@@ -11,7 +11,7 @@
         })(window, document, "clarity", "script", "k9zlm89vrc");
     </script>
 
-    <title>spoo.me URL Shortener</title>
+    <title>URL Shortener</title>
     <link rel="icon" type="image/png" href="https://spoo.me/static/images/favicon.png">
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -31,7 +31,7 @@
     <!-- Twitter Card Meta Tags -->
     <meta property="twitter:card" content="summary_large_image" />
     <meta property="twitter:url" content="https://spoo.me/" />
-    <meta property="twitter:title" content="spoo.me URL Shortener" />
+    <meta property="twitter:title" content="URL Shortener" />
     <meta property="twitter:description"
         content="spoo.me is a free and easy-to-use URL shortener that lets you create short links for any website. You can even choose your own alias, set a password, and limit the number of clicks." />
     <meta property="twitter:image" content="https://spoo.me/static/images/banner.webp" />
@@ -59,12 +59,12 @@
 
 <body>
     {% if self_promo %}
-        <div class="self-promo">
-            <div class="self-promo-inner"><a href="{{ self_promo_uri }}" target="_blank" rel="noopener">🥳
-                    {{ self_promo_text }}</a></div>
-            <button id="close-button" class="self-promo-close"><img width="20" height="20"
-                    src="https://img.icons8.com/metro/30/ffffff/delete-sign.png" alt="delete-sign" /></button>
-        </div>
+    <div class="self-promo">
+        <div class="self-promo-inner"><a href="{{ self_promo_uri }}" target="_blank" rel="noopener">🥳
+                {{ self_promo_text }}</a></div>
+        <button id="close-button" class="self-promo-close"><img width="20" height="20"
+                src="https://img.icons8.com/metro/30/ffffff/delete-sign.png" alt="delete-sign" /></button>
+    </div>
     {% endif %}
 
     <div class="navbar">
@@ -75,10 +75,12 @@
                 <li><a href="#" class="active">Shorten</a></li>
                 <li><a href="/api">API</a></li>
                 <li><a href="/stats">Stats</a></li>
+                <!--
                 <li><a href="/report">Report URL</a></li>
                 <li><a href="https://github.com/spoo-me/url-shortener" rel="noopener" target="_blank">Open-Source ↗</a>
                 </li>
                 <li onclick="showContactModal();"><a href="#">Contact</a></li>
+                -->
             </ul>
         </div>
     </div>
@@ -148,7 +150,8 @@
                 <label for="long-url" id="tagline"><b>Shorten Your URLs, Not Your Possiblities.</b></label>
             </h1>
             <p id="url-error"></p>
-            <input type="text" id="long-url" name="url" required placeholder="https://your-long-url.com" value="{{ url }}">
+            <input type="text" id="long-url" name="url" required placeholder="https://your-long-url.com"
+                value="{{ url }}">
             {% if error %}
             <script>
                 customTopNotification("AliasError", "{{ error }}", 10);
@@ -230,6 +233,7 @@
                 <h2 id="total-clicks"></h2>
                 <h4>CLICKS REDIRECTED</h4>
             </div>
+            <!--
             <div class="github-stars">
                 <a id="github-stars-link" href="/github" target="_blank">
                     <h2 id="github-stars"></h2>
@@ -242,9 +246,11 @@
                     <h4>ONLINE IN DISCORD</h4>
                 </a>
             </div>
+            -->
         </div>
     </div>
 
+    <!--
     <div id="producthunt">
         <a href="https://www.producthunt.com/posts/spoo-me-url-shortener?utm_source=badge-featured&utm_medium=badge&utm_souce=badge-spoo&#0045;me&#0045;url&#0045;shortener"
             target="_blank" rel="noopener"><img
@@ -252,6 +258,7 @@
                 alt="Spoo&#0046;me&#0032;Url&#0032;Shortener - Shorten&#0032;Your&#0032;URLs&#0044;&#0032;Not&#0032;Your&#0032;Possibilities&#0046; | Product Hunt"
                 style="width: 200px; height: 40px;" width="200" height="40" loading="lazy" /></a>
     </div>
+    -->
 
     <script src="https://cdn.rawgit.com/davidshimjs/qrcodejs/gh-pages/qrcode.min.js"></script>
 
