@@ -1,16 +1,19 @@
-# Vector config: tail docker container logs → ship to Axiom
+# Vector config: docker logs → Axiom logs dataset
+#                Redis prometheus metrics → Axiom metrics dataset
+
+# ─────────────────────────────────────────────────────────────────────
+# LOGS pipeline
+# ─────────────────────────────────────────────────────────────────────
 
 [sources.docker]
 type = "docker_logs"
 include_containers = ["spoo_app", "spoo_tunnel"]
-exclude_containers = ["spoo_vector"]
+exclude_containers = ["spoo_vector", "spoo_redis_exporter"]
 
-# Parse spoo_app's structlog JSON. Lift fields. Strip docker noise.
 [transforms.parse_and_clean]
 type = "remap"
 inputs = ["docker"]
 source = '''
-# Lift inner JSON for spoo_app structlog logs.
 if .container_name == "spoo_app" {
     parsed, err = parse_json(.message)
     if err == null {
@@ -19,10 +22,8 @@ if .container_name == "spoo_app" {
     }
 }
 
-# Tag service name for filtering.
 .service = .container_name
 
-# Strip docker metadata noise. None of this is useful for app debugging.
 del(.label)
 del(.image)
 del(.host)
@@ -32,7 +33,6 @@ del(.source_type)
 del(.stream)
 '''
 
-# Drop /health pings (UptimeRobot every 5min) to cut volume.
 [transforms.drop_health]
 type = "filter"
 inputs = ["parse_and_clean"]
@@ -40,11 +40,42 @@ condition = '''
 !(exists(.http_path) && .http_path == "/health")
 '''
 
-[sinks.axiom]
+[sinks.axiom_logs]
 type = "axiom"
 inputs = ["drop_health"]
 token = "${AXIOM_TOKEN}"
 dataset = "${AXIOM_DATASET}"
 
-[sinks.axiom.healthcheck]
+[sinks.axiom_logs.healthcheck]
+enabled = true
+
+# ─────────────────────────────────────────────────────────────────────
+# REDIS METRICS pipeline (scrape redis-exporter every 15s, ship to Axiom)
+# ─────────────────────────────────────────────────────────────────────
+
+[sources.redis_metrics]
+type = "prometheus_scrape"
+endpoints = ["http://redis-exporter:9121/metrics"]
+scrape_interval_secs = 15
+
+[transforms.metrics_to_log]
+type = "metric_to_log"
+inputs = ["redis_metrics"]
+host_tag = "host"
+
+[transforms.tag_metrics]
+type = "remap"
+inputs = ["metrics_to_log"]
+source = '''
+.service = "redis"
+.source_kind = "metrics"
+'''
+
+[sinks.axiom_metrics]
+type = "axiom"
+inputs = ["tag_metrics"]
+token = "${AXIOM_TOKEN}"
+dataset = "${AXIOM_METRICS_DATASET}"
+
+[sinks.axiom_metrics.healthcheck]
 enabled = true

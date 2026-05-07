@@ -49,6 +49,7 @@ services:
       --appendonly no
       --tcp-keepalive 60
       --timeout 300
+      --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis-data:/data
     healthcheck:
@@ -90,6 +91,26 @@ services:
         max-file: "2"
         tag: "{{.Name}}"
 
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: spoo_redis_exporter
+    restart: always
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+    mem_limit: 64m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.50
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
+
   vector:
     image: timberio/vector:0.43.0-alpine
     container_name: spoo_vector
@@ -98,10 +119,13 @@ services:
     environment:
       - AXIOM_TOKEN=${AXIOM_TOKEN}
       - AXIOM_DATASET=${AXIOM_DATASET:-spoo-prod}
+      - AXIOM_METRICS_DATASET=${AXIOM_METRICS_DATASET:-spoo-metrics}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - ./vector.toml:/etc/vector/vector.toml:ro
+    depends_on:
+      - redis-exporter
     mem_limit: 128m
     networks:
       spoonet:

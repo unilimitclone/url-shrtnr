@@ -1,0 +1,201 @@
+{
+  "name": "spoo · redis",
+  "description": "Redis health, memory, hit rate, ops, slow log. Refresh 60s. Metrics via vector + redis_exporter.",
+  "owner": "X-AXIOM-EVERYONE",
+  "datasets": ["spoo-metrics"],
+  "refreshTime": 60,
+  "schemaVersion": 2,
+  "timeWindowStart": "qr-now-1h",
+  "timeWindowEnd": "qr-now",
+  "charts": [
+    {
+      "id": "stat-hit-rate",
+      "name": "Cache hit rate %",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_keyspace_hits_total' or name == 'redis_keyspace_misses_total'\n| summarize\n    hits = sumif(['counter.value'], name == 'redis_keyspace_hits_total'),\n    misses = sumif(['counter.value'], name == 'redis_keyspace_misses_total')\n| extend hit_rate = round(iff((hits + misses) > 0, 100.0 * hits / (hits + misses), 0.0), 2)\n| project hit_rate"
+      }
+    },
+    {
+      "id": "stat-mem-used",
+      "name": "Memory used (MB)",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_memory_used_bytes'\n| summarize bytes = max(['gauge.value'])\n| extend mb = round(bytes / 1024.0 / 1024.0, 1)\n| project mb"
+      }
+    },
+    {
+      "id": "stat-keys",
+      "name": "Total keys",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_db_keys'\n| summarize total = max(['gauge.value'])\n| project total"
+      }
+    },
+    {
+      "id": "stat-clients",
+      "name": "Connected clients",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_connected_clients'\n| summarize clients = max(['gauge.value'])\n| project clients"
+      }
+    },
+    {
+      "id": "stat-evictions",
+      "name": "Evictions (total)",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_evicted_keys_total'\n| summarize evicted = max(['counter.value'])\n| project evicted"
+      }
+    },
+    {
+      "id": "stat-uptime",
+      "name": "Uptime (hours)",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_uptime_in_seconds'\n| summarize secs = max(['gauge.value'])\n| extend hours = round(secs / 3600.0, 1)\n| project hours"
+      }
+    },
+    {
+      "id": "ts-hit-miss",
+      "name": "Cache hits vs misses (cumulative)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_keyspace_hits_total' or name == 'redis_keyspace_misses_total'\n| summarize value = max(['counter.value']) by bin_auto(_time), name"
+      }
+    },
+    {
+      "id": "ts-hit-rate",
+      "name": "Hit rate % over time",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_keyspace_hits_total' or name == 'redis_keyspace_misses_total'\n| summarize\n    hits = sumif(['counter.value'], name == 'redis_keyspace_hits_total'),\n    misses = sumif(['counter.value'], name == 'redis_keyspace_misses_total')\n  by bin_auto(_time)\n| extend hit_rate = round(iff((hits + misses) > 0, 100.0 * hits / (hits + misses), 0.0), 2)\n| project _time, hit_rate"
+      }
+    },
+    {
+      "id": "ts-memory",
+      "name": "Memory used (MB)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_memory_used_bytes'\n| summarize mb = max(['gauge.value']) / 1024.0 / 1024.0 by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-commands-total",
+      "name": "Commands processed (cumulative)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_commands_processed_total'\n| summarize cmds = max(['counter.value']) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-keys",
+      "name": "Total keys over time",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_db_keys'\n| summarize keys = max(['gauge.value']) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-clients",
+      "name": "Connected clients over time",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_connected_clients'\n| summarize clients = max(['gauge.value']) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-evictions",
+      "name": "Evictions (cumulative)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_evicted_keys_total'\n| summarize evicted = max(['counter.value']) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-net-io",
+      "name": "Network I/O bytes (in / out)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_net_input_bytes_total' or name == 'redis_net_output_bytes_total'\n| summarize bytes = max(['counter.value']) by bin_auto(_time), name"
+      }
+    },
+    {
+      "id": "ts-cpu",
+      "name": "CPU seconds (user + sys)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_cpu_user_seconds_total' or name == 'redis_cpu_sys_seconds_total'\n| summarize cpu = max(['counter.value']) by bin_auto(_time), name"
+      }
+    },
+    {
+      "id": "ts-frag",
+      "name": "Memory fragmentation ratio",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_mem_fragmentation_ratio'\n| summarize ratio = max(['gauge.value']) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "table-top-commands",
+      "name": "Top commands by call count",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_commands_total' and isnotnull(['tags.cmd'])\n| summarize calls = max(['counter.value']) by tostring(['tags.cmd'])\n| top 20 by calls"
+      }
+    },
+    {
+      "id": "table-slow-commands",
+      "name": "Commands by avg latency (μs)",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_commands_latencies_usec' and isnotnull(['tags.cmd'])\n| summarize\n    sum = max(['aggregated_summary.sum']),\n    count = max(['aggregated_summary.count'])\n  by tostring(['tags.cmd'])\n| extend avg_us = iff(count > 0, sum / count, 0.0)\n| project cmd = tags_cmd, avg_us, count\n| top 20 by avg_us"
+      }
+    },
+    {
+      "id": "stat-slowlog",
+      "name": "Slow log length",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_slowlog_length'\n| summarize len = max(['gauge.value'])\n| project len"
+      }
+    },
+    {
+      "id": "stat-blocked",
+      "name": "Blocked clients",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-metrics']\n| where name == 'redis_blocked_clients'\n| summarize blocked = max(['gauge.value'])\n| project blocked"
+      }
+    }
+  ],
+  "layout": [
+    {"i": "stat-hit-rate",     "x": 0,  "y": 0,  "w": 2, "h": 2},
+    {"i": "stat-mem-used",     "x": 2,  "y": 0,  "w": 2, "h": 2},
+    {"i": "stat-keys",         "x": 4,  "y": 0,  "w": 2, "h": 2},
+    {"i": "stat-clients",      "x": 6,  "y": 0,  "w": 2, "h": 2},
+    {"i": "stat-evictions",    "x": 8,  "y": 0,  "w": 2, "h": 2},
+    {"i": "stat-uptime",       "x": 10, "y": 0,  "w": 2, "h": 2},
+
+    {"i": "ts-hit-rate",       "x": 0,  "y": 2,  "w": 6, "h": 4},
+    {"i": "ts-hit-miss",       "x": 6,  "y": 2,  "w": 6, "h": 4},
+
+    {"i": "ts-memory",         "x": 0,  "y": 6,  "w": 6, "h": 4},
+    {"i": "ts-keys",           "x": 6,  "y": 6,  "w": 6, "h": 4},
+
+    {"i": "ts-commands-total", "x": 0,  "y": 10, "w": 6, "h": 4},
+    {"i": "ts-evictions",      "x": 6,  "y": 10, "w": 6, "h": 4},
+
+    {"i": "ts-net-io",         "x": 0,  "y": 14, "w": 6, "h": 4},
+    {"i": "ts-cpu",            "x": 6,  "y": 14, "w": 6, "h": 4},
+
+    {"i": "ts-clients",        "x": 0,  "y": 18, "w": 6, "h": 4},
+    {"i": "ts-frag",           "x": 6,  "y": 18, "w": 6, "h": 4},
+
+    {"i": "table-top-commands","x": 0,  "y": 22, "w": 6, "h": 5},
+    {"i": "table-slow-commands","x": 6, "y": 22, "w": 6, "h": 5},
+
+    {"i": "stat-slowlog",      "x": 0,  "y": 27, "w": 3, "h": 2},
+    {"i": "stat-blocked",      "x": 3,  "y": 27, "w": 3, "h": 2}
+  ]
+}
