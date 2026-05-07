@@ -35,7 +35,9 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: spoo_tunnel
     restart: always
-    command: tunnel --no-autoupdate run
+    # http2 is more stable than QUIC across CF backbone for cross-region traffic.
+    # SIN/BOM POPs sometimes fail to route to IAD origin via QUIC.
+    command: tunnel --no-autoupdate --protocol http2 run
     environment:
       - TUNNEL_TOKEN=${CF_TUNNEL_TOKEN}
     depends_on:
