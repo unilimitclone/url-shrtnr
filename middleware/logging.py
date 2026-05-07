@@ -24,8 +24,8 @@ log = get_logger("spoo.request")
 _SKIP_PATHS = frozenset({"/health", "/favicon.ico"})
 
 
-# Auth header inference — gives a coarse "who is calling" tag without leaking creds.
 def _auth_kind(request: Request) -> str:
+    """Coarse "who is calling" tag without leaking creds."""
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer "):
         token = auth[7:]
@@ -37,6 +37,26 @@ def _auth_kind(request: Request) -> str:
     if request.cookies.get("session"):
         return "session_cookie"
     return "anonymous"
+
+
+def _classify_route(path: str) -> str:
+    """Coarse route bucket for filtering."""
+    if path.startswith("/static/"):
+        return "static"
+    if path.startswith("/api/"):
+        return "api"
+    if path.startswith("/auth/") or path.startswith("/oauth/"):
+        return "auth"
+    if path.startswith("/dashboard"):
+        return "dashboard"
+    if path == "/" or path == "/contact" or path == "/report" or path == "/docs":
+        return "page"
+    if path == "/health" or path == "/favicon.ico":
+        return "system"
+    if path == "/metric" or path.startswith("/stats") or path.startswith("/export"):
+        return "analytics"
+    # everything else is likely a redirect short_code
+    return "redirect"
 
 
 def _generate_request_id() -> str:
@@ -57,6 +77,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         ip_hash = hash_ip(get_client_ip(request))
         auth_kind = _auth_kind(request)
 
+        cf_ray = request.headers.get("cf-ray", "")
+        # cf-ray format: <12-hex-id>-<3-letter-pop>, e.g. "9f80a96e7a07f934-SIN"
+        cf_pop = cf_ray.rsplit("-", 1)[-1] if "-" in cf_ray else None
+
+        # Param NAMES only — values may be sensitive (passwords, tokens).
+        query_keys = list(request.query_params.keys()) or None
+
+        accept_language = request.headers.get("accept-language", "")
+
         # Bind rich request context to structlog contextvars — every downstream
         # log call (services, repositories, etc.) inherits these fields.
         structlog.contextvars.clear_contextvars()
@@ -64,11 +93,18 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             request_id=request_id,
             http_method=request.method,
             http_path=path,
+            host=request.headers.get("host"),
+            route_class=_classify_route(path),
+            is_https=request.url.scheme == "https",
             ip_hash=ip_hash,
             country=country,
             referrer=referrer,
             user_agent=ua[:200] if ua else None,
             auth_kind=auth_kind,
+            cf_ray=cf_ray or None,
+            cf_pop=cf_pop,
+            query_keys=query_keys,
+            accept_language=accept_language[:50] or None,
         )
 
         response = await call_next(request)
@@ -85,7 +121,6 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             )
             log_fn(
                 "request_completed",
-                query=request.url.query or None,
                 status_code=status,
                 duration_ms=duration_ms,
                 content_length=response.headers.get("content-length"),

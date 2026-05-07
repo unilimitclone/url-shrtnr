@@ -128,6 +128,14 @@ async def redirect_url(
     # 4. Redirect
     total_ms = int((time.perf_counter() - start_time) * 1000)
     if should_sample("url_redirect"):
+        long_url_domain = None
+        try:
+            from urllib.parse import urlparse
+
+            long_url_domain = urlparse(url_data.long_url).hostname
+        except Exception:
+            pass
+
         log.info(
             "url_redirect",
             short_code=short_code,
@@ -135,6 +143,12 @@ async def redirect_url(
             resolve_ms=resolve_ms,
             tracking_ms=tracking_ms,
             total_ms=total_ms,
+            long_url_domain=long_url_domain,
+            password_protected=bool(getattr(url_data, "password_hash", None)),
+            had_max_clicks=bool(getattr(url_data, "max_clicks", None)),
+            max_clicks=getattr(url_data, "max_clicks", None),
+            owner_id=str(getattr(url_data, "owner_id", "")) or None,
+            slow=total_ms > 100,
         )
     resp = RedirectResponse(url_data.long_url, status_code=302)
     resp.headers["X-Robots-Tag"] = "noindex, nofollow"

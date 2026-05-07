@@ -149,8 +149,13 @@ class V2ClickHandler:
                 short_code=short_code,
                 schema="v2",
                 country=country or "Unknown",
+                city=city or "Unknown",
                 browser=browser,
+                os=os_name,
                 is_bot=is_bot,
+                bot_name=bot_name,
+                referrer_domain=sanitized_referrer,
+                owner_id=str(url_data.owner_id) if url_data.owner_id else None,
                 duration_ms=redirect_ms,
             )
 
@@ -300,5 +305,8 @@ class LegacyClickHandler:
                 schema="emoji" if is_emoji else "v1",
                 country=country or "Unknown",
                 browser=browser,
+                os=os_name,
                 is_bot=is_bot,
+                bot_name=bot_name,
+                duration_ms=int(redirection_time),
             )
