@@ -23,7 +23,7 @@ htmlcov/
 tests/
 k6-tests/
 local_test_db/
-misc/domain.py
+misc/*.py
 thoughts/
 
 # Editor/OS
