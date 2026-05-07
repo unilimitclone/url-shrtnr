@@ -5,11 +5,12 @@ type = "docker_logs"
 include_containers = ["spoo_app", "spoo_tunnel"]
 exclude_containers = ["spoo_vector"]
 
-# Parse spoo_app's structlog JSON. Lift inner fields up.
-[transforms.parse_json]
+# Parse spoo_app's structlog JSON. Lift fields. Strip docker noise.
+[transforms.parse_and_clean]
 type = "remap"
 inputs = ["docker"]
 source = '''
+# Lift inner JSON for spoo_app structlog logs.
 if .container_name == "spoo_app" {
     parsed, err = parse_json(.message)
     if err == null {
@@ -17,13 +18,24 @@ if .container_name == "spoo_app" {
         del(.message)
     }
 }
+
+# Tag service name for filtering.
 .service = .container_name
+
+# Strip docker metadata noise. None of this is useful for app debugging.
+del(.label)
+del(.image)
+del(.host)
+del(.container_id)
+del(.container_created_at)
+del(.source_type)
+del(.stream)
 '''
 
 # Drop /health pings (UptimeRobot every 5min) to cut volume.
 [transforms.drop_health]
 type = "filter"
-inputs = ["parse_json"]
+inputs = ["parse_and_clean"]
 condition = '''
 !(exists(.http_path) && .http_path == "/health")
 '''
