@@ -1,0 +1,241 @@
+{
+  "name": "spoo · ops",
+  "description": "Operational health, performance, and errors. Refresh 30s.",
+  "owner": "X-AXIOM-EVERYONE",
+  "datasets": [
+    "spoo-prod"
+  ],
+  "schemaVersion": 2,
+  "timeWindowStart": "qr-now-1h",
+  "timeWindowEnd": "qr-now",
+  "charts": [
+    {
+      "id": "stat-rps",
+      "name": "Requests / sec",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize requests = count()\n| extend rps = round(requests / 300.0, 1)\n| project rps"
+      }
+    },
+    {
+      "id": "stat-error-rate",
+      "name": "Error rate %",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize total = count(), errors = countif(status_code >= 500)\n| extend error_rate = round(iff(total > 0, 100.0 * errors / total, 0.0), 3)\n| project error_rate"
+      }
+    },
+    {
+      "id": "stat-p95-redirect",
+      "name": "p95 redirect (ms)",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"url_redirect\"\n| summarize p95 = percentile(total_ms, 95)\n| project p95"
+      }
+    },
+    {
+      "id": "stat-slow-count",
+      "name": "Slow (>500ms) last 1h",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\" and slow == true\n| summarize count()"
+      }
+    },
+    {
+      "id": "ts-rps-by-route",
+      "name": "RPS by route_class",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize count() by bin_auto(_time), route_class"
+      }
+    },
+    {
+      "id": "ts-status-class",
+      "name": "Status code distribution",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| extend status_class = case(status_code < 300, \"2xx\", status_code < 400, \"3xx\", status_code < 500, \"4xx\", \"5xx\")\n| summarize count() by bin_auto(_time), status_class"
+      }
+    },
+    {
+      "id": "ts-redirect-latency",
+      "name": "Redirect latency p50 / p95 / p99 (ms)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"url_redirect\"\n| summarize percentiles_array(total_ms, 50, 95, 99) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-request-latency",
+      "name": "Request latency p50 / p95 / p99 (ms)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize percentiles_array(duration_ms, 50, 95, 99) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-error-rate",
+      "name": "Error rate %",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize total = count(), errors = countif(status_code >= 500) by bin_auto(_time)\n| extend error_rate = iff(total > 0, round(100.0 * errors / total, 3), 0.0)\n| project _time, error_rate"
+      }
+    },
+    {
+      "id": "ts-4xx-breakdown",
+      "name": "4xx breakdown by status_code",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\" and status_code >= 400 and status_code < 500\n| summarize count() by bin_auto(_time), tostring(status_code)"
+      }
+    },
+    {
+      "id": "table-slow-paths",
+      "name": "Top 20 slowest paths (last 1h)",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\" and slow == true\n| summarize count = count(), p95 = percentile(duration_ms, 95) by route_class, http_path\n| top 20 by p95\n| project route_class, http_path, count, p95"
+      }
+    },
+    {
+      "id": "table-5xx-events",
+      "name": "Latest 5xx events",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\" and status_code >= 500\n| project _time, http_method, http_path, status_code, country, ip_hash, request_id\n| top 50 by _time"
+      }
+    },
+    {
+      "id": "pie-cf-pop",
+      "name": "Cloudflare POP distribution",
+      "type": "Pie",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\" and isnotnull(cf_pop)\n| summarize count() by cf_pop"
+      }
+    },
+    {
+      "id": "pie-cf-cache",
+      "name": "CF cache status",
+      "type": "Pie",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\" and isnotnull(cache_status)\n| summarize count() by cache_status"
+      }
+    },
+    {
+      "id": "pie-route-class",
+      "name": "Route class share",
+      "type": "Pie",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize count() by route_class"
+      }
+    }
+  ],
+  "layout": [
+    {
+      "i": "stat-rps",
+      "x": 0,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "stat-error-rate",
+      "x": 3,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "stat-p95-redirect",
+      "x": 6,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "stat-slow-count",
+      "x": 9,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "ts-rps-by-route",
+      "x": 0,
+      "y": 2,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-status-class",
+      "x": 6,
+      "y": 2,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-redirect-latency",
+      "x": 0,
+      "y": 6,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-request-latency",
+      "x": 6,
+      "y": 6,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-error-rate",
+      "x": 0,
+      "y": 10,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-4xx-breakdown",
+      "x": 6,
+      "y": 10,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "table-slow-paths",
+      "x": 0,
+      "y": 14,
+      "w": 6,
+      "h": 5
+    },
+    {
+      "i": "table-5xx-events",
+      "x": 6,
+      "y": 14,
+      "w": 6,
+      "h": 5
+    },
+    {
+      "i": "pie-cf-pop",
+      "x": 0,
+      "y": 19,
+      "w": 4,
+      "h": 4
+    },
+    {
+      "i": "pie-cf-cache",
+      "x": 4,
+      "y": 19,
+      "w": 4,
+      "h": 4
+    },
+    {
+      "i": "pie-route-class",
+      "x": 8,
+      "y": 19,
+      "w": 4,
+      "h": 4
+    }
+  ],
+  "refreshTime": 60
+}
