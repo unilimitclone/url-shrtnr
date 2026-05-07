@@ -5,21 +5,22 @@
   "datasets": [
     "spoo-prod"
   ],
+  "refreshTime": 300,
   "schemaVersion": 2,
-  "timeWindowStart": "qr-now-24h",
+  "timeWindowStart": "qr-now-6h",
   "timeWindowEnd": "qr-now",
   "charts": [
     {
-      "id": "stat-redirects-1h",
-      "name": "Redirects last 1h",
+      "id": "stat-redirects-total",
+      "name": "Redirects",
       "type": "Statistic",
       "query": {
         "apl": "['spoo-prod']\n| where event == \"url_redirect\"\n| summarize count()"
       }
     },
     {
-      "id": "stat-creates-24h",
-      "name": "URLs created (24h)",
+      "id": "stat-creates-total",
+      "name": "URLs created",
       "type": "Statistic",
       "query": {
         "apl": "['spoo-prod']\n| where event == \"url_created\"\n| summarize count()"
@@ -27,10 +28,18 @@
     },
     {
       "id": "stat-unique-countries",
-      "name": "Unique countries (24h)",
+      "name": "Unique countries",
       "type": "Statistic",
       "query": {
         "apl": "['spoo-prod']\n| where event == \"url_redirect\" and isnotnull(country)\n| summarize dcount(country)"
+      }
+    },
+    {
+      "id": "stat-unique-visitors",
+      "name": "Unique visitors",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"url_redirect\" and isnotnull(ip_hash)\n| summarize dcount(ip_hash)"
       }
     },
     {
@@ -39,6 +48,14 @@
       "type": "Statistic",
       "query": {
         "apl": "['spoo-prod']\n| where event == \"click_recorded\"\n| summarize total = count(), bots = countif(is_bot == true)\n| extend bot_rate = round(iff(total > 0, 100.0 * bots / total, 0.0), 2)\n| project bot_rate"
+      }
+    },
+    {
+      "id": "stat-password-rate",
+      "name": "Password-protected %",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"url_redirect\"\n| summarize total = count(), pwd = countif(password_protected == true)\n| extend pwd_rate = round(iff(total > 0, 100.0 * pwd / total, 0.0), 2)\n| project pwd_rate"
       }
     },
     {
@@ -58,6 +75,22 @@
       }
     },
     {
+      "id": "ts-clicks-real-vs-bot",
+      "name": "Clicks: real users vs bots",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"click_recorded\"\n| summarize real = countif(is_bot == false), bot = countif(is_bot == true) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-redirects-by-country",
+      "name": "Redirects by top-5 country",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"url_redirect\" and isnotnull(country)\n| summarize hits = count() by bin_auto(_time), country\n| top-hitters 5 of country by sum(hits)"
+      }
+    },
+    {
       "id": "table-top-countries",
       "name": "Top 20 countries",
       "type": "Table",
@@ -66,11 +99,11 @@
       }
     },
     {
-      "id": "ts-redirects-by-country",
-      "name": "Redirects by top-5 country",
-      "type": "TimeSeries",
+      "id": "table-top-cities",
+      "name": "Top 20 cities (clicks)",
+      "type": "Table",
       "query": {
-        "apl": "['spoo-prod']\n| where event == \"url_redirect\" and isnotnull(country)\n| summarize hits = count() by country\n| top 5 by hits\n| project country\n| join kind=inner (\n    ['spoo-prod']\n    | where event == \"url_redirect\"\n    | summarize count() by bin_auto(_time), country\n) on country\n| project _time, country, count_"
+        "apl": "['spoo-prod']\n| where event == \"click_recorded\" and isnotnull(city) and city != \"Unknown\"\n| summarize clicks = count() by city, country\n| top 20 by clicks"
       }
     },
     {
@@ -79,6 +112,14 @@
       "type": "Table",
       "query": {
         "apl": "['spoo-prod']\n| where event == \"url_redirect\" and isnotnull(short_code)\n| summarize hits = count() by short_code\n| top 20 by hits"
+      }
+    },
+    {
+      "id": "table-slow-codes",
+      "name": "Top 20 slowest short_codes (p95)",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"url_redirect\" and isnotnull(short_code)\n| summarize hits = count(), p95 = percentile(total_ms, 95) by short_code\n| where hits >= 5\n| top 20 by p95"
       }
     },
     {
@@ -95,6 +136,14 @@
       "type": "Table",
       "query": {
         "apl": "['spoo-prod']\n| where event == \"url_created\" and isnotnull(long_url_domain)\n| summarize creates = count() by long_url_domain\n| top 20 by creates"
+      }
+    },
+    {
+      "id": "table-referrers",
+      "name": "Top 20 referrer domains",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"click_recorded\" and isnotnull(referrer_domain)\n| summarize clicks = count() by referrer_domain\n| top 20 by clicks"
       }
     },
     {
@@ -122,11 +171,11 @@
       }
     },
     {
-      "id": "table-referrers",
-      "name": "Top 20 referrer domains",
-      "type": "Table",
+      "id": "pie-language",
+      "name": "Top accept-language (primary tag)",
+      "type": "Pie",
       "query": {
-        "apl": "['spoo-prod']\n| where event == \"click_recorded\" and isnotnull(referrer_domain)\n| summarize clicks = count() by referrer_domain\n| top 20 by clicks"
+        "apl": "['spoo-prod']\n| where event == \"url_redirect\" and isnotnull(accept_language)\n| extend lang = tolower(split(split(accept_language, \",\")[0], \"-\")[0])\n| where strlen(lang) > 0\n| summarize count() by tostring(lang)\n| top 10 by count_"
       }
     },
     {
@@ -162,41 +211,71 @@
       }
     },
     {
-      "id": "pie-url-features",
-      "name": "URL feature usage at create",
-      "type": "Pie",
+      "id": "table-top-creators",
+      "name": "Top 10 creators by URLs",
+      "type": "Table",
       "query": {
-        "apl": "['spoo-prod']\n| where event == \"url_created\"\n| summarize\n    pwd = countif(has_password == true),\n    max_clicks = countif(isnotnull(max_clicks)),\n    block_bots = countif(block_bots == true),\n    expiration = countif(has_expiration == true),\n    private = countif(private_stats == true),\n    custom_alias = countif(alias_custom == true)\n| project pwd, max_clicks, block_bots, expiration, private, custom_alias"
+        "apl": "['spoo-prod']\n| where event == \"url_created\" and isnotnull(user_id)\n| summarize urls = count() by user_id\n| top 10 by urls"
+      }
+    },
+    {
+      "id": "ts-resolve-vs-tracking",
+      "name": "Redirect time breakdown: resolve vs tracking (avg ms)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"url_redirect\"\n| summarize resolve = avg(resolve_ms), tracking = avg(tracking_ms) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "table-not-found",
+      "name": "Most-missed short codes (404)",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"url_not_found\" and isnotnull(short_code)\n| summarize attempts = count() by short_code\n| top 20 by attempts"
       }
     }
   ],
   "layout": [
     {
-      "i": "stat-redirects-1h",
+      "i": "stat-redirects-total",
       "x": 0,
       "y": 0,
-      "w": 3,
+      "w": 2,
       "h": 2
     },
     {
-      "i": "stat-creates-24h",
-      "x": 3,
+      "i": "stat-creates-total",
+      "x": 2,
       "y": 0,
-      "w": 3,
+      "w": 2,
       "h": 2
     },
     {
       "i": "stat-unique-countries",
+      "x": 4,
+      "y": 0,
+      "w": 2,
+      "h": 2
+    },
+    {
+      "i": "stat-unique-visitors",
       "x": 6,
       "y": 0,
-      "w": 3,
+      "w": 2,
       "h": 2
     },
     {
       "i": "stat-bot-rate",
-      "x": 9,
+      "x": 8,
       "y": 0,
-      "w": 3,
+      "w": 2,
+      "h": 2
+    },
+    {
+      "i": "stat-password-rate",
+      "x": 10,
+      "y": 0,
+      "w": 2,
       "h": 2
     },
     {
@@ -214,103 +293,145 @@
       "h": 4
     },
     {
-      "i": "table-top-countries",
+      "i": "ts-clicks-real-vs-bot",
       "x": 0,
       "y": 6,
       "w": 6,
-      "h": 5
+      "h": 4
     },
     {
       "i": "ts-redirects-by-country",
       "x": 6,
       "y": 6,
       "w": 6,
+      "h": 4
+    },
+    {
+      "i": "table-top-countries",
+      "x": 0,
+      "y": 10,
+      "w": 6,
+      "h": 5
+    },
+    {
+      "i": "table-top-cities",
+      "x": 6,
+      "y": 10,
+      "w": 6,
       "h": 5
     },
     {
       "i": "table-hot-codes",
       "x": 0,
-      "y": 11,
+      "y": 15,
+      "w": 6,
+      "h": 5
+    },
+    {
+      "i": "table-slow-codes",
+      "x": 6,
+      "y": 15,
       "w": 6,
       "h": 5
     },
     {
       "i": "table-top-destinations",
-      "x": 6,
-      "y": 11,
+      "x": 0,
+      "y": 20,
       "w": 6,
       "h": 5
     },
     {
       "i": "table-created-domains",
-      "x": 0,
-      "y": 16,
+      "x": 6,
+      "y": 20,
       "w": 6,
       "h": 5
     },
     {
       "i": "table-referrers",
+      "x": 0,
+      "y": 25,
+      "w": 6,
+      "h": 5
+    },
+    {
+      "i": "table-not-found",
       "x": 6,
-      "y": 16,
+      "y": 25,
       "w": 6,
       "h": 5
     },
     {
       "i": "table-browsers",
       "x": 0,
-      "y": 21,
+      "y": 30,
       "w": 4,
       "h": 5
     },
     {
       "i": "table-os",
       "x": 4,
-      "y": 21,
+      "y": 30,
       "w": 4,
       "h": 5
     },
     {
       "i": "table-bot-names",
       "x": 8,
-      "y": 21,
+      "y": 30,
       "w": 4,
       "h": 5
     },
     {
       "i": "pie-schema",
       "x": 0,
-      "y": 26,
-      "w": 4,
+      "y": 35,
+      "w": 3,
       "h": 4
     },
     {
       "i": "pie-bot-vs-human",
-      "x": 4,
-      "y": 26,
-      "w": 4,
+      "x": 3,
+      "y": 35,
+      "w": 3,
       "h": 4
     },
     {
       "i": "pie-auth-kind",
-      "x": 8,
-      "y": 26,
-      "w": 4,
+      "x": 6,
+      "y": 35,
+      "w": 3,
+      "h": 4
+    },
+    {
+      "i": "pie-language",
+      "x": 9,
+      "y": 35,
+      "w": 3,
       "h": 4
     },
     {
       "i": "table-top-owners",
       "x": 0,
-      "y": 30,
+      "y": 39,
       "w": 6,
       "h": 5
     },
     {
-      "i": "pie-url-features",
+      "i": "table-top-creators",
       "x": 6,
-      "y": 30,
+      "y": 39,
       "w": 6,
       "h": 5
+    },
+    {
+      "i": "ts-resolve-vs-tracking",
+      "x": 0,
+      "y": 44,
+      "w": 12,
+      "h": 4
     }
   ],
-  "refreshTime": 300
+  "version": "1778180161812782745"
 }

@@ -1,12 +1,13 @@
 {
   "name": "spoo · ops",
-  "description": "Operational health, performance, and errors. Refresh 30s.",
+  "description": "Operational health, performance, and errors. Refresh 60s.",
   "owner": "X-AXIOM-EVERYONE",
   "datasets": [
     "spoo-prod"
   ],
+  "refreshTime": 60,
   "schemaVersion": 2,
-  "timeWindowStart": "qr-now-1h",
+  "timeWindowStart": "qr-now-6h",
   "timeWindowEnd": "qr-now",
   "charts": [
     {
@@ -14,7 +15,7 @@
       "name": "Requests / sec",
       "type": "Statistic",
       "query": {
-        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize requests = count()\n| extend rps = round(requests / 300.0, 1)\n| project rps"
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize requests = count(), tmin = min(_time), tmax = max(_time)\n| extend window_s = todouble(datetime_diff('second', tmax, tmin))\n| extend rps = iff(window_s > 0, round(requests / window_s, 2), 0.0)\n| project rps"
       }
     },
     {
@@ -34,11 +35,11 @@
       }
     },
     {
-      "id": "stat-slow-count",
-      "name": "Slow (>500ms) last 1h",
+      "id": "stat-unique-visitors",
+      "name": "Unique visitors",
       "type": "Statistic",
       "query": {
-        "apl": "['spoo-prod']\n| where event == \"request_completed\" and slow == true\n| summarize count()"
+        "apl": "['spoo-prod']\n| where event == \"request_completed\" and isnotnull(ip_hash)\n| summarize uniques = dcount(ip_hash)\n| project uniques"
       }
     },
     {
@@ -74,6 +75,14 @@
       }
     },
     {
+      "id": "heatmap-latency",
+      "name": "Request latency distribution (heatmap)",
+      "type": "Heatmap",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\" and duration_ms > 0\n| summarize histogram(duration_ms, 25) by bin_auto(_time)"
+      }
+    },
+    {
       "id": "ts-error-rate",
       "name": "Error rate %",
       "type": "TimeSeries",
@@ -91,10 +100,10 @@
     },
     {
       "id": "table-slow-paths",
-      "name": "Top 20 slowest paths (last 1h)",
+      "name": "Top 20 slowest paths (by p95)",
       "type": "Table",
       "query": {
-        "apl": "['spoo-prod']\n| where event == \"request_completed\" and slow == true\n| summarize count = count(), p95 = percentile(duration_ms, 95) by route_class, http_path\n| top 20 by p95\n| project route_class, http_path, count, p95"
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize hits = count(), p95 = percentile(duration_ms, 95) by route_class, http_path\n| where hits >= 5\n| top 20 by p95"
       }
     },
     {
@@ -106,19 +115,27 @@
       }
     },
     {
-      "id": "pie-cf-pop",
-      "name": "Cloudflare POP distribution",
-      "type": "Pie",
+      "id": "table-4xx-paths",
+      "name": "Top 20 4xx paths",
+      "type": "Table",
       "query": {
-        "apl": "['spoo-prod']\n| where event == \"request_completed\" and isnotnull(cf_pop)\n| summarize count() by cf_pop"
+        "apl": "['spoo-prod']\n| where event == \"request_completed\" and status_code >= 400 and status_code < 500\n| summarize hits = count() by status_code, route_class, http_path\n| top 20 by hits"
       }
     },
     {
-      "id": "pie-cf-cache",
-      "name": "CF cache status",
+      "id": "logstream-errors",
+      "name": "Recent error logs",
+      "type": "LogStream",
+      "query": {
+        "apl": "[\"spoo-prod\"]\n| where level == \"error\" or level == \"exception\"\n| project _time, level, event, http_path, status_code, country, exception, message\n| order by _time desc\n| take 100"
+      }
+    },
+    {
+      "id": "pie-cf-pop-city",
+      "name": "Cloudflare edge POP (city)",
       "type": "Pie",
       "query": {
-        "apl": "['spoo-prod']\n| where event == \"request_completed\" and isnotnull(cache_status)\n| summarize count() by cache_status"
+        "apl": "['spoo-prod']\n| where event == \"request_completed\" and isnotnull(cf_pop)\n| extend pop_city = case(\n    cf_pop == \"IAD\", \"Ashburn\",\n    cf_pop == \"DFW\", \"Dallas\",\n    cf_pop == \"ATL\", \"Atlanta\",\n    cf_pop == \"MIA\", \"Miami\",\n    cf_pop == \"LAX\", \"Los Angeles\",\n    cf_pop == \"ORD\", \"Chicago\",\n    cf_pop == \"EWR\", \"Newark\",\n    cf_pop == \"SEA\", \"Seattle\",\n    cf_pop == \"SJC\", \"San Jose\",\n    cf_pop == \"DEN\", \"Denver\",\n    cf_pop == \"PHX\", \"Phoenix\",\n    cf_pop == \"YYZ\", \"Toronto\",\n    cf_pop == \"YUL\", \"Montreal\",\n    cf_pop == \"YVR\", \"Vancouver\",\n    cf_pop == \"LHR\", \"London\",\n    cf_pop == \"AMS\", \"Amsterdam\",\n    cf_pop == \"FRA\", \"Frankfurt\",\n    cf_pop == \"CDG\", \"Paris\",\n    cf_pop == \"MAD\", \"Madrid\",\n    cf_pop == \"MRS\", \"Marseille\",\n    cf_pop == \"DUB\", \"Dublin\",\n    cf_pop == \"ARN\", \"Stockholm\",\n    cf_pop == \"WAW\", \"Warsaw\",\n    cf_pop == \"ZRH\", \"Zurich\",\n    cf_pop == \"VIE\", \"Vienna\",\n    cf_pop == \"MXP\", \"Milan\",\n    cf_pop == \"FCO\", \"Rome\",\n    cf_pop == \"PRG\", \"Prague\",\n    cf_pop == \"OTP\", \"Bucharest\",\n    cf_pop == \"SOF\", \"Sofia\",\n    cf_pop == \"IST\", \"Istanbul\",\n    cf_pop == \"BOM\", \"Mumbai\",\n    cf_pop == \"DEL\", \"Delhi\",\n    cf_pop == \"BLR\", \"Bangalore\",\n    cf_pop == \"HYD\", \"Hyderabad\",\n    cf_pop == \"MAA\", \"Chennai\",\n    cf_pop == \"CCU\", \"Kolkata\",\n    cf_pop == \"SIN\", \"Singapore\",\n    cf_pop == \"HKG\", \"Hong Kong\",\n    cf_pop == \"NRT\", \"Tokyo\",\n    cf_pop == \"KIX\", \"Osaka\",\n    cf_pop == \"ICN\", \"Seoul\",\n    cf_pop == \"TPE\", \"Taipei\",\n    cf_pop == \"KUL\", \"Kuala Lumpur\",\n    cf_pop == \"BKK\", \"Bangkok\",\n    cf_pop == \"MNL\", \"Manila\",\n    cf_pop == \"CGK\", \"Jakarta\",\n    cf_pop == \"SYD\", \"Sydney\",\n    cf_pop == \"MEL\", \"Melbourne\",\n    cf_pop == \"AKL\", \"Auckland\",\n    cf_pop == \"PER\", \"Perth\",\n    cf_pop == \"DXB\", \"Dubai\",\n    cf_pop == \"DOH\", \"Doha\",\n    cf_pop == \"BAH\", \"Bahrain\",\n    cf_pop == \"TLV\", \"Tel Aviv\",\n    cf_pop == \"GRU\", \"São Paulo\",\n    cf_pop == \"GIG\", \"Rio de Janeiro\",\n    cf_pop == \"EZE\", \"Buenos Aires\",\n    cf_pop == \"SCL\", \"Santiago\",\n    cf_pop == \"BOG\", \"Bogotá\",\n    cf_pop == \"LIM\", \"Lima\",\n    cf_pop == \"MEX\", \"Mexico City\",\n    cf_pop == \"JNB\", \"Johannesburg\",\n    cf_pop == \"CPT\", \"Cape Town\",\n    cf_pop == \"DUR\", \"Durban\",\n    cf_pop == \"LOS\", \"Lagos\",\n    cf_pop == \"NBO\", \"Nairobi\",\n    cf_pop == \"CAI\", \"Cairo\",\n    cf_pop\n  )\n| summarize count() by pop_city"
       }
     },
     {
@@ -127,6 +144,14 @@
       "type": "Pie",
       "query": {
         "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize count() by route_class"
+      }
+    },
+    {
+      "id": "pie-http-method",
+      "name": "HTTP method distribution",
+      "type": "Pie",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize count() by http_method"
       }
     }
   ],
@@ -153,7 +178,7 @@
       "h": 2
     },
     {
-      "i": "stat-slow-count",
+      "i": "stat-unique-visitors",
       "x": 9,
       "y": 0,
       "w": 3,
@@ -188,54 +213,75 @@
       "h": 4
     },
     {
-      "i": "ts-error-rate",
+      "i": "heatmap-latency",
       "x": 0,
       "y": 10,
+      "w": 12,
+      "h": 4
+    },
+    {
+      "i": "ts-error-rate",
+      "x": 0,
+      "y": 14,
       "w": 6,
       "h": 4
     },
     {
       "i": "ts-4xx-breakdown",
       "x": 6,
-      "y": 10,
+      "y": 14,
       "w": 6,
       "h": 4
     },
     {
       "i": "table-slow-paths",
       "x": 0,
-      "y": 14,
+      "y": 18,
       "w": 6,
       "h": 5
     },
     {
       "i": "table-5xx-events",
       "x": 6,
-      "y": 14,
+      "y": 18,
       "w": 6,
       "h": 5
     },
     {
-      "i": "pie-cf-pop",
+      "i": "table-4xx-paths",
       "x": 0,
-      "y": 19,
-      "w": 4,
-      "h": 4
+      "y": 23,
+      "w": 6,
+      "h": 5
     },
     {
-      "i": "pie-cf-cache",
-      "x": 4,
-      "y": 19,
+      "i": "logstream-errors",
+      "x": 6,
+      "y": 23,
+      "w": 6,
+      "h": 5
+    },
+    {
+      "i": "pie-cf-pop-city",
+      "x": 0,
+      "y": 28,
       "w": 4,
-      "h": 4
+      "h": 5
     },
     {
       "i": "pie-route-class",
-      "x": 8,
-      "y": 19,
+      "x": 4,
+      "y": 28,
       "w": 4,
-      "h": 4
+      "h": 5
+    },
+    {
+      "i": "pie-http-method",
+      "x": 8,
+      "y": 28,
+      "w": 4,
+      "h": 5
     }
   ],
-  "refreshTime": 60
+  "version": "1778180160792036464"
 }
