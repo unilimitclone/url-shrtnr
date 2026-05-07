@@ -1,18 +1,16 @@
 services:
   app:
-    image: ghcr.io/spoo-me/spoo:latest
+    image: ghcr.io/spoo-me/spoo:${IMAGE_TAG:-latest}
     container_name: spoo_app
     restart: always
     command: >
-      uv run gunicorn main:app
+      uv run uvicorn main:app
+      --host 0.0.0.0
+      --port 8000
       --workers 2
-      --worker-class uvicorn.workers.UvicornWorker
-      --bind 0.0.0.0:8000
-      --access-logfile -
-      --error-logfile -
-      --graceful-timeout 30
-      --timeout 60
-      --keep-alive 5
+      --no-access-log
+      --timeout-keep-alive 5
+      --timeout-graceful-shutdown 30
     env_file:
       - .env.production
     healthcheck:
@@ -21,12 +19,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    deploy:
-      resources:
-        limits:
-          memory: 3G
-        reservations:
-          memory: 512M
+    mem_limit: 3g
+    mem_reservation: 512m
     logging:
       driver: json-file
       options:
@@ -37,17 +31,13 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: spoo_tunnel
     restart: always
-    command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 run
+    command: tunnel --no-autoupdate run
     environment:
       - TUNNEL_TOKEN=${CF_TUNNEL_TOKEN}
     depends_on:
       app:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:2000/ready | grep -q '\"status\":200' || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    mem_limit: 128m
     logging:
       driver: json-file
       options:
