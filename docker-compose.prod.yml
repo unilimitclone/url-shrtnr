@@ -13,6 +13,9 @@ services:
       --timeout-graceful-shutdown 30
     env_file:
       - .env.production
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 15s
@@ -30,6 +33,39 @@ services:
         max-size: "10m"
         max-file: "3"
         tag: "{{.Name}}"
+
+  redis:
+    image: redis:7-alpine
+    container_name: spoo_redis
+    restart: always
+    # 512MB cap (out of 8GB box). LRU evicts stale URL entries when full.
+    # No persistence — cache is rebuildable from Mongo. RDB/AOF disabled to
+    # avoid disk I/O cost. Lose-cache-on-restart is acceptable.
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --appendonly no
+      --tcp-keepalive 60
+      --timeout 300
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    mem_limit: 768m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.40
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -75,6 +111,9 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
+
+volumes:
+  redis-data:
 
 networks:
   spoonet:
