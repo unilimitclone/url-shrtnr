@@ -21,6 +21,9 @@ services:
       start_period: 30s
     mem_limit: 3g
     mem_reservation: 512m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.10
     logging:
       driver: json-file
       options:
@@ -39,6 +42,9 @@ services:
       app:
         condition: service_healthy
     mem_limit: 128m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.20
     logging:
       driver: json-file
       options:
@@ -59,8 +65,18 @@ services:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - ./vector.toml:/etc/vector/vector.toml:ro
     mem_limit: 128m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.30
     logging:
       driver: json-file
       options:
         max-size: "5m"
         max-file: "2"
+
+networks:
+  spoonet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

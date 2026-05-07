@@ -87,6 +87,9 @@ jobs:
             chmod 600 .env
             docker compose --env-file .env -f docker-compose.prod.yml pull
             docker compose --env-file .env -f docker-compose.prod.yml up -d --remove-orphans
+            # Restart cloudflared so it re-resolves app's IP (even though we now
+            # pin static IPs, this guarantees fresh tunnel state after deploy).
+            docker compose --env-file .env -f docker-compose.prod.yml restart cloudflared
             docker image prune -f
             docker compose --env-file .env -f docker-compose.prod.yml ps
 
