@@ -51,6 +51,7 @@ from schemas.models.url import (
 )
 from shared.datetime_utils import parse_datetime
 from shared.generators import generate_short_code_v2
+from shared.url_utils import extract_hostname
 from shared.validators import (
     is_emoji_alias,
     validate_alias,
@@ -398,19 +399,11 @@ class UrlService:
         _url_base = request.long_url.split("?")[0]
         _log_url = f"{_url_base}?[REDACTED]" if "?" in request.long_url else _url_base
 
-        long_url_domain = None
-        try:
-            from urllib.parse import urlparse
-
-            long_url_domain = urlparse(request.long_url).hostname
-        except Exception:
-            pass
-
         log.info(
             "url_created",
             short_code=alias,
             long_url=_log_url,
-            long_url_domain=long_url_domain,
+            long_url_domain=extract_hostname(request.long_url),
             user_id=str(owner_id) if owner_id else None,
             schema=SchemaVersion.V2,
             has_password=bool(password_hash),

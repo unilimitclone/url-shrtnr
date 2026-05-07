@@ -246,9 +246,10 @@ class LegacyClickHandler:
 
         # Bot detection (v1: blocked bot raises ForbiddenError)
         is_bot = is_bot_request(user_agent)
+        bot_name: str | None = None
         if is_bot:
+            bot_name = get_bot_name(user_agent)
             if url_data.block_bots:
-                bot_name = get_bot_name(user_agent)
                 log.info(
                     "bot_blocked",
                     short_code=short_code,
@@ -256,7 +257,6 @@ class LegacyClickHandler:
                     schema="v1",
                 )
                 raise ForbiddenError("Access Denied, Bots not allowed")
-            bot_name = get_bot_name(user_agent)
             if bot_name:
                 sanitized_bot = re.sub(r"[.$\x00-\x1F\x7F-\x9F]", "_", str(bot_name))
                 updates["$inc"][f"bots.{sanitized_bot}"] = 1
