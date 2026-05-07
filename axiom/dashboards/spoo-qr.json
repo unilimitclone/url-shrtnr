@@ -1,0 +1,226 @@
+{
+  "name": "spoo · qr",
+  "description": "QR generator service health, traffic, errors. Refresh 60s.",
+  "owner": "X-AXIOM-EVERYONE",
+  "datasets": [
+    "spoo-prod"
+  ],
+  "refreshTime": 60,
+  "schemaVersion": 2,
+  "timeWindowStart": "qr-now-1h",
+  "timeWindowEnd": "qr-now",
+  "charts": [
+    {
+      "id": "stat-rps",
+      "name": "Requests / sec",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed'\n| summarize requests = count(), tmin = min(_time), tmax = max(_time)\n| extend window_s = todouble(datetime_diff('second', tmax, tmin))\n| extend rps = iff(window_s > 0, round(requests / window_s, 2), 0.0)\n| project rps"
+      }
+    },
+    {
+      "id": "stat-error-rate",
+      "name": "Error rate %",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed'\n| summarize total = count(), errors = countif(status_code >= 500)\n| extend error_rate = round(iff(total > 0, 100.0 * errors / total, 0.0), 3)\n| project error_rate"
+      }
+    },
+    {
+      "id": "stat-p95-latency",
+      "name": "p95 latency (ms)",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed'\n| summarize p95 = percentile(duration_ms, 95)\n| project p95"
+      }
+    },
+    {
+      "id": "stat-unique-visitors",
+      "name": "Unique visitors",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and isnotnull(ip_hash)\n| summarize uniques = dcount(ip_hash)\n| project uniques"
+      }
+    },
+    {
+      "id": "ts-rps",
+      "name": "Requests per minute",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed'\n| summarize count() by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-status-class",
+      "name": "Status code distribution",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed'\n| extend status_class = case(status_code < 300, '2xx', status_code < 400, '3xx', status_code < 500, '4xx', '5xx')\n| summarize count() by bin_auto(_time), status_class"
+      }
+    },
+    {
+      "id": "ts-latency",
+      "name": "Latency p50 / p95 / p99 (ms)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed'\n| summarize percentiles_array(duration_ms, 50, 95, 99) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-error-rate",
+      "name": "Error rate over time",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed'\n| summarize total = count(), errors = countif(status_code >= 500) by bin_auto(_time)\n| extend error_rate = iff(total > 0, round(100.0 * errors / total, 3), 0.0)\n| project _time, error_rate"
+      }
+    },
+    {
+      "id": "table-top-paths",
+      "name": "Top 20 endpoints by requests",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed'\n| summarize hits = count(), p95 = percentile(duration_ms, 95) by path\n| top 20 by hits"
+      }
+    },
+    {
+      "id": "table-slow-paths",
+      "name": "Slowest 20 endpoints (p95)",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed'\n| summarize hits = count(), p95 = percentile(duration_ms, 95) by path\n| where hits >= 5\n| top 20 by p95"
+      }
+    },
+    {
+      "id": "table-errors",
+      "name": "Recent 5xx events",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed' and status_code >= 500\n| project _time, method, path, status_code, ip_hash, request_id\n| top 50 by _time"
+      }
+    },
+    {
+      "id": "logstream-errors",
+      "name": "Recent error logs",
+      "type": "LogStream",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and (level == 'error' or level == 'exception')\n| project _time, level, event, path, status_code, message\n| order by _time desc\n| take 100"
+      }
+    },
+    {
+      "id": "pie-method",
+      "name": "HTTP method",
+      "type": "Pie",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed' and isnotnull(method)\n| summarize count() by method"
+      }
+    },
+    {
+      "id": "pie-status",
+      "name": "Status code share",
+      "type": "Pie",
+      "query": {
+        "apl": "['spoo-prod']\n| where container_name == 'spoo_qr' and event == 'request_completed'\n| extend status_class = case(status_code < 300, '2xx', status_code < 400, '3xx', status_code < 500, '4xx', '5xx')\n| summarize count() by status_class"
+      }
+    }
+  ],
+  "layout": [
+    {
+      "i": "stat-rps",
+      "x": 0,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "stat-error-rate",
+      "x": 3,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "stat-p95-latency",
+      "x": 6,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "stat-unique-visitors",
+      "x": 9,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "ts-rps",
+      "x": 0,
+      "y": 2,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-status-class",
+      "x": 6,
+      "y": 2,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-latency",
+      "x": 0,
+      "y": 6,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-error-rate",
+      "x": 6,
+      "y": 6,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "table-top-paths",
+      "x": 0,
+      "y": 10,
+      "w": 6,
+      "h": 5
+    },
+    {
+      "i": "table-slow-paths",
+      "x": 6,
+      "y": 10,
+      "w": 6,
+      "h": 5
+    },
+    {
+      "i": "table-errors",
+      "x": 0,
+      "y": 15,
+      "w": 6,
+      "h": 5
+    },
+    {
+      "i": "logstream-errors",
+      "x": 6,
+      "y": 15,
+      "w": 6,
+      "h": 5
+    },
+    {
+      "i": "pie-method",
+      "x": 0,
+      "y": 20,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "pie-status",
+      "x": 6,
+      "y": 20,
+      "w": 6,
+      "h": 4
+    }
+  ]
+}

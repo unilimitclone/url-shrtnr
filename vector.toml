@@ -13,17 +13,20 @@ exclude_containers = ["spoo_vector", "spoo_redis_exporter"]
 [transforms.parse_and_clean]
 type = "remap"
 inputs = ["docker"]
+# Tag service name + lift structlog JSON without dropping bad events.
+# parse_json !! null falls back to null on error (no panic).
 source = '''
+.service = .container_name
+
 if .container_name == "spoo_app" || .container_name == "spoo_qr" {
-    parsed, err = parse_json(.message)
-    if err == null {
-        . = merge!(., parsed)
+    parsed = parse_json(.message) ?? null
+    if parsed != null && is_object(parsed) {
+        . = merge(., object!(parsed))
         del(.message)
     }
 }
 
-.service = .container_name
-
+# Strip docker-injected metadata noise (kept the event no matter what).
 del(.label)
 del(.image)
 del(.host)
