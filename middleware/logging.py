@@ -51,13 +51,24 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         start = time.perf_counter()
         path = request.url.path
 
-        # Bind request context to structlog contextvars — available in all
-        # downstream log calls (services, repositories, etc.)
+        ua = request.headers.get("user-agent", "")
+        country = request.headers.get("cf-ipcountry")
+        referrer = request.headers.get("referer")
+        ip_hash = hash_ip(get_client_ip(request))
+        auth_kind = _auth_kind(request)
+
+        # Bind rich request context to structlog contextvars — every downstream
+        # log call (services, repositories, etc.) inherits these fields.
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(
             request_id=request_id,
             http_method=request.method,
             http_path=path,
+            ip_hash=ip_hash,
+            country=country,
+            referrer=referrer,
+            user_agent=ua[:200] if ua else None,
+            auth_kind=auth_kind,
         )
 
         response = await call_next(request)
@@ -72,23 +83,14 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 if status >= 500
                 else (log.warning if status >= 400 else log.info)
             )
-
-            ua = request.headers.get("user-agent", "")
             log_fn(
                 "request_completed",
-                method=request.method,
-                path=path,
                 query=request.url.query or None,
                 status_code=status,
                 duration_ms=duration_ms,
-                ip_hash=hash_ip(get_client_ip(request)),
-                country=request.headers.get("cf-ipcountry"),
-                referrer=request.headers.get("referer"),
-                user_agent=ua[:200] if ua else None,
                 content_length=response.headers.get("content-length"),
                 content_type=response.headers.get("content-type"),
                 cache_status=response.headers.get("cf-cache-status"),
-                auth_kind=_auth_kind(request),
                 slow=duration_ms > 500,
             )
 
