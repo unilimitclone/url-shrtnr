@@ -1,0 +1,45 @@
+services:
+  app:
+    image: ghcr.io/spoo-me/spoo:${IMAGE_TAG:-latest}
+    container_name: spoo_app
+    restart: always
+    command: >
+      uv run uvicorn main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 2
+      --no-access-log
+      --timeout-keep-alive 5
+      --timeout-graceful-shutdown 30
+    env_file:
+      - .env.production
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 3g
+    mem_reservation: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: spoo_tunnel
+    restart: always
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CF_TUNNEL_TOKEN}
+    depends_on:
+      app:
+        condition: service_healthy
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
