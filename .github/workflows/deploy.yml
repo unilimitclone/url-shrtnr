@@ -80,11 +80,15 @@ jobs:
             set -e
             cd /opt/spoo
             echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            export IMAGE_TAG="${IMAGE_TAG}"
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            # write IMAGE_TAG to .env so compose substitution picks it up
+            grep -v '^IMAGE_TAG=' .env > .env.tmp 2>/dev/null || true
+            echo "IMAGE_TAG=${IMAGE_TAG}" >> .env.tmp
+            mv .env.tmp .env
+            chmod 600 .env
+            docker compose --env-file .env -f docker-compose.prod.yml pull
+            docker compose --env-file .env -f docker-compose.prod.yml up -d --remove-orphans
             docker image prune -f
-            docker compose -f docker-compose.prod.yml ps
+            docker compose --env-file .env -f docker-compose.prod.yml ps
 
       - name: Verify health
         uses: appleboy/ssh-action@v1.0.3
