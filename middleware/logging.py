@@ -24,6 +24,21 @@ log = get_logger("spoo.request")
 _SKIP_PATHS = frozenset({"/health", "/favicon.ico"})
 
 
+# Auth header inference — gives a coarse "who is calling" tag without leaking creds.
+def _auth_kind(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth[7:]
+        if token.startswith("spoo_"):
+            return "api_key"
+        if token.count(".") == 2:
+            return "jwt"
+        return "bearer_other"
+    if request.cookies.get("session"):
+        return "session_cookie"
+    return "anonymous"
+
+
 def _generate_request_id() -> str:
     return f"req_{uuid.uuid4().hex[:12]}"
 
@@ -57,13 +72,24 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 if status >= 500
                 else (log.warning if status >= 400 else log.info)
             )
+
+            ua = request.headers.get("user-agent", "")
             log_fn(
                 "request_completed",
                 method=request.method,
                 path=path,
+                query=request.url.query or None,
                 status_code=status,
                 duration_ms=duration_ms,
                 ip_hash=hash_ip(get_client_ip(request)),
+                country=request.headers.get("cf-ipcountry"),
+                referrer=request.headers.get("referer"),
+                user_agent=ua[:200] if ua else None,
+                content_length=response.headers.get("content-length"),
+                content_type=response.headers.get("content-type"),
+                cache_status=response.headers.get("cf-cache-status"),
+                auth_kind=_auth_kind(request),
+                slow=duration_ms > 500,
             )
 
         return response
