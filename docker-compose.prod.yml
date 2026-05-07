@@ -34,6 +34,38 @@ services:
         max-file: "3"
         tag: "{{.Name}}"
 
+  qr:
+    image: ghcr.io/spoo-me/qr:${QR_IMAGE_TAG:-latest}
+    container_name: spoo_qr
+    restart: always
+    command: >
+      uv run uvicorn main:app
+      --host 0.0.0.0
+      --port 8080
+      --workers 2
+      --no-access-log
+      --timeout-keep-alive 5
+      --timeout-graceful-shutdown 30
+    env_file:
+      - .env.qr
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    mem_limit: 512m
+    mem_reservation: 128m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.60
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}"
+
   redis:
     image: redis:7-alpine
     container_name: spoo_redis

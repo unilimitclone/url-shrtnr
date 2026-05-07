@@ -7,14 +7,14 @@
 
 [sources.docker]
 type = "docker_logs"
-include_containers = ["spoo_app", "spoo_tunnel"]
+include_containers = ["spoo_app", "spoo_tunnel", "spoo_qr"]
 exclude_containers = ["spoo_vector", "spoo_redis_exporter"]
 
 [transforms.parse_and_clean]
 type = "remap"
 inputs = ["docker"]
 source = '''
-if .container_name == "spoo_app" {
+if .container_name == "spoo_app" || .container_name == "spoo_qr" {
     parsed, err = parse_json(.message)
     if err == null {
         . = merge!(., parsed)
