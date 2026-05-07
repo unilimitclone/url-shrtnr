@@ -7,7 +7,7 @@
 
 [sources.docker]
 type = "docker_logs"
-include_containers = ["spoo_app", "spoo_tunnel", "spoo_qr"]
+include_containers = ["spoo_app", "spoo_qr", "spoo_caddy"]
 exclude_containers = ["spoo_vector", "spoo_redis_exporter"]
 
 [transforms.parse_and_clean]
