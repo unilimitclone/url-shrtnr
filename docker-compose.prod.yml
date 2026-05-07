@@ -26,6 +26,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+        tag: "{{.Name}}"
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -37,6 +38,25 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+        tag: "{{.Name}}"
+
+  vector:
+    image: timberio/vector:0.43.0-alpine
+    container_name: spoo_vector
+    restart: always
+    environment:
+      - AXIOM_TOKEN=${AXIOM_TOKEN}
+      - AXIOM_DATASET=${AXIOM_DATASET:-spoo-prod}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./vector.toml:/etc/vector/vector.toml:ro
     mem_limit: 128m
     logging:
       driver: json-file

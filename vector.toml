@@ -1,0 +1,43 @@
+# Vector config: tail docker container logs → ship to Axiom
+# Runs on the Hetzner VPS, reads /var/run/docker.sock and container log files.
+
+[sources.docker]
+type = "docker_logs"
+include_containers = ["spoo_app", "spoo_tunnel"]
+exclude_containers = ["spoo_vector"]
+
+[transforms.parse_json]
+type = "remap"
+inputs = ["docker"]
+source = '''
+# spoo_app logs are JSON (structlog). Parse them.
+if .container_name == "spoo_app" {
+  parsed, err = parse_json(.message)
+  if err == null {
+    . = merge(., parsed)
+    del(.message)
+  }
+}
+# Add a service tag for filtering
+.service = .container_name
+'''
+
+[transforms.drop_health_noise]
+type = "filter"
+inputs = ["parse_json"]
+condition = '''
+# Drop UptimeRobot /health pings to reduce log volume
+if exists(.http_path) && .http_path == "/health" {
+  return false
+}
+true
+'''
+
+[sinks.axiom]
+type = "axiom"
+inputs = ["drop_health_noise"]
+token = "${AXIOM_TOKEN}"
+dataset = "${AXIOM_DATASET}"
+
+[sinks.axiom.healthcheck]
+enabled = true
