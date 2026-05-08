@@ -90,11 +90,17 @@ jobs:
             # Wait for app healthy before declaring success — Caddy keeps a
             # connection pool to app:8000 with retries, so users see a brief
             # latency bump (not 502) during the swap.
+            status=""
             for i in 1 2 3 4 5 6 7 8; do
               status=$(docker inspect spoo_app --format '{{.State.Health.Status}}')
               [ "$status" = "healthy" ] && break
               echo "app $status, retry $i"; sleep 3
             done
+            if [ "$status" != "healthy" ]; then
+              echo "::error::app failed to reach healthy after 8 retries (last status: $status)"
+              docker compose --env-file .env -f docker-compose.prod.yml logs --tail=100 app
+              exit 1
+            fi
             docker image prune -f
             docker compose --env-file .env -f docker-compose.prod.yml ps
 

@@ -127,8 +127,13 @@ services:
         condition: service_healthy
       qr:
         condition: service_healthy
+    # Caddy admin API check is the cheapest reliable liveness signal.
+    # An https://localhost/health probe fails on SNI (localhost matches no
+    # host block); an external probe through Cloudflare loops back through
+    # the host network. Admin API on 127.0.0.1:2019 proves the daemon is
+    # accepting config — that's the failure mode we actually want to catch.
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost/health", "--header", "Host: spoo.me"]
+      test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=3", "http://127.0.0.1:2019/config/"]
       interval: 15s
       timeout: 5s
       retries: 3
