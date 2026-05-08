@@ -100,27 +100,54 @@ services:
         max-size: "5m"
         max-file: "2"
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: spoo_tunnel
+  caddy:
+    image: caddy:2-alpine
+    container_name: spoo_caddy
     restart: always
-    # http2 is more stable than QUIC across CF backbone for cross-region traffic.
-    # SIN/BOM POPs sometimes fail to route to IAD origin via QUIC.
-    command: tunnel --no-autoupdate --protocol http2 run
-    environment:
-      - TUNNEL_TOKEN=${CF_TUNNEL_TOKEN}
+    # Caddy terminates TLS for CF orange-cloud requests using a Cloudflare
+    # Origin CA certificate (mounted from ./caddy/origin.{crt,key}). UFW on
+    # the host (see infrastructure/ufw-cloudflare.sh) restricts inbound 443
+    # to CF IP ranges only — so any request reaching Caddy came from CF.
+    #
+    # Architecturally this replaces cloudflared. CF Tunnel routed all traffic
+    # through IAD POPs which has flaky cross-region backbone for some user
+    # paths (Jio IPv6 → MRS, Berlin POP for Asia traffic). Direct origin uses
+    # CF's standard anycast — no tunnel detour.
+    ports:
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/origin.crt:/etc/caddy/origin.crt:ro
+      - ./caddy/origin.key:/etc/caddy/origin.key:ro
+      - caddy-data:/data
+      - caddy-config:/config
     depends_on:
       app:
         condition: service_healthy
-    mem_limit: 128m
+      qr:
+        condition: service_healthy
+    # Caddy admin API check is the cheapest reliable liveness signal.
+    # An https://localhost/health probe fails on SNI (localhost matches no
+    # host block); an external probe through Cloudflare loops back through
+    # the host network. Admin API on 127.0.0.1:2019 proves the daemon is
+    # accepting config — that's the failure mode we actually want to catch.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=3", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 256m
+    mem_reservation: 64m
     networks:
       spoonet:
         ipv4_address: 172.30.0.20
     logging:
       driver: json-file
       options:
-        max-size: "5m"
-        max-file: "2"
+        max-size: "10m"
+        max-file: "3"
         tag: "{{.Name}}"
 
   redis-exporter:
@@ -170,6 +197,8 @@ services:
 
 volumes:
   redis-data:
+  caddy-data:
+  caddy-config:
 
 networks:
   spoonet:
