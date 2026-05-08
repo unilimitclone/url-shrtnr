@@ -46,11 +46,15 @@
 	}
 }
 
-# Shared TLS + headers block reused across all hostnames.
+# Shared TLS + headers + access-log block reused across all hostnames.
+# Empty `log` directive opts the site into Caddy's HTTP access log, routed
+# through the global `default` logger (stdout/json) defined above. Without
+# this, Caddy only emits admin-API logs — no per-request observability.
 (common_tls) {
 	tls /etc/caddy/origin.crt /etc/caddy/origin.key {
 		protocols tls1.2 tls1.3
 	}
+	log
 	header {
 		-Server
 	}

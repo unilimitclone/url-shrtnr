@@ -160,6 +160,10 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    # No healthcheck: the redis_exporter image is built FROM scratch (Go binary
+    # only — no shell, wget, curl, or nc). Docker compose has no built-in HTTP
+    # probe (that's a k8s feature). Process auto-restarts on crash via
+    # restart: always; in 14h+ uptime we've never seen this image deadlock.
     mem_limit: 64m
     networks:
       spoonet:
@@ -185,6 +189,15 @@ services:
       - ./vector.toml:/etc/vector/vector.toml:ro
     depends_on:
       - redis-exporter
+    healthcheck:
+      # Vector's API server (enabled in vector.toml [api]) exposes /health on
+      # 127.0.0.1:8686. Catches deadlocks where process is up but pipeline is
+      # stuck — restart: always alone can't see this.
+      test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=3", "http://127.0.0.1:8686/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     mem_limit: 128m
     networks:
       spoonet:

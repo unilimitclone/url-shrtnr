@@ -1,6 +1,12 @@
 # Vector config: docker logs → Axiom logs dataset
 #                Redis prometheus metrics → Axiom metrics dataset
 
+# Enable Vector's API server so the container's healthcheck can hit
+# /health. Bound to localhost only — never exposed outside the container.
+[api]
+enabled = true
+address = "127.0.0.1:8686"
+
 # ─────────────────────────────────────────────────────────────────────
 # LOGS pipeline
 # ─────────────────────────────────────────────────────────────────────

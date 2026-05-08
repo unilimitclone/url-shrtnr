@@ -15,7 +15,7 @@
       "name": "Requests / sec",
       "type": "Statistic",
       "query": {
-        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize requests = count(), tmin = min(_time), tmax = max(_time)\n| extend window_s = todouble(datetime_diff('second', tmax, tmin))\n| extend rps = iff(window_s > 0, round(requests / window_s, 2), 0.0)\n| project rps"
+        "apl": "['spoo-prod']\n| where event == \"request_completed\"\n| summarize cnt = count() by bin(_time, 1m)\n| summarize rps = round(avg(cnt) / 60.0, 2)\n| project rps"
       }
     },
     {
