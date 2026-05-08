@@ -12,6 +12,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from config import AppSettings
+from infrastructure.cache.feature_flag_cache import FeatureFlagCache
 from infrastructure.cache.url_cache import UrlCache
 from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.webhook.discord import DiscordWebhookProvider
@@ -19,6 +20,7 @@ from repositories.api_key_repository import ApiKeyRepository
 from repositories.app_grant_repository import AppGrantRepository
 from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.click_repository import ClickRepository
+from repositories.feature_flag_repository import FeatureFlagRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.token_repository import TokenRepository
@@ -34,6 +36,7 @@ from services.click import ClickService, LegacyClickHandler, V2ClickHandler
 from services.contact_service import ContactService
 from services.export.formatters import default_formatters
 from services.export.service import ExportService
+from services.feature_flag_service import FeatureFlagService
 from services.oauth_service import OAuthService
 from services.profile_picture_service import ProfilePictureService
 from services.stats_service import StatsService
@@ -60,9 +63,11 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     api_key_repo = ApiKeyRepository(db["api-keys"])
     blocked_url_repo = BlockedUrlRepository(db["blocked-urls"])
     app_grant_repo = AppGrantRepository(db["app-grants"])
+    feature_flag_repo = FeatureFlagRepository(db["feature_flags"])
 
     # ── Infrastructure ───────────────────────────────────────────────────
     url_cache = UrlCache(redis_client, ttl_seconds=settings.redis.redis_ttl_seconds)
+    feature_flag_cache = FeatureFlagCache(redis_client)
     captcha = HCaptchaProvider(settings.hcaptcha_secret, http_client)
     contact_webhook = DiscordWebhookProvider(settings.contact_webhook, http_client)
     report_webhook = DiscordWebhookProvider(settings.url_report_webhook, http_client)
@@ -143,3 +148,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     app.state.click_service = ClickService({"v2": v2_handler, "v1": v1_handler})
 
     app.state.app_grant_repo = app_grant_repo
+
+    app.state.feature_flag_service = FeatureFlagService(
+        feature_flag_repo, feature_flag_cache
+    )

@@ -93,4 +93,8 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
     await app_grants_col.create_index([("user_id", 1), ("revoked_at", 1)])
     await app_grants_col.create_index([("app_id", 1), ("revoked_at", 1)])
 
+    # ── feature-flags ──────────────────────────────────────────────────
+    feature_flags_col = db["feature_flags"]
+    await feature_flags_col.create_index([("name", 1)], unique=True)
+
     log.info("mongodb_indexes_ensured")
