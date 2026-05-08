@@ -106,13 +106,14 @@ class FeatureFlagService:
             return _digit_bucket(user.user_id, salt=flag.name) in flag.enabled_digits
 
         if rollout == RolloutType.TIER:
-            # Defensive — ``CurrentUser`` doesn't carry ``tier`` today. When a
-            # tier system ships and adds the field this branch starts working
-            # without code changes here.
+            # Default-deny when flag.tier is unset — None == None would
+            # otherwise enable for every user with no tier attribute.
+            if flag.tier is None:
+                return False
             return getattr(user, "tier", None) == flag.tier
 
-        # Unknown rollout type from a future client writing to Mongo before
-        # this service is upgraded. Default-deny is the safe answer.
+        # Unreachable today — Pydantic validates rollout_type against the
+        # RolloutType enum. Kept as default-deny if the field is ever widened.
         log.warning("feature_flag_unknown_rollout", name=name, rollout=str(rollout))
         return False
 

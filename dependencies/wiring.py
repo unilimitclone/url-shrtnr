@@ -67,7 +67,11 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
 
     # ── Infrastructure ───────────────────────────────────────────────────
     url_cache = UrlCache(redis_client, ttl_seconds=settings.redis.redis_ttl_seconds)
-    feature_flag_cache = FeatureFlagCache(redis_client)
+    feature_flag_cache = FeatureFlagCache(
+        redis_client,
+        ttl_seconds=settings.redis.feature_flag_ttl_seconds,
+        negative_ttl_seconds=settings.redis.feature_flag_negative_ttl_seconds,
+    )
     captcha = HCaptchaProvider(settings.hcaptcha_secret, http_client)
     contact_webhook = DiscordWebhookProvider(settings.contact_webhook, http_client)
     report_webhook = DiscordWebhookProvider(settings.url_report_webhook, http_client)

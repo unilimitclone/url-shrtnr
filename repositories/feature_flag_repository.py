@@ -2,9 +2,9 @@
 Repository for the `feature_flags` MongoDB collection.
 
 Read-mostly. Mutations are rare and happen via direct mongosh edits during
-rollouts (PR0 ships without an admin API). The ``upsert`` and ``list_all``
-methods exist to support tests, internal scripts, and the lifespan-time
-``ensure_feature_flag`` helper that registers known flags on boot.
+rollouts (PR0 ships without an admin API). ``upsert`` and ``list_all``
+exist for tests and any future bootstrap script that wants to register
+known flags programmatically.
 """
 
 from __future__ import annotations
@@ -23,14 +23,14 @@ class FeatureFlagRepository(BaseRepository[FeatureFlagDoc]):
         return await self._find_one({"name": name})
 
     async def upsert(self, name: str, fields: dict) -> ObjectId:
-        """Insert or update a flag doc by name. Returns the doc's _id.
-
-        Uses ``$setOnInsert`` for ``created_at`` so re-running the upsert
-        does not overwrite the original creation timestamp. ``updated_at``
-        is always refreshed.
-        """
+        """Insert or update a flag doc by name. Returns the doc's _id."""
         now = datetime.now(timezone.utc)
-        set_fields = {**fields, "updated_at": now}
+        # Strip keys that live in $setOnInsert — same key in both $set and
+        # $setOnInsert raises a path-conflict error on MongoDB >= 4.4.
+        set_fields = {
+            k: v for k, v in fields.items() if k not in ("name", "created_at")
+        }
+        set_fields["updated_at"] = now
         result = await self._col.update_one(
             {"name": name},
             {

@@ -32,6 +32,13 @@ class RedisSettings(BaseSettings):
     redis_uri: str | None = None
     redis_ttl_seconds: int = 3600
 
+    # Feature flag cache TTLs. Positive results cached for `feature_flag_ttl_seconds`
+    # so flag flips propagate within that window. Negative results (unregistered
+    # flag names) cached for a shorter window so newly-registered flags become
+    # visible faster than the positive TTL.
+    feature_flag_ttl_seconds: int = 60
+    feature_flag_negative_ttl_seconds: int = 30
+
 
 class JWTSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

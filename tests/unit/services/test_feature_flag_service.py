@@ -259,6 +259,16 @@ class TestRolloutTier:
         service, _, _ = make_service(flag=flag)
         assert await service.is_enabled("test_flag", _user(tier="free")) is False
 
+    @pytest.mark.asyncio
+    async def test_unset_flag_tier_blocks_all(self):
+        # If the flag has rollout_type=TIER but tier=None, the gate must
+        # default-deny rather than match ``user.tier is None == flag.tier is None``.
+        flag = _flag(rollout_type=RolloutType.TIER, tier=None)
+        service, _, _ = make_service(flag=flag)
+        assert await service.is_enabled("test_flag", _user()) is False
+        assert await service.is_enabled("test_flag", _user(tier="pro")) is False
+        assert await service.is_enabled("test_flag", _user(tier="free")) is False
+
 
 # ── Caching behaviour ────────────────────────────────────────────────────────
 
