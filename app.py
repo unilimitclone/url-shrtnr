@@ -19,6 +19,9 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from config import AppSettings
 from dependencies.wiring import wire_services
+from infrastructure.bootstrap.system_default_domain import (
+    ensure_system_default_domain,
+)
 from infrastructure.email.zeptomail import ZeptoMailProvider
 from infrastructure.geoip import GeoIPService
 from infrastructure.http_client import HttpClient
@@ -126,6 +129,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             settings.geoip_country_db, settings.geoip_city_db
         )
 
+        await ensure_system_default_domain(app.state.db, settings.system_default_domain)
         await ensure_indexes(app.state.db)
 
         # App registry for the consent/apps system

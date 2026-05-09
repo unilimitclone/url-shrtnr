@@ -46,6 +46,30 @@ def test_validate_url_empty_blocked_list_allows_spoo():
     assert validate_url("https://spoo.me/x", blocked_self_domains=()) is True
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://example.com",
+        "file:///etc/passwd",
+        "data:text/html,foo",
+        "javascript:alert(1)",
+        "//example.com/path",
+        "example.com",
+    ],
+    ids=["ftp", "file", "data", "javascript", "scheme_relative", "no_scheme"],
+)
+def test_validate_url_rejects_non_http_schemes(url):
+    assert validate_url(url) is False
+
+
+def test_validate_url_blocks_self_link_across_schemes():
+    # Bare hostname catches both http:// and https:// variants — guards
+    # against the wiring bug where the full app_url only matched one scheme.
+    assert validate_url("http://spoo.me/abc") is False
+    assert validate_url("https://spoo.me/abc") is False
+    assert validate_url("https://docs.spoo.me/x") is False
+
+
 # ---------------------------------------------------------------------------
 # shared.validators — validate_url_password
 # ---------------------------------------------------------------------------

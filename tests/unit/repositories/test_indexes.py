@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pymongo.errors import CollectionInvalid
+from pymongo.errors import CollectionInvalid, OperationFailure
 
 
 class TestEnsureIndexes:
@@ -41,13 +41,21 @@ class TestEnsureIndexes:
 
         # Check a few critical indexes
         users_col.create_index.assert_any_await([("email", 1)], unique=True)
-        urls_v2_col.create_index.assert_any_await([("alias", 1)], unique=True)
+        # Per-domain alias namespace via compound unique. The legacy
+        # ``alias_1`` global unique is dropped (see test below).
+        urls_v2_col.create_index.assert_any_await(
+            [("domain", 1), ("alias", 1)], unique=True
+        )
+        urls_v2_col.drop_index.assert_any_await("alias_1")
         urls_v2_col.create_index.assert_any_await([("owner_id", 1)])
         clicks_col.create_index.assert_any_await(
             [("meta.url_id", 1), ("clicked_at", -1)]
         )
         clicks_col.create_index.assert_any_await(
             [("meta.owner_id", 1), ("clicked_at", -1)]
+        )
+        clicks_col.create_index.assert_any_await(
+            [("meta.domain", 1), ("clicked_at", -1)], sparse=True
         )
         api_keys_col.create_index.assert_any_await([("token_hash", 1)], unique=True)
         tokens_col.create_index.assert_any_await(
@@ -81,3 +89,37 @@ class TestEnsureIndexes:
                 "granularity": "seconds",
             },
         )
+
+    @pytest.mark.asyncio
+    async def test_drop_alias_1_swallows_index_not_found(self):
+        # On boots after the legacy alias_1 has been dropped, drop_index
+        # raises OperationFailure code 27. Must be silently swallowed so
+        # ensure_indexes stays idempotent.
+        from repositories.indexes import ensure_indexes
+
+        db = MagicMock()
+        col = AsyncMock()
+        not_found = OperationFailure("alias_1 not found", code=27)
+        col.drop_index = AsyncMock(side_effect=not_found)
+        db.__getitem__ = lambda self, name: col
+        db.create_collection = AsyncMock(side_effect=CollectionInvalid("clicks"))
+
+        # Must not raise.
+        await ensure_indexes(db)
+        col.drop_index.assert_any_await("alias_1")
+
+    @pytest.mark.asyncio
+    async def test_drop_alias_1_propagates_other_errors(self):
+        # Any drop_index failure that ISN'T IndexNotFound must propagate —
+        # silent swallowing of e.g. permission errors would mask real bugs.
+        from repositories.indexes import ensure_indexes
+
+        db = MagicMock()
+        col = AsyncMock()
+        perm_err = OperationFailure("not authorized", code=13)  # Unauthorized
+        col.drop_index = AsyncMock(side_effect=perm_err)
+        db.__getitem__ = lambda self, name: col
+        db.create_collection = AsyncMock(side_effect=CollectionInvalid("clicks"))
+
+        with pytest.raises(OperationFailure):
+            await ensure_indexes(db)

@@ -58,6 +58,7 @@ def make_url_v2_doc(
             "private_stats": True,
             "total_clicks": total_clicks,
             "last_click": None,
+            "domain": "spoo.me",
         }
     )
 
@@ -80,6 +81,7 @@ def make_url_service() -> tuple[UrlService, AsyncMock, AsyncMock, AsyncMock]:
         blocked_url_repo=blocked_url_repo,
         url_cache=url_cache,
         blocked_self_domains=["spoo.me"],
+        system_default_domain="spoo.me",
     )
     return service, url_repo, legacy_repo, url_cache
 

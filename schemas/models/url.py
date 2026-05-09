@@ -38,21 +38,40 @@ class SchemaVersion(str, Enum):
 
 
 class UrlV2Doc(MongoBaseModel):
-    """
-    Document model for the `urlsV2` collection.
+    """Document model for the `urlsV2` collection.
 
-    password stores an argon2 hash (None when no password set).
-    owner_id is ANONYMOUS_OWNER_ID sentinel for unowned URLs.
+    password stores an argon2 hash. owner_id uses ANONYMOUS_OWNER_ID for
+    unowned URLs. domain scopes alias uniqueness via the compound
+    `(domain, alias)` index.
     """
 
     alias: str
     owner_id: PyObjectId = Field(default=ANONYMOUS_OWNER_ID)
+    domain: str
 
     @field_validator("owner_id", mode="before")
     @classmethod
     def _coerce_null_owner(cls, v: Any) -> Any:
-        """Legacy v2 URLs may have null owner_id — treat as anonymous."""
         return v if v is not None else ANONYMOUS_OWNER_ID
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _normalise_domain(cls, v: Any) -> str:
+        # Reject empty so a forgotten domain on insert can't silently shadow
+        # a real short under the unique compound index. Strip first so
+        # whitespace-only input is also caught.
+        if v is None:
+            raise ValueError(
+                "domain is required — pass settings.system_default_domain or "
+                "an explicit custom domain fqdn"
+            )
+        normalised = str(v).strip()
+        if normalised == "":
+            raise ValueError(
+                "domain is required — pass settings.system_default_domain or "
+                "an explicit custom domain fqdn"
+            )
+        return normalised.lower().rstrip(".")
 
     created_at: datetime
     creation_ip: str | None = None

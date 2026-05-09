@@ -1,11 +1,7 @@
-"""
-MongoDB index and collection setup for all repositories.
+"""MongoDB index + collection setup. Idempotent.
 
-Call ensure_indexes(db) once at application startup (from the lifespan handler
-in app.py). Index creation is idempotent — safe to call on every boot.
-
-Mirrors the legacy ensure_indexes() in utils/mongo_utils.py exactly,
-including every index definition and the time-series collection config.
+Data migrations live under ``infrastructure/bootstrap/`` and must run before
+this — see lifespan ordering in app.py.
 """
 
 from __future__ import annotations
@@ -38,7 +34,19 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
     await users_col.create_index([("auth_providers.provider", 1)])
 
     # ── urlsV2 ─────────────────────────────────────────────────────────────
-    await urls_v2_col.create_index([("alias", 1)], unique=True)
+    # Per-domain alias namespace via compound unique. Replaces the legacy
+    # global ``alias_1`` unique which would collide same-alias-different-domain
+    # once custom domains land.
+    await urls_v2_col.create_index([("domain", 1), ("alias", 1)], unique=True)
+    # Drop the obsolete global unique left over from pre-PR1 deploys.
+    # Code 27 = IndexNotFound — expected on every boot after the first run,
+    # so log only the actual-drop case to keep steady-state logs quiet.
+    try:
+        await urls_v2_col.drop_index("alias_1")
+        log.info("legacy_alias_index_dropped", index="alias_1")
+    except OperationFailure as e:
+        if getattr(e, "code", None) != 27:
+            raise
     await urls_v2_col.create_index([("owner_id", 1)])
     await urls_v2_col.create_index([("owner_id", 1), ("created_at", -1)])
     await urls_v2_col.create_index([("total_clicks", -1)])
@@ -71,6 +79,8 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
     await clicks_col.create_index([("meta.owner_id", 1), ("clicked_at", -1)])
     # for anonymous stats (scope=anon, by short_code)
     await clicks_col.create_index([("meta.short_code", 1), ("clicked_at", -1)])
+    # sparse — older buckets have no meta.domain, index stays small
+    await clicks_col.create_index([("meta.domain", 1), ("clicked_at", -1)], sparse=True)
 
     # ── api-keys ───────────────────────────────────────────────────────────
     await api_keys_col.create_index([("user_id", 1)])

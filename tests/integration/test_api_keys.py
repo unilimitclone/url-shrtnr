@@ -250,6 +250,7 @@ def test_use_api_key_for_shorten():
             "status": "ACTIVE",
             "private_stats": True,
             "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+            "domain": "spoo.me",
         }
     )
     mock_url_svc.create = AsyncMock(return_value=created_doc)

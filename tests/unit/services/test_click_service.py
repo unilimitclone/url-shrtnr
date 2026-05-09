@@ -52,10 +52,14 @@ BOT_UA = (
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+DOMAIN = "spoo.me"
+
+
 def make_v2_cache(
     block_bots: bool = False,
     max_clicks: int | None = None,
     owner_id: str | None = None,
+    domain: str = DOMAIN,
 ) -> UrlCacheData:
     return UrlCacheData(
         id=str(URL_OID),
@@ -68,6 +72,7 @@ def make_v2_cache(
         url_status="ACTIVE",
         schema_version="v2",
         owner_id=owner_id or str(USER_OID),
+        domain=domain,
     )
 
 
@@ -191,6 +196,30 @@ class TestV2ClickHandler:
         assert doc["country"] == "United States"
 
     @pytest.mark.asyncio
+    async def test_meta_carries_domain_from_cache(self):
+        d = make_deps()
+        handler = make_v2_handler(d.click_repo, d.url_repo, d.geoip, d.url_cache)
+        url_data = make_v2_cache(domain="links.acme.com")
+
+        await handler.handle(make_context(url_data))
+
+        doc = d.click_repo.insert.call_args[0][0]
+        assert doc["meta"]["domain"] == "links.acme.com"
+
+    @pytest.mark.asyncio
+    async def test_meta_domain_none_when_cache_empty_string(self):
+        # Older cached entries pre-PR1 have domain="". Coerce to None so
+        # per-domain queries can distinguish "unknown" from a real value.
+        d = make_deps()
+        handler = make_v2_handler(d.click_repo, d.url_repo, d.geoip, d.url_cache)
+        url_data = make_v2_cache(domain="")
+
+        await handler.handle(make_context(url_data))
+
+        doc = d.click_repo.insert.call_args[0][0]
+        assert doc["meta"]["domain"] is None
+
+    @pytest.mark.asyncio
     async def test_blocked_bot_skips_analytics_no_error(self):
         """v2: blocked bot → skip analytics, no exception raised (redirect proceeds)."""
         d = make_deps()
@@ -230,7 +259,7 @@ class TestV2ClickHandler:
         await handler.handle(make_context(url_data))
 
         d.url_repo.expire_if_max_clicks.assert_called_once_with(URL_OID, 100)
-        d.url_cache.invalidate.assert_called_once_with(ALIAS)
+        d.url_cache.invalidate.assert_called_once_with(ALIAS, DOMAIN)
 
     @pytest.mark.asyncio
     async def test_max_clicks_not_reached_no_cache_invalidation(self):

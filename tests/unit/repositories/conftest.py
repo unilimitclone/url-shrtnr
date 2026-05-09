@@ -44,6 +44,7 @@ def _url_v2_doc():
         "_id": URL_OID,
         "alias": "abc1234",
         "owner_id": USER_OID,
+        "domain": "spoo.me",
         "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
         "creation_ip": "1.2.3.4",
         "long_url": "https://example.com",

@@ -14,6 +14,8 @@ from pymongo.errors import (
 
 from .conftest import URL_OID, USER_OID, _url_v2_doc, make_collection
 
+DOMAIN = "spoo.me"
+
 
 class TestUrlRepository:
     def _repo(self, col=None):
@@ -25,8 +27,8 @@ class TestUrlRepository:
     async def test_find_by_alias_returns_model(self):
         col = make_collection()
         col.find_one = AsyncMock(return_value=_url_v2_doc())
-        result = await self._repo(col).find_by_alias("abc1234")
-        col.find_one.assert_awaited_once_with({"alias": "abc1234"})
+        result = await self._repo(col).find_by_alias("abc1234", DOMAIN)
+        col.find_one.assert_awaited_once_with({"alias": "abc1234", "domain": DOMAIN})
         assert result is not None
         assert result.alias == "abc1234"
 
@@ -34,8 +36,19 @@ class TestUrlRepository:
     async def test_find_by_alias_returns_none_on_miss(self):
         col = make_collection()
         col.find_one = AsyncMock(return_value=None)
-        result = await self._repo(col).find_by_alias("missing")
+        result = await self._repo(col).find_by_alias("missing", DOMAIN)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_find_by_alias_scoped_to_domain(self):
+        # Same alias under different domains is a different short — query
+        # must include the domain so the compound unique index slot matches.
+        col = make_collection()
+        col.find_one = AsyncMock(return_value=None)
+        await self._repo(col).find_by_alias("sale", "links.acme.com")
+        col.find_one.assert_awaited_once_with(
+            {"alias": "sale", "domain": "links.acme.com"}
+        )
 
     @pytest.mark.asyncio
     async def test_find_by_id_returns_model(self):
@@ -97,14 +110,16 @@ class TestUrlRepository:
     async def test_check_alias_exists_true(self):
         col = make_collection()
         col.find_one = AsyncMock(return_value={"_id": URL_OID})
-        assert await self._repo(col).check_alias_exists("abc1234") is True
-        col.find_one.assert_awaited_once_with({"alias": "abc1234"}, {"_id": 1})
+        assert await self._repo(col).check_alias_exists("abc1234", DOMAIN) is True
+        col.find_one.assert_awaited_once_with(
+            {"alias": "abc1234", "domain": DOMAIN}, {"_id": 1}
+        )
 
     @pytest.mark.asyncio
     async def test_check_alias_exists_false(self):
         col = make_collection()
         col.find_one = AsyncMock(return_value=None)
-        assert await self._repo(col).check_alias_exists("nope") is False
+        assert await self._repo(col).check_alias_exists("nope", DOMAIN) is False
 
     @pytest.mark.asyncio
     async def test_increment_clicks_uses_inc_and_set(self):
@@ -179,7 +194,7 @@ class TestUrlRepository:
         col = make_collection()
         col.find_one = AsyncMock(side_effect=Exception("connection refused"))
         with pytest.raises(Exception, match="connection refused"):
-            await self._repo(col).find_by_alias("any")
+            await self._repo(col).find_by_alias("any", DOMAIN)
 
     # ── Error path tests ──────────────────────────────────────────────────────
 
@@ -189,7 +204,7 @@ class TestUrlRepository:
         col = make_collection()
         col.find_one = AsyncMock(side_effect=OperationFailure("query failed"))
         with pytest.raises(OperationFailure):
-            await self._repo(col).find_by_alias("abc")
+            await self._repo(col).find_by_alias("abc", DOMAIN)
 
     @pytest.mark.asyncio
     async def test_find_by_alias_raises_on_server_timeout(self):
@@ -197,7 +212,7 @@ class TestUrlRepository:
         col = make_collection()
         col.find_one = AsyncMock(side_effect=ServerSelectionTimeoutError("timed out"))
         with pytest.raises(ServerSelectionTimeoutError):
-            await self._repo(col).find_by_alias("abc")
+            await self._repo(col).find_by_alias("abc", DOMAIN)
 
     @pytest.mark.asyncio
     async def test_insert_raises_duplicate_key(self):
@@ -231,4 +246,4 @@ class TestUrlRepository:
         col = make_collection()
         col.find_one = AsyncMock(side_effect=ValueError("unexpected"))
         with pytest.raises(ValueError, match="unexpected"):
-            await self._repo(col).find_by_alias("abc")
+            await self._repo(col).find_by_alias("abc", DOMAIN)

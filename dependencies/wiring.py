@@ -77,15 +77,14 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     report_webhook = DiscordWebhookProvider(settings.url_report_webhook, http_client)
 
     # ── Services ─────────────────────────────────────────────────────────
-    blocked_self_domains = [settings.app_url] if settings.app_url else []
-
     app.state.url_service = UrlService(
         url_repo,
         legacy_repo,
         emoji_repo,
         blocked_url_repo,
         url_cache,
-        blocked_self_domains,
+        settings.blocked_self_domains,
+        system_default_domain=settings.system_default_domain,
         blocked_url_regex_timeout=settings.blocked_url_regex_timeout,
         max_emoji_alias_length=settings.max_emoji_alias_length,
     )

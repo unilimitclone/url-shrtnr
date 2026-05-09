@@ -8,17 +8,19 @@ from infrastructure.cache.url_cache import UrlCache
 
 from .conftest import _fake_redis, _url_data
 
+DOMAIN = "spoo.me"
+
 
 class TestUrlCache:
     async def test_get_returns_none_when_redis_none(self):
         cache = UrlCache(redis_client=None)
-        assert await cache.get("abc") is None
+        assert await cache.get("abc", DOMAIN) is None
 
     async def test_get_returns_data_on_hit(self):
         data = _url_data()
         r = _fake_redis(get_returns=json.dumps(data.__dict__))
         cache = UrlCache(r)
-        result = await cache.get("abc1234")
+        result = await cache.get("abc1234", DOMAIN)
         assert result is not None
         assert result.long_url == "https://example.com"
         assert result.url_status == "ACTIVE"
@@ -26,38 +28,72 @@ class TestUrlCache:
     async def test_get_returns_none_on_miss(self):
         r = _fake_redis(get_returns=None)
         cache = UrlCache(r)
-        assert await cache.get("missing") is None
+        assert await cache.get("missing", DOMAIN) is None
+
+    async def test_get_decodes_legacy_payload_without_domain(self):
+        # Pre-PR1 cached entries have no `domain` field. The model's empty
+        # default keeps them decodable so a deploy doesn't 5xx until the
+        # entire cache TTLs out.
+        legacy_payload = {
+            "_id": "507f1f77bcf86cd799439011",
+            "alias": "abc1234",
+            "long_url": "https://example.com",
+            "block_bots": False,
+            "password_hash": None,
+            "expiration_time": None,
+            "max_clicks": None,
+            "url_status": "ACTIVE",
+            "schema_version": "v2",
+            "owner_id": "507f1f77bcf86cd799439012",
+        }
+        r = _fake_redis(get_returns=json.dumps(legacy_payload))
+        cache = UrlCache(r)
+        result = await cache.get("abc1234", DOMAIN)
+        assert result is not None
+        assert result.domain == ""
 
     async def test_set_calls_setex_with_ttl(self):
         r = _fake_redis()
         cache = UrlCache(r, ttl_seconds=300)
-        await cache.set("abc1234", _url_data())
+        await cache.set("abc1234", _url_data(domain=DOMAIN))
         r.setex.assert_called_once()
         call_args = r.setex.call_args[0]
-        assert call_args[0] == "url_cache:abc1234"
+        assert call_args[0] == f"url_cache:{DOMAIN}:abc1234"
         assert call_args[1] == 300
 
     async def test_set_noop_when_redis_none(self):
         cache = UrlCache(redis_client=None)
-        await cache.set("abc", _url_data())  # must not raise
+        await cache.set("abc", _url_data(domain=DOMAIN))  # must not raise
 
     async def test_invalidate_deletes_key(self):
         r = _fake_redis()
         cache = UrlCache(r)
-        await cache.invalidate("abc1234")
-        r.delete.assert_called_once_with("url_cache:abc1234")
+        await cache.invalidate("abc1234", DOMAIN)
+        r.delete.assert_called_once_with(f"url_cache:{DOMAIN}:abc1234")
 
     async def test_invalidate_noop_when_redis_none(self):
         cache = UrlCache(redis_client=None)
-        await cache.invalidate("abc")  # must not raise
+        await cache.invalidate("abc", DOMAIN)  # must not raise
 
     async def test_set_stores_json_serialisable_data(self):
         r = _fake_redis()
         cache = UrlCache(r)
-        await cache.set("x", _url_data(password_hash="$argon2id$..."))
+        await cache.set("x", _url_data(domain=DOMAIN, password_hash="$argon2id$..."))
         _, _, payload = r.setex.call_args[0]
         parsed = json.loads(payload)
         assert parsed["password_hash"] == "$argon2id$..."
+
+    async def test_keys_scoped_per_domain(self):
+        # Same alias, different domains → different cache slots.
+        r = _fake_redis(get_returns=None)
+        cache = UrlCache(r)
+        await cache.get("sale", "spoo.me")
+        await cache.get("sale", "links.acme.com")
+        keys_used = [c.args[0] for c in r.get.call_args_list]
+        assert keys_used == [
+            "url_cache:spoo.me:sale",
+            "url_cache:links.acme.com:sale",
+        ]
 
 
 class TestUrlCacheDataVerifyPassword:

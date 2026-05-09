@@ -111,9 +111,8 @@ async def shorten_url(
         )
 
     blocked_patterns = await BlockedUrlRepository(db["blocked-urls"]).get_patterns()
-    blocked_self_domains = [settings.app_url] if settings.app_url else []
 
-    if not validate_url(url, blocked_self_domains=blocked_self_domains):
+    if not validate_url(url, blocked_self_domains=settings.blocked_self_domains):
         return JSONResponse(
             {
                 "UrlError": (
@@ -174,7 +173,9 @@ async def shorten_url(
             candidate = generate_short_code()
             if not await legacy_repo.check_exists(
                 candidate
-            ) and not await url_repo.check_alias_exists(candidate):
+            ) and not await url_repo.check_alias_exists(
+                candidate, settings.system_default_domain
+            ):
                 short_code = candidate
                 break
         else:
@@ -276,7 +277,6 @@ async def emoji(
         return JSONResponse({"UrlError": "URL is required"}, status_code=400)
 
     blocked_patterns = await BlockedUrlRepository(db["blocked-urls"]).get_patterns()
-    blocked_self_domains = [settings.app_url] if settings.app_url else []
 
     emoji_repo = EmojiUrlRepository(db["emojis"])
 
@@ -301,7 +301,7 @@ async def emoji(
                 {"EmojiError": "Could not generate unique emoji alias"}, status_code=500
             )
 
-    if not validate_url(url, blocked_self_domains=blocked_self_domains):
+    if not validate_url(url, blocked_self_domains=settings.blocked_self_domains):
         return JSONResponse(
             {
                 "UrlError": (
@@ -420,6 +420,7 @@ async def result(
 async def preview_url(
     short_code: str,
     request: Request,
+    settings: Settings,
     db=Depends(get_db),
 ) -> Response:
     """Show a preview of where a short URL redirects to.
@@ -452,7 +453,9 @@ async def preview_url(
                 url_data = {"_id": short_code, "url": doc.url, "password": doc.password}
                 schema_type = "v1"
             else:
-                v2 = await url_repo.find_by_alias(short_code)
+                v2 = await url_repo.find_by_alias(
+                    short_code, settings.system_default_domain
+                )
                 if v2:
                     url_data = {
                         "alias": v2.alias,
@@ -462,7 +465,9 @@ async def preview_url(
                     schema_type = "v2"
         else:
             # v2 first
-            v2 = await url_repo.find_by_alias(short_code)
+            v2 = await url_repo.find_by_alias(
+                short_code, settings.system_default_domain
+            )
             if v2:
                 url_data = {
                     "alias": v2.alias,

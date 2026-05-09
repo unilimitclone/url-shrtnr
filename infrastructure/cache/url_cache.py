@@ -1,7 +1,8 @@
 """URL-specific Redis cache.
 
-Stores UrlCacheData as JSON (not pickle) so cache entries are
-debuggable and safe to deserialise across Python versions.
+Stores UrlCacheData as JSON (not pickle) so cache entries are debuggable and
+safe to deserialise across Python versions. Keys are scoped by fqdn:
+``url_cache:<domain>:<alias>``.
 """
 
 import redis.asyncio as aioredis
@@ -29,6 +30,7 @@ class UrlCacheData(BaseModel):
     schema_version: str  # "v1" or "v2"
     owner_id: str | None  # ObjectId as string; None for v1 URLs
     total_clicks: int = 0  # Live click count for v1 max-clicks check
+    domain: str = ""
 
     def verify_password(self, password: str | None) -> bool:
         """Check a password against this URL's stored hash.
@@ -52,14 +54,14 @@ class UrlCache:
         self._redis = redis_client
         self.ttl_seconds = ttl_seconds
 
-    def _key(self, short_code: str) -> str:
-        return f"url_cache:{short_code}"
+    def _key(self, short_code: str, domain: str) -> str:
+        return f"url_cache:{domain}:{short_code}"
 
-    async def get(self, short_code: str) -> UrlCacheData | None:
+    async def get(self, short_code: str, domain: str) -> UrlCacheData | None:
         if self._redis is None:
             return None
         try:
-            raw = await self._redis.get(self._key(short_code))
+            raw = await self._redis.get(self._key(short_code, domain))
             if raw is None:
                 return None
             return UrlCacheData.model_validate_json(raw)
@@ -68,22 +70,24 @@ class UrlCache:
             return None
 
     async def set(self, short_code: str, data: UrlCacheData) -> None:
+        # Domain is read from `data.domain` — caller always has the doc and
+        # the doc's domain is the canonical source. No redundant parameter.
         if self._redis is None:
             return
         try:
             await self._redis.setex(
-                self._key(short_code),
+                self._key(short_code, data.domain),
                 self.ttl_seconds,
                 data.model_dump_json(by_alias=True),
             )
         except Exception as e:
             log.error("url_cache_set_error", short_code=short_code, error=str(e))
 
-    async def invalidate(self, short_code: str) -> None:
+    async def invalidate(self, short_code: str, domain: str) -> None:
         if self._redis is None:
             return
         try:
-            await self._redis.delete(self._key(short_code))
+            await self._redis.delete(self._key(short_code, domain))
             log.info(
                 "cache_invalidated", short_code=short_code, reason="manual_invalidation"
             )

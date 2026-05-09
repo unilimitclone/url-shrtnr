@@ -188,6 +188,7 @@ class UrlService:
         blocked_url_repo: BlockedUrlRepository,
         url_cache: UrlCache,
         blocked_self_domains: list[str],
+        system_default_domain: str,
         blocked_url_regex_timeout: float = 0.2,
         max_emoji_alias_length: int = 15,
     ) -> None:
@@ -197,6 +198,9 @@ class UrlService:
         self._blocked_url_repo = blocked_url_repo
         self._url_cache = url_cache
         self._blocked_self_domains = blocked_self_domains
+        # The only domain on which v1/legacy lookups fire — custom domains
+        # are v2-only by definition.
+        self._system_default_domain = system_default_domain
         self._blocked_url_regex_timeout = blocked_url_regex_timeout
         self._max_emoji_alias_length = max_emoji_alias_length
 
@@ -215,7 +219,7 @@ class UrlService:
             GoneError:       URL status is EXPIRED or INACTIVE (v2 only).
         """
         # 1. Cache hit
-        cached = await self._url_cache.get(short_code)
+        cached = await self._url_cache.get(short_code, self._system_default_domain)
         if cached is not None:
             schema = cached.schema_version
             if schema == SchemaVersion.V2 and cached.url_status in (
@@ -284,7 +288,7 @@ class UrlService:
 
     async def check_alias_available(self, alias: str) -> bool:
         """Return True if alias is free in both urlsV2 and legacy urls collections."""
-        if await self._url_repo.check_alias_exists(alias):
+        if await self._url_repo.check_alias_exists(alias, self._system_default_domain):
             return False
         return not await self._legacy_repo.check_exists(alias)
 
@@ -378,6 +382,7 @@ class UrlService:
         url_doc = UrlV2Doc(
             alias=alias,
             owner_id=owner_oid,
+            domain=self._system_default_domain,
             created_at=now,
             creation_ip=client_ip,
             long_url=request.long_url,
@@ -466,8 +471,8 @@ class UrlService:
         # 4. Persist
         await self._url_repo.update(url_id, {"$set": update_ops})
 
-        # 5. Invalidate cache
-        await self._url_cache.invalidate(existing.alias)
+        # 5. Invalidate cache scoped to the doc's domain
+        await self._url_cache.invalidate(existing.alias, existing.domain)
 
         log.info(
             "url_updated",
@@ -534,7 +539,7 @@ class UrlService:
             raise ForbiddenError("Cannot delete a blocked URL")
 
         await self._url_repo.delete(url_id)
-        await self._url_cache.invalidate(existing.alias)
+        await self._url_cache.invalidate(existing.alias, existing.domain)
 
         log.info(
             "url_deleted",
@@ -651,7 +656,10 @@ class UrlService:
         if is_emoji_alias(short_code):
             doc = await self._emoji_repo.find_by_id(short_code)
             if doc is not None:
-                return _emoji_doc_to_cache(short_code, doc), SchemaVersion.EMOJI
+                return (
+                    _emoji_doc_to_cache(short_code, doc, self._system_default_domain),
+                    SchemaVersion.EMOJI,
+                )
             return None, SchemaVersion.EMOJI
 
         code_len = len(short_code)
@@ -665,12 +673,17 @@ class UrlService:
     async def _try_v2_then_v1(
         self, short_code: str
     ) -> tuple[UrlCacheData | None, SchemaVersion]:
-        v2_doc = await self._url_repo.find_by_alias(short_code)
+        v2_doc = await self._url_repo.find_by_alias(
+            short_code, self._system_default_domain
+        )
         if v2_doc is not None:
             return _v2_doc_to_cache(v2_doc), SchemaVersion.V2
         v1_doc = await self._legacy_repo.find_by_id(short_code)
         if v1_doc is not None:
-            return _legacy_doc_to_cache(short_code, v1_doc), SchemaVersion.V1
+            return (
+                _legacy_doc_to_cache(short_code, v1_doc, self._system_default_domain),
+                SchemaVersion.V1,
+            )
         return None, SchemaVersion.V2
 
     async def _try_v1_then_v2(
@@ -678,8 +691,13 @@ class UrlService:
     ) -> tuple[UrlCacheData | None, SchemaVersion]:
         v1_doc = await self._legacy_repo.find_by_id(short_code)
         if v1_doc is not None:
-            return _legacy_doc_to_cache(short_code, v1_doc), SchemaVersion.V1
-        v2_doc = await self._url_repo.find_by_alias(short_code)
+            return (
+                _legacy_doc_to_cache(short_code, v1_doc, self._system_default_domain),
+                SchemaVersion.V1,
+            )
+        v2_doc = await self._url_repo.find_by_alias(
+            short_code, self._system_default_domain
+        )
         if v2_doc is not None:
             return _v2_doc_to_cache(v2_doc), SchemaVersion.V2
         return None, SchemaVersion.V2
@@ -706,7 +724,9 @@ class UrlService:
         """Generate a 7-character alias not already in urlsV2."""
         for _ in range(10):
             candidate = generate_short_code_v2(7)
-            if not await self._url_repo.check_alias_exists(candidate):
+            if not await self._url_repo.check_alias_exists(
+                candidate, self._system_default_domain
+            ):
                 return candidate
         log.error("url_alias_generation_exhausted")
         raise AppError("Could not generate a unique alias; please try again")
@@ -735,15 +755,21 @@ def _v2_doc_to_cache(doc: UrlV2Doc) -> UrlCacheData:
         url_status=doc.status,
         schema_version=SchemaVersion.V2,
         owner_id=str(doc.owner_id) if doc.owner_id else None,
+        domain=doc.domain,
     )
 
 
 def _legacy_doc_to_cache(
     short_code: str,
     doc: LegacyUrlDoc | EmojiUrlDoc,
+    system_default_domain: str,
     schema_version: SchemaVersion = SchemaVersion.V1,
 ) -> UrlCacheData:
-    """Convert a LegacyUrlDoc or EmojiUrlDoc to UrlCacheData."""
+    """Convert a LegacyUrlDoc or EmojiUrlDoc to UrlCacheData.
+
+    v1/emoji shorts only exist under the system default domain — they
+    predate custom domains and won't ever be created elsewhere.
+    """
     expiration_time = None
     if doc.expiration_time:
         expiration_time = int(doc.expiration_time.timestamp())
@@ -759,8 +785,13 @@ def _legacy_doc_to_cache(
         schema_version=schema_version,
         total_clicks=doc.total_clicks,
         owner_id=None,
+        domain=system_default_domain,
     )
 
 
-def _emoji_doc_to_cache(short_code: str, doc: EmojiUrlDoc) -> UrlCacheData:
-    return _legacy_doc_to_cache(short_code, doc, schema_version=SchemaVersion.EMOJI)
+def _emoji_doc_to_cache(
+    short_code: str, doc: EmojiUrlDoc, system_default_domain: str
+) -> UrlCacheData:
+    return _legacy_doc_to_cache(
+        short_code, doc, system_default_domain, schema_version=SchemaVersion.EMOJI
+    )

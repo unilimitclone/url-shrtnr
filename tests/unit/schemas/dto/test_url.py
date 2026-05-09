@@ -236,6 +236,7 @@ def _make_doc(**overrides) -> UrlV2Doc:
         "_id": ObjectId(),
         "alias": "test123",
         "owner_id": ObjectId(),
+        "domain": "spoo.me",
         "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
         "long_url": "https://example.com/long",
         "password": None,
