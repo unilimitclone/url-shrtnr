@@ -69,12 +69,14 @@ class UrlCache:
             log.warning("url_cache_get_error", short_code=short_code, error=str(e))
             return None
 
-    async def set(self, short_code: str, domain: str, data: UrlCacheData) -> None:
+    async def set(self, short_code: str, data: UrlCacheData) -> None:
+        # Domain is read from `data.domain` — caller always has the doc and
+        # the doc's domain is the canonical source. No redundant parameter.
         if self._redis is None:
             return
         try:
             await self._redis.setex(
-                self._key(short_code, domain),
+                self._key(short_code, data.domain),
                 self.ttl_seconds,
                 data.model_dump_json(by_alias=True),
             )

@@ -141,6 +141,11 @@ class AppSettings(BaseSettings):
             )
         return parsed.hostname.lower().rstrip(".")
 
+    @cached_property
+    def blocked_self_domains(self) -> tuple[str, ...]:
+        """Hostnames refused as shortener destinations (self-link prevention)."""
+        return (self.system_default_domain,)
+
     # CORS — public API routes allow all origins (no credentials).
     # Private routes (auth, oauth, dashboard) require explicit origin allowlist.
     cors_origins: list[str] = ["*"]  # deprecated — kept for backward compat

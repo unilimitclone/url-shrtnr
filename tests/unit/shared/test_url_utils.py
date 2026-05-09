@@ -16,11 +16,9 @@ class TestExtractHostname:
         assert extract_hostname("") is None
 
     def test_returns_none_for_unparseable(self):
-        # urllib is forgiving — most inputs parse to *something*. The fallback
-        # path triggers on truly malformed inputs.
-        assert extract_hostname("not a url at all") is None or isinstance(
-            extract_hostname("not a url at all"), str
-        )
+        # urllib's urlparse is forgiving but a string with no scheme and no
+        # netloc structure resolves to ``hostname=None``.
+        assert extract_hostname("not a url at all") is None
 
 
 class TestExtractFqdn:
@@ -41,7 +39,8 @@ class TestExtractFqdn:
         assert extract_fqdn("https://my.shortener.dev") == "my.shortener.dev"
 
     def test_falls_back_to_localhost_for_no_host(self):
-        # Dev convenience: missing APP_URL must not crash boot.
+        # Defensive fallback for callers fed user-supplied URLs that lack
+        # a parseable host (raw paths, garbage strings).
         assert extract_fqdn("") == "localhost"
         assert extract_fqdn("not-a-url") == "localhost"
 

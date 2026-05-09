@@ -16,22 +16,25 @@ import emoji
 import regex
 import validators as _validators
 
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+
 
 def validate_url(
     url: str,
     blocked_self_domains: Sequence[str] = ("spoo.me",),
 ) -> bool:
-    """Return True if *url* is a valid, non-self-referential HTTP/S URL.
+    """Return True if *url* is a valid, non-self-referential http(s) URL.
 
     Args:
         url: The URL string to validate.
-        blocked_self_domains: Domain strings that must not appear in the URL.
-            Defaults to ``("spoo.me",)`` to prevent redirect loops.
-
-    Returns:
-        True when the URL passes format validation AND none of the blocked
-        domains appear in it.
+        blocked_self_domains: Bare hostnames whose substring presence in the
+            URL marks it as self-referential. Defaults to ``("spoo.me",)``
+            to prevent redirect loops.
     """
+    # Scheme allowlist defends against ftp/file/data/etc even if the
+    # validators package widens its accepted schemes upstream.
+    if urlparse(url).scheme not in _ALLOWED_URL_SCHEMES:
+        return False
     if not _validators.url(url, skip_ipv4_addr=True, skip_ipv6_addr=True):
         return False
     url_lower = url.lower()

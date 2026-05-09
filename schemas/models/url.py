@@ -58,13 +58,20 @@ class UrlV2Doc(MongoBaseModel):
     @classmethod
     def _normalise_domain(cls, v: Any) -> str:
         # Reject empty so a forgotten domain on insert can't silently shadow
-        # a real short under the unique compound index.
-        if v is None or v == "":
+        # a real short under the unique compound index. Strip first so
+        # whitespace-only input is also caught.
+        if v is None:
             raise ValueError(
                 "domain is required — pass settings.system_default_domain or "
                 "an explicit custom domain fqdn"
             )
-        return str(v).lower().rstrip(".")
+        normalised = str(v).strip()
+        if normalised == "":
+            raise ValueError(
+                "domain is required — pass settings.system_default_domain or "
+                "an explicit custom domain fqdn"
+            )
+        return normalised.lower().rstrip(".")
 
     created_at: datetime
     creation_ip: str | None = None

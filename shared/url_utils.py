@@ -22,8 +22,9 @@ def extract_fqdn(url: str) -> str:
     domain key across config, cache, and middleware so the same hostname
     always maps to the same string.
 
-    Falls back to ``"localhost"`` when the URL has no usable host (dev
-    convenience — keeps the system bootable without ``APP_URL`` set).
+    Falls back to ``"localhost"`` for inputs without a parseable host
+    (raw paths, garbage strings) — defensive shape for callers that feed
+    arbitrary user input.
     """
     host = extract_hostname(url)
     if not host:

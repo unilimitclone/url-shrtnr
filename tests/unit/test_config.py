@@ -165,6 +165,12 @@ class TestSystemDefaultDomain:
         with_mongo.setenv("APP_URL", "https://my.shortener.dev")
         assert AppSettings().system_default_domain == "my.shortener.dev"
 
+    def test_strips_trailing_dot(self, with_mongo):
+        # Fully qualified DNS notation includes a trailing dot for the root.
+        # Strip it so the canonical form matches everywhere.
+        with_mongo.setenv("APP_URL", "https://spoo.me./")
+        assert AppSettings().system_default_domain == "spoo.me"
+
     def test_raises_on_missing_scheme(self, with_mongo):
         # Bare domain, no scheme → urlparse can't extract hostname.
         with_mongo.setenv("APP_URL", "spoo.me")
@@ -180,3 +186,7 @@ class TestSystemDefaultDomain:
         with_mongo.setenv("APP_URL", "not a url")
         with pytest.raises(ValueError, match="APP_URL is missing or invalid"):
             _ = AppSettings().system_default_domain
+
+    def test_blocked_self_domains_derives_from_default(self, with_mongo):
+        with_mongo.setenv("APP_URL", "https://spoo.me")
+        assert AppSettings().blocked_self_domains == ("spoo.me",)

@@ -111,9 +111,8 @@ async def shorten_url(
         )
 
     blocked_patterns = await BlockedUrlRepository(db["blocked-urls"]).get_patterns()
-    blocked_self_domains = [settings.app_url] if settings.app_url else []
 
-    if not validate_url(url, blocked_self_domains=blocked_self_domains):
+    if not validate_url(url, blocked_self_domains=settings.blocked_self_domains):
         return JSONResponse(
             {
                 "UrlError": (
@@ -278,7 +277,6 @@ async def emoji(
         return JSONResponse({"UrlError": "URL is required"}, status_code=400)
 
     blocked_patterns = await BlockedUrlRepository(db["blocked-urls"]).get_patterns()
-    blocked_self_domains = [settings.app_url] if settings.app_url else []
 
     emoji_repo = EmojiUrlRepository(db["emojis"])
 
@@ -303,7 +301,7 @@ async def emoji(
                 {"EmojiError": "Could not generate unique emoji alias"}, status_code=500
             )
 
-    if not validate_url(url, blocked_self_domains=blocked_self_domains):
+    if not validate_url(url, blocked_self_domains=settings.blocked_self_domains):
         return JSONResponse(
             {
                 "UrlError": (

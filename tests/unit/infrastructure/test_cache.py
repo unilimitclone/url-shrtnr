@@ -30,10 +30,32 @@ class TestUrlCache:
         cache = UrlCache(r)
         assert await cache.get("missing", DOMAIN) is None
 
+    async def test_get_decodes_legacy_payload_without_domain(self):
+        # Pre-PR1 cached entries have no `domain` field. The model's empty
+        # default keeps them decodable so a deploy doesn't 5xx until the
+        # entire cache TTLs out.
+        legacy_payload = {
+            "_id": "507f1f77bcf86cd799439011",
+            "alias": "abc1234",
+            "long_url": "https://example.com",
+            "block_bots": False,
+            "password_hash": None,
+            "expiration_time": None,
+            "max_clicks": None,
+            "url_status": "ACTIVE",
+            "schema_version": "v2",
+            "owner_id": "507f1f77bcf86cd799439012",
+        }
+        r = _fake_redis(get_returns=json.dumps(legacy_payload))
+        cache = UrlCache(r)
+        result = await cache.get("abc1234", DOMAIN)
+        assert result is not None
+        assert result.domain == ""
+
     async def test_set_calls_setex_with_ttl(self):
         r = _fake_redis()
         cache = UrlCache(r, ttl_seconds=300)
-        await cache.set("abc1234", DOMAIN, _url_data())
+        await cache.set("abc1234", _url_data(domain=DOMAIN))
         r.setex.assert_called_once()
         call_args = r.setex.call_args[0]
         assert call_args[0] == f"url_cache:{DOMAIN}:abc1234"
@@ -41,7 +63,7 @@ class TestUrlCache:
 
     async def test_set_noop_when_redis_none(self):
         cache = UrlCache(redis_client=None)
-        await cache.set("abc", DOMAIN, _url_data())  # must not raise
+        await cache.set("abc", _url_data(domain=DOMAIN))  # must not raise
 
     async def test_invalidate_deletes_key(self):
         r = _fake_redis()
@@ -56,7 +78,7 @@ class TestUrlCache:
     async def test_set_stores_json_serialisable_data(self):
         r = _fake_redis()
         cache = UrlCache(r)
-        await cache.set("x", DOMAIN, _url_data(password_hash="$argon2id$..."))
+        await cache.set("x", _url_data(domain=DOMAIN, password_hash="$argon2id$..."))
         _, _, payload = r.setex.call_args[0]
         parsed = json.loads(payload)
         assert parsed["password_hash"] == "$argon2id$..."

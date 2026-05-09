@@ -718,7 +718,7 @@ class UrlService:
         if schema == SchemaVersion.V2 or (
             schema == SchemaVersion.V1 and url_cache_data.max_clicks is None
         ):
-            await self._url_cache.set(short_code, url_cache_data.domain, url_cache_data)
+            await self._url_cache.set(short_code, url_cache_data)
 
     async def _generate_unique_alias(self) -> str:
         """Generate a 7-character alias not already in urlsV2."""

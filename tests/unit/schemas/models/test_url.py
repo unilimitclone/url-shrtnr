@@ -95,6 +95,34 @@ class TestUrlV2Doc:
         with pytest.raises(ValidationError, match="domain is required"):
             UrlV2Doc.model_validate(base)
 
+    def test_whitespace_only_domain_raises(self):
+        # Strip-then-check catches whitespace-only input that the bare
+        # empty-string check would miss.
+        import pytest
+        from pydantic import ValidationError
+
+        base = {
+            "_id": oid(),
+            "alias": "abc1234",
+            "domain": "   ",
+            "created_at": now(),
+            "long_url": "https://example.com",
+        }
+        with pytest.raises(ValidationError, match="domain is required"):
+            UrlV2Doc.model_validate(base)
+
+    def test_domain_strips_surrounding_whitespace(self):
+        doc = UrlV2Doc.model_validate(
+            {
+                "_id": oid(),
+                "alias": "abc1234",
+                "domain": "  Spoo.Me  ",
+                "created_at": now(),
+                "long_url": "https://example.com",
+            }
+        )
+        assert doc.domain == "spoo.me"
+
     def test_from_mongo_none_returns_none(self):
         assert UrlV2Doc.from_mongo(None) is None
 

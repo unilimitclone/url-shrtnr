@@ -238,8 +238,8 @@ def test_redirect_populates_cache_on_miss():
     cache.set.assert_called_once()
     call_args = cache.set.call_args
     assert call_args[0][0] == "abc1234"
-    assert call_args[0][1] == "spoo.me"
-    assert isinstance(call_args[0][2], UrlCacheData)
+    assert isinstance(call_args[0][1], UrlCacheData)
+    assert call_args[0][1].domain == "spoo.me"
 
 
 def test_redirect_uses_cached_data():
