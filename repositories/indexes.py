@@ -107,4 +107,13 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
     feature_flags_col = db["feature_flags"]
     await feature_flags_col.create_index([("name", 1)], unique=True)
 
+    # ── custom_domains ────────────────────────────────────────────────
+    # One row per fqdn — uniqueness enforced globally (no two users can claim
+    # the same domain). Owner+created_at supports the dashboard list view.
+    # status+last_verified_at backs the background re-verify worker query.
+    custom_domains_col = db["custom_domains"]
+    await custom_domains_col.create_index([("fqdn", 1)], unique=True)
+    await custom_domains_col.create_index([("owner_id", 1), ("created_at", -1)])
+    await custom_domains_col.create_index([("status", 1), ("last_verified_at", 1)])
+
     log.info("mongodb_indexes_ensured")

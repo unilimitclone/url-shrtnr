@@ -118,6 +118,50 @@ class SentrySettings(BaseSettings):
             return ""
 
 
+class CustomDomainSettings(BaseSettings):
+    """User-bring-your-own-domain feature config.
+
+    All fields default to safe values that keep the feature off until the
+    rollout flag flips. ``enabled`` is the master switch consulted by the
+    service layer (PR5+); the data plumbing (schema, repo, wiring) lands
+    even when False so the rollout has a clean code path to flip.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Master switch consulted by CustomDomainService. Until True, every
+    # public method short-circuits with DomainQuotaExceededError or similar.
+    enabled: bool = False
+
+    # Verifier targets — change in env when the canonical edge IP shifts.
+    cname_target: str = "custom.spoo.me"
+    origin_ipv4: list[str] = ["178.156.161.168"]
+
+    # Quotas. Flat for all users in v1 (no tier branching).
+    max_per_user: int = 2
+    create_attempts_per_day: int = 3
+    verify_attempts_per_hour: int = 5
+
+    # Re-register cooldown after a user revokes their own domain — discourages
+    # rapid hostname-cycling abuse against the LE rate limit.
+    re_register_cooldown_days: int = 30
+
+    # Background re-verify worker tunables.
+    reverify_interval_seconds: int = 3600  # check every hour
+    reverify_batch_size: int = 10
+    max_verify_age_seconds: int = 7 * 24 * 3600  # suspend after 7 days unverified
+    suspend_after_consecutive_failures: int = 3
+
+    # Caddy admin API — used by CaddyAskProvisioner to evict revoked certs.
+    caddy_admin_url: str = "http://caddy:2019"
+    # IP that Caddy uses to call the /internal/caddy-ask endpoint. Only this
+    # source IP is allowed by the require_caddy_caller dependency.
+    caddy_caller_ip: str = "172.30.0.20"
+
+    # Static blocklist file (one fqdn per line). Empty path = no blocklist.
+    blocklist_path: str = ""
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -222,6 +266,7 @@ class AppSettings(BaseSettings):
     email: EmailSettings | None = None
     logging: LoggingSettings | None = None
     sentry: SentrySettings | None = None
+    custom_domains: CustomDomainSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -251,6 +296,8 @@ class AppSettings(BaseSettings):
             self.logging = LoggingSettings()
         if self.sentry is None:
             self.sentry = SentrySettings()
+        if self.custom_domains is None:
+            self.custom_domains = CustomDomainSettings()
 
         return self
 

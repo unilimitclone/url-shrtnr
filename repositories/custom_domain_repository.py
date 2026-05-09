@@ -1,0 +1,134 @@
+"""
+Repository for the ``custom_domains`` MongoDB collection.
+
+All methods are async and return typed Pydantic document models.
+Errors are handled by BaseRepository — domain methods delegate to shared
+CRUD helpers.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from bson import ObjectId
+from pymongo.errors import PyMongoError
+
+from infrastructure.logging import get_logger
+from repositories.base import BaseRepository
+from schemas.enums.domain_status import DomainStatus
+from schemas.models.custom_domain import CustomDomainDoc
+
+log = get_logger(__name__)
+
+
+class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
+    async def find_by_id(self, domain_id: ObjectId) -> CustomDomainDoc | None:
+        """Find a domain by its ObjectId."""
+        return await self._find_one({"_id": domain_id})
+
+    async def find_by_fqdn(self, fqdn: str) -> CustomDomainDoc | None:
+        """Find a domain by fqdn (any status). Used by uniqueness checks."""
+        return await self._find_one({"fqdn": fqdn})
+
+    async def find_active_by_fqdn(self, fqdn: str) -> CustomDomainDoc | None:
+        """Find a domain by fqdn, scoped to ACTIVE only.
+
+        Used by the Caddy ask endpoint — we only mint certs for verified,
+        currently-active domains.
+        """
+        return await self._find_one({"fqdn": fqdn, "status": DomainStatus.ACTIVE})
+
+    async def list_by_owner(
+        self,
+        owner_id: ObjectId,
+        skip: int,
+        limit: int,
+    ) -> list[CustomDomainDoc]:
+        """Return a page of domains owned by *owner_id*, newest first."""
+        try:
+            cursor = (
+                self._col.find({"owner_id": owner_id})
+                .sort("created_at", -1)
+                .skip(skip)
+                .limit(limit)
+            )
+            docs = await cursor.to_list(length=limit)
+            return [CustomDomainDoc.from_mongo(d) for d in docs]  # type: ignore[misc]
+        except PyMongoError as exc:
+            log.error(
+                "repo_list_by_owner_failed",
+                collection=self._collection_name,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise
+
+    async def count_by_owner(self, owner_id: ObjectId) -> int:
+        """Count all domains owned by *owner_id* (any status)."""
+        return await self._count({"owner_id": owner_id})
+
+    async def insert(self, doc: dict) -> ObjectId:
+        """Insert a new domain document. Returns the inserted ``_id``."""
+        return await self._insert(doc)
+
+    async def update_status(
+        self,
+        domain_id: ObjectId,
+        new_status: DomainStatus,
+        *,
+        last_verification_error: str | None = None,
+        bump_last_verified_at: bool = False,
+    ) -> bool:
+        """Persist a status transition.
+
+        Always sets ``updated_at`` to ``now``. Optionally records the latest
+        verification error message and bumps ``last_verified_at`` (only set
+        on successful checks — failed re-verify keeps the prior timestamp).
+
+        Returns True if the document existed and was updated.
+        """
+        now = datetime.now(timezone.utc)
+        ops: dict = {
+            "$set": {
+                "status": new_status,
+                "updated_at": now,
+                "last_verification_error": last_verification_error,
+            }
+        }
+        if bump_last_verified_at:
+            ops["$set"]["last_verified_at"] = now
+        return await self._update({"_id": domain_id}, ops)
+
+    async def find_stale_active(
+        self, older_than: datetime, limit: int
+    ) -> list[CustomDomainDoc]:
+        """Return ACTIVE domains whose ``last_verified_at`` is older than the cutoff.
+
+        Used by the background re-verify worker to pick the next batch. Sorted
+        oldest-first so the most stale gets re-checked first.
+        """
+        try:
+            cursor = (
+                self._col.find(
+                    {
+                        "status": DomainStatus.ACTIVE,
+                        "is_system_default": {"$ne": True},
+                        "$or": [
+                            {"last_verified_at": {"$lt": older_than}},
+                            {"last_verified_at": None},
+                        ],
+                    }
+                )
+                .sort("last_verified_at", 1)
+                .limit(limit)
+            )
+            docs = await cursor.to_list(length=limit)
+            return [CustomDomainDoc.from_mongo(d) for d in docs]  # type: ignore[misc]
+        except PyMongoError as exc:
+            log.error(
+                "repo_find_stale_active_failed",
+                collection=self._collection_name,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise

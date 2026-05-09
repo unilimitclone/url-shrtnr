@@ -20,12 +20,14 @@ from repositories.api_key_repository import ApiKeyRepository
 from repositories.app_grant_repository import AppGrantRepository
 from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.click_repository import ClickRepository
+from repositories.custom_domain_repository import CustomDomainRepository
 from repositories.feature_flag_repository import FeatureFlagRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.token_repository import TokenRepository
 from repositories.url_repository import UrlRepository
 from repositories.user_repository import UserRepository
+from schemas.enums.domain_status import VerificationMethod
 from services.api_key_service import ApiKeyService
 from services.auth.credentials import CredentialService
 from services.auth.device import DeviceAuthService
@@ -34,14 +36,22 @@ from services.auth.password import PasswordService
 from services.auth.verification import EmailVerificationService
 from services.click import ClickService, LegacyClickHandler, V2ClickHandler
 from services.contact_service import ContactService
+from services.custom_domain_service import CustomDomainService
+from services.edge_provisioner import CaddyAskProvisioner
 from services.export.formatters import default_formatters
 from services.export.service import ExportService
 from services.feature_flag_service import FeatureFlagService
 from services.oauth_service import OAuthService
 from services.profile_picture_service import ProfilePictureService
 from services.stats_service import StatsService
+from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
 from services.url_service import UrlService
+from services.verifiers import (
+    ARecordVerifier,
+    CnameVerifier,
+    TxtChallengeVerifier,
+)
 
 
 def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
@@ -154,4 +164,30 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
 
     app.state.feature_flag_service = FeatureFlagService(
         feature_flag_repo, feature_flag_cache
+    )
+
+    # ── Custom-domains feature ───────────────────────────────────────
+    # Wired unconditionally so the data plumbing is in place even when the
+    # master flag is off. Mutations short-circuit inside the service via
+    # ``settings.custom_domains.enabled``; the route layer (PR4) further
+    # gates per-user access via the FeatureFlagService.
+    custom_domain_repo = CustomDomainRepository(db["custom_domains"])
+    cd_settings = settings.custom_domains
+    verifiers = {
+        VerificationMethod.CNAME: CnameVerifier(cd_settings.cname_target),
+        VerificationMethod.A_RECORD: ARecordVerifier(cd_settings.origin_ipv4),
+        VerificationMethod.TXT_CHALLENGE: TxtChallengeVerifier(),
+    }
+    edge_provisioner = CaddyAskProvisioner(http_client, cd_settings.caddy_admin_url)
+    app.state.custom_domain_service = CustomDomainService(
+        repo=custom_domain_repo,
+        verifiers=verifiers,
+        edge_provisioner=edge_provisioner,
+        settings=cd_settings,
+        redis_client=redis_client,
+    )
+    app.state.tenant_resolver = CachedMongoTenantResolver(
+        repo=custom_domain_repo,
+        redis_client=redis_client,
+        system_default_domain=settings.system_default_domain,
     )

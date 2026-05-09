@@ -88,3 +88,39 @@ class GoneError(AppError):
 class RateLimitError(AppError):
     status_code = 429
     error_code = "rate_limit_exceeded"
+
+
+# ── Custom-domain errors ─────────────────────────────────────────────────
+
+
+class DomainAlreadyRegisteredError(ConflictError):
+    """The fqdn is already registered (by this user or another)."""
+
+    error_code = "domain_already_registered"
+
+
+class DomainNotVerifiedError(ValidationError):
+    """Operation requires the domain to be in ACTIVE status."""
+
+    status_code = 422
+    error_code = "domain_not_verified"
+
+
+class DomainBlocklistedError(ValidationError):
+    """The fqdn matches a blocklisted name (Tranco top-N, abuse list, etc.)."""
+
+    status_code = 422
+    error_code = "domain_blocklisted"
+
+
+class DomainQuotaExceededError(RateLimitError):
+    """Per-user max-domains or per-window create/verify limit hit."""
+
+    error_code = "domain_quota_exceeded"
+
+
+class InvalidDomainTransitionError(ValidationError):
+    """Requested status transition isn't legal — see LEGAL_TRANSITIONS."""
+
+    status_code = 422
+    error_code = "invalid_domain_transition"

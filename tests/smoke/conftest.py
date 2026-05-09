@@ -62,6 +62,8 @@ def _build_smoke_app() -> FastAPI:
         app.state.contact_service = AsyncMock()
         app.state.click_service = AsyncMock()
         app.state.feature_flag_service = AsyncMock()
+        app.state.custom_domain_service = AsyncMock()
+        app.state.tenant_resolver = AsyncMock()
         yield
 
     app = FastAPI(
