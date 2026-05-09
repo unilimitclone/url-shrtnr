@@ -1,53 +1,46 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pymongo>=4.6",
+# ]
+# ///
 """One-shot migration: stamp ``domain`` on every urlsV2 doc missing it.
 
-Run once when upgrading to the custom-domains release. Idempotent — re-runs
-match zero docs.
+Standalone — no spoo project context required. Run anywhere uv is installed.
+
+Reads ``MONGODB_URI``, ``APP_URL``, and (optional) ``DB_NAME`` from the
+environment. Pass ``--env-file`` to ``uv run`` to load a dotenv file.
 
 Usage::
 
-    uv run python -m scripts.backfill_url_domain               # apply
-    uv run python -m scripts.backfill_url_domain --dry-run     # preview only
+    # apply
+    uv run --env-file .env.production scripts/backfill_url_domain.py
+
+    # preview only
+    uv run --env-file .env.production scripts/backfill_url_domain.py --dry-run
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
+import os
+import sys
+from urllib.parse import urlparse
 
-from pymongo.asynchronous.mongo_client import AsyncMongoClient
-
-from config import AppSettings
+from pymongo import MongoClient
 
 _FILTER = {"$or": [{"domain": {"$exists": False}}, {"domain": ""}]}
 
 
-async def run(dry_run: bool) -> None:
-    settings = AppSettings()
-    client: AsyncMongoClient = AsyncMongoClient(settings.db.mongodb_uri)
-    db = client[settings.db.db_name]
-
-    fqdn = settings.system_default_domain
-    needs = await db["urlsV2"].count_documents(_FILTER)
-    print(f"Docs needing backfill: {needs}")
-    print(f"Would stamp domain={fqdn!r}")
-
-    if needs == 0:
-        print("Nothing to do.")
-        await client.close()
-        return
-
-    if dry_run:
-        print("DRY RUN — no writes performed.")
-        await client.close()
-        return
-
-    result = await db["urlsV2"].update_many(_FILTER, {"$set": {"domain": fqdn}})
-    print(f"Stamped domain={fqdn!r} on {result.modified_count} docs.")
-
-    remaining = await db["urlsV2"].count_documents(_FILTER)
-    print(f"Remaining un-stamped (expect 0): {remaining}")
-
-    await client.close()
+def _system_default_domain(app_url: str) -> str:
+    parsed = urlparse(app_url)
+    if not parsed.scheme or not parsed.hostname:
+        sys.exit(
+            f"APP_URL is missing or invalid: {app_url!r}. "
+            "Set APP_URL to your shortener's public URL (e.g. https://spoo.me)."
+        )
+    return parsed.hostname.lower().rstrip(".")
 
 
 def main() -> None:
@@ -58,7 +51,41 @@ def main() -> None:
         help="Show counts and target domain without writing.",
     )
     args = parser.parse_args()
-    asyncio.run(run(dry_run=args.dry_run))
+
+    mongodb_uri = os.environ.get("MONGODB_URI")
+    app_url = os.environ.get("APP_URL")
+    db_name = os.environ.get("DB_NAME", "url-shortener")
+
+    if not mongodb_uri:
+        sys.exit("MONGODB_URI not set in environment.")
+    if not app_url:
+        sys.exit("APP_URL not set in environment.")
+
+    fqdn = _system_default_domain(app_url)
+    client: MongoClient = MongoClient(mongodb_uri)
+    coll = client[db_name]["urlsV2"]
+
+    needs = coll.count_documents(_FILTER)
+    print(f"Docs needing backfill: {needs}")
+    print(f"Would stamp domain={fqdn!r}")
+
+    if needs == 0:
+        print("Nothing to do.")
+        client.close()
+        return
+
+    if args.dry_run:
+        print("DRY RUN — no writes performed.")
+        client.close()
+        return
+
+    result = coll.update_many(_FILTER, {"$set": {"domain": fqdn}})
+    print(f"Stamped domain={fqdn!r} on {result.modified_count} docs.")
+
+    remaining = coll.count_documents(_FILTER)
+    print(f"Remaining un-stamped (expect 0): {remaining}")
+
+    client.close()
 
 
 if __name__ == "__main__":
