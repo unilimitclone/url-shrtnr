@@ -34,14 +34,19 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
     await users_col.create_index([("auth_providers.provider", 1)])
 
     # ── urlsV2 ─────────────────────────────────────────────────────────────
-    # The compound ``{domain, alias}`` unique swap is intentionally deferred
-    # to a manual operational step after backfill verification. Operator runs:
-    #   1. db.urlsV2.countDocuments({domain: {$exists: false}})  // expect 0
-    #      db.urlsV2.countDocuments({domain: ""})                // expect 0
-    #   2. db.urlsV2.dropIndex("alias_1")
-    #      db.urlsV2.createIndex({domain: 1, alias: 1}, {unique: true})
-    # Doing it in code risks a uniqueness gap or a failed compound build.
-    await urls_v2_col.create_index([("alias", 1)], unique=True)
+    # Per-domain alias namespace via compound unique. Replaces the legacy
+    # global ``alias_1`` unique which would collide same-alias-different-domain
+    # once custom domains land.
+    await urls_v2_col.create_index([("domain", 1), ("alias", 1)], unique=True)
+    # Drop the obsolete global unique left over from pre-PR1 deploys.
+    # Code 27 = IndexNotFound — expected on every boot after the first run,
+    # so log only the actual-drop case to keep steady-state logs quiet.
+    try:
+        await urls_v2_col.drop_index("alias_1")
+        log.info("legacy_alias_index_dropped", index="alias_1")
+    except OperationFailure as e:
+        if getattr(e, "code", None) != 27:
+            raise
     await urls_v2_col.create_index([("owner_id", 1)])
     await urls_v2_col.create_index([("owner_id", 1), ("created_at", -1)])
     await urls_v2_col.create_index([("total_clicks", -1)])
