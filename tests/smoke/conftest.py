@@ -61,6 +61,7 @@ def _build_smoke_app() -> FastAPI:
         app.state.profile_picture_service = AsyncMock()
         app.state.contact_service = AsyncMock()
         app.state.click_service = AsyncMock()
+        app.state.feature_flag_service = AsyncMock()
         yield
 
     app = FastAPI(

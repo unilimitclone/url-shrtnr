@@ -25,6 +25,7 @@ from services.auth.verification import EmailVerificationService
 from services.click import ClickService
 from services.contact_service import ContactService
 from services.export.service import ExportService
+from services.feature_flag_service import FeatureFlagService
 from services.oauth_service import OAuthService
 from services.profile_picture_service import ProfilePictureService
 from services.stats_service import StatsService
@@ -99,6 +100,10 @@ def get_app_grant_repo(request: Request) -> AppGrantRepository:
     return request.app.state.app_grant_repo
 
 
+def get_feature_flag_service(request: Request) -> FeatureFlagService:
+    return request.app.state.feature_flag_service
+
+
 # ── Annotated type aliases — Depends shortcuts for route signatures ──────────
 
 UrlSvc = Annotated[UrlService, Depends(get_url_service)]
@@ -117,3 +122,4 @@ ProfilePictureSvc = Annotated[
 ContactSvc = Annotated[ContactService, Depends(get_contact_service)]
 ClickSvc = Annotated[ClickService, Depends(get_click_service)]
 AppGrantRepo = Annotated[AppGrantRepository, Depends(get_app_grant_repo)]
+FeatureFlagSvc = Annotated[FeatureFlagService, Depends(get_feature_flag_service)]
