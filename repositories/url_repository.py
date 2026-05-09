@@ -30,9 +30,9 @@ class StatsPrivacyInfo(TypedDict):
 
 
 class UrlRepository(BaseRepository[UrlV2Doc]):
-    async def find_by_alias(self, alias: str) -> UrlV2Doc | None:
-        """Find a URL document by its short alias."""
-        return await self._find_one({"alias": alias})
+    async def find_by_alias(self, alias: str, domain: str) -> UrlV2Doc | None:
+        """Find a URL by ``(alias, domain)``."""
+        return await self._find_one({"alias": alias, "domain": domain})
 
     async def find_by_id(self, url_id: ObjectId) -> UrlV2Doc | None:
         """Find a URL document by its ObjectId."""
@@ -53,9 +53,9 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         """Hard-delete a URL document. Returns True if a document was deleted."""
         return await self._delete({"_id": url_id})
 
-    async def check_alias_exists(self, alias: str) -> bool:
-        """Return True if the alias already exists in the collection."""
-        doc = await self._find_one_raw({"alias": alias}, {"_id": 1})
+    async def check_alias_exists(self, alias: str, domain: str) -> bool:
+        """Return True if the alias is taken under the given domain namespace."""
+        doc = await self._find_one_raw({"alias": alias, "domain": domain}, {"_id": 1})
         return doc is not None
 
     async def increment_clicks(
@@ -123,9 +123,14 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         return await self._count(query)
 
     async def check_stats_privacy(self, alias: str) -> StatsPrivacyInfo:
-        """Return privacy metadata for a URL alias."""
+        """Return privacy metadata for a URL alias.
+
+        Currently unscoped — stats route only operates on system-default
+        shorts. Scope by domain when stats becomes domain-aware.
+        """
         doc = await self._find_one_raw(
-            {"alias": alias}, {"private_stats": 1, "owner_id": 1}
+            {"alias": alias},
+            {"private_stats": 1, "owner_id": 1},
         )
         if not doc:
             return {"exists": False, "private": False, "owner_id": None}

@@ -144,3 +144,39 @@ class TestAppSettings:
 
     def test_cors_origins_default(self, with_mongo):
         assert AppSettings().cors_origins == ["*"]
+
+
+class TestSystemDefaultDomain:
+    """AppSettings.system_default_domain — fail-hard derivation from app_url."""
+
+    def test_extracts_fqdn_from_app_url(self, with_mongo):
+        with_mongo.setenv("APP_URL", "https://spoo.me")
+        assert AppSettings().system_default_domain == "spoo.me"
+
+    def test_lowercases(self, with_mongo):
+        with_mongo.setenv("APP_URL", "https://SPOO.ME")
+        assert AppSettings().system_default_domain == "spoo.me"
+
+    def test_strips_port(self, with_mongo):
+        with_mongo.setenv("APP_URL", "http://localhost:8000")
+        assert AppSettings().system_default_domain == "localhost"
+
+    def test_self_hoster_domain(self, with_mongo):
+        with_mongo.setenv("APP_URL", "https://my.shortener.dev")
+        assert AppSettings().system_default_domain == "my.shortener.dev"
+
+    def test_raises_on_missing_scheme(self, with_mongo):
+        # Bare domain, no scheme → urlparse can't extract hostname.
+        with_mongo.setenv("APP_URL", "spoo.me")
+        with pytest.raises(ValueError, match="APP_URL is missing or invalid"):
+            _ = AppSettings().system_default_domain
+
+    def test_raises_on_empty(self, with_mongo):
+        with_mongo.setenv("APP_URL", "")
+        with pytest.raises(ValueError, match="APP_URL is missing or invalid"):
+            _ = AppSettings().system_default_domain
+
+    def test_raises_on_garbage(self, with_mongo):
+        with_mongo.setenv("APP_URL", "not a url")
+        with pytest.raises(ValueError, match="APP_URL is missing or invalid"):
+            _ = AppSettings().system_default_domain

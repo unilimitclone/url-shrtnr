@@ -16,6 +16,7 @@ class TestUrlV2Doc:
             "_id": oid(),
             "alias": "abc1234",
             "owner_id": oid(),
+            "domain": "spoo.me",
             "created_at": now(),
             "long_url": "https://example.com",
         }
@@ -53,12 +54,46 @@ class TestUrlV2Doc:
         base = {
             "_id": oid(),
             "alias": "abc1234",
+            "domain": "spoo.me",
             "created_at": now(),
             "long_url": "https://example.com",
         }
         doc = UrlV2Doc.from_mongo(base)
         assert doc.owner_id == ANONYMOUS_OWNER_ID
         assert isinstance(doc.owner_id, ObjectId)
+
+    def test_missing_domain_raises(self):
+        # PR1: domain is required. Catching the absence at construction time
+        # prevents silent corruption (a doc with empty domain is invisible
+        # to find_by_alias scoped lookups). Pydantic's "required field
+        # missing" check fires before the field_validator, so the error
+        # type is ValidationError, not ValueError.
+        import pytest
+        from pydantic import ValidationError
+
+        base = {
+            "_id": oid(),
+            "alias": "abc1234",
+            "created_at": now(),
+            "long_url": "https://example.com",
+        }
+        with pytest.raises(ValidationError, match="domain"):
+            UrlV2Doc.model_validate(base)
+
+    def test_empty_domain_raises(self):
+        # Empty string passes the required check but fails the validator.
+        import pytest
+        from pydantic import ValidationError
+
+        base = {
+            "_id": oid(),
+            "alias": "abc1234",
+            "domain": "",
+            "created_at": now(),
+            "long_url": "https://example.com",
+        }
+        with pytest.raises(ValidationError, match="domain is required"):
+            UrlV2Doc.model_validate(base)
 
     def test_from_mongo_none_returns_none(self):
         assert UrlV2Doc.from_mongo(None) is None

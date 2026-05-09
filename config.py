@@ -10,6 +10,7 @@ FLASK_SECRET_KEY is also accepted as an alias for backward compatibility
 
 from __future__ import annotations
 
+from functools import cached_property
 from urllib.parse import urlparse
 
 from pydantic import field_validator, model_validator
@@ -126,6 +127,19 @@ class AppSettings(BaseSettings):
     env: str = "development"
     app_url: str = "https://spoo.me"
     app_name: str = "spoo.me"
+
+    @cached_property
+    def system_default_domain(self) -> str:
+        """Canonical fqdn for shorts created without an explicit custom domain."""
+        # Hard fail rather than fall back — a wrong APP_URL silently
+        # mis-attributes every short to the wrong host.
+        parsed = urlparse(self.app_url)
+        if not parsed.scheme or not parsed.hostname:
+            raise ValueError(
+                f"APP_URL is missing or invalid: {self.app_url!r}. "
+                "Set APP_URL to your shortener's public URL (e.g. https://spoo.me)."
+            )
+        return parsed.hostname.lower().rstrip(".")
 
     # CORS — public API routes allow all origins (no credentials).
     # Private routes (auth, oauth, dashboard) require explicit origin allowlist.

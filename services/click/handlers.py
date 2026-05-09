@@ -129,6 +129,9 @@ class V2ClickHandler:
                 url_id=url_id,
                 short_code=short_code,
                 owner_id=owner_id,
+                # Empty string from older cached entries → None so per-domain
+                # queries can distinguish "unknown" from a real value.
+                domain=url_data.domain or None,
             ),
             ip_address=client_ip,
             country=country or "Unknown",
@@ -172,7 +175,7 @@ class V2ClickHandler:
                     reason="max_clicks_reached",
                     max_clicks=url_data.max_clicks,
                 )
-                await self._url_cache.invalidate(short_code)
+                await self._url_cache.invalidate(short_code, url_data.domain)
 
 
 class LegacyClickHandler:

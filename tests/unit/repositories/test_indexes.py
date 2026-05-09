@@ -41,6 +41,9 @@ class TestEnsureIndexes:
 
         # Check a few critical indexes
         users_col.create_index.assert_any_await([("email", 1)], unique=True)
+        # PR1: alias_1 unique stays in code; compound {domain, alias} unique
+        # is INTENTIONALLY NOT created here (deferred to a manual ops step
+        # after backfill verification — see comment in repositories/indexes.py).
         urls_v2_col.create_index.assert_any_await([("alias", 1)], unique=True)
         urls_v2_col.create_index.assert_any_await([("owner_id", 1)])
         clicks_col.create_index.assert_any_await(
@@ -48,6 +51,9 @@ class TestEnsureIndexes:
         )
         clicks_col.create_index.assert_any_await(
             [("meta.owner_id", 1), ("clicked_at", -1)]
+        )
+        clicks_col.create_index.assert_any_await(
+            [("meta.domain", 1), ("clicked_at", -1)], sparse=True
         )
         api_keys_col.create_index.assert_any_await([("token_hash", 1)], unique=True)
         tokens_col.create_index.assert_any_await(

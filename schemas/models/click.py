@@ -28,6 +28,9 @@ class ClickMeta(BaseModel):
     url_id: PyObjectId
     short_code: str
     owner_id: PyObjectId  # ANONYMOUS_OWNER_ID for unowned URLs
+    # Nullable because time-series buckets created before this field existed
+    # can't be backfilled — they keep their original shape forever.
+    domain: str | None = None
 
 
 class ClickDoc(MongoBaseModel):

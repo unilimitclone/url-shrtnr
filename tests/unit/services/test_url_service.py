@@ -32,6 +32,7 @@ from schemas.models.url import EmojiUrlDoc, LegacyUrlDoc, UrlV2Doc
 USER_OID = ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")
 URL_OID = ObjectId("bbbbbbbbbbbbbbbbbbbbbbbb")
 ALIAS = "abc1234"
+SYSTEM_DEFAULT_DOMAIN = "spoo.me"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,12 +49,14 @@ def make_url_v2_doc(
     max_clicks: int | None = None,
     password: str | None = None,
     expire_after: datetime | None = None,
+    domain: str | None = None,
 ) -> UrlV2Doc:
     return UrlV2Doc.from_mongo(
         {
             "_id": url_id,
             "alias": alias,
             "owner_id": owner_id,
+            "domain": domain if domain is not None else SYSTEM_DEFAULT_DOMAIN,
             "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
             "creation_ip": "1.2.3.4",
             "long_url": "https://example.com",
@@ -138,7 +141,8 @@ def make_service(url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache)
         emoji_repo=emoji_repo,
         blocked_url_repo=blocked_url_repo,
         url_cache=url_cache,
-        blocked_self_domains=["spoo.me"],
+        blocked_self_domains=[SYSTEM_DEFAULT_DOMAIN],
+        system_default_domain=SYSTEM_DEFAULT_DOMAIN,
     )
 
 
@@ -226,7 +230,7 @@ class TestUrlServiceResolve:
 
         assert schema == "v2"
         assert result.alias == "abc1234"
-        url_repo.find_by_alias.assert_called_once_with("abc1234")
+        url_repo.find_by_alias.assert_called_once_with("abc1234", SYSTEM_DEFAULT_DOMAIN)
         legacy_repo.find_by_id.assert_not_called()
 
     @pytest.mark.asyncio
@@ -244,7 +248,7 @@ class TestUrlServiceResolve:
         _result, schema = await svc.resolve("abc1234")
 
         assert schema == "v1"
-        url_repo.find_by_alias.assert_called_once_with("abc1234")
+        url_repo.find_by_alias.assert_called_once_with("abc1234", SYSTEM_DEFAULT_DOMAIN)
         legacy_repo.find_by_id.assert_called_once_with("abc1234")
 
     @pytest.mark.asyncio
@@ -280,7 +284,7 @@ class TestUrlServiceResolve:
 
         assert schema == "v2"
         legacy_repo.find_by_id.assert_called_once_with("abcdef")
-        url_repo.find_by_alias.assert_called_once_with("abcdef")
+        url_repo.find_by_alias.assert_called_once_with("abcdef", SYSTEM_DEFAULT_DOMAIN)
 
     @pytest.mark.asyncio
     async def test_cache_miss_emoji_resolves_emoji_schema(self):
@@ -314,7 +318,9 @@ class TestUrlServiceResolve:
         _result, schema = await svc.resolve("customalias")
 
         assert schema == "v2"
-        url_repo.find_by_alias.assert_called_once_with("customalias")
+        url_repo.find_by_alias.assert_called_once_with(
+            "customalias", SYSTEM_DEFAULT_DOMAIN
+        )
 
     @pytest.mark.asyncio
     async def test_cache_miss_not_found_raises_not_found(self):
@@ -421,7 +427,7 @@ class TestUrlServiceCreate:
         req = CreateUrlRequest(long_url="https://example.com", alias="myalias")
         await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
 
-        url_repo.check_alias_exists.assert_called_with("myalias")
+        url_repo.check_alias_exists.assert_called_with("myalias", SYSTEM_DEFAULT_DOMAIN)
 
     @pytest.mark.asyncio
     async def test_create_with_custom_alias_checks_v1_uniqueness(self):
@@ -513,6 +519,27 @@ class TestUrlServiceCreate:
         assert inserted_doc["owner_id"] == ANONYMOUS_OWNER_ID
 
     @pytest.mark.asyncio
+    async def test_create_stamps_system_default_domain(self):
+        # Regression: empty domain on insert silently shadows real shorts under
+        # the compound unique index. Service must always stamp it.
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com")
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        inserted_doc = url_repo.insert.call_args[0][0]
+        assert inserted_doc["domain"] == SYSTEM_DEFAULT_DOMAIN
+
+    @pytest.mark.asyncio
     async def test_create_future_expire_after_is_accepted(self):
         url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
         svc = make_service(
@@ -576,7 +603,7 @@ class TestUrlServiceUpdate:
         update_doc = url_repo.update.call_args[0][1]
         assert "$set" in update_doc
         assert "long_url" in update_doc["$set"]
-        url_cache.invalidate.assert_called_once_with(ALIAS)
+        url_cache.invalidate.assert_called_once_with(ALIAS, SYSTEM_DEFAULT_DOMAIN)
 
     @pytest.mark.asyncio
     async def test_update_no_changes_returns_existing(self):
@@ -707,6 +734,7 @@ class TestUrlServiceAutoReactivate:
                 "_id": URL_OID,
                 "alias": ALIAS,
                 "owner_id": USER_OID,
+                "domain": SYSTEM_DEFAULT_DOMAIN,
                 "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
                 "long_url": "https://example.com",
                 "status": "EXPIRED",
@@ -739,6 +767,7 @@ class TestUrlServiceAutoReactivate:
                 "_id": URL_OID,
                 "alias": ALIAS,
                 "owner_id": USER_OID,
+                "domain": SYSTEM_DEFAULT_DOMAIN,
                 "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
                 "long_url": "https://example.com",
                 "status": "EXPIRED",
@@ -771,6 +800,7 @@ class TestUrlServiceAutoReactivate:
                 "_id": URL_OID,
                 "alias": ALIAS,
                 "owner_id": USER_OID,
+                "domain": SYSTEM_DEFAULT_DOMAIN,
                 "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
                 "long_url": "https://example.com",
                 "status": "EXPIRED",
@@ -801,6 +831,7 @@ class TestUrlServiceAutoReactivate:
                 "_id": URL_OID,
                 "alias": ALIAS,
                 "owner_id": USER_OID,
+                "domain": SYSTEM_DEFAULT_DOMAIN,
                 "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
                 "long_url": "https://example.com",
                 "status": "EXPIRED",
@@ -832,6 +863,7 @@ class TestUrlServiceAutoReactivate:
                 "_id": URL_OID,
                 "alias": ALIAS,
                 "owner_id": USER_OID,
+                "domain": SYSTEM_DEFAULT_DOMAIN,
                 "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
                 "long_url": "https://example.com",
                 "status": "EXPIRED",
@@ -873,7 +905,7 @@ class TestUrlServiceDelete:
         await svc.delete(URL_OID, USER_OID)
 
         url_repo.delete.assert_called_once_with(URL_OID)
-        url_cache.invalidate.assert_called_once_with(ALIAS)
+        url_cache.invalidate.assert_called_once_with(ALIAS, SYSTEM_DEFAULT_DOMAIN)
 
     @pytest.mark.asyncio
     async def test_delete_wrong_owner_raises_forbidden(self):

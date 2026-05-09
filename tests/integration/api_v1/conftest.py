@@ -35,6 +35,7 @@ def _make_url_doc(alias: str = "testme", owner_id: ObjectId | None = None) -> Ur
             "long_url": "https://example.com/long",
             "status": "ACTIVE",
             "private_stats": False,
+            "domain": "spoo.me",
         }
     )
 

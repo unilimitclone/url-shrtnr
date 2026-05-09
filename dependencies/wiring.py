@@ -86,6 +86,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         blocked_url_repo,
         url_cache,
         blocked_self_domains,
+        system_default_domain=settings.system_default_domain,
         blocked_url_regex_timeout=settings.blocked_url_regex_timeout,
         max_emoji_alias_length=settings.max_emoji_alias_length,
     )

@@ -96,7 +96,15 @@ def _make_url_service(
     blocked_url_repo = AsyncMock()
     blocked_url_repo.get_patterns = AsyncMock(return_value=[])
 
-    return UrlService(url_repo, legacy_repo, emoji_repo, blocked_url_repo, cache, [])
+    return UrlService(
+        url_repo,
+        legacy_repo,
+        emoji_repo,
+        blocked_url_repo,
+        cache,
+        [],
+        system_default_domain="spoo.me",
+    )
 
 
 def _mock_click_service():
@@ -127,6 +135,7 @@ def _make_v2_doc_mock(
     doc.created_at = now
     doc.updated_at = None
     doc.private_stats = True
+    doc.domain = "spoo.me"
     return doc
 
 
@@ -146,6 +155,7 @@ def _make_real_v2_doc(
             "long_url": long_url,
             "status": "ACTIVE",
             "total_clicks": 0,
+            "domain": "spoo.me",
         }
     )
 
@@ -199,7 +209,7 @@ def test_redirect_works_when_cache_miss():
         resp = client.get("/abc1234")
     assert resp.status_code == 302
     assert resp.headers["location"] == "https://example.com"
-    cache.get.assert_called_once_with("abc1234")
+    cache.get.assert_called_once_with("abc1234", "spoo.me")
 
 
 def test_redirect_populates_cache_on_miss():
@@ -228,7 +238,8 @@ def test_redirect_populates_cache_on_miss():
     cache.set.assert_called_once()
     call_args = cache.set.call_args
     assert call_args[0][0] == "abc1234"
-    assert isinstance(call_args[0][1], UrlCacheData)
+    assert call_args[0][1] == "spoo.me"
+    assert isinstance(call_args[0][2], UrlCacheData)
 
 
 def test_redirect_uses_cached_data():
@@ -282,7 +293,7 @@ def test_cache_invalidated_on_url_update():
     finally:
         loop.close()
 
-    cache.invalidate.assert_called_once_with("abc1234")
+    cache.invalidate.assert_called_once_with("abc1234", "spoo.me")
 
 
 def test_cache_invalidated_on_url_delete():
@@ -306,7 +317,7 @@ def test_cache_invalidated_on_url_delete():
     finally:
         loop.close()
 
-    cache.invalidate.assert_called_once_with("abc1234")
+    cache.invalidate.assert_called_once_with("abc1234", "spoo.me")
 
 
 def test_redis_error_on_get_falls_back_to_db():

@@ -63,6 +63,7 @@ def _make_url_doc(
             "total_clicks": total_clicks,
             "last_click": None,
             "updated_at": _NOW,
+            "domain": "spoo.me",
         }
     )
 

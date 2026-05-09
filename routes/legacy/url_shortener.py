@@ -174,7 +174,9 @@ async def shorten_url(
             candidate = generate_short_code()
             if not await legacy_repo.check_exists(
                 candidate
-            ) and not await url_repo.check_alias_exists(candidate):
+            ) and not await url_repo.check_alias_exists(
+                candidate, settings.system_default_domain
+            ):
                 short_code = candidate
                 break
         else:
@@ -420,6 +422,7 @@ async def result(
 async def preview_url(
     short_code: str,
     request: Request,
+    settings: Settings,
     db=Depends(get_db),
 ) -> Response:
     """Show a preview of where a short URL redirects to.
@@ -452,7 +455,9 @@ async def preview_url(
                 url_data = {"_id": short_code, "url": doc.url, "password": doc.password}
                 schema_type = "v1"
             else:
-                v2 = await url_repo.find_by_alias(short_code)
+                v2 = await url_repo.find_by_alias(
+                    short_code, settings.system_default_domain
+                )
                 if v2:
                     url_data = {
                         "alias": v2.alias,
@@ -462,7 +467,9 @@ async def preview_url(
                     schema_type = "v2"
         else:
             # v2 first
-            v2 = await url_repo.find_by_alias(short_code)
+            v2 = await url_repo.find_by_alias(
+                short_code, settings.system_default_domain
+            )
             if v2:
                 url_data = {
                     "alias": v2.alias,
