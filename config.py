@@ -158,9 +158,6 @@ class CustomDomainSettings(BaseSettings):
     # source IP is allowed by the require_caddy_caller dependency.
     caddy_caller_ip: str = "172.30.0.20"
 
-    # Static blocklist file (one fqdn per line). Empty path = no blocklist.
-    blocklist_path: str = ""
-
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

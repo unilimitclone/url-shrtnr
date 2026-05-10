@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 from config import CustomDomainSettings
 from errors import (
@@ -68,6 +69,7 @@ def _build_service(
     verifiers=None,
     edge=None,
     tenant_resolver=None,
+    blocked_domain_repo=None,
     redis=None,
     extra_settings=None,
 ):
@@ -78,6 +80,11 @@ def _build_service(
     repo.find_by_id = AsyncMock(return_value=None)
     repo.update_status = AsyncMock(return_value=True)
     repo.set_eviction_pending = AsyncMock(return_value=True)
+
+    if blocked_domain_repo is None:
+        blocked_domain_repo = AsyncMock()
+        # Default: nothing blocked.
+        blocked_domain_repo.is_blocked = AsyncMock(return_value=False)
 
     if verifiers is None:
         cname = AsyncMock()
@@ -105,6 +112,7 @@ def _build_service(
             edge_provisioner=edge,
             settings=settings,
             tenant_resolver=tenant_resolver,
+            blocked_domain_repo=blocked_domain_repo,
             redis_client=redis,
         ),
         repo,
@@ -184,15 +192,26 @@ class TestCreate:
             await svc.create(req, _user())
 
     @pytest.mark.asyncio
-    async def test_blocklist_enforced(self, tmp_path):
-        blockfile = tmp_path / "block.txt"
-        blockfile.write_text("links.acme.com\nevil.com\n# comment line\n")
-        svc, _, _, _, _ = _build_service(
-            extra_settings={"blocklist_path": str(blockfile)}
-        )
-        req = CreateCustomDomainRequest(fqdn="links.acme.com")
+    async def test_blocklist_enforced_via_repo(self):
+        blocked = AsyncMock()
+        blocked.is_blocked = AsyncMock(return_value=True)
+        svc, _, _, _, _ = _build_service(blocked_domain_repo=blocked)
+        req = CreateCustomDomainRequest(fqdn="evil.com")
         with pytest.raises(DomainBlocklistedError):
             await svc.create(req, _user())
+        blocked.is_blocked.assert_awaited_once_with("evil.com")
+
+    @pytest.mark.asyncio
+    async def test_blocklist_skipped_when_repo_missing(self):
+        # Service must tolerate a None blocked_domain_repo (unit tests
+        # that don't wire it) without crashing.
+        svc, repo, _, _, _ = _build_service(blocked_domain_repo=None)
+        # Wiring sets it; bypass for the test.
+        svc._blocked_repo = None
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        req = CreateCustomDomainRequest(fqdn="anything.example.com")
+        # Must not raise — just skip the check.
+        await svc.create(req, _user())
 
     @pytest.mark.asyncio
     async def test_create_attempts_quota_via_redis(self):
@@ -202,6 +221,20 @@ class TestCreate:
         svc, _, _, _, _ = _build_service(redis=redis)
         req = CreateCustomDomainRequest(fqdn="links.acme.com")
         with pytest.raises(DomainQuotaExceededError):
+            await svc.create(req, _user())
+
+    @pytest.mark.asyncio
+    async def test_duplicate_key_during_race_translates_to_friendly_error(self):
+        # Precheck passes (no existing doc) but the unique-index backstop
+        # catches a concurrent insert. Service must translate to the same
+        # 409-friendly error instead of leaking a 500 with raw Mongo text.
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_fqdn = AsyncMock(return_value=None)
+        repo.insert = AsyncMock(
+            side_effect=DuplicateKeyError("E11000 duplicate key error: fqdn")
+        )
+        req = CreateCustomDomainRequest(fqdn="links.acme.com")
+        with pytest.raises(DomainAlreadyRegisteredError):
             await svc.create(req, _user())
 
 

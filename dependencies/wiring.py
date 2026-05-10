@@ -18,6 +18,7 @@ from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.webhook.discord import DiscordWebhookProvider
 from repositories.api_key_repository import ApiKeyRepository
 from repositories.app_grant_repository import AppGrantRepository
+from repositories.blocked_domain_repository import BlockedDomainRepository
 from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.click_repository import ClickRepository
 from repositories.custom_domain_repository import CustomDomainRepository
@@ -172,6 +173,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # ``settings.custom_domains.enabled``; the route layer (PR4) further
     # gates per-user access via the FeatureFlagService.
     custom_domain_repo = CustomDomainRepository(db["custom_domains"])
+    blocked_domain_repo = BlockedDomainRepository(db["blocked_domains"])
     cd_settings = settings.custom_domains
     verifiers = {
         VerificationMethod.CNAME: CnameVerifier(cd_settings.cname_target),
@@ -192,5 +194,6 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         edge_provisioner=edge_provisioner,
         settings=cd_settings,
         tenant_resolver=tenant_resolver,
+        blocked_domain_repo=blocked_domain_repo,
         redis_client=redis_client,
     )

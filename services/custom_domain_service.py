@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 from config import CustomDomainSettings
 from errors import (
@@ -29,6 +29,7 @@ from errors import (
     NotFoundError,
 )
 from infrastructure.logging import get_logger
+from repositories.blocked_domain_repository import BlockedDomainRepository
 from repositories.custom_domain_repository import CustomDomainRepository
 from schemas.dto.requests.custom_domain import (
     CreateCustomDomainRequest,
@@ -58,6 +59,7 @@ class CustomDomainService:
         edge_provisioner: EdgeProvisioner,
         settings: CustomDomainSettings,
         tenant_resolver: TenantResolver | None = None,
+        blocked_domain_repo: BlockedDomainRepository | None = None,
         redis_client: aioredis.Redis | None = None,
     ) -> None:
         self._repo = repo
@@ -65,10 +67,11 @@ class CustomDomainService:
         self._edge = edge_provisioner
         self._settings = settings
         # Optional so unit tests can wire just the bits they care about.
+        # Wiring (`dependencies/wiring.py`) always passes both so the
+        # production path gets cache invalidation + blocklist checks.
         self._tenant_resolver = tenant_resolver
+        self._blocked_repo = blocked_domain_repo
         self._redis = redis_client
-        # Lazy-loaded set of blocklisted hostnames (Tranco top-N, abuse list).
-        self._blocklist: frozenset[str] | None = None
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -105,7 +108,16 @@ class CustomDomainService:
             is_system_default=False,
             created_at=now,
         )
-        new_id = await self._repo.insert(doc.to_mongo())
+        try:
+            new_id = await self._repo.insert(doc.to_mongo())
+        except DuplicateKeyError:
+            # Race lost — another request inserted the same fqdn between
+            # our precheck and our insert. Translate to the same friendly
+            # error the precheck would have raised so the API stays at 409
+            # instead of leaking a 500 with a raw Mongo error.
+            raise DomainAlreadyRegisteredError(
+                f"domain {request.fqdn!r} is already registered"
+            ) from None
 
         log.info(
             "audit.domain.created",
@@ -409,22 +421,10 @@ class CustomDomainService:
             raise DomainQuotaExceededError("too many verification attempts this hour")
 
     async def _enforce_blocklist(self, fqdn: str) -> None:
-        if self._blocklist is None:
-            self._blocklist = self._load_blocklist()
-        if fqdn in self._blocklist:
+        # Live Mongo lookup — no per-process cache so an operator can add an
+        # abuse domain via mongosh and have the next create() honour it
+        # without an app restart.
+        if self._blocked_repo is None:
+            return
+        if await self._blocked_repo.is_blocked(fqdn):
             raise DomainBlocklistedError(f"domain {fqdn!r} is on the blocklist")
-
-    def _load_blocklist(self) -> frozenset[str]:
-        path = self._settings.blocklist_path
-        if not path:
-            return frozenset()
-        try:
-            text = Path(path).read_text(encoding="utf-8")
-        except OSError as exc:
-            log.warning("blocklist_load_failed", path=path, error=str(exc))
-            return frozenset()
-        return frozenset(
-            line.strip().lower().rstrip(".")
-            for line in text.splitlines()
-            if line.strip() and not line.startswith("#")
-        )
