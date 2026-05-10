@@ -79,6 +79,25 @@ class TestAnnounceRevoked:
         assert log.warning.call_args.args[0] == "caddy_revocation_announce_failed"
 
     @pytest.mark.asyncio
+    async def test_returns_false_on_unexpected_exception(self):
+        # Protocol contract: announce_revoked MUST NOT raise. Anything
+        # exotic that escapes httpx (RuntimeError from a closed loop,
+        # OSError from DNS at a layer below httpx, AttributeError from a
+        # misconfigured client) must be swallowed so revoke() can finish
+        # cleanly and the caller doesn't surface a 500.
+        http = _http_client(exc=RuntimeError("event loop is closed"))
+        p = CaddyAskProvisioner(http, "http://caddy:2019")
+        with patch("services.edge_provisioner.caddy_ask.log") as log:
+            ok = await p.announce_revoked("links.acme.com")
+        assert ok is False
+        # Distinct event so Axiom can alert separately from transport errors.
+        log.exception.assert_called_once()
+        assert (
+            log.exception.call_args.args[0]
+            == "caddy_revocation_announce_unexpected_error"
+        )
+
+    @pytest.mark.asyncio
     async def test_truncates_large_response_body(self):
         # Misconfigured Caddy admin returning a huge body shouldn't blow
         # up our log payload size — cap at 500 chars.

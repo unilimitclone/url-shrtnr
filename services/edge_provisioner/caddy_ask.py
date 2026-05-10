@@ -36,6 +36,16 @@ class CaddyAskProvisioner(EdgeProvisioner):
                 error_type=type(exc).__name__,
             )
             return False
+        except Exception as exc:
+            # Protocol contract: must not raise. Catch non-httpx escapees
+            # (closed loop, OSError, etc.) so revoke() can finish cleanly.
+            log.exception(
+                "caddy_revocation_announce_unexpected_error",
+                fqdn=fqdn,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return False
 
         if response.is_success:
             log.info(

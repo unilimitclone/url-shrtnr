@@ -365,6 +365,17 @@ class CustomDomainService:
         last_verification_error: str | None = None,
         bump_last_verified_at: bool = False,
     ) -> None:
+        # Idempotency: self-loops are absent from LEGAL_TRANSITIONS by
+        # design, but retrying verify/delete must not raise. Skip the
+        # legality check; still bump timestamps + record latest error.
+        if doc.status == new_status:
+            await self._repo.update_status(
+                doc.id,
+                new_status,
+                last_verification_error=last_verification_error,
+                bump_last_verified_at=bump_last_verified_at,
+            )
+            return
         legal = LEGAL_TRANSITIONS.get(doc.status, frozenset())
         if new_status not in legal:
             raise InvalidDomainTransitionError(

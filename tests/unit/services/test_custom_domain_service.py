@@ -270,6 +270,22 @@ class TestVerify:
         assert kwargs["last_verification_error"] == "DNS NXDOMAIN"
 
     @pytest.mark.asyncio
+    async def test_verify_on_already_active_is_idempotent(self):
+        # Idempotency: re-clicking "Verify" on an ACTIVE domain (e.g. after
+        # a transient browser network blip) must not raise. ACTIVE→ACTIVE
+        # is deliberately omitted from LEGAL_TRANSITIONS — _transition()
+        # short-circuits self-loops to a plain update_status so the call
+        # still bumps last_verified_at without going through the legality
+        # check.
+        svc, repo, _, _, _ = _build_service()
+        active = _doc(status=DomainStatus.ACTIVE)
+        repo.find_by_id = AsyncMock(side_effect=[active, active])
+        await svc.verify(DOMAIN_OID, _user())
+        args, kwargs = repo.update_status.call_args
+        assert args[1] == DomainStatus.ACTIVE
+        assert kwargs["bump_last_verified_at"] is True
+
+    @pytest.mark.asyncio
     async def test_not_owner_forbidden(self):
         svc, repo, _, _, _ = _build_service()
         someone_else = ObjectId()
@@ -297,14 +313,20 @@ class TestDelete:
         edge.announce_revoked.assert_awaited_once_with("links.acme.com")
 
     @pytest.mark.asyncio
-    async def test_revoked_to_active_illegal(self):
-        # State machine guard — REVOKED is terminal; can't transition to ACTIVE.
-        svc, repo, _, _, _ = _build_service()
+    async def test_delete_on_already_revoked_is_idempotent(self):
+        # Idempotency: retrying delete() on a REVOKED domain must not raise.
+        # LEGAL_TRANSITIONS[REVOKED] is empty (terminal), so without the
+        # self-loop short-circuit in _transition() this would raise
+        # InvalidDomainTransitionError on every retry — bad UX for a user
+        # who refreshes the dashboard or hits a transient network error
+        # mid-delete.
+        svc, repo, _, edge, _ = _build_service()
         repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.REVOKED))
-        with pytest.raises(InvalidDomainTransitionError):
-            await svc.delete(
-                DOMAIN_OID, _user()
-            )  # any transition out of REVOKED illegal
+        await svc.delete(DOMAIN_OID, _user())
+        # update_status still called (records timestamps); status unchanged.
+        args, _ = repo.update_status.call_args
+        assert args[1] == DomainStatus.REVOKED
+        edge.announce_revoked.assert_awaited_once()
 
 
 class TestSuspend:

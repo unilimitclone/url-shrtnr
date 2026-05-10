@@ -194,7 +194,11 @@ class TestCachedMongoTenantResolver:
         r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
 
         await r.invalidate("spoo.me")
-        redis.delete.assert_not_called()
+        # Assert against pipeline() — that's what invalidate() actually
+        # opens. Asserting delete() is vacuously true (delete is only
+        # called via the pipeline) and would silently pass a regression
+        # that opened a pipeline for the system-default host.
+        redis.pipeline.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_invalidate_tolerates_redis_none(self):
