@@ -67,6 +67,7 @@ def _build_service(
     repo=None,
     verifiers=None,
     edge=None,
+    tenant_resolver=None,
     redis=None,
     extra_settings=None,
 ):
@@ -91,6 +92,7 @@ def _build_service(
         }
 
     edge = edge or AsyncMock()
+    tenant_resolver = tenant_resolver or AsyncMock()
     settings_kwargs = {"enabled": enabled, **(extra_settings or {})}
     settings = _settings(**settings_kwargs)
     return (
@@ -99,31 +101,33 @@ def _build_service(
             verifiers=verifiers,
             edge_provisioner=edge,
             settings=settings,
+            tenant_resolver=tenant_resolver,
             redis_client=redis,
         ),
         repo,
         verifiers,
         edge,
+        tenant_resolver,
     )
 
 
 class TestEnabledGate:
     @pytest.mark.asyncio
     async def test_create_refused_when_disabled(self):
-        svc, _, _, _ = _build_service(enabled=False)
+        svc, _, _, _, _ = _build_service(enabled=False)
         req = CreateCustomDomainRequest(fqdn="links.acme.com")
         with pytest.raises(DomainQuotaExceededError):
             await svc.create(req, _user())
 
     @pytest.mark.asyncio
     async def test_verify_refused_when_disabled(self):
-        svc, _, _, _ = _build_service(enabled=False)
+        svc, _, _, _, _ = _build_service(enabled=False)
         with pytest.raises(DomainQuotaExceededError):
             await svc.verify(DOMAIN_OID, _user())
 
     @pytest.mark.asyncio
     async def test_delete_refused_when_disabled(self):
-        svc, _, _, _ = _build_service(enabled=False)
+        svc, _, _, _, _ = _build_service(enabled=False)
         with pytest.raises(DomainQuotaExceededError):
             await svc.delete(DOMAIN_OID, _user())
 
@@ -131,7 +135,7 @@ class TestEnabledGate:
     async def test_list_allowed_when_disabled_for_rollback_visibility(self):
         # Reads stay open even when the master switch is off so existing
         # owners don't lose visibility into their domains during rollback.
-        svc, repo, _, _ = _build_service(enabled=False)
+        svc, repo, _, _, _ = _build_service(enabled=False)
         repo.list_by_owner = AsyncMock(return_value=[])
         repo.count_by_owner = AsyncMock(return_value=0)
         items, total = await svc.list_by_owner(_user(), ListCustomDomainsQuery())
@@ -141,14 +145,14 @@ class TestEnabledGate:
     @pytest.mark.asyncio
     async def test_is_allowed_for_caddy_returns_false_in_pr2(self):
         # Default-deny on the cert ask endpoint; PR3 wires up the real check.
-        svc, _, _, _ = _build_service(enabled=True)
+        svc, _, _, _, _ = _build_service(enabled=True)
         assert await svc.is_allowed_for_caddy("anything.example.com") is False
 
 
 class TestCreate:
     @pytest.mark.asyncio
     async def test_creates_pending_doc_with_token(self):
-        svc, repo, _, _ = _build_service()
+        svc, repo, _, _, _ = _build_service()
         repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
         req = CreateCustomDomainRequest(
             fqdn="links.acme.com", verification_method=VerificationMethod.TXT_CHALLENGE
@@ -162,7 +166,7 @@ class TestCreate:
 
     @pytest.mark.asyncio
     async def test_uniqueness_conflict_raises(self):
-        svc, repo, _, _ = _build_service()
+        svc, repo, _, _, _ = _build_service()
         repo.find_by_fqdn = AsyncMock(return_value=_doc())
         req = CreateCustomDomainRequest(fqdn="links.acme.com")
         with pytest.raises(DomainAlreadyRegisteredError):
@@ -170,7 +174,7 @@ class TestCreate:
 
     @pytest.mark.asyncio
     async def test_per_user_quota_enforced(self):
-        svc, repo, _, _ = _build_service()
+        svc, repo, _, _, _ = _build_service()
         repo.count_by_owner = AsyncMock(return_value=2)  # at default cap
         req = CreateCustomDomainRequest(fqdn="links.acme.com")
         with pytest.raises(DomainQuotaExceededError):
@@ -180,7 +184,9 @@ class TestCreate:
     async def test_blocklist_enforced(self, tmp_path):
         blockfile = tmp_path / "block.txt"
         blockfile.write_text("links.acme.com\nevil.com\n# comment line\n")
-        svc, _, _, _ = _build_service(extra_settings={"blocklist_path": str(blockfile)})
+        svc, _, _, _, _ = _build_service(
+            extra_settings={"blocklist_path": str(blockfile)}
+        )
         req = CreateCustomDomainRequest(fqdn="links.acme.com")
         with pytest.raises(DomainBlocklistedError):
             await svc.create(req, _user())
@@ -190,7 +196,7 @@ class TestCreate:
         redis = AsyncMock()
         redis.incr = AsyncMock(return_value=99)  # way over cap of 3
         redis.expire = AsyncMock()
-        svc, _, _, _ = _build_service(redis=redis)
+        svc, _, _, _, _ = _build_service(redis=redis)
         req = CreateCustomDomainRequest(fqdn="links.acme.com")
         with pytest.raises(DomainQuotaExceededError):
             await svc.create(req, _user())
@@ -199,7 +205,7 @@ class TestCreate:
 class TestVerify:
     @pytest.mark.asyncio
     async def test_success_transitions_to_active(self):
-        svc, repo, _, _ = _build_service()
+        svc, repo, _, _, _ = _build_service()
         starting = _doc(status=DomainStatus.PENDING)
         # find_by_id called twice: load_owned + refresh
         repo.find_by_id = AsyncMock(
@@ -215,7 +221,7 @@ class TestVerify:
 
     @pytest.mark.asyncio
     async def test_failure_records_reason_keeps_status(self):
-        svc, repo, verifiers, _ = _build_service()
+        svc, repo, verifiers, _, _ = _build_service()
         verifiers[VerificationMethod.CNAME].verify = AsyncMock(
             return_value=VerificationResult(False, reason="DNS NXDOMAIN")
         )
@@ -229,7 +235,7 @@ class TestVerify:
 
     @pytest.mark.asyncio
     async def test_not_owner_forbidden(self):
-        svc, repo, _, _ = _build_service()
+        svc, repo, _, _, _ = _build_service()
         someone_else = ObjectId()
         repo.find_by_id = AsyncMock(return_value=_doc(owner_id=someone_else))
         with pytest.raises(ForbiddenError):
@@ -237,7 +243,7 @@ class TestVerify:
 
     @pytest.mark.asyncio
     async def test_not_found_raises(self):
-        svc, repo, _, _ = _build_service()
+        svc, repo, _, _, _ = _build_service()
         repo.find_by_id = AsyncMock(return_value=None)
         with pytest.raises(NotFoundError):
             await svc.verify(DOMAIN_OID, _user())
@@ -246,7 +252,7 @@ class TestVerify:
 class TestDelete:
     @pytest.mark.asyncio
     async def test_revokes_and_announces(self):
-        svc, repo, _, edge = _build_service()
+        svc, repo, _, edge, _ = _build_service()
         repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
         await svc.delete(DOMAIN_OID, _user())
         # update_status to REVOKED + edge.announce_revoked called
@@ -257,7 +263,7 @@ class TestDelete:
     @pytest.mark.asyncio
     async def test_revoked_to_active_illegal(self):
         # State machine guard — REVOKED is terminal; can't transition to ACTIVE.
-        svc, repo, _, _ = _build_service()
+        svc, repo, _, _, _ = _build_service()
         repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.REVOKED))
         with pytest.raises(InvalidDomainTransitionError):
             await svc.delete(
@@ -268,7 +274,7 @@ class TestDelete:
 class TestSuspend:
     @pytest.mark.asyncio
     async def test_active_to_suspended_legal(self):
-        svc, repo, _, edge = _build_service()
+        svc, repo, _, edge, _ = _build_service()
         repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
         await svc.suspend(DOMAIN_OID, reason="3 consecutive fails")
         args, _ = repo.update_status.call_args
@@ -278,7 +284,51 @@ class TestSuspend:
     @pytest.mark.asyncio
     async def test_pending_to_suspended_illegal(self):
         # PENDING → SUSPENDED isn't in LEGAL_TRANSITIONS; should raise.
-        svc, repo, _, _ = _build_service()
+        svc, repo, _, _, _ = _build_service()
         repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
         with pytest.raises(InvalidDomainTransitionError):
             await svc.suspend(DOMAIN_OID, reason="test")
+
+
+class TestCacheInvalidation:
+    """Every state transition must invalidate the tenant resolver cache so
+    the new state is visible to the next request, not after the TTL window.
+    """
+
+    @pytest.mark.asyncio
+    async def test_verify_success_invalidates_negative_cache(self):
+        svc, repo, _, _, resolver = _build_service()
+        repo.find_by_id = AsyncMock(
+            side_effect=[
+                _doc(status=DomainStatus.PENDING),
+                _doc(status=DomainStatus.ACTIVE),
+            ]
+        )
+        await svc.verify(DOMAIN_OID, _user())
+        resolver.invalidate.assert_awaited_once_with("links.acme.com")
+
+    @pytest.mark.asyncio
+    async def test_verify_failure_does_not_invalidate(self):
+        svc, repo, verifiers, _, resolver = _build_service()
+        verifiers[VerificationMethod.CNAME].verify = AsyncMock(
+            return_value=VerificationResult(False, reason="DNS NXDOMAIN")
+        )
+        starting = _doc(status=DomainStatus.PENDING)
+        repo.find_by_id = AsyncMock(side_effect=[starting, starting])
+        await svc.verify(DOMAIN_OID, _user())
+        # Status didn't change → no cache to drop.
+        resolver.invalidate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_invalidates_cache(self):
+        svc, repo, _, _, resolver = _build_service()
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
+        await svc.delete(DOMAIN_OID, _user())
+        resolver.invalidate.assert_awaited_once_with("links.acme.com")
+
+    @pytest.mark.asyncio
+    async def test_suspend_invalidates_cache(self):
+        svc, repo, _, _, resolver = _build_service()
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
+        await svc.suspend(DOMAIN_OID, reason="test")
+        resolver.invalidate.assert_awaited_once_with("links.acme.com")

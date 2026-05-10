@@ -37,6 +37,7 @@ from schemas.dto.requests.custom_domain import (
 from schemas.enums.domain_status import DomainStatus, VerificationMethod
 from schemas.models.custom_domain import LEGAL_TRANSITIONS, CustomDomainDoc
 from services.edge_provisioner.protocol import EdgeProvisioner
+from services.tenant_resolver.protocol import TenantResolver
 from services.verifiers.protocol import DomainVerifier, VerificationResult
 
 if TYPE_CHECKING:
@@ -56,12 +57,15 @@ class CustomDomainService:
         verifiers: dict[VerificationMethod, DomainVerifier],
         edge_provisioner: EdgeProvisioner,
         settings: CustomDomainSettings,
+        tenant_resolver: TenantResolver | None = None,
         redis_client: aioredis.Redis | None = None,
     ) -> None:
         self._repo = repo
         self._verifiers = verifiers
         self._edge = edge_provisioner
         self._settings = settings
+        # Optional so unit tests can wire just the bits they care about.
+        self._tenant_resolver = tenant_resolver
         self._redis = redis_client
         # Lazy-loaded set of blocklisted hostnames (Tranco top-N, abuse list).
         self._blocklist: frozenset[str] | None = None
@@ -150,6 +154,9 @@ class CustomDomainService:
                 last_verification_error=None,
                 bump_last_verified_at=True,
             )
+            # Drop any negative cache entry so the freshly-active domain
+            # resolves on the very next request.
+            await self._invalidate_cache(doc.fqdn)
             log.info(
                 "audit.domain.verified",
                 fqdn=doc.fqdn,
@@ -208,6 +215,9 @@ class CustomDomainService:
         doc = await self._load_owned(domain_id, user)
         await self._transition(doc, DomainStatus.REVOKED)
         await self._edge.announce_revoked(doc.fqdn)
+        # Drop any positive cache entry so the now-revoked host stops
+        # resolving immediately, not after the positive TTL window.
+        await self._invalidate_cache(doc.fqdn)
 
         log.info(
             "audit.domain.revoked",
@@ -278,6 +288,7 @@ class CustomDomainService:
             last_verification_error=reason,
         )
         await self._edge.announce_revoked(doc.fqdn)
+        await self._invalidate_cache(doc.fqdn)
         log.info(
             "audit.domain.suspended",
             fqdn=doc.fqdn,
@@ -287,11 +298,28 @@ class CustomDomainService:
             suspending_actor=actor,
         )
 
-    # ── Internal: state machine, quotas, blocklist ───────────────────
+    # ── Internal: state machine, quotas, blocklist, cache ────────────
 
     def _require_enabled(self) -> None:
         if not self._settings.enabled:
             raise DomainQuotaExceededError("custom domains are not currently enabled")
+
+    async def _invalidate_cache(self, fqdn: str) -> None:
+        """Best-effort cache eviction for *fqdn*.
+
+        Tolerates a missing resolver (unit tests that don't wire one) and
+        any backend failure — staleness is degraded UX, not data loss.
+        """
+        if self._tenant_resolver is None:
+            return
+        try:
+            await self._tenant_resolver.invalidate(fqdn)
+        except Exception as exc:
+            log.warning(
+                "tenant_cache_invalidate_failed",
+                fqdn=fqdn,
+                error=str(exc),
+            )
 
     async def _load_owned(
         self, domain_id: ObjectId, user: CurrentUser

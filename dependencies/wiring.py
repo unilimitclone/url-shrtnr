@@ -179,15 +179,18 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         VerificationMethod.TXT_CHALLENGE: TxtChallengeVerifier(),
     }
     edge_provisioner = CaddyAskProvisioner(http_client, cd_settings.caddy_admin_url)
+    # Build the resolver before the service so the service can take it as a dep
+    tenant_resolver = CachedMongoTenantResolver(
+        repo=custom_domain_repo,
+        redis_client=redis_client,
+        system_default_domain=settings.system_default_domain,
+    )
+    app.state.tenant_resolver = tenant_resolver
     app.state.custom_domain_service = CustomDomainService(
         repo=custom_domain_repo,
         verifiers=verifiers,
         edge_provisioner=edge_provisioner,
         settings=cd_settings,
+        tenant_resolver=tenant_resolver,
         redis_client=redis_client,
-    )
-    app.state.tenant_resolver = CachedMongoTenantResolver(
-        repo=custom_domain_repo,
-        redis_client=redis_client,
-        system_default_domain=settings.system_default_domain,
     )

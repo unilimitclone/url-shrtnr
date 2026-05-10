@@ -130,3 +130,65 @@ class TestCachedMongoTenantResolver:
         info = await r.resolve("links.acme.com")
         assert info is not None
         repo.find_active_by_fqdn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_negative_cache_short_circuits_mongo(self):
+        # Regression: previously _cache_get returned None for both real
+        # misses and negative-cached entries, so resolve() always re-hit
+        # Mongo on negative-cached hosts. Now the negative sentinel must
+        # short-circuit the second call.
+        repo = AsyncMock()
+        repo.find_active_by_fqdn = AsyncMock(return_value=None)
+        redis = AsyncMock()
+        # Second call simulates Redis returning the negative sentinel.
+        redis.get = AsyncMock(side_effect=[None, "__none__"])
+        r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
+
+        # Cold call: miss → Mongo lookup → negative-cache write
+        assert await r.resolve("nonexistent.example.com") is None
+        assert repo.find_active_by_fqdn.await_count == 1
+
+        # Hot call: negative-cache hit must NOT re-query Mongo
+        assert await r.resolve("nonexistent.example.com") is None
+        assert repo.find_active_by_fqdn.await_count == 1  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_negative_sentinel_handled_when_redis_returns_bytes(self):
+        # Defensive: aioredis may be configured without decode_responses.
+        # The sentinel comparison must still work.
+        repo = AsyncMock()
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=b"__none__")
+        r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
+
+        assert await r.resolve("nonexistent.example.com") is None
+        repo.find_active_by_fqdn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invalidate_drops_cache_entry(self):
+        repo = AsyncMock()
+        redis = AsyncMock()
+        r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
+
+        await r.invalidate("links.acme.com")
+        redis.delete.assert_awaited_once_with("tenant:links.acme.com")
+
+    @pytest.mark.asyncio
+    async def test_invalidate_skips_system_default(self):
+        # System-default lookups don't touch cache, so invalidate must not
+        # waste a Redis round-trip on them.
+        repo = AsyncMock()
+        redis = AsyncMock()
+        r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
+
+        await r.invalidate("spoo.me")
+        redis.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invalidate_tolerates_redis_none(self):
+        repo = AsyncMock()
+        r = CachedMongoTenantResolver(
+            repo, redis_client=None, system_default_domain="spoo.me"
+        )
+        # Must not raise.
+        await r.invalidate("links.acme.com")

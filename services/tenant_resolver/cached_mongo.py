@@ -20,9 +20,15 @@ from services.tenant_resolver.protocol import TenantInfo, TenantResolver
 
 log = get_logger(__name__)
 
-# Sentinel value stored under negative cache keys so we can distinguish
-# "missing key" from "we already checked and it's unknown."
+# Stored as the Redis VALUE under negative-cache keys so a follow-up read
+# can distinguish "we already checked and it's unknown" from "no key set".
 _NEG_SENTINEL = "__none__"
+
+# Distinct sentinel OBJECTS returned by _cache_get so callers can branch
+# between (a) cache miss → must hit Mongo, (b) negative-cached → skip
+# Mongo and return None.
+_CACHE_MISS = object()
+_NEG_CACHE_HIT = object()
 
 
 class CachedMongoTenantResolver(TenantResolver):
@@ -32,7 +38,9 @@ class CachedMongoTenantResolver(TenantResolver):
         redis_client: aioredis.Redis | None,
         system_default_domain: str,
         positive_ttl_seconds: int = 60,
-        negative_ttl_seconds: int = 10,
+        # Negative TTL can be aggressive because the orchestrator calls
+        # ``invalidate(fqdn)`` on every state transition
+        negative_ttl_seconds: int = 300,
     ) -> None:
         self._repo = repo
         self._redis = redis_client
@@ -66,7 +74,12 @@ class CachedMongoTenantResolver(TenantResolver):
             )
 
         cached = await self._cache_get(normalised)
-        if cached is not None:
+        if cached is _NEG_CACHE_HIT:
+            # We already asked Mongo about this host and it didn't exist —
+            # short-circuit so scanner traffic / typos don't repeat the query.
+            return None
+        if cached is not _CACHE_MISS:
+            # Positive cache hit — `cached` is the TenantInfo.
             return cached
 
         doc = await self._repo.find_active_by_fqdn(normalised)
@@ -86,22 +99,42 @@ class CachedMongoTenantResolver(TenantResolver):
         await self._cache_set(normalised, info)
         return info
 
+    async def invalidate(self, host: str) -> None:
+        if self._redis is None:
+            return
+        normalised = self._normalise_host(host)
+        if not normalised or normalised == self._system_default_domain:
+            # System default short-circuits resolve(); no cache slot to drop.
+            return
+        try:
+            await self._redis.delete(self._key(normalised))
+        except Exception as exc:
+            log.warning("tenant_cache_invalidate_error", host=host, error=str(exc))
+
     # ── Cache helpers ────────────────────────────────────────────────
 
-    async def _cache_get(self, host: str) -> TenantInfo | None:
+    async def _cache_get(self, host: str):
+        """Return ``_CACHE_MISS``, ``_NEG_CACHE_HIT``, or a ``TenantInfo``.
+
+        Three-state return so resolve() can distinguish "I haven't asked
+        yet" from "I already asked and there's nothing" — the latter must
+        skip Mongo to be useful as a negative cache.
+        """
         if self._redis is None:
-            return None
+            return _CACHE_MISS
         try:
             raw = await self._redis.get(self._key(host))
         except Exception as exc:
             log.warning("tenant_cache_get_error", host=host, error=str(exc))
-            return None
+            return _CACHE_MISS
         if raw is None:
-            return None
+            return _CACHE_MISS
+        # Redis client may return bytes or str depending on decode_responses.
+        # Normalise to str once so downstream comparisons work either way.
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
         if raw == _NEG_SENTINEL:
-            # Negative-cached. Returning None tells the caller "we already
-            # checked, no tenant" without re-hitting Mongo.
-            return None
+            return _NEG_CACHE_HIT
         try:
             payload = json.loads(raw)
             return TenantInfo(
@@ -116,9 +149,10 @@ class CachedMongoTenantResolver(TenantResolver):
                 is_system_default=payload.get("is_system_default", False),
             )
         except Exception as exc:
-            # Corrupt cache entry — log and fall through to Mongo.
+            # Corrupt cache entry — log and treat as a miss so the caller
+            # falls through to Mongo and overwrites with fresh data.
             log.warning("tenant_cache_decode_error", host=host, error=str(exc))
-            return None
+            return _CACHE_MISS
 
     async def _cache_set(self, host: str, info: TenantInfo) -> None:
         if self._redis is None:

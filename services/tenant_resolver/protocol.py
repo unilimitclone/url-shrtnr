@@ -31,3 +31,13 @@ class TenantResolver(Protocol):
     async def resolve(self, host: str) -> TenantInfo | None:
         """Return tenant info for a Host header, or None if unknown."""
         ...
+
+    async def invalidate(self, host: str) -> None:
+        """Drop any cached entry for *host*.
+
+        Called by the orchestrator on every state transition so the next
+        request reflects the new state immediately, instead of waiting for
+        the cache TTL to expire. Must be a no-op when the cache backend
+        (Redis) is unavailable.
+        """
+        ...
