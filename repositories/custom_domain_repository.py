@@ -99,6 +99,31 @@ class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
             ops["$set"]["last_verified_at"] = now
         return await self._update({"_id": domain_id}, ops)
 
+    async def set_eviction_pending(
+        self,
+        domain_id: ObjectId,
+        pending: bool,
+        *,
+        error: str | None = None,
+    ) -> bool:
+        """Persist whether the edge still holds a stale cert for this domain.
+
+        Set ``pending=True`` after a SUSPEND/REVOKE if the edge call failed,
+        ``False`` after a successful eviction (initial or worker retry).
+        ``error`` records the latest failure reason for ops visibility;
+        cleared (set to None) on success.
+        """
+        return await self._update(
+            {"_id": domain_id},
+            {
+                "$set": {
+                    "eviction_pending": pending,
+                    "last_eviction_error": error,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+
     async def find_stale_active(
         self, older_than: datetime, limit: int
     ) -> list[CustomDomainDoc]:

@@ -77,6 +77,7 @@ def _build_service(
     repo.find_by_fqdn = AsyncMock(return_value=None)
     repo.find_by_id = AsyncMock(return_value=None)
     repo.update_status = AsyncMock(return_value=True)
+    repo.set_eviction_pending = AsyncMock(return_value=True)
 
     if verifiers is None:
         cname = AsyncMock()
@@ -92,6 +93,8 @@ def _build_service(
         }
 
     edge = edge or AsyncMock()
+    # Default to "Caddy acked" so existing tests don't have to opt in.
+    edge.announce_revoked = AsyncMock(return_value=True)
     tenant_resolver = tenant_resolver or AsyncMock()
     settings_kwargs = {"enabled": enabled, **(extra_settings or {})}
     settings = _settings(**settings_kwargs)
@@ -332,3 +335,61 @@ class TestCacheInvalidation:
         repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
         await svc.suspend(DOMAIN_OID, reason="test")
         resolver.invalidate.assert_awaited_once_with("links.acme.com")
+
+
+class TestEvictionTracking:
+    """Caddy revocation outcomes get persisted on the doc so the worker
+    (PR5) can retry stale evictions. ``status`` and ``eviction_pending``
+    are independent dimensions — both get updated, neither gates the other.
+    """
+
+    @pytest.mark.asyncio
+    async def test_delete_with_caddy_ack_clears_eviction_pending(self):
+        svc, repo, _, edge, _ = _build_service()
+        edge.announce_revoked = AsyncMock(return_value=True)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
+
+        await svc.delete(DOMAIN_OID, _user())
+
+        repo.set_eviction_pending.assert_awaited_once()
+        kwargs = repo.set_eviction_pending.call_args.kwargs
+        assert kwargs["pending"] is False
+        assert kwargs["error"] is None
+
+    @pytest.mark.asyncio
+    async def test_delete_with_caddy_failure_marks_eviction_pending(self):
+        svc, repo, _, edge, _ = _build_service()
+        edge.announce_revoked = AsyncMock(return_value=False)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
+
+        await svc.delete(DOMAIN_OID, _user())
+
+        kwargs = repo.set_eviction_pending.call_args.kwargs
+        assert kwargs["pending"] is True
+        assert "revoked" in kwargs["error"]
+
+    @pytest.mark.asyncio
+    async def test_suspend_with_caddy_failure_marks_eviction_pending(self):
+        svc, repo, _, edge, _ = _build_service()
+        edge.announce_revoked = AsyncMock(return_value=False)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
+
+        await svc.suspend(DOMAIN_OID, reason="test")
+
+        kwargs = repo.set_eviction_pending.call_args.kwargs
+        assert kwargs["pending"] is True
+        assert "suspended" in kwargs["error"]
+
+    @pytest.mark.asyncio
+    async def test_status_transition_happens_regardless_of_caddy_outcome(self):
+        # Even if Caddy fails, the status MUST move to REVOKED — the
+        # in-app TenantResolver is the gating authority, not Caddy.
+        svc, repo, _, edge, _ = _build_service()
+        edge.announce_revoked = AsyncMock(return_value=False)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
+
+        await svc.delete(DOMAIN_OID, _user())
+
+        # update_status was called with REVOKED first
+        first_call = repo.update_status.call_args_list[0]
+        assert first_call.args[1] == DomainStatus.REVOKED

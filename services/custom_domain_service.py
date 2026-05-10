@@ -214,7 +214,7 @@ class CustomDomainService:
 
         doc = await self._load_owned(domain_id, user)
         await self._transition(doc, DomainStatus.REVOKED)
-        await self._edge.announce_revoked(doc.fqdn)
+        await self._announce_eviction(doc, kind="revoked")
         # Drop any positive cache entry so the now-revoked host stops
         # resolving immediately, not after the positive TTL window.
         await self._invalidate_cache(doc.fqdn)
@@ -287,7 +287,7 @@ class CustomDomainService:
             DomainStatus.SUSPENDED,
             last_verification_error=reason,
         )
-        await self._edge.announce_revoked(doc.fqdn)
+        await self._announce_eviction(doc, kind="suspended")
         await self._invalidate_cache(doc.fqdn)
         log.info(
             "audit.domain.suspended",
@@ -320,6 +320,20 @@ class CustomDomainService:
                 fqdn=fqdn,
                 error=str(exc),
             )
+
+    async def _announce_eviction(self, doc: CustomDomainDoc, *, kind: str) -> None:
+        """Tell the edge to drop *doc.fqdn* and persist the outcome.
+
+        ``kind`` ("revoked" / "suspended") only affects the persisted error
+        message — the edge call itself is the same for both. The PR5
+        reverify worker scans for ``eviction_pending=True`` and retries.
+        """
+        ok = await self._edge.announce_revoked(doc.fqdn)
+        await self._repo.set_eviction_pending(
+            doc.id,
+            pending=not ok,
+            error=None if ok else f"caddy {kind} eviction failed",
+        )
 
     async def _load_owned(
         self, domain_id: ObjectId, user: CurrentUser

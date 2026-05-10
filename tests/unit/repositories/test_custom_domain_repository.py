@@ -106,6 +106,37 @@ class TestCustomDomainRepository:
         assert "last_verified_at" in ops["$set"]
 
     @pytest.mark.asyncio
+    async def test_set_eviction_pending_records_state_and_error(self):
+        col = AsyncMock()
+        result = MagicMock()
+        result.matched_count = 1
+        col.update_one = AsyncMock(return_value=result)
+        col.name = "custom_domains"
+        repo = CustomDomainRepository(col)
+        domain_id = ObjectId()
+
+        ok = await repo.set_eviction_pending(domain_id, pending=True, error="caddy 500")
+        assert ok is True
+        ops = col.update_one.call_args.args[1]
+        assert ops["$set"]["eviction_pending"] is True
+        assert ops["$set"]["last_eviction_error"] == "caddy 500"
+        assert "updated_at" in ops["$set"]
+
+    @pytest.mark.asyncio
+    async def test_set_eviction_pending_clears_error_on_success(self):
+        col = AsyncMock()
+        result = MagicMock()
+        result.matched_count = 1
+        col.update_one = AsyncMock(return_value=result)
+        col.name = "custom_domains"
+        repo = CustomDomainRepository(col)
+
+        await repo.set_eviction_pending(ObjectId(), pending=False)
+        ops = col.update_one.call_args.args[1]
+        assert ops["$set"]["eviction_pending"] is False
+        assert ops["$set"]["last_eviction_error"] is None
+
+    @pytest.mark.asyncio
     async def test_find_stale_active_excludes_system_default(self):
         col = AsyncMock()
         cursor = MagicMock()

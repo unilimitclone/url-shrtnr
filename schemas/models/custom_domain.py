@@ -53,6 +53,12 @@ class CustomDomainDoc(MongoBaseModel):
     # attempts so they can debug their DNS without contacting support.
     last_verification_error: str | None = None
 
+    # Edge state — orthogonal to ``status``. True when the user/admin has
+    # asked us to revoke or suspend but the edge (Caddy) didn't ack the
+    # cert eviction.
+    eviction_pending: bool = False
+    last_eviction_error: str | None = None
+
     @field_validator("fqdn", mode="before")
     @classmethod
     def _normalise_fqdn(cls, v: Any) -> str:

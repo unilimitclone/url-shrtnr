@@ -8,6 +8,7 @@ system-default host short-circuits before touching Redis or Mongo.
 from __future__ import annotations
 
 import json
+from urllib.parse import urlsplit
 
 import redis.asyncio as aioredis
 from bson import ObjectId
@@ -53,9 +54,22 @@ class CachedMongoTenantResolver(TenantResolver):
 
     @staticmethod
     def _normalise_host(host: str) -> str:
-        # Strip the optional ``:port`` suffix from a Host header so the cache
-        # key matches the stored fqdn regardless of port number.
-        return host.split(":")[0].lower().rstrip(".")
+        """Lowercased, dot-stripped, port-stripped host.
+
+        Defers to ``urllib.parse.urlsplit`` so bracketed IPv6 literals
+        (``[::1]:8000`` → ``::1``) work per RFC 3986 — splitting on ``:``
+        directly would lose the address.
+        """
+        if not host:
+            return ""
+        try:
+            parsed_host = urlsplit(f"//{host.strip()}").hostname
+        except ValueError:
+            # Malformed input (unbalanced brackets, etc.) — treat as unknown.
+            return ""
+        if not parsed_host:
+            return ""
+        return parsed_host.rstrip(".")
 
     async def resolve(self, host: str) -> TenantInfo | None:
         normalised = self._normalise_host(host)

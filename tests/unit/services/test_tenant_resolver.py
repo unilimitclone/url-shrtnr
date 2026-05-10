@@ -192,3 +192,24 @@ class TestCachedMongoTenantResolver:
         )
         # Must not raise.
         await r.invalidate("links.acme.com")
+
+
+class TestNormaliseHost:
+    @pytest.mark.parametrize(
+        "host, expected",
+        [
+            ("spoo.me", "spoo.me"),
+            ("spoo.me:8000", "spoo.me"),
+            ("SPOO.ME", "spoo.me"),
+            ("spoo.me.", "spoo.me"),
+            ("[::1]", "::1"),
+            ("[::1]:8000", "::1"),
+            ("[2001:db8::1]:443", "2001:db8::1"),
+            ("", ""),
+            ("[malformed", ""),  # ValueError-raising input → empty
+        ],
+    )
+    def test_handles_ipv4_ipv6_and_edge_cases(self, host, expected):
+        # IPv6 literals in Host headers are bracketed per RFC 3986;
+        # naïve `host.split(":")[0]` returned `"["` and broke routing.
+        assert CachedMongoTenantResolver._normalise_host(host) == expected
