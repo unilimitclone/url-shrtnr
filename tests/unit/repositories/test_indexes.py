@@ -23,6 +23,7 @@ class TestEnsureIndexes:
 
         app_grants_col = AsyncMock()
         feature_flags_col = AsyncMock()
+        custom_domains_col = AsyncMock()
 
         db.__getitem__ = lambda self, name: {
             "users": users_col,
@@ -32,6 +33,7 @@ class TestEnsureIndexes:
             "verification-tokens": tokens_col,
             "app-grants": app_grants_col,
             "feature_flags": feature_flags_col,
+            "custom_domains": custom_domains_col,
         }[name]
 
         # create_collection raises CollectionInvalid when collection already exists
@@ -69,6 +71,13 @@ class TestEnsureIndexes:
         )
         app_grants_col.create_index.assert_any_await([("app_id", 1), ("revoked_at", 1)])
         feature_flags_col.create_index.assert_any_await([("name", 1)], unique=True)
+        custom_domains_col.create_index.assert_any_await([("fqdn", 1)], unique=True)
+        custom_domains_col.create_index.assert_any_await(
+            [("owner_id", 1), ("created_at", -1)]
+        )
+        custom_domains_col.create_index.assert_any_await(
+            [("status", 1), ("last_verified_at", 1)]
+        )
 
     @pytest.mark.asyncio
     async def test_ensure_indexes_creates_timeseries_collection(self):

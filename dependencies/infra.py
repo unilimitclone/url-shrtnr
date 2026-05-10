@@ -14,6 +14,7 @@ from fastapi import Depends, Request
 from config import AppSettings, JWTSettings
 from infrastructure.geoip import GeoIPService
 from schemas.models.app import AppEntry
+from services.tenant_resolver import TenantResolver
 
 
 def get_settings(request: Request) -> AppSettings:
@@ -56,9 +57,15 @@ def get_app_registry(request: Request) -> dict[str, AppEntry]:
     return request.app.state.app_registry
 
 
+def get_tenant_resolver(request: Request) -> TenantResolver:
+    """Return the TenantResolver singleton (used by PR4 middleware)."""
+    return request.app.state.tenant_resolver
+
+
 # ── Annotated type aliases ───────────────────────────────────────────────────
 
 Settings = Annotated[AppSettings, Depends(get_settings)]
 JwtConfig = Annotated[JWTSettings, Depends(get_jwt_config)]
 OAuthProviders = Annotated[dict[str, Any], Depends(get_oauth_providers)]
 AppRegistryDep = Annotated[dict[str, AppEntry], Depends(get_app_registry)]
+TenantResolverDep = Annotated[TenantResolver, Depends(get_tenant_resolver)]

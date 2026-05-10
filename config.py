@@ -13,7 +13,7 @@ from __future__ import annotations
 from functools import cached_property
 from urllib.parse import urlparse
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -116,6 +116,61 @@ class SentrySettings(BaseSettings):
             return urlparse(self.sentry_dsn).username or ""
         except Exception:
             return ""
+
+
+class CustomDomainSettings(BaseSettings):
+    """User-bring-your-own-domain feature config.
+
+    All fields default to safe values that keep the feature off until the
+    rollout flag flips. ``enabled`` is the master switch consulted by the
+    service layer (PR5+); the data plumbing (schema, repo, wiring) lands
+    even when False so the rollout has a clean code path to flip.
+
+    All env vars must be prefixed ``CUSTOM_DOMAINS_`` so generic names
+    like ``ENABLED`` or ``MAX_PER_USER`` set elsewhere in the deploy
+    environment don't accidentally configure this feature.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="CUSTOM_DOMAINS_",
+    )
+
+    # Master switch consulted by CustomDomainService. Until True, every
+    # public method short-circuits with DomainQuotaExceededError or similar.
+    enabled: bool = False
+
+    # Verifier targets — change in env when the canonical edge IP shifts.
+    cname_target: str = "custom.spoo.me"
+    origin_ipv4: list[str] = ["178.156.161.168"]
+
+    # Quotas. Flat for all users in v1 (no tier branching).
+    # All counts must be >= 1 — a zero quota silently bricks the feature
+    # (every create raises QuotaExceeded with no log signal that the cause
+    # is config, not abuse). Validators below fail container startup instead.
+    max_per_user: int = Field(default=2, ge=1)
+    create_attempts_per_day: int = Field(default=3, ge=1)
+    verify_attempts_per_hour: int = Field(default=5, ge=1)
+
+    # Re-register cooldown after a user revokes their own domain — discourages
+    # rapid hostname-cycling abuse against the LE rate limit. Zero allowed
+    # (disables the cooldown); negative meaningless.
+    re_register_cooldown_days: int = Field(default=30, ge=0)
+
+    # Background re-verify worker tunables.
+    # interval=0 would busy-loop the worker; batch=0 wastes a tick;
+    # max_age<=0 would suspend every active domain on first tick.
+    reverify_interval_seconds: int = Field(default=3600, ge=1)
+    reverify_batch_size: int = Field(default=10, ge=1)
+    max_verify_age_seconds: int = Field(default=7 * 24 * 3600, ge=1)
+    suspend_after_consecutive_failures: int = Field(default=3, ge=1)
+
+    # Caddy admin API — used by CaddyAskProvisioner to evict revoked certs.
+    caddy_admin_url: str = "http://caddy:2019"
+    # IP that Caddy uses to call the /internal/caddy-ask endpoint. Only this
+    # source IP is allowed by the require_caddy_caller dependency.
+    caddy_caller_ip: str = "172.30.0.20"
 
 
 class AppSettings(BaseSettings):
@@ -222,6 +277,7 @@ class AppSettings(BaseSettings):
     email: EmailSettings | None = None
     logging: LoggingSettings | None = None
     sentry: SentrySettings | None = None
+    custom_domains: CustomDomainSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -251,6 +307,8 @@ class AppSettings(BaseSettings):
             self.logging = LoggingSettings()
         if self.sentry is None:
             self.sentry = SentrySettings()
+        if self.custom_domains is None:
+            self.custom_domains = CustomDomainSettings()
 
         return self
 
