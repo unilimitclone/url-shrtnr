@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import dns.exception
 import dns.resolver
 import pytest
 
@@ -67,3 +69,31 @@ class TestARecordVerifier:
             r = await v.verify("acme.com")
         assert r.verified is False
         assert "1.2.3.4" in r.reason
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_failure(self):
+        v = ARecordVerifier(["1.2.3.4"])
+        with patch(
+            "services.verifiers.a_record_verifier.dns.asyncresolver.resolve",
+            new=AsyncMock(side_effect=asyncio.TimeoutError()),
+        ):
+            r = await v.verify("slow.com")
+        assert r.verified is False
+        assert "timed out" in r.reason
+
+    @pytest.mark.asyncio
+    async def test_generic_dns_exception_swallowed(self):
+        # Verifiers MUST NOT raise on DNS errors — every DNSException
+        # subclass must become a VerificationResult(verified=False).
+        v = ARecordVerifier(["1.2.3.4"])
+
+        class WeirdDnsError(dns.exception.DNSException):
+            pass
+
+        with patch(
+            "services.verifiers.a_record_verifier.dns.asyncresolver.resolve",
+            new=AsyncMock(side_effect=WeirdDnsError("upstream broke")),
+        ):
+            r = await v.verify("acme.com")
+        assert r.verified is False
+        assert "DNS error" in r.reason

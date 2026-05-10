@@ -31,6 +31,10 @@ _NEG_SENTINEL = "__none__"
 _CACHE_MISS = object()
 _NEG_CACHE_HIT = object()
 
+# Sentinel value of a tombstone key. Any non-empty value works — readers
+# only check existence; the value is informational.
+_TOMB_VALUE = "1"
+
 
 class CachedMongoTenantResolver(TenantResolver):
     def __init__(
@@ -42,15 +46,24 @@ class CachedMongoTenantResolver(TenantResolver):
         # Negative TTL can be aggressive because the orchestrator calls
         # ``invalidate(fqdn)`` on every state transition
         negative_ttl_seconds: int = 300,
+        # Tombstone window: how long after invalidate() new cache writes
+        # for the same host are skipped. Defends against the read-through
+        # race where a slow resolve() reads stale Mongo data, then races
+        # invalidate() and writes the stale answer back.
+        tombstone_ttl_seconds: int = 5,
     ) -> None:
         self._repo = repo
         self._redis = redis_client
         self._system_default_domain = system_default_domain.lower().rstrip(".")
         self._positive_ttl = positive_ttl_seconds
         self._negative_ttl = negative_ttl_seconds
+        self._tombstone_ttl = tombstone_ttl_seconds
 
     def _key(self, host: str) -> str:
         return f"tenant:{host}"
+
+    def _tomb_key(self, host: str) -> str:
+        return f"tenant_tomb:{host}"
 
     @staticmethod
     def _normalise_host(host: str) -> str:
@@ -121,9 +134,31 @@ class CachedMongoTenantResolver(TenantResolver):
             # System default short-circuits resolve(); no cache slot to drop.
             return
         try:
-            await self._redis.delete(self._key(normalised))
+            # Atomic delete + tombstone via pipeline. Tombstone blocks any
+            # in-flight resolve() from writing stale data back to the cache
+            # for the next ``tombstone_ttl_seconds`` — see _cache_set /
+            # _cache_set_negative for the read-side check.
+            pipe = self._redis.pipeline()
+            pipe.delete(self._key(normalised))
+            pipe.setex(self._tomb_key(normalised), self._tombstone_ttl, _TOMB_VALUE)
+            await pipe.execute()
         except Exception as exc:
             log.warning("tenant_cache_invalidate_error", host=host, error=str(exc))
+
+    async def _is_tombstoned(self, host: str) -> bool:
+        """Return True if invalidate() recently fired for *host*.
+
+        Used as the anti-stale guard before any cache write. Failures here
+        degrade safely to ``False`` — the cache write proceeds (no worse
+        than current behaviour).
+        """
+        if self._redis is None:
+            return False
+        try:
+            return await self._redis.get(self._tomb_key(host)) is not None
+        except Exception as exc:
+            log.warning("tenant_tomb_check_error", host=host, error=str(exc))
+            return False
 
     # ── Cache helpers ────────────────────────────────────────────────
 
@@ -171,6 +206,11 @@ class CachedMongoTenantResolver(TenantResolver):
     async def _cache_set(self, host: str, info: TenantInfo) -> None:
         if self._redis is None:
             return
+        # Anti-stale guard: invalidate() may have fired while we were
+        # querying Mongo — if so, skip the write so we don't poison the
+        # cache with the now-stale answer.
+        if await self._is_tombstoned(host):
+            return
         try:
             payload = json.dumps(
                 {
@@ -187,6 +227,8 @@ class CachedMongoTenantResolver(TenantResolver):
 
     async def _cache_set_negative(self, host: str) -> None:
         if self._redis is None:
+            return
+        if await self._is_tombstoned(host):
             return
         try:
             await self._redis.setex(self._key(host), self._negative_ttl, _NEG_SENTINEL)

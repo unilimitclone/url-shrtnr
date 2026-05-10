@@ -161,6 +161,32 @@ class TestCustomDomainRepository:
         assert ops["$set"]["last_eviction_error"] is None
 
     @pytest.mark.asyncio
+    async def test_list_by_owner_paginates_and_orders_by_created_at_desc(self):
+        # Underpins the dashboard listing endpoint — must filter by owner,
+        # sort newest first, and respect skip/limit so pagination works.
+        col = AsyncMock()
+        cursor = MagicMock()
+        cursor.sort = MagicMock(return_value=cursor)
+        cursor.skip = MagicMock(return_value=cursor)
+        cursor.limit = MagicMock(return_value=cursor)
+        cursor.to_list = AsyncMock(return_value=[])
+        col.find = MagicMock(return_value=cursor)
+        col.name = "custom_domains"
+        repo = CustomDomainRepository(col)
+        owner_id = ObjectId()
+
+        await repo.list_by_owner(owner_id, skip=20, limit=10)
+
+        # (1) filters by owner_id
+        assert col.find.call_args.args[0] == {"owner_id": owner_id}
+        # (2) sorts by created_at descending
+        cursor.sort.assert_called_once_with("created_at", -1)
+        # (3) respects skip + limit
+        cursor.skip.assert_called_once_with(20)
+        cursor.limit.assert_called_once_with(10)
+        cursor.to_list.assert_awaited_once_with(length=10)
+
+    @pytest.mark.asyncio
     async def test_find_stale_active_excludes_system_default(self):
         col = AsyncMock()
         cursor = MagicMock()

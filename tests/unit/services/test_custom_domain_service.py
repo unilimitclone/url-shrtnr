@@ -426,3 +426,109 @@ class TestEvictionTracking:
         # update_status was called with REVOKED first
         first_call = repo.update_status.call_args_list[0]
         assert first_call.args[1] == DomainStatus.REVOKED
+
+
+class TestSuspendNotFound:
+    @pytest.mark.asyncio
+    async def test_suspend_missing_domain_is_noop(self):
+        # Worker may race with a concurrent delete — domain disappears
+        # between scan and suspend. Must silently noop, not crash.
+        svc, repo, _, edge, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=None)
+
+        # Must not raise
+        await svc.suspend(DOMAIN_OID, reason="missing_domain_ok")
+
+        repo.update_status.assert_not_called()
+        edge.announce_revoked.assert_not_called()
+
+
+class TestVerifyAttemptsQuota:
+    @pytest.mark.asyncio
+    async def test_quota_increments_redis_counter(self):
+        redis = AsyncMock()
+        redis.incr = AsyncMock(return_value=1)
+        redis.expire = AsyncMock()
+        svc, repo, _, _, _ = _build_service(redis=redis)
+        starting = _doc(status=DomainStatus.PENDING)
+        repo.find_by_id = AsyncMock(side_effect=[starting, starting])
+
+        await svc.verify(DOMAIN_OID, _user())
+
+        redis.incr.assert_awaited_once()
+        # First incr → expire is set so the counter rolls over after the window
+        redis.expire.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_quota_exceeded_raises_quota_error(self):
+        redis = AsyncMock()
+        redis.incr = AsyncMock(return_value=99)  # well over default cap of 5
+        redis.expire = AsyncMock()
+        svc, repo, _, _, _ = _build_service(redis=redis)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+
+        with pytest.raises(DomainQuotaExceededError):
+            await svc.verify(DOMAIN_OID, _user())
+
+    @pytest.mark.asyncio
+    async def test_quota_fails_open_when_redis_errors(self):
+        # If Redis is down we degrade to "no quota enforcement" rather than
+        # blocking all verifies — staff allowlist + per-user-per-domain
+        # natural rate-limit cover the abuse vector.
+        redis = AsyncMock()
+        redis.incr = AsyncMock(side_effect=Exception("redis down"))
+        svc, repo, _, _, _ = _build_service(redis=redis)
+        starting = _doc(status=DomainStatus.PENDING)
+        repo.find_by_id = AsyncMock(side_effect=[starting, starting])
+
+        # Must not raise — verify proceeds normally despite Redis fault.
+        await svc.verify(DOMAIN_OID, _user())
+
+
+class TestReverifyActive:
+    @pytest.mark.asyncio
+    async def test_success_bumps_last_verified_and_clears_error(self):
+        svc, repo, _, _, _ = _build_service()
+        d = _doc(status=DomainStatus.ACTIVE)
+        repo.find_stale_active = AsyncMock(return_value=[d])
+
+        result_pairs = await svc.reverify_active(batch_size=10)
+
+        assert len(result_pairs) == 1
+        ok_call = repo.update_status.call_args
+        # ACTIVE remains, last_verified_at bumped, error cleared
+        assert ok_call.args[1] == DomainStatus.ACTIVE
+        assert ok_call.kwargs["bump_last_verified_at"] is True
+        assert ok_call.kwargs["last_verification_error"] is None
+
+    @pytest.mark.asyncio
+    async def test_failure_records_reason_keeps_status(self):
+        svc, repo, verifiers, _, _ = _build_service()
+        verifiers[VerificationMethod.CNAME].verify = AsyncMock(
+            return_value=VerificationResult(False, reason="DNS NXDOMAIN")
+        )
+        d = _doc(status=DomainStatus.ACTIVE)
+        repo.find_stale_active = AsyncMock(return_value=[d])
+
+        await svc.reverify_active(batch_size=10)
+
+        # Status unchanged (worker doesn't auto-suspend on a single fail —
+        # that's the consecutive-failure counter's job, lives in the worker)
+        call = repo.update_status.call_args
+        assert call.args[1] == DomainStatus.ACTIVE
+        # bump_last_verified_at omitted on failure → default False applies.
+        assert call.kwargs.get("bump_last_verified_at", False) is False
+        assert call.kwargs["last_verification_error"] == "DNS NXDOMAIN"
+
+    @pytest.mark.asyncio
+    async def test_skips_doc_when_verifier_missing(self):
+        # Defensive: if a doc references a verification_method that isn't
+        # wired (legacy data), the loop must skip it without crashing.
+        svc, repo, _, _, _ = _build_service(verifiers={})  # no verifiers
+        d = _doc(status=DomainStatus.ACTIVE)
+        repo.find_stale_active = AsyncMock(return_value=[d])
+
+        result_pairs = await svc.reverify_active(batch_size=10)
+
+        assert result_pairs == []
+        repo.update_status.assert_not_called()

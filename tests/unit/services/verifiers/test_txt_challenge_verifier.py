@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import dns.exception
 import dns.resolver
 import pytest
 
@@ -89,3 +91,43 @@ class TestTxtChallengeVerifier:
             r = await v.verify("acme.com", token="abc-123")
         assert r.verified is False
         assert "abc-123" in r.reason
+
+    @pytest.mark.asyncio
+    async def test_no_answer_provides_setup_hint(self):
+        # Domain exists but has no TXT records — guide the user to set one.
+        v = TxtChallengeVerifier()
+        with patch(
+            "services.verifiers.txt_challenge_verifier.dns.asyncresolver.resolve",
+            new=AsyncMock(side_effect=dns.resolver.NoAnswer()),
+        ):
+            r = await v.verify("acme.com", token="abc-123")
+        assert r.verified is False
+        assert "TXT" in r.reason
+        assert "abc-123" in r.reason
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_failure(self):
+        v = TxtChallengeVerifier()
+        with patch(
+            "services.verifiers.txt_challenge_verifier.dns.asyncresolver.resolve",
+            new=AsyncMock(side_effect=asyncio.TimeoutError()),
+        ):
+            r = await v.verify("acme.com", token="abc-123")
+        assert r.verified is False
+        assert "timed out" in r.reason
+
+    @pytest.mark.asyncio
+    async def test_generic_dns_exception_swallowed(self):
+        # Verifier-must-not-raise contract — same shape as CNAME / A-record.
+        v = TxtChallengeVerifier()
+
+        class WeirdDnsError(dns.exception.DNSException):
+            pass
+
+        with patch(
+            "services.verifiers.txt_challenge_verifier.dns.asyncresolver.resolve",
+            new=AsyncMock(side_effect=WeirdDnsError("upstream broke")),
+        ):
+            r = await v.verify("acme.com", token="abc-123")
+        assert r.verified is False
+        assert "DNS error" in r.reason

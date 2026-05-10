@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from bson import ObjectId
@@ -140,8 +140,9 @@ class TestCachedMongoTenantResolver:
         repo = AsyncMock()
         repo.find_active_by_fqdn = AsyncMock(return_value=None)
         redis = AsyncMock()
-        # Second call simulates Redis returning the negative sentinel.
-        redis.get = AsyncMock(side_effect=[None, "__none__"])
+        # Cold flow: cache_get → None, tomb check → None (allow write).
+        # Hot flow: cache_get → "__none__" (negative-hit, no further reads).
+        redis.get = AsyncMock(side_effect=[None, None, "__none__"])
         r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
 
         # Cold call: miss → Mongo lookup → negative-cache write
@@ -165,13 +166,24 @@ class TestCachedMongoTenantResolver:
         repo.find_active_by_fqdn.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_invalidate_drops_cache_entry(self):
+    async def test_invalidate_drops_cache_entry_and_sets_tombstone(self):
+        # Pipelined: delete the cache slot AND set a tombstone so any
+        # in-flight resolve() can't write the now-stale answer back.
         repo = AsyncMock()
         redis = AsyncMock()
+        pipe = MagicMock()
+        pipe.execute = AsyncMock()
+        redis.pipeline = MagicMock(return_value=pipe)
         r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
 
         await r.invalidate("links.acme.com")
-        redis.delete.assert_awaited_once_with("tenant:links.acme.com")
+        pipe.delete.assert_called_once_with("tenant:links.acme.com")
+        pipe.setex.assert_called_once()
+        # Tombstone key + value
+        args = pipe.setex.call_args.args
+        assert args[0] == "tenant_tomb:links.acme.com"
+        assert args[2] == "1"
+        pipe.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_invalidate_skips_system_default(self):
@@ -192,6 +204,55 @@ class TestCachedMongoTenantResolver:
         )
         # Must not raise.
         await r.invalidate("links.acme.com")
+
+    @pytest.mark.asyncio
+    async def test_tombstone_blocks_stale_positive_writeback(self):
+        # Race: resolve() reads stale Mongo, then invalidate() fires,
+        # then resolve() tries to write the stale doc back. The tombstone
+        # set by invalidate() must cause _cache_set to skip the write.
+        d = _doc()
+        repo = AsyncMock()
+        repo.find_active_by_fqdn = AsyncMock(return_value=d)
+        redis = AsyncMock()
+        # Cache miss on initial read, then tombstone present at write time.
+        redis.get = AsyncMock(side_effect=[None, "1"])
+        r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
+
+        info = await r.resolve("links.acme.com")
+        # The current request still gets the answer it computed
+        assert info is not None
+        # But the stale answer must NOT have been written back to cache
+        redis.setex.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tombstone_blocks_stale_negative_writeback(self):
+        # Same race for the negative path: resolve() reads None from Mongo,
+        # invalidate() flips the doc to ACTIVE, resolve() must not write
+        # the stale negative back.
+        repo = AsyncMock()
+        repo.find_active_by_fqdn = AsyncMock(return_value=None)
+        redis = AsyncMock()
+        redis.get = AsyncMock(side_effect=[None, "1"])
+        r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
+
+        result = await r.resolve("nonexistent.example.com")
+        assert result is None
+        # No negative-cache write — tombstone forced the skip
+        redis.setex.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_tombstone_writes_proceed_normally(self):
+        # Sanity: when no race fires (no tombstone), cache writes happen.
+        d = _doc()
+        repo = AsyncMock()
+        repo.find_active_by_fqdn = AsyncMock(return_value=d)
+        redis = AsyncMock()
+        # Cache miss + no tombstone → write should fire.
+        redis.get = AsyncMock(side_effect=[None, None])
+        r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
+
+        await r.resolve("links.acme.com")
+        redis.setex.assert_awaited_once()
 
 
 class TestNormaliseHost:
