@@ -1,6 +1,8 @@
-"""Unit tests for shared/url_utils.py — extract_hostname + extract_fqdn."""
+"""Unit tests for shared/url_utils.py — extract_hostname + extract_fqdn + normalise_fqdn."""
 
-from shared.url_utils import extract_fqdn, extract_hostname
+import pytest
+
+from shared.url_utils import extract_fqdn, extract_hostname, normalise_fqdn
 
 
 class TestExtractHostname:
@@ -49,3 +51,45 @@ class TestExtractFqdn:
         # so the cache key, the seeded custom_domains row, and the request
         # middleware all agree on the canonical form.
         assert extract_fqdn("HTTPS://Spoo.Me./") == extract_fqdn("https://spoo.me")
+
+
+class TestNormaliseFqdn:
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ("links.acme.com", "links.acme.com"),
+            ("LINKS.ACME.COM", "links.acme.com"),
+            ("  links.acme.com  ", "links.acme.com"),
+            ("links.acme.com.", "links.acme.com"),
+            ("acme.co", "acme.co"),
+            # Punycode TLD (encoded `.中国`) — required for IDN custom domains.
+            ("links.xn--fiqs8s", "links.xn--fiqs8s"),
+            # Multi-level subdomain
+            ("a.b.c.example.com", "a.b.c.example.com"),
+        ],
+    )
+    def test_accepts_valid_inputs(self, value, expected):
+        assert normalise_fqdn(value) == expected
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            None,
+            "",
+            "   ",
+            "no_underscores_allowed.com",
+            "-leading-hyphen.com",
+            "trailing-hyphen-.com",
+            "single-label",
+            "two..consecutive.dots.com",
+            "evil<script>.com",
+            "evil`backtick.com",
+            "evil\\backslash.com",
+            "evil\x00null.com",
+            "a" * 64 + ".com",  # label > 63 chars
+            "a" * 254 + ".com",  # total > 253 chars
+        ],
+    )
+    def test_rejects_invalid_inputs(self, value):
+        with pytest.raises(ValueError):
+            normalise_fqdn(value)

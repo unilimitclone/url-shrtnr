@@ -2,35 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from pydantic import Field, field_validator
 
 from schemas.dto.base import RequestBase
 from schemas.enums.domain_status import VerificationMethod
-
-# Same regex as schemas.models.custom_domain — duplicated here so DTO
-# validation rejects bad input at the API boundary without depending on
-# the document model.
-_HOSTNAME_RE = re.compile(
-    r"^(?=.{1,253}$)"
-    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-    r"[a-z]{2,63}$"
-)
-
-
-def _normalise_fqdn(v: Any) -> str:
-    if v is None:
-        raise ValueError("fqdn is required")
-    normalised = str(v).strip().lower().rstrip(".")
-    if not normalised:
-        raise ValueError("fqdn is required")
-    if re.search(r"[\x00-\x1F\x7F-\x9F<>\"'`\\]", normalised):
-        raise ValueError("fqdn contains forbidden characters")
-    if not _HOSTNAME_RE.match(normalised):
-        raise ValueError("fqdn does not look like a valid hostname")
-    return normalised
+from shared.url_utils import normalise_fqdn
 
 
 class CreateCustomDomainRequest(RequestBase):
@@ -55,7 +33,7 @@ class CreateCustomDomainRequest(RequestBase):
     @field_validator("fqdn", mode="before")
     @classmethod
     def _validate_fqdn(cls, v: Any) -> str:
-        return _normalise_fqdn(v)
+        return normalise_fqdn(v)
 
     @field_validator("verification_method", mode="before")
     @classmethod

@@ -21,6 +21,18 @@ from schemas.models.custom_domain import CustomDomainDoc
 log = get_logger(__name__)
 
 
+def _canonical(fqdn: str) -> str:
+    """Cheap normalisation for lookup parameters.
+
+    Persisted docs are validated through ``normalise_fqdn`` (strict) before
+    insert, so they're already canonical. Lookups normalise too — different
+    callers (DTO-validated input, raw middleware string, ops mongosh
+    input) reach the same row regardless of case or trailing dots. Kept
+    cheap (no regex) because lookup syntax is the caller's job, not ours.
+    """
+    return str(fqdn).strip().lower().rstrip(".")
+
+
 class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
     async def find_by_id(self, domain_id: ObjectId) -> CustomDomainDoc | None:
         """Find a domain by its ObjectId."""
@@ -28,7 +40,7 @@ class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
 
     async def find_by_fqdn(self, fqdn: str) -> CustomDomainDoc | None:
         """Find a domain by fqdn (any status). Used by uniqueness checks."""
-        return await self._find_one({"fqdn": fqdn})
+        return await self._find_one({"fqdn": _canonical(fqdn)})
 
     async def find_active_by_fqdn(self, fqdn: str) -> CustomDomainDoc | None:
         """Find a domain by fqdn, scoped to ACTIVE only.
@@ -36,7 +48,9 @@ class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
         Used by the Caddy ask endpoint — we only mint certs for verified,
         currently-active domains.
         """
-        return await self._find_one({"fqdn": fqdn, "status": DomainStatus.ACTIVE})
+        return await self._find_one(
+            {"fqdn": _canonical(fqdn), "status": DomainStatus.ACTIVE}
+        )
 
     async def list_by_owner(
         self,

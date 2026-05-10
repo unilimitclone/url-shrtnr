@@ -41,6 +41,30 @@ class TestCustomDomainRepository:
         col.find_one.assert_awaited_once_with({"fqdn": "links.example.com"})
 
     @pytest.mark.asyncio
+    async def test_find_by_fqdn_normalises_lookup_input(self):
+        # A caller passing an uppercased, trailing-dot, padded variant must
+        # still find the canonical row — defends against input drift between
+        # the writer (DTO-validated) and ad-hoc lookup paths.
+        col = AsyncMock()
+        col.find_one = AsyncMock(return_value=None)
+        col.name = "custom_domains"
+        repo = CustomDomainRepository(col)
+
+        await repo.find_by_fqdn("  LINKS.Example.COM.  ")
+        col.find_one.assert_awaited_once_with({"fqdn": "links.example.com"})
+
+    @pytest.mark.asyncio
+    async def test_find_active_by_fqdn_normalises_lookup_input(self):
+        col = AsyncMock()
+        col.find_one = AsyncMock(return_value=None)
+        col.name = "custom_domains"
+        repo = CustomDomainRepository(col)
+
+        await repo.find_active_by_fqdn("LINKS.Example.COM.")
+        args = col.find_one.call_args.args[0]
+        assert args["fqdn"] == "links.example.com"
+
+    @pytest.mark.asyncio
     async def test_find_active_by_fqdn_scopes_to_active(self):
         col = AsyncMock()
         col.find_one = AsyncMock(return_value=None)

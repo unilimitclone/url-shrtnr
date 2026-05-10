@@ -5,6 +5,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from config import (
     AppSettings,
+    CustomDomainSettings,
     DatabaseSettings,
     JWTSettings,
     RedisSettings,
@@ -190,3 +191,28 @@ class TestSystemDefaultDomain:
     def test_blocked_self_domains_derives_from_default(self, with_mongo):
         with_mongo.setenv("APP_URL", "https://spoo.me")
         assert AppSettings().blocked_self_domains == ("spoo.me",)
+
+
+class TestCustomDomainSettings:
+    def test_default_is_disabled(self, monkeypatch):
+        # Sanity: default-deny so any deploy that forgets to set the
+        # explicit env var keeps the feature off.
+        # Clear any inherited env var so the test is hermetic.
+        monkeypatch.delenv("CUSTOM_DOMAINS_ENABLED", raising=False)
+        monkeypatch.delenv("ENABLED", raising=False)
+        assert CustomDomainSettings().enabled is False
+
+    def test_generic_enabled_env_var_does_not_leak_in(self, monkeypatch):
+        # Regression: without env_prefix, a generic ENABLED=true set by an
+        # unrelated CI/deploy script would have flipped the master switch.
+        monkeypatch.setenv("ENABLED", "true")
+        monkeypatch.delenv("CUSTOM_DOMAINS_ENABLED", raising=False)
+        assert CustomDomainSettings().enabled is False
+
+    def test_prefixed_env_var_is_honoured(self, monkeypatch):
+        monkeypatch.setenv("CUSTOM_DOMAINS_ENABLED", "true")
+        assert CustomDomainSettings().enabled is True
+
+    def test_prefixed_max_per_user_overrides_default(self, monkeypatch):
+        monkeypatch.setenv("CUSTOM_DOMAINS_MAX_PER_USER", "10")
+        assert CustomDomainSettings().max_per_user == 10

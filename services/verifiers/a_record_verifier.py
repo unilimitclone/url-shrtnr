@@ -15,10 +15,7 @@ import dns.asyncresolver
 import dns.exception
 import dns.resolver
 
-from infrastructure.logging import get_logger
 from services.verifiers.protocol import DomainVerifier, VerificationResult
-
-log = get_logger(__name__)
 
 _DNS_TIMEOUT_SECS = 3.0
 

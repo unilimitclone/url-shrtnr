@@ -125,9 +125,17 @@ class CustomDomainSettings(BaseSettings):
     rollout flag flips. ``enabled`` is the master switch consulted by the
     service layer (PR5+); the data plumbing (schema, repo, wiring) lands
     even when False so the rollout has a clean code path to flip.
+
+    All env vars must be prefixed ``CUSTOM_DOMAINS_`` so generic names
+    like ``ENABLED`` or ``MAX_PER_USER`` set elsewhere in the deploy
+    environment don't accidentally configure this feature.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="CUSTOM_DOMAINS_",
+    )
 
     # Master switch consulted by CustomDomainService. Until True, every
     # public method short-circuits with DomainQuotaExceededError or similar.

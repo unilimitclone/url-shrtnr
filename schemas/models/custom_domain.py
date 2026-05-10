@@ -13,7 +13,6 @@ never in Pydantic.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import Any
 
@@ -21,16 +20,7 @@ from pydantic import field_validator
 
 from schemas.enums.domain_status import DomainStatus, VerificationMethod
 from schemas.models.base import MongoBaseModel, PyObjectId
-
-# RFC 1035 hostname: labels of [a-z0-9-], 1-63 chars each, separated by dots,
-# total length ≤ 253. Trailing dot stripped before validation. Allows internal
-# uppercase (we lowercase ourselves) and rejects leading/trailing hyphens per
-# label.
-_HOSTNAME_RE = re.compile(
-    r"^(?=.{1,253}$)"
-    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-    r"[a-z]{2,63}$"
-)
+from shared.url_utils import normalise_fqdn
 
 
 class CustomDomainDoc(MongoBaseModel):
@@ -61,19 +51,8 @@ class CustomDomainDoc(MongoBaseModel):
 
     @field_validator("fqdn", mode="before")
     @classmethod
-    def _normalise_fqdn(cls, v: Any) -> str:
-        if v is None:
-            raise ValueError("fqdn is required")
-        normalised = str(v).strip().lower().rstrip(".")
-        if not normalised:
-            raise ValueError("fqdn is required")
-        # Reject control + HTML metacharacters explicitly so a malformed input
-        # can't sneak past the regex via Unicode tricks.
-        if re.search(r"[\x00-\x1F\x7F-\x9F<>\"'`\\]", normalised):
-            raise ValueError(f"fqdn contains forbidden characters: {v!r}")
-        if not _HOSTNAME_RE.match(normalised):
-            raise ValueError(f"fqdn does not look like a valid hostname: {v!r}")
-        return normalised
+    def _normalise(cls, v: Any) -> str:
+        return normalise_fqdn(v)
 
 
 # Convenience: the set of legal state transitions, used by the service to

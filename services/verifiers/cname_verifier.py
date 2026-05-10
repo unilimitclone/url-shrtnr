@@ -11,13 +11,9 @@ import asyncio
 
 import dns.asyncresolver
 import dns.exception
-import dns.rdatatype
 import dns.resolver
 
-from infrastructure.logging import get_logger
 from services.verifiers.protocol import DomainVerifier, VerificationResult
-
-log = get_logger(__name__)
 
 # Per-query DNS timeout. Kept short so a single slow nameserver can't stall
 # the worker; total budget = timeout * dnspython retries (default 2).
