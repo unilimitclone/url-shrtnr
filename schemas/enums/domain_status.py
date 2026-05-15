@@ -30,3 +30,7 @@ class VerificationMethod(str, Enum):
     A_RECORD = "a_record"  # A <fqdn> -> origin IPv4 (apex domains)
     TXT_CHALLENGE = "txt_challenge"  # TXT _spoo-challenge.<fqdn> = token
     SYSTEM = "system"  # reserved for the system-default row
+    # CF SaaS paths — verifier polls Cloudflare instead of running DNS itself.
+    # CF auto-renews certs forever once Delegated DCV CNAME is in place.
+    CF_DELEGATED_DCV = "cf_delegated_dcv"
+    CF_HTTP_DCV = "cf_http_dcv"

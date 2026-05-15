@@ -25,6 +25,7 @@ from schemas.dto.requests.custom_domain import (
 from schemas.enums.domain_status import DomainStatus, VerificationMethod
 from schemas.models.custom_domain import CustomDomainDoc
 from services.custom_domain_service import CustomDomainService
+from services.registrar.protocol import RegistrationResult
 from services.verifiers.protocol import VerificationResult
 
 USER_OID = ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")
@@ -68,6 +69,7 @@ def _build_service(
     repo=None,
     verifiers=None,
     edge=None,
+    registrar=None,
     tenant_resolver=None,
     blocked_domain_repo=None,
     redis=None,
@@ -75,6 +77,8 @@ def _build_service(
 ):
     repo = repo or AsyncMock()
     repo.insert = AsyncMock(return_value=DOMAIN_OID)
+    repo.delete_by_id = AsyncMock(return_value=True)
+    repo.update_edge_metadata = AsyncMock(return_value=True)
     repo.count_by_owner = AsyncMock(return_value=0)
     repo.find_by_fqdn = AsyncMock(return_value=None)
     repo.find_by_id = AsyncMock(return_value=None)
@@ -102,6 +106,12 @@ def _build_service(
     edge = edge or AsyncMock()
     # Default to "Caddy acked" so existing tests don't have to opt in.
     edge.announce_revoked = AsyncMock(return_value=True)
+
+    if registrar is None:
+        registrar = AsyncMock()
+        # Default to NoOp-style result so existing tests pass through unchanged.
+        registrar.register = AsyncMock(return_value=RegistrationResult(backend_id=None))
+
     tenant_resolver = tenant_resolver or AsyncMock()
     settings_kwargs = {"enabled": enabled, **(extra_settings or {})}
     settings = _settings(**settings_kwargs)
@@ -110,6 +120,7 @@ def _build_service(
             repo=repo,
             verifiers=verifiers,
             edge_provisioner=edge,
+            registrar=registrar,
             settings=settings,
             tenant_resolver=tenant_resolver,
             blocked_domain_repo=blocked_domain_repo,
@@ -554,3 +565,126 @@ class TestReverifyActive:
 
         assert result_pairs == []
         repo.update_status.assert_not_called()
+
+
+class TestRegistrarIntegration:
+    @pytest.mark.asyncio
+    async def test_create_persists_backend_id_and_metadata(self):
+        registrar = AsyncMock()
+        registrar.register = AsyncMock(
+            return_value=RegistrationResult(
+                backend_id="cf-1",
+                backend_metadata={
+                    "cf_status": "pending",
+                    "cf_ssl_status": "initializing",
+                },
+            )
+        )
+        svc, repo, _, _, _ = _build_service(registrar=registrar)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        req = CreateCustomDomainRequest(fqdn="links.acme.com")
+
+        await svc.create(req, _user())
+
+        registrar.register.assert_awaited_once()
+        repo.update_edge_metadata.assert_awaited_once()
+        kwargs = repo.update_edge_metadata.call_args.kwargs
+        assert kwargs["cf_hostname_id"] == "cf-1"
+        assert kwargs["cf_status"] == "pending"
+        assert kwargs["cf_ssl_status"] == "initializing"
+
+    @pytest.mark.asyncio
+    async def test_create_rolls_back_doc_on_registration_failure(self):
+        registrar = AsyncMock()
+        registrar.register = AsyncMock(side_effect=RuntimeError("CF down"))
+        svc, repo, _, _, _ = _build_service(registrar=registrar)
+        req = CreateCustomDomainRequest(fqdn="links.acme.com")
+
+        with pytest.raises(RuntimeError):
+            await svc.create(req, _user())
+
+        # Doc inserted, then deleted because registration blew up.
+        repo.insert.assert_awaited_once()
+        repo.delete_by_id.assert_awaited_once_with(DOMAIN_OID)
+
+    @pytest.mark.asyncio
+    async def test_rollback_failure_logs_and_still_raises_original(self):
+        # If delete_by_id itself fails after registrar fails, the original
+        # registration error must still surface to the caller. Orphan doc is
+        # logged loud so an operator can clean up via mongosh.
+        registrar = AsyncMock()
+        registrar.register = AsyncMock(side_effect=RuntimeError("CF down"))
+        svc, repo, _, _, _ = _build_service(registrar=registrar)
+        repo.delete_by_id = AsyncMock(side_effect=Exception("mongo down"))
+        req = CreateCustomDomainRequest(fqdn="links.acme.com")
+
+        with pytest.raises(RuntimeError, match="CF down"):
+            await svc.create(req, _user())
+
+        # Both attempted exactly once.
+        repo.insert.assert_awaited_once()
+        repo.delete_by_id.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_persists_dns_instructions_for_dashboard(self):
+        registrar = AsyncMock()
+        instructions = [
+            {"type": "CNAME", "name": "links.acme.com", "value": "customers.spoo.me"},
+            {
+                "type": "CNAME",
+                "name": "_acme-challenge.links.acme.com",
+                "value": "links.acme.com.abc.dcv.cloudflare.com",
+            },
+        ]
+        registrar.register = AsyncMock(
+            return_value=RegistrationResult(
+                backend_id="cf-1", instructions=instructions
+            )
+        )
+        svc, repo, _, _, _ = _build_service(registrar=registrar)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        req = CreateCustomDomainRequest(fqdn="links.acme.com")
+
+        await svc.create(req, _user())
+
+        kwargs = repo.update_edge_metadata.call_args.kwargs
+        assert kwargs["dns_instructions"] == instructions
+
+    @pytest.mark.asyncio
+    async def test_create_skips_metadata_update_when_noop_registrar(self):
+        # NoOpRegistrar (self-host path) returns backend_id=None and no
+        # metadata. Service must not bother calling update_edge_metadata.
+        svc, repo, _, _, _ = _build_service()  # default registrar = NoOp
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        req = CreateCustomDomainRequest(fqdn="links.acme.com")
+
+        await svc.create(req, _user())
+
+        repo.update_edge_metadata.assert_not_called()
+
+
+class TestVerifierTokenSelection:
+    @pytest.mark.asyncio
+    async def test_cf_method_passes_cf_hostname_id_to_verifier(self):
+        verifier = AsyncMock()
+        verifier.verify = AsyncMock(return_value=VerificationResult(True))
+        verifiers = {VerificationMethod.CF_DELEGATED_DCV: verifier}
+        svc, repo, _, _, _ = _build_service(verifiers=verifiers)
+        cf_doc = _doc(method=VerificationMethod.CF_DELEGATED_DCV)
+        cf_doc.cf_hostname_id = "cf-xyz"
+        repo.find_by_id = AsyncMock(side_effect=[cf_doc, cf_doc])
+
+        await svc.verify(DOMAIN_OID, _user())
+
+        verifier.verify.assert_awaited_once_with("links.acme.com", "cf-xyz")
+
+    @pytest.mark.asyncio
+    async def test_dns_method_passes_verification_token(self):
+        svc, repo, verifiers, _, _ = _build_service()
+        cname_verifier = verifiers[VerificationMethod.CNAME]
+        starting = _doc(method=VerificationMethod.CNAME)
+        repo.find_by_id = AsyncMock(side_effect=[starting, starting])
+
+        await svc.verify(DOMAIN_OID, _user())
+
+        cname_verifier.verify.assert_awaited_once_with("links.acme.com", "token-abc")

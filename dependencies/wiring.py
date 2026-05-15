@@ -15,6 +15,7 @@ from config import AppSettings
 from infrastructure.cache.feature_flag_cache import FeatureFlagCache
 from infrastructure.cache.url_cache import UrlCache
 from infrastructure.captcha.hcaptcha import HCaptchaProvider
+from infrastructure.cloudflare_client import CloudflareClient
 from infrastructure.webhook.discord import DiscordWebhookProvider
 from repositories.api_key_repository import ApiKeyRepository
 from repositories.app_grant_repository import AppGrantRepository
@@ -35,6 +36,7 @@ from services.auth.device import DeviceAuthService
 from services.auth.otp import OtpService
 from services.auth.password import PasswordService
 from services.auth.verification import EmailVerificationService
+from services.cf_saas_backend import CfSaasBackend
 from services.click import ClickService, LegacyClickHandler, V2ClickHandler
 from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
@@ -44,6 +46,7 @@ from services.export.service import ExportService
 from services.feature_flag_service import FeatureFlagService
 from services.oauth_service import OAuthService
 from services.profile_picture_service import ProfilePictureService
+from services.registrar import HostnameRegistrar, NoOpRegistrar
 from services.stats_service import StatsService
 from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
@@ -172,15 +175,44 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # master flag is off. Mutations short-circuit inside the service via
     # ``settings.custom_domains.enabled``; the route layer (PR4) further
     # gates per-user access via the FeatureFlagService.
+    #
+    # Backend selection: ``cf_zone_id`` set ⇒ CF SaaS path (one CfSaasBackend
+    # registered against all three protocol slots). Unset ⇒ self-host LE
+    # on-demand path (DNS verifiers + CaddyAskProvisioner + NoOpRegistrar).
     custom_domain_repo = CustomDomainRepository(db["custom_domains"])
     blocked_domain_repo = BlockedDomainRepository(db["blocked_domains"])
     cd_settings = settings.custom_domains
-    verifiers = {
-        VerificationMethod.CNAME: CnameVerifier(cd_settings.cname_target),
-        VerificationMethod.A_RECORD: ARecordVerifier(cd_settings.origin_ipv4),
-        VerificationMethod.TXT_CHALLENGE: TxtChallengeVerifier(),
-    }
-    edge_provisioner = CaddyAskProvisioner(http_client, cd_settings.caddy_admin_url)
+
+    if cd_settings.cf_zone_id:
+        cf_client = CloudflareClient(
+            http_client=http_client,
+            api_token=cd_settings.cf_api_token,
+            zone_id=cd_settings.cf_zone_id,
+            max_retries=cd_settings.cf_api_max_retries,
+            initial_backoff_seconds=cd_settings.cf_api_initial_backoff_seconds,
+        )
+        cf_backend = CfSaasBackend(
+            cf_client=cf_client,
+            custom_domain_repo=custom_domain_repo,
+            cname_target=cd_settings.cf_cname_target,
+            dcv_delegation_target=cd_settings.cf_dcv_delegation_target,
+        )
+        # Same instance fills three protocol slots — wiring contract.
+        verifiers = {
+            VerificationMethod.CF_DELEGATED_DCV: cf_backend,
+            VerificationMethod.CF_HTTP_DCV: cf_backend,
+        }
+        edge_provisioner = cf_backend
+        registrar: HostnameRegistrar = cf_backend
+    else:
+        verifiers = {
+            VerificationMethod.CNAME: CnameVerifier(cd_settings.cname_target),
+            VerificationMethod.A_RECORD: ARecordVerifier(cd_settings.origin_ipv4),
+            VerificationMethod.TXT_CHALLENGE: TxtChallengeVerifier(),
+        }
+        edge_provisioner = CaddyAskProvisioner(http_client, cd_settings.caddy_admin_url)
+        registrar = NoOpRegistrar()
+
     # Build the resolver before the service so the service can take it as a dep
     tenant_resolver = CachedMongoTenantResolver(
         repo=custom_domain_repo,
@@ -192,6 +224,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         repo=custom_domain_repo,
         verifiers=verifiers,
         edge_provisioner=edge_provisioner,
+        registrar=registrar,
         settings=cd_settings,
         tenant_resolver=tenant_resolver,
         blocked_domain_repo=blocked_domain_repo,

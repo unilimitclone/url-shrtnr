@@ -85,6 +85,10 @@ class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
         """Insert a new domain document. Returns the inserted ``_id``."""
         return await self._insert(doc)
 
+    async def delete_by_id(self, domain_id: ObjectId) -> bool:
+        """Hard-delete a domain doc. Used to roll back a failed registration."""
+        return await self._delete({"_id": domain_id})
+
     async def update_status(
         self,
         domain_id: ObjectId,
@@ -137,6 +141,35 @@ class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
                 }
             },
         )
+
+    async def update_edge_metadata(
+        self,
+        domain_id: ObjectId,
+        *,
+        cf_hostname_id: str | None = None,
+        cf_status: str | None = None,
+        cf_ssl_status: str | None = None,
+        dns_instructions: list[dict[str, str]] | None = None,
+    ) -> bool:
+        """Persist edge-backend bookkeeping (CF hostname id + status snapshots).
+
+        Only fields explicitly passed (non-None) are written so the worker
+        sync path can refresh status without clobbering the id, and the
+        create path can stamp the id without overwriting later sync results.
+        """
+        ops: dict = {}
+        if cf_hostname_id is not None:
+            ops["cf_hostname_id"] = cf_hostname_id
+        if cf_status is not None:
+            ops["cf_status"] = cf_status
+        if cf_ssl_status is not None:
+            ops["cf_ssl_status"] = cf_ssl_status
+        if dns_instructions is not None:
+            ops["dns_instructions"] = dns_instructions
+        if not ops:
+            return False
+        ops["updated_at"] = datetime.now(timezone.utc)
+        return await self._update({"_id": domain_id}, {"$set": ops})
 
     async def find_stale_active(
         self, older_than: datetime, limit: int

@@ -38,6 +38,7 @@ from schemas.dto.requests.custom_domain import (
 from schemas.enums.domain_status import DomainStatus, VerificationMethod
 from schemas.models.custom_domain import LEGAL_TRANSITIONS, CustomDomainDoc
 from services.edge_provisioner.protocol import EdgeProvisioner
+from services.registrar.protocol import HostnameRegistrar
 from services.tenant_resolver.protocol import TenantResolver
 from services.verifiers.protocol import DomainVerifier, VerificationResult
 
@@ -57,6 +58,7 @@ class CustomDomainService:
         repo: CustomDomainRepository,
         verifiers: dict[VerificationMethod, DomainVerifier],
         edge_provisioner: EdgeProvisioner,
+        registrar: HostnameRegistrar,
         settings: CustomDomainSettings,
         tenant_resolver: TenantResolver | None = None,
         blocked_domain_repo: BlockedDomainRepository | None = None,
@@ -65,6 +67,7 @@ class CustomDomainService:
         self._repo = repo
         self._verifiers = verifiers
         self._edge = edge_provisioner
+        self._registrar = registrar
         self._settings = settings
         # Optional so unit tests can wire just the bits they care about.
         # Wiring (`dependencies/wiring.py`) always passes both so the
@@ -119,6 +122,51 @@ class CustomDomainService:
                 f"domain {request.fqdn!r} is already registered"
             ) from None
 
+        # Announce to the edge backend (CF SaaS = create custom hostname;
+        # NoOp on self-host). On failure, roll back the Mongo insert so
+        # the user can retry — leaving an orphan doc would block re-create
+        # via the unique fqdn index.
+        try:
+            registration = await self._registrar.register(
+                request.fqdn, dcv_method=method.value
+            )
+        except Exception as exc:
+            try:
+                await self._repo.delete_by_id(new_id)
+            except Exception as rollback_exc:
+                # Rollback failure leaves an orphan PENDING doc that blocks
+                # re-create. Log loud so an operator can clean up via
+                # mongosh; still raise the original error to the user.
+                log.exception(
+                    "audit.domain.registration_rollback_failed",
+                    fqdn=request.fqdn,
+                    domain_id=str(new_id),
+                    owner_id=str(user.user_id),
+                    rollback_error=str(rollback_exc),
+                )
+            log.warning(
+                "audit.domain.registration_failed",
+                fqdn=request.fqdn,
+                domain_id=str(new_id),
+                owner_id=str(user.user_id),
+                verification_method=method.value,
+                error=str(exc),
+            )
+            raise
+
+        if (
+            registration.backend_id is not None
+            or registration.backend_metadata
+            or registration.instructions
+        ):
+            await self._repo.update_edge_metadata(
+                new_id,
+                cf_hostname_id=registration.backend_id,
+                cf_status=registration.backend_metadata.get("cf_status"),
+                cf_ssl_status=registration.backend_metadata.get("cf_ssl_status"),
+                dns_instructions=registration.instructions or None,
+            )
+
         log.info(
             "audit.domain.created",
             fqdn=request.fqdn,
@@ -156,7 +204,7 @@ class CustomDomainService:
             )
 
         result: VerificationResult = await verifier.verify(
-            doc.fqdn, doc.verification_token
+            doc.fqdn, self._verifier_token(doc)
         )
 
         if result.verified:
@@ -270,7 +318,7 @@ class CustomDomainService:
             verifier = self._verifiers.get(doc.verification_method)
             if verifier is None:
                 continue
-            result = await verifier.verify(doc.fqdn, doc.verification_token)
+            result = await verifier.verify(doc.fqdn, self._verifier_token(doc))
             if result.verified:
                 await self._repo.update_status(
                     doc.id,
@@ -311,6 +359,21 @@ class CustomDomainService:
         )
 
     # ── Internal: state machine, quotas, blocklist, cache ────────────
+
+    @staticmethod
+    def _verifier_token(doc: CustomDomainDoc) -> str | None:
+        """Backend handle to feed into ``DomainVerifier.verify``.
+
+        CF SaaS verifiers poll Cloudflare keyed on the CF hostname id;
+        DNS verifiers (CNAME / A / TXT) only need the per-domain UUID
+        token. Keeping the protocol signature uniform across backends
+        means the service picks the right value here, not the verifier.
+        Detection by enum value prefix so a future ``cf_*`` method auto-
+        routes to ``cf_hostname_id`` without touching this branch.
+        """
+        if doc.verification_method.value.startswith("cf_"):
+            return doc.cf_hostname_id
+        return doc.verification_token
 
     def _require_enabled(self) -> None:
         if not self._settings.enabled:
