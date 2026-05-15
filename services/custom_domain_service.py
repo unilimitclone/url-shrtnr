@@ -154,12 +154,17 @@ class CustomDomainService:
             )
             raise
 
-        if registration.backend_id is not None or registration.backend_metadata:
+        if (
+            registration.backend_id is not None
+            or registration.backend_metadata
+            or registration.instructions
+        ):
             await self._repo.update_edge_metadata(
                 new_id,
                 cf_hostname_id=registration.backend_id,
                 cf_status=registration.backend_metadata.get("cf_status"),
                 cf_ssl_status=registration.backend_metadata.get("cf_ssl_status"),
+                dns_instructions=registration.instructions or None,
             )
 
         log.info(

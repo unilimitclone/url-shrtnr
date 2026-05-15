@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
 from schemas.enums.domain_status import DomainStatus, VerificationMethod
 from schemas.models.base import MongoBaseModel, PyObjectId
@@ -56,6 +56,11 @@ class CustomDomainDoc(MongoBaseModel):
     cf_hostname_id: str | None = None
     cf_status: str | None = None
     cf_ssl_status: str | None = None
+
+    # DNS records to surface to the user. Stamped by the registrar at
+    # create time so PR4's dashboard reads them off the doc instead of
+    # re-asking the backend on every page load.
+    dns_instructions: list[dict[str, str]] = Field(default_factory=list)
 
     @field_validator("fqdn", mode="before")
     @classmethod

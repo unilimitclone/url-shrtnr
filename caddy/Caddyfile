@@ -76,13 +76,11 @@ qr.spoo.me {
 	}
 }
 
-# Cloudflare for SaaS fallback origin. CF SaaS proxies every customer
-# Custom Hostname here, preserving the customer's Host header. mTLS via
-# Authenticated Origin Pulls is mandatory — without `client_auth` anyone
-# who finds our origin IP could spoof "I'm Cloudflare" and pump arbitrary
-# traffic. The pinned CF root CA cert binds the fallback origin to the
-# legitimate CF edge.
-proxy-fallback.spoo.me {
+# CF for SaaS catch-all. Site address is `:443` (not a hostname) because
+# CF preserves the customer's Host header — a hostname-addressed block
+# would 404. mTLS is mandatory: without it any client reaching our IP
+# could spoof "I'm Cloudflare".
+:443 {
 	tls /etc/caddy/origin.crt /etc/caddy/origin.key {
 		protocols tls1.2 tls1.3
 		client_auth {
@@ -94,9 +92,6 @@ proxy-fallback.spoo.me {
 	header {
 		-Server
 	}
-	# Caddy passes the original Host as X-Forwarded-Host automatically,
-	# which the tenant resolver middleware (PR4) reads to scope alias
-	# lookups by the customer's hostname.
 	reverse_proxy app:8000 {
 		header_up X-Real-IP {client_ip}
 		header_up X-Forwarded-For {client_ip}

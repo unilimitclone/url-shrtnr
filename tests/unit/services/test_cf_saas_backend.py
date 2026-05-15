@@ -56,6 +56,29 @@ class TestRegister:
             "links.acme.com", dcv_method="txt"
         )
 
+    async def test_delegation_target_with_stray_dots_is_normalised(self):
+        cf_client = MagicMock()
+        cf_client.create_custom_hostname = AsyncMock(
+            return_value=CFHostnameResult(
+                id="cf-1",
+                hostname="links.acme.com",
+                status="pending",
+                ssl_status="initializing",
+            )
+        )
+        from services.cf_saas_backend import CfSaasBackend
+
+        backend = CfSaasBackend(
+            cf_client=cf_client,
+            custom_domain_repo=MagicMock(),
+            cname_target=".customers.spoo.me.",
+            dcv_delegation_target=".abc.dcv.cloudflare.com.",
+        )
+        result = await backend.register("links.acme.com", dcv_method="cf_delegated_dcv")
+        cname, delegation = result.instructions
+        assert cname["value"] == "customers.spoo.me"
+        assert delegation["value"] == "links.acme.com.abc.dcv.cloudflare.com"
+
     async def test_register_http_dcv_returns_one_record(self):
         cf_client = MagicMock()
         cf_client.create_custom_hostname = AsyncMock(

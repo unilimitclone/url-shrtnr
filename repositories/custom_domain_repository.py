@@ -149,6 +149,7 @@ class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
         cf_hostname_id: str | None = None,
         cf_status: str | None = None,
         cf_ssl_status: str | None = None,
+        dns_instructions: list[dict[str, str]] | None = None,
     ) -> bool:
         """Persist edge-backend bookkeeping (CF hostname id + status snapshots).
 
@@ -163,6 +164,8 @@ class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
             ops["cf_status"] = cf_status
         if cf_ssl_status is not None:
             ops["cf_ssl_status"] = cf_ssl_status
+        if dns_instructions is not None:
+            ops["dns_instructions"] = dns_instructions
         if not ops:
             return False
         ops["updated_at"] = datetime.now(timezone.utc)

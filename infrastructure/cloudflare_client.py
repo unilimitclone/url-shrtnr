@@ -178,7 +178,28 @@ class CloudflareClient:
                     },
                 )
 
-            return response.json()
+            # CF v4 can return 2xx with `success: false` for validation
+            # failures — must surface as our error type, not a downstream
+            # KeyError on `result`.
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise CloudflareAPIError(
+                    f"CF API {method} {path} returned malformed JSON",
+                    details={"status_code": response.status_code},
+                ) from exc
+
+            if isinstance(payload, dict) and payload.get("success") is False:
+                raise CloudflareAPIError(
+                    f"CF API {method} {path} reported success=false",
+                    details={
+                        "status_code": response.status_code,
+                        "errors": payload.get("errors"),
+                        "messages": payload.get("messages"),
+                    },
+                )
+
+            return payload
 
         # All retries failed.
         if isinstance(last_exc, CloudflareAPIError):

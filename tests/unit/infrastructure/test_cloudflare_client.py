@@ -201,6 +201,77 @@ class TestCloudflareClient:
         for call in sleep.await_args_list:
             assert call.args[0] == 0.0
 
+    async def test_2xx_with_success_false_raises_cloudflare_api_error(self):
+        # CF v4 envelope quirk: a 200 response can carry success=false with
+        # an errors array (validation failures, partial-success edge cases).
+        # Must surface as CloudflareAPIError so callers handle one error type.
+        http, _ = _http_client_with_response(
+            {
+                "success": False,
+                "errors": [{"code": 1234, "message": "validation failed"}],
+                "messages": [],
+                "result": None,
+            }
+        )
+        client = CloudflareClient(http_client=http, api_token="t", zone_id="z")
+        with pytest.raises(CloudflareAPIError, match="success=false"):
+            await client.get_custom_hostname("abc")
+
+    async def test_2xx_with_malformed_json_raises_cloudflare_api_error(self):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.is_success = True
+        response.json.side_effect = ValueError("Expecting value")
+        response.text = "<html>oops</html>"
+        response.headers = {}
+        http = MagicMock()
+        http.request = AsyncMock(return_value=response)
+        client = CloudflareClient(http_client=http, api_token="t", zone_id="z")
+        with pytest.raises(CloudflareAPIError, match="malformed JSON"):
+            await client.get_custom_hostname("abc")
+
+    async def test_delete_non_404_4xx_still_raises(self):
+        # 404 on delete is idempotent success; other 4xx must still raise so
+        # ops sees the real failure (e.g. bad hostname id, auth error).
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 400
+        response.is_success = False
+        response.text = "bad request"
+        response.headers = {}
+        http = MagicMock()
+        http.request = AsyncMock(return_value=response)
+        client = CloudflareClient(http_client=http, api_token="t", zone_id="z")
+        with pytest.raises(CloudflareAPIError):
+            await client.delete_custom_hostname("abc")
+
+    async def test_retry_after_malformed_falls_back_to_exponential_backoff(
+        self, mocker
+    ):
+        # CF API can return Retry-After in HTTP-date format or with junk
+        # values. Our parser only handles seconds-form floats; anything else
+        # must fall through cleanly to the exponential schedule.
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 429
+        response.is_success = False
+        response.text = "rate limited"
+        response.headers = {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+        http = MagicMock()
+        http.request = AsyncMock(return_value=response)
+        sleep = mocker.patch(
+            "infrastructure.cloudflare_client.asyncio.sleep",
+            new_callable=AsyncMock,
+        )
+        client = CloudflareClient(
+            http_client=http,
+            api_token="t",
+            zone_id="z",
+            max_retries=2,
+            initial_backoff_seconds=0.5,
+        )
+        with pytest.raises(CloudflareAPIError):
+            await client.get_custom_hostname("abc")
+        sleep.assert_awaited_with(0.5)  # exponential backoff, not the malformed header
+
     async def test_429_falls_back_to_backoff_when_header_missing(self, mocker):
         response = MagicMock(spec=httpx.Response)
         response.status_code = 429

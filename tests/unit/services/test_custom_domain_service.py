@@ -626,6 +626,31 @@ class TestRegistrarIntegration:
         repo.delete_by_id.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_create_persists_dns_instructions_for_dashboard(self):
+        registrar = AsyncMock()
+        instructions = [
+            {"type": "CNAME", "name": "links.acme.com", "value": "customers.spoo.me"},
+            {
+                "type": "CNAME",
+                "name": "_acme-challenge.links.acme.com",
+                "value": "links.acme.com.abc.dcv.cloudflare.com",
+            },
+        ]
+        registrar.register = AsyncMock(
+            return_value=RegistrationResult(
+                backend_id="cf-1", instructions=instructions
+            )
+        )
+        svc, repo, _, _, _ = _build_service(registrar=registrar)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        req = CreateCustomDomainRequest(fqdn="links.acme.com")
+
+        await svc.create(req, _user())
+
+        kwargs = repo.update_edge_metadata.call_args.kwargs
+        assert kwargs["dns_instructions"] == instructions
+
+    @pytest.mark.asyncio
     async def test_create_skips_metadata_update_when_noop_registrar(self):
         # NoOpRegistrar (self-host path) returns backend_id=None and no
         # metadata. Service must not bother calling update_edge_metadata.

@@ -149,7 +149,7 @@ class CustomDomainSettings(BaseSettings):
     # All counts must be >= 1 — a zero quota silently bricks the feature
     # (every create raises QuotaExceeded with no log signal that the cause
     # is config, not abuse). Validators below fail container startup instead.
-    max_per_user: int = Field(default=2, ge=1)
+    max_per_user: int = Field(default=1, ge=1)
     create_attempts_per_day: int = Field(default=3, ge=1)
     verify_attempts_per_hour: int = Field(default=5, ge=1)
 
@@ -186,10 +186,6 @@ class CustomDomainSettings(BaseSettings):
     # enabled (e.g. <random>.dcv.cloudflare.com). Customer adds
     # _acme-challenge.<fqdn> CNAME to <fqdn>.<this value> so CF can renew.
     cf_dcv_delegation_target: str = ""
-    # Default DCV method used when create request omits verification_method
-    # on a CF-configured deployment. Stored as string to keep config.py free
-    # of schema imports; service-layer maps to VerificationMethod enum.
-    cf_default_dcv_method: str = "cf_delegated_dcv"
     # Retry policy for CF API calls. Three attempts with exponential backoff.
     cf_api_max_retries: int = Field(default=3, ge=1)
     cf_api_initial_backoff_seconds: float = Field(default=1.0, gt=0)

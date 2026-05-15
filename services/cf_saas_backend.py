@@ -47,8 +47,9 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
     ) -> None:
         self._cf = cf_client
         self._repo = custom_domain_repo
-        self._cname_target = cname_target
-        self._dcv_delegation_target = dcv_delegation_target
+        # Strip dots so misconfigured env vars can't produce `foo..bar`.
+        self._cname_target = cname_target.strip(".")
+        self._dcv_delegation_target = dcv_delegation_target.strip(".")
 
     # ── HostnameRegistrar ───────────────────────────────────────────────
 
