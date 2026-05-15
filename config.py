@@ -172,6 +172,42 @@ class CustomDomainSettings(BaseSettings):
     # source IP is allowed by the require_caddy_caller dependency.
     caddy_caller_ip: str = "172.30.0.20"
 
+    # Cloudflare for SaaS Custom Hostnames. Setting cf_zone_id flips wiring
+    # from the LE on-demand path (self-host fallback) to the CF SaaS path.
+    # When set, cf_api_token + cf_dcv_delegation_target MUST also be set —
+    # validated at startup so a misconfig fails the container, not the first
+    # customer create.
+    cf_zone_id: str | None = None
+    cf_api_token: str | None = None
+    # Friendly CNAME target users see in their DNS dashboard. Created once
+    # in the CF zone as a proxied CNAME to the fallback origin.
+    cf_cname_target: str = "customers.spoo.me"
+    # Per-zone delegation hostname returned by CF when Delegated DCV is
+    # enabled (e.g. <random>.dcv.cloudflare.com). Customer adds
+    # _acme-challenge.<fqdn> CNAME to <fqdn>.<this value> so CF can renew.
+    cf_dcv_delegation_target: str = ""
+    # Default DCV method used when create request omits verification_method
+    # on a CF-configured deployment. Stored as string to keep config.py free
+    # of schema imports; service-layer maps to VerificationMethod enum.
+    cf_default_dcv_method: str = "cf_delegated_dcv"
+    # Retry policy for CF API calls. Three attempts with exponential backoff.
+    cf_api_max_retries: int = Field(default=3, ge=1)
+    cf_api_initial_backoff_seconds: float = Field(default=1.0, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_cf_saas_config(self) -> CustomDomainSettings:
+        if self.cf_zone_id:
+            missing = []
+            if not self.cf_api_token:
+                missing.append("cf_api_token")
+            if not self.cf_dcv_delegation_target:
+                missing.append("cf_dcv_delegation_target")
+            if missing:
+                raise ValueError(
+                    f"CF SaaS path requires {missing} when cf_zone_id is set."
+                )
+        return self
+
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

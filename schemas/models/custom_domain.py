@@ -49,16 +49,25 @@ class CustomDomainDoc(MongoBaseModel):
     eviction_pending: bool = False
     last_eviction_error: str | None = None
 
+    # Cloudflare for SaaS bookkeeping. Populated when the wiring is the CF
+    # SaaS backend; left None on self-host (LE) deployments. Repository
+    # filters keyed on cf_hostname_id are sparse-indexed, so None rows are
+    # cheap to ignore.
+    cf_hostname_id: str | None = None
+    cf_status: str | None = None
+    cf_ssl_status: str | None = None
+
     @field_validator("fqdn", mode="before")
     @classmethod
     def _normalise(cls, v: Any) -> str:
         return normalise_fqdn(v)
 
 
-# Convenience: the set of legal state transitions, used by the service to
-# reject illegal mutations (e.g. anything-out-of-REVOKED). VERIFYING is kept
-# in the enum for forward compat (when verification becomes async or worker-
-# coordinated) but the synchronous flow today goes straight PENDING → ACTIVE.
+# Legal state transitions consulted by the service. PENDING → ACTIVE is the
+# common synchronous path (DNS verifiers complete in one call). VERIFYING is
+# kept for forward-compat with async/worker-coordinated verification (e.g. a
+# future CF SaaS poll loop) but the audit.domain.verified log event already
+# records every verifier dispatch — no need to materialise it as a state.
 LEGAL_TRANSITIONS: dict[DomainStatus, frozenset[DomainStatus]] = {
     DomainStatus.PENDING: frozenset({DomainStatus.ACTIVE, DomainStatus.REVOKED}),
     DomainStatus.VERIFYING: frozenset(

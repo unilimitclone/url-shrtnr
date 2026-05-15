@@ -124,3 +124,17 @@ class InvalidDomainTransitionError(ValidationError):
 
     status_code = 422
     error_code = "invalid_domain_transition"
+
+
+class CloudflareAPIError(AppError):
+    """Cloudflare API call failed (4xx, 5xx, or network)."""
+
+    status_code = 502
+    error_code = "cloudflare_api_error"
+
+
+class CloudflareNotConfiguredError(AppError):
+    """CF SaaS path invoked but settings missing — wiring bug."""
+
+    status_code = 500
+    error_code = "cloudflare_not_configured"
