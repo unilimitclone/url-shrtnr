@@ -116,6 +116,10 @@ services:
     ports:
       - "443:443"
       - "443:443/udp"
+      - "80:80"
+    environment:
+      # Shared with the CF custom-domain Worker; see cloudflare-worker/README.md.
+      - WORKER_AUTH_SECRET=${WORKER_AUTH_SECRET}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/origin.crt:/etc/caddy/origin.crt:ro

@@ -179,8 +179,9 @@ class CustomDomainSettings(BaseSettings):
     # customer create.
     cf_zone_id: str | None = None
     cf_api_token: str | None = None
-    # Friendly CNAME target users see in their DNS dashboard. Created once
-    # in the CF zone as a proxied CNAME to the fallback origin.
+    # Friendly CNAME target users see in their DNS dashboard. Backed in
+    # the SaaS zone by a sentinel proxied A record (192.0.2.0) so the
+    # bound Worker route engages; never actually contacted.
     cf_cname_target: str = "customers.spoo.me"
     # Per-zone delegation hostname returned by CF when Delegated DCV is
     # enabled (e.g. <random>.dcv.cloudflare.com). Customer adds

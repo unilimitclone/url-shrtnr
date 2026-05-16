@@ -37,10 +37,8 @@
  2c0f:f248::/32
 		trusted_proxies_strict
 		client_ip_headers CF-Connecting-IP X-Forwarded-For
-		# CF SaaS sends SNI=proxy-fallback.spoo.me but Host=customer-hostname.
-		# Caddy auto-enables strict SNI/Host matching when client_auth is set,
-		# which would reject every CF SaaS request. mTLS (AOP) already proves
-		# the request is from CF, so SNI/Host mismatch is safe to allow.
+		# Disable Caddy's auto strict SNI/Host match (triggered by
+		# client_auth) — mTLS is the real auth, SNI/Host mismatch is fine.
 		strict_sni_host insecure_off
 	}
 
@@ -81,11 +79,9 @@ qr.spoo.me {
 	}
 }
 
-# CF for SaaS catch-all. Site address is `:443` (not a hostname) because
-# CF preserves the customer's Host header — a hostname-addressed block
-# would 404. mTLS is mandatory: without it any client reaching our IP
-# could spoof "I'm Cloudflare".
-:443 {
+# CF SaaS fallback origin. CF polls this to keep the origin Active
+# (prereq for Custom Hostname registrations). mTLS via AOP required.
+proxy-fallback.spoo.me {
 	tls /etc/caddy/origin.crt /etc/caddy/origin.key {
 		protocols tls1.2 tls1.3
 		client_auth {
@@ -101,4 +97,24 @@ qr.spoo.me {
 		header_up X-Real-IP {client_ip}
 		header_up X-Forwarded-For {client_ip}
 	}
+}
+
+# CF Worker → origin hop for custom domains (see cloudflare-worker/).
+# Plain HTTP because Workers can't attach AOP. Shared secret gates auth;
+# Host gets rewritten from X-Forwarded-Host so the app builds absolute
+# URLs against the customer hostname.
+:80 {
+	log
+	header {
+		-Server
+	}
+	@authed header X-Worker-Auth {env.WORKER_AUTH_SECRET}
+	handle @authed {
+		reverse_proxy app:8000 {
+			header_up X-Real-IP {client_ip}
+			header_up X-Forwarded-For {client_ip}
+			header_up Host {http.request.header.X-Forwarded-Host}
+		}
+	}
+	respond 403
 }

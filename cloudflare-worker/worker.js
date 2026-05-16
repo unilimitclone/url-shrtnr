@@ -1,29 +1,9 @@
-// spoo.me Custom Domain dispatcher (Cloudflare Worker).
-//
-// Why this exists: CF SaaS Custom Hostnames + fallback origin alone don't
-// dispatch arbitrary customer-hostname traffic to a single backend on the
-// Free plan. A Worker route bound to the dispatch endpoint is the actual
-// routing mechanism — it catches Custom Hostname traffic and proxies it to
-// our origin while preserving the customer's original Host header.
-//
-// Flow:
-//   1. Customer browser → CF anycast (resolves customer hostname)
-//   2. CF SaaS terminates TLS with the per-hostname SaaS cert
-//   3. CF SaaS dispatches per the hostname's custom_origin_server setting
-//      (set to ORIGIN_HOST below — usually customers.spoo.me)
-//   4. Worker route customers.spoo.me/* catches the dispatched request
-//   5. This Worker fetches FALLBACK_ORIGIN with X-Forwarded-Host preserving
-//      the customer hostname so the app can scope alias lookups
-//   6. CF→origin TLS uses zone-level Authenticated Origin Pulls so Caddy
-//      validates the request actually came from CF
-//
-// Single-backend setup: no per-tenant routing, no metadata lookup. If we
-// ever need per-tenant dispatch later, read request.cf.hostMetadata.appName
-// and route accordingly — CF SaaS exposes custom_metadata via the binding.
+// spoo.me Custom Domain dispatcher. See README.md for the routing
+// chain + why the fetch target is the Hetzner rDNS over plain HTTP.
 
-const FALLBACK_ORIGIN = "proxy-fallback.spoo.me";
+const FALLBACK_ORIGIN = "http://static.168.161.156.178.clients.your-server.de";
 
-// Hop-by-hop headers per RFC 7230 §6.1 — must not be forwarded as-is.
+// RFC 7230 §6.1 — never forward as-is.
 const HOP_BY_HOP = new Set([
   "connection",
   "keep-alive",
@@ -35,30 +15,33 @@ const HOP_BY_HOP = new Set([
   "upgrade",
 ]);
 
-function buildOutboundHeaders(request, customerHost) {
+function buildOutboundHeaders(request, customerHost, authSecret) {
   const out = new Headers();
   for (const [name, value] of request.headers.entries()) {
     if (HOP_BY_HOP.has(name.toLowerCase())) continue;
-    if (name.toLowerCase() === "host") continue; // set by fetch from URL
+    if (name.toLowerCase() === "host") continue;
     out.set(name, value);
   }
-  // Customer hostname → app's tenant resolver middleware (PR4) reads this
-  // to scope alias lookups by tenant.
+  // Caddy rewrites Host from this header (Workers can't override Host).
   out.set("X-Forwarded-Host", customerHost);
+  if (authSecret) {
+    out.set("X-Worker-Auth", authSecret);
+  }
   return out;
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const originalUrl = new URL(request.url);
     const customerHost = request.headers.get("host") || originalUrl.hostname;
 
-    const upstream = new URL(originalUrl);
-    upstream.hostname = FALLBACK_ORIGIN;
+    const upstream = new URL(FALLBACK_ORIGIN);
+    upstream.pathname = originalUrl.pathname;
+    upstream.search = originalUrl.search;
 
     const init = {
       method: request.method,
-      headers: buildOutboundHeaders(request, customerHost),
+      headers: buildOutboundHeaders(request, customerHost, env.WORKER_AUTH_SECRET),
       redirect: "manual",
     };
     if (request.method !== "GET" && request.method !== "HEAD") {
@@ -67,8 +50,12 @@ export default {
 
     try {
       const response = await fetch(upstream.toString(), init);
+      console.log(
+        `customer=${customerHost} status=${response.status} cf-ray=${response.headers.get("cf-ray") || "n/a"}`,
+      );
       return response;
     } catch (err) {
+      console.log(`upstream-fetch-err customer=${customerHost} err=${err.message}`);
       return new Response(`upstream fetch failed: ${err.message}`, {
         status: 502,
         headers: { "content-type": "text/plain; charset=utf-8" },
