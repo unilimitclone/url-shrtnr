@@ -1,14 +1,5 @@
-"""
-CustomDomainService — orchestrates the custom-domain lifecycle.
-
-Composition root for the verifiers, edge provisioner, and repository. Owns
-the state machine (``LEGAL_TRANSITIONS``), the per-window quota counters
-(Redis-backed when available), and the ``audit.domain.*`` event stream.
-
-Public methods are flag-aware via the ``enabled`` setting — when False,
-every mutation refuses with ``DomainQuotaExceededError`` and
-``is_allowed_for_caddy`` returns False.
-"""
+"""Custom-domain lifecycle orchestrator. Owns state machine, quotas, and
+audit.domain.* events. Mutations gated by settings.enabled."""
 
 from __future__ import annotations
 
@@ -23,6 +14,7 @@ from config import CustomDomainSettings
 from errors import (
     DomainAlreadyRegisteredError,
     DomainBlocklistedError,
+    DomainDnsNotPropagatedError,
     DomainQuotaExceededError,
     ForbiddenError,
     InvalidDomainTransitionError,
@@ -37,6 +29,7 @@ from schemas.dto.requests.custom_domain import (
 )
 from schemas.enums.domain_status import DomainStatus, VerificationMethod
 from schemas.models.custom_domain import LEGAL_TRANSITIONS, CustomDomainDoc
+from services.dns_preflight import check_cname, uses_cloudflare_dns
 from services.edge_provisioner.protocol import EdgeProvisioner
 from services.registrar.protocol import HostnameRegistrar
 from services.tenant_resolver.protocol import TenantResolver
@@ -48,6 +41,12 @@ if TYPE_CHECKING:
     from dependencies.auth import CurrentUser
 
 log = get_logger(__name__)
+
+
+def _is_apex(fqdn: str) -> bool:
+    # Naive — misses multi-part TLDs (co.uk). False-negative there just
+    # picks the CNAME path which fails at apex without CNAME-flattening.
+    return fqdn.strip(".").count(".") == 1
 
 
 class CustomDomainService:
@@ -63,18 +62,18 @@ class CustomDomainService:
         tenant_resolver: TenantResolver | None = None,
         blocked_domain_repo: BlockedDomainRepository | None = None,
         redis_client: aioredis.Redis | None = None,
+        preflight_cname_target: str | None = None,
     ) -> None:
         self._repo = repo
         self._verifiers = verifiers
         self._edge = edge_provisioner
         self._registrar = registrar
         self._settings = settings
-        # Optional so unit tests can wire just the bits they care about.
-        # Wiring (`dependencies/wiring.py`) always passes both so the
-        # production path gets cache invalidation + blocklist checks.
         self._tenant_resolver = tenant_resolver
         self._blocked_repo = blocked_domain_repo
         self._redis = redis_client
+        # None = preflight off (tests, self-host LE).
+        self._preflight_cname_target = preflight_cname_target
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -90,53 +89,43 @@ class CustomDomainService:
         await self._enforce_uniqueness(request.fqdn)
         await self._enforce_per_user_quota(user.user_id)
         await self._enforce_create_attempts_quota(user.user_id)
+        await self._enforce_dns_preflight(request.fqdn)
 
-        method = request.verification_method
+        method = self._pick_verification_method(request.fqdn)
         if method not in self._verifiers:
-            # Defensive — DTO validator already rejects SYSTEM and unknown
-            # methods. Hitting this branch implies a wiring bug.
             raise InvalidDomainTransitionError(
                 f"unsupported verification method: {method.value}"
             )
 
         now = datetime.now(timezone.utc)
+        setup_notes = await self._build_setup_notes(request.fqdn)
         doc = CustomDomainDoc(
             fqdn=request.fqdn,
             owner_id=user.user_id,
             status=DomainStatus.PENDING,
             verification_method=method,
-            # Stamp a TXT token unconditionally — cheap, and lets the user
-            # switch verification methods later without re-registering.
             verification_token=str(uuid.uuid4()),
             is_system_default=False,
             created_at=now,
+            setup_notes=setup_notes,
         )
         try:
             new_id = await self._repo.insert(doc.to_mongo())
         except DuplicateKeyError:
-            # Race lost — another request inserted the same fqdn between
-            # our precheck and our insert. Translate to the same friendly
-            # error the precheck would have raised so the API stays at 409
-            # instead of leaking a 500 with a raw Mongo error.
+            # Race with concurrent insert — translate to 409 instead of 500.
             raise DomainAlreadyRegisteredError(
                 f"domain {request.fqdn!r} is already registered"
             ) from None
 
-        # Announce to the edge backend (CF SaaS = create custom hostname;
-        # NoOp on self-host). On failure, roll back the Mongo insert so
-        # the user can retry — leaving an orphan doc would block re-create
-        # via the unique fqdn index.
         try:
             registration = await self._registrar.register(
                 request.fqdn, dcv_method=method.value
             )
         except Exception as exc:
+            # Roll back Mongo so a CF failure doesn't block re-create.
             try:
                 await self._repo.delete_by_id(new_id)
             except Exception as rollback_exc:
-                # Rollback failure leaves an orphan PENDING doc that blocks
-                # re-create. Log loud so an operator can clean up via
-                # mongosh; still raise the original error to the user.
                 log.exception(
                     "audit.domain.registration_rollback_failed",
                     fqdn=request.fqdn,
@@ -175,10 +164,8 @@ class CustomDomainService:
             verification_method=method.value,
         )
 
-        # Re-fetch so the returned doc carries the canonical _id and any
-        # server-side defaults (matches the repo contract elsewhere).
         created = await self._repo.find_by_id(new_id)
-        if created is None:  # pragma: no cover — write succeeded above
+        if created is None:  # pragma: no cover
             raise NotFoundError(f"domain {new_id} vanished after insert")
         return created
 
@@ -187,11 +174,7 @@ class CustomDomainService:
         domain_id: ObjectId,
         user: CurrentUser,
     ) -> CustomDomainDoc:
-        """Run the verifier strategy associated with this domain.
-
-        On success, transitions to ACTIVE. On failure, stays in PENDING (or
-        whatever non-terminal state) and records the error reason.
-        """
+        """Dispatch the verifier. Success → ACTIVE. Failure records reason."""
         self._require_enabled()
 
         doc = await self._load_owned(domain_id, user)
@@ -214,8 +197,6 @@ class CustomDomainService:
                 last_verification_error=None,
                 bump_last_verified_at=True,
             )
-            # Drop any negative cache entry so the freshly-active domain
-            # resolves on the very next request.
             await self._invalidate_cache(doc.fqdn)
             log.info(
                 "audit.domain.verified",
@@ -226,9 +207,8 @@ class CustomDomainService:
                 last_verification_error=None,
             )
         else:
-            # Stay in current state; just record the latest reason so the
-            # user can debug.  Do NOT auto-suspend on a single user-driven
-            # verify — that's the worker's job after N consecutive fails.
+            # Stay in current state; record reason. No auto-suspend on a
+            # single failed click — sync worker (PR5) owns that.
             await self._repo.update_status(
                 doc.id,
                 doc.status,
@@ -253,10 +233,8 @@ class CustomDomainService:
         user: CurrentUser,
         query: ListCustomDomainsQuery,
     ) -> tuple[list[CustomDomainDoc], int]:
-        """Return (page, total_count) for the caller's domains."""
-        # Read path is allowed even when the feature flag is off so existing
-        # owners can see their domains during a rollback. Mutations remain
-        # gated by ``_require_enabled``.
+        """Return (page, total_count) for caller's domains. Reads bypass flag
+        gate so owners can still see their state during a rollback."""
         skip = (query.page - 1) * query.page_size
         items = await self._repo.list_by_owner(
             user.user_id, skip=skip, limit=query.page_size
@@ -275,8 +253,6 @@ class CustomDomainService:
         doc = await self._load_owned(domain_id, user)
         await self._transition(doc, DomainStatus.REVOKED)
         await self._announce_eviction(doc, kind="revoked")
-        # Drop any positive cache entry so the now-revoked host stops
-        # resolving immediately, not after the positive TTL window.
         await self._invalidate_cache(doc.fqdn)
 
         log.info(
@@ -287,26 +263,17 @@ class CustomDomainService:
         )
 
     async def is_allowed_for_caddy(self, fqdn: str) -> bool:
-        """Caddy ask endpoint authorisation check.
-
-        Returns False unconditionally in PR2 — the route that consumes this
-        ships in PR3 along with the Caddyfile changes that activate
-        on-demand TLS. Default-deny matches the security model: even if the
-        endpoint is reached early, no certs are minted.
-        """
+        """Caddy on-demand TLS ask endpoint. Default-deny; wired when the
+        LE path ever ships routes for it."""
         return False
 
-    # ── Background-worker helpers (used by PR5's reverify loop) ──────
+    # ── PR5 sync worker helpers ──────────────────────────────────────
 
     async def reverify_active(
         self, batch_size: int | None = None
     ) -> list[tuple[CustomDomainDoc, VerificationResult]]:
-        """Re-check ACTIVE domains older than the configured freshness window.
-
-        The actual ACTIVE→SUSPENDED suspension after N consecutive fails
-        lives in the worker (PR5) so the consecutive-failure counter stays
-        process-local. Here we only run the check + record latest result.
-        """
+        """Re-check ACTIVE domains older than freshness window. Worker (PR5)
+        handles ACTIVE→SUSPENDED on N consecutive fails."""
         cutoff = datetime.now(timezone.utc) - timedelta(
             seconds=self._settings.max_verify_age_seconds
         )
@@ -360,17 +327,19 @@ class CustomDomainService:
 
     # ── Internal: state machine, quotas, blocklist, cache ────────────
 
+    def _pick_verification_method(self, fqdn: str) -> VerificationMethod:
+        """Backend picks DCV method. CF SaaS → cf_http_dcv. Self-host LE →
+        a_record for apex, cname otherwise."""
+        if VerificationMethod.CF_HTTP_DCV in self._verifiers:
+            return VerificationMethod.CF_HTTP_DCV
+        if _is_apex(fqdn) and VerificationMethod.A_RECORD in self._verifiers:
+            return VerificationMethod.A_RECORD
+        return VerificationMethod.CNAME
+
     @staticmethod
     def _verifier_token(doc: CustomDomainDoc) -> str | None:
-        """Backend handle to feed into ``DomainVerifier.verify``.
-
-        CF SaaS verifiers poll Cloudflare keyed on the CF hostname id;
-        DNS verifiers (CNAME / A / TXT) only need the per-domain UUID
-        token. Keeping the protocol signature uniform across backends
-        means the service picks the right value here, not the verifier.
-        Detection by enum value prefix so a future ``cf_*`` method auto-
-        routes to ``cf_hostname_id`` without touching this branch.
-        """
+        # CF backends key off the cf_hostname_id; DNS verifiers off the
+        # per-domain UUID. Prefix check auto-routes new cf_* methods.
         if doc.verification_method.value.startswith("cf_"):
             return doc.cf_hostname_id
         return doc.verification_token
@@ -380,11 +349,7 @@ class CustomDomainService:
             raise DomainQuotaExceededError("custom domains are not currently enabled")
 
     async def _invalidate_cache(self, fqdn: str) -> None:
-        """Best-effort cache eviction for *fqdn*.
-
-        Tolerates a missing resolver (unit tests that don't wire one) and
-        any backend failure — staleness is degraded UX, not data loss.
-        """
+        """Best-effort tenant-cache eviction. Staleness is degraded UX, not data loss."""
         if self._tenant_resolver is None:
             return
         try:
@@ -397,12 +362,8 @@ class CustomDomainService:
             )
 
     async def _announce_eviction(self, doc: CustomDomainDoc, *, kind: str) -> None:
-        """Tell the edge to drop *doc.fqdn* and persist the outcome.
-
-        ``kind`` ("revoked" / "suspended") only affects the persisted error
-        message — the edge call itself is the same for both. The PR5
-        reverify worker scans for ``eviction_pending=True`` and retries.
-        """
+        """Tell edge to drop fqdn. Stamps eviction_pending on failure for
+        PR5 sync worker to retry. ``kind`` only affects the error message."""
         ok = await self._edge.announce_revoked(doc.fqdn)
         await self._repo.set_eviction_pending(
             doc.id,
@@ -428,9 +389,7 @@ class CustomDomainService:
         last_verification_error: str | None = None,
         bump_last_verified_at: bool = False,
     ) -> None:
-        # Idempotency: self-loops are absent from LEGAL_TRANSITIONS by
-        # design, but retrying verify/delete must not raise. Skip the
-        # legality check; still bump timestamps + record latest error.
+        # Self-loop = idempotent retry. Skip legality; still bump fields.
         if doc.status == new_status:
             await self._repo.update_status(
                 doc.id,
@@ -464,9 +423,7 @@ class CustomDomainService:
             )
 
     async def _enforce_create_attempts_quota(self, owner_id: ObjectId) -> None:
-        # Per-day per-user counter — fails open when Redis is unavailable
-        # (self-hosters without Redis don't get this protection but the
-        # core quota above still bounds total domains).
+        # Fails open without Redis; per-user count still bounds totals.
         if self._redis is None:
             return
         key = f"domain_create_attempts:{owner_id}"
@@ -494,10 +451,29 @@ class CustomDomainService:
         if count > self._settings.verify_attempts_per_hour:
             raise DomainQuotaExceededError("too many verification attempts this hour")
 
+    async def _build_setup_notes(self, fqdn: str) -> list[str]:
+        notes: list[str] = []
+        try:
+            if await uses_cloudflare_dns(fqdn):
+                notes.append(
+                    "Your domain uses Cloudflare DNS. Both DNS records must be "
+                    "set to **DNS only** (grey cloud), not Proxied (orange cloud), "
+                    "or CF SaaS validation will fail."
+                )
+        except Exception as exc:
+            log.warning("setup_notes_ns_lookup_failed", fqdn=fqdn, error=str(exc))
+        return notes
+
+    async def _enforce_dns_preflight(self, fqdn: str) -> None:
+        if not self._preflight_cname_target:
+            return
+        result = await check_cname(fqdn, self._preflight_cname_target)
+        if not result.ok:
+            raise DomainDnsNotPropagatedError(result.reason)
+
     async def _enforce_blocklist(self, fqdn: str) -> None:
-        # Live Mongo lookup — no per-process cache so an operator can add an
-        # abuse domain via mongosh and have the next create() honour it
-        # without an app restart.
+        # Live Mongo — operator can add an abuse domain via mongosh and the
+        # next create() honours it without restart.
         if self._blocked_repo is None:
             return
         if await self._blocked_repo.is_blocked(fqdn):

@@ -66,8 +66,10 @@ async def redirect_url(
 
     # 1. Resolve URL (cache-first)
     resolve_start = time.perf_counter()
+    tenant = getattr(request.state, "tenant", None)
+    domain = tenant.fqdn if tenant else None
     try:
-        url_data, schema = await url_service.resolve(short_code)
+        url_data, schema = await url_service.resolve(short_code, domain=domain)
     except NotFoundError:
         log.info("url_not_found", short_code=short_code)
         return _error_page(request, "404", "URL NOT FOUND", 404)
@@ -165,8 +167,10 @@ async def check_password(
     password = form_data.get("password")
     host_url = str(request.base_url)
 
+    tenant = getattr(request.state, "tenant", None)
+    domain = tenant.fqdn if tenant else None
     try:
-        url_data, _schema = await url_service.resolve(short_code)
+        url_data, _schema = await url_service.resolve(short_code, domain=domain)
     except (NotFoundError, BlockedUrlError, ForbiddenError, GoneError):
         return _error_page(
             request, "400", "Invalid short code or URL not password-protected", 400

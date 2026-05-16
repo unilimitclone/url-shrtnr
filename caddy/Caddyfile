@@ -79,9 +79,12 @@ qr.spoo.me {
 	}
 }
 
-# CF SaaS fallback origin. CF polls this to keep the origin Active
-# (prereq for Custom Hostname registrations). mTLS via AOP required.
-proxy-fallback.spoo.me {
+# Custom-domain catch-all. CF SaaS terminates TLS at the edge, then
+# dispatches to this listener via the zone fallback_origin
+# (proxy-fallback.spoo.me) with SNI = proxy-fallback.spoo.me and Host
+# = customer fqdn. AOP client cert gates origin access; the app reads
+# the Host header to scope the lookup to the right tenant.
+:443 {
 	tls /etc/caddy/origin.crt /etc/caddy/origin.key {
 		protocols tls1.2 tls1.3
 		client_auth {
@@ -97,24 +100,4 @@ proxy-fallback.spoo.me {
 		header_up X-Real-IP {client_ip}
 		header_up X-Forwarded-For {client_ip}
 	}
-}
-
-# CF Worker → origin hop for custom domains (see cloudflare-worker/).
-# Plain HTTP because Workers can't attach AOP. Shared secret gates auth;
-# Host gets rewritten from X-Forwarded-Host so the app builds absolute
-# URLs against the customer hostname.
-:80 {
-	log
-	header {
-		-Server
-	}
-	@authed header X-Worker-Auth {env.WORKER_AUTH_SECRET}
-	handle @authed {
-		reverse_proxy app:8000 {
-			header_up X-Real-IP {client_ip}
-			header_up X-Forwarded-For {client_ip}
-			header_up Host {http.request.header.X-Forwarded-Host}
-		}
-	}
-	respond 403
 }

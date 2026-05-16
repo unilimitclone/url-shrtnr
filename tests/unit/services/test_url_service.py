@@ -383,6 +383,37 @@ class TestUrlServiceResolve:
 
         url_cache.set.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_custom_domain_scope_only_hits_v2_with_domain(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        url_cache.get.return_value = None
+        doc = make_url_v2_doc(alias=ALIAS, domain="links.acme.com")
+        url_repo.find_by_alias.return_value = doc
+
+        result, schema = await svc.resolve(ALIAS, domain="links.acme.com")
+
+        assert schema == "v2"
+        assert result.alias == ALIAS
+        url_repo.find_by_alias.assert_called_once_with(ALIAS, "links.acme.com")
+        legacy_repo.find_by_id.assert_not_called()
+        emoji_repo.find_by_id.assert_not_called()
+        url_cache.get.assert_called_once_with(ALIAS, "links.acme.com")
+
+    @pytest.mark.asyncio
+    async def test_custom_domain_unknown_alias_raises_not_found(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = None
+
+        with pytest.raises(NotFoundError):
+            await svc.resolve("absent", domain="links.acme.com")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestUrlServiceCreate

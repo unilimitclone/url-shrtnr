@@ -1,15 +1,6 @@
-"""
-Custom-domain document model.
-
-Maps to the ``custom_domains`` collection. Each row represents either:
-  - the auto-seeded system default (``is_system_default=True``,
-    ``verification_method=SYSTEM``, owned by ANONYMOUS_OWNER_ID), or
-  - a user-registered fqdn that moves through the ``DomainStatus`` lifecycle
-    via the ``CustomDomainService`` state machine.
-
-Validators are syntax-only — DNS resolution lives in the verifier services,
-never in Pydantic.
-"""
+"""Document model for the ``custom_domains`` collection. One row per fqdn
+(system default + user-registered). DNS resolution lives in verifiers,
+never in Pydantic validators."""
 
 from __future__ import annotations
 
@@ -30,37 +21,30 @@ class CustomDomainDoc(MongoBaseModel):
     owner_id: PyObjectId
     status: DomainStatus = DomainStatus.PENDING
     verification_method: VerificationMethod
-    # Per-domain UUID4 stamped at create time when the chosen method is
-    # TXT_CHALLENGE. Stored on every doc for shape uniformity; consulted only
-    # by the TXT verifier.
+    # UUID stamped on every doc for shape uniformity; only the TXT verifier
+    # actually consumes it.
     verification_token: str | None = None
     is_system_default: bool = False
 
     created_at: datetime
     updated_at: datetime | None = None
     last_verified_at: datetime | None = None
-    # Free-form last failure reason — surface back to the user on re-verify
-    # attempts so they can debug their DNS without contacting support.
     last_verification_error: str | None = None
 
-    # Edge state — orthogonal to ``status``. True when the user/admin has
-    # asked us to revoke or suspend but the edge (Caddy) didn't ack the
-    # cert eviction.
+    # Set when revoke/suspend fired but the edge didn't ack the eviction.
+    # Orthogonal to status; sync worker scans these and retries.
     eviction_pending: bool = False
     last_eviction_error: str | None = None
 
-    # Cloudflare for SaaS bookkeeping. Populated when the wiring is the CF
-    # SaaS backend; left None on self-host (LE) deployments. Repository
-    # filters keyed on cf_hostname_id are sparse-indexed, so None rows are
-    # cheap to ignore.
+    # CF SaaS bookkeeping. None on self-host LE deployments.
     cf_hostname_id: str | None = None
     cf_status: str | None = None
     cf_ssl_status: str | None = None
 
-    # DNS records to surface to the user. Stamped by the registrar at
-    # create time so PR4's dashboard reads them off the doc instead of
-    # re-asking the backend on every page load.
+    # DNS records + setup hints surfaced to the user. Stamped at create
+    # time so the dashboard reads from the doc, not the backend.
     dns_instructions: list[dict[str, str]] = Field(default_factory=list)
+    setup_notes: list[str] = Field(default_factory=list)
 
     @field_validator("fqdn", mode="before")
     @classmethod
@@ -68,11 +52,7 @@ class CustomDomainDoc(MongoBaseModel):
         return normalise_fqdn(v)
 
 
-# Legal state transitions consulted by the service. PENDING → ACTIVE is the
-# common synchronous path (DNS verifiers complete in one call). VERIFYING is
-# kept for forward-compat with async/worker-coordinated verification (e.g. a
-# future CF SaaS poll loop) but the audit.domain.verified log event already
-# records every verifier dispatch — no need to materialise it as a state.
+# State machine. VERIFYING reserved for future async verification flows.
 LEGAL_TRANSITIONS: dict[DomainStatus, frozenset[DomainStatus]] = {
     DomainStatus.PENDING: frozenset({DomainStatus.ACTIVE, DomainStatus.REVOKED}),
     DomainStatus.VERIFYING: frozenset(
@@ -80,12 +60,10 @@ LEGAL_TRANSITIONS: dict[DomainStatus, frozenset[DomainStatus]] = {
     ),
     DomainStatus.ACTIVE: frozenset({DomainStatus.SUSPENDED, DomainStatus.REVOKED}),
     DomainStatus.SUSPENDED: frozenset({DomainStatus.ACTIVE, DomainStatus.REVOKED}),
-    DomainStatus.REVOKED: frozenset(),  # terminal
+    DomainStatus.REVOKED: frozenset(),
 }
 
 
-# Re-exported here for convenience so callers don't need to import from
-# schemas.enums separately.
 __all__ = [
     "LEGAL_TRANSITIONS",
     "CustomDomainDoc",

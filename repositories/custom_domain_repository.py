@@ -171,6 +171,32 @@ class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
         ops["updated_at"] = datetime.now(timezone.utc)
         return await self._update({"_id": domain_id}, {"$set": ops})
 
+    async def find_pending(
+        self, created_before: datetime, limit: int
+    ) -> list[CustomDomainDoc]:
+        """PENDING docs older than ``created_before`` — for the background poller."""
+        try:
+            cursor = (
+                self._col.find(
+                    {
+                        "status": DomainStatus.PENDING,
+                        "is_system_default": {"$ne": True},
+                        "created_at": {"$lt": created_before},
+                    }
+                )
+                .sort("created_at", 1)
+                .limit(limit)
+            )
+            docs = await cursor.to_list(length=limit)
+            return [CustomDomainDoc.from_mongo(d) for d in docs]  # type: ignore[misc]
+        except PyMongoError as exc:
+            log.error(
+                "repo_find_pending_failed",
+                collection=self._collection_name,
+                error=str(exc),
+            )
+            raise
+
     async def find_stale_active(
         self, older_than: datetime, limit: int
     ) -> list[CustomDomainDoc]:
