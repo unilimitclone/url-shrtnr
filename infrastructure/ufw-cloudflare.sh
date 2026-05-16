@@ -68,7 +68,13 @@ done <<< "$v6"
 
 # ── Step 5: mirror the allowlist into DOCKER-USER ──────────────────────
 # Docker bypasses UFW filter; DOCKER-USER is the documented hook.
-# Marker-delimited block in after.rules so re-runs replace cleanly.
+# Rules are scoped to dst = Caddy container IPs so they only affect
+# inbound traffic, not outbound HTTPS from any container (which would
+# otherwise also match a naked `--dport 443 DROP`).
+# Caddy container IPs are pinned in docker-compose.prod.yml.
+
+CADDY_IPV4=172.30.0.20
+CADDY_IPV6=""   # spoonet is v4-only today; left empty so v6 block no-ops
 
 BEGIN_MARKER='# BEGIN cf-docker-user (managed by ufw-cloudflare.sh)'
 END_MARKER='# END cf-docker-user'
@@ -76,10 +82,17 @@ END_MARKER='# END cf-docker-user'
 write_docker_user_block() {
 	local rules_file="$1"
 	local ip_list="$2"
+	local dst_ip="$3"   # Caddy container IP for this family; "" skips
 
 	if grep -qF "$BEGIN_MARKER" "$rules_file"; then
 		echo "[ufw-cloudflare] removing prior managed block from $rules_file…"
 		sed -i "/^$BEGIN_MARKER\$/,/^$END_MARKER\$/d" "$rules_file"
+	fi
+
+	# Skip the file if no container IP for this family.
+	if [[ -z "$dst_ip" ]]; then
+		echo "[ufw-cloudflare] no container IP for $rules_file family; skipping"
+		return
 	fi
 
 	echo "[ufw-cloudflare] writing managed block to $rules_file…"
@@ -87,26 +100,25 @@ write_docker_user_block() {
 		echo ""
 		echo "$BEGIN_MARKER"
 		echo "*filter"
-		# `:CHAIN - [0:0]` flushes existing rules so re-runs replace.
 		echo ":DOCKER-USER - [0:0]"
 		while IFS= read -r ip; do
 			[[ -z "$ip" ]] && continue
-			echo "-A DOCKER-USER -p tcp -s $ip --dport 443 -j RETURN"
-			echo "-A DOCKER-USER -p udp -s $ip --dport 443 -j RETURN"
-			echo "-A DOCKER-USER -p tcp -s $ip --dport 80 -j RETURN"
+			echo "-A DOCKER-USER -p tcp -s $ip -d $dst_ip --dport 443 -j RETURN"
+			echo "-A DOCKER-USER -p udp -s $ip -d $dst_ip --dport 443 -j RETURN"
+			echo "-A DOCKER-USER -p tcp -s $ip -d $dst_ip --dport 80 -j RETURN"
 		done <<< "$ip_list"
-		echo "-A DOCKER-USER -p tcp --dport 443 -j DROP"
-		echo "-A DOCKER-USER -p udp --dport 443 -j DROP"
-		echo "-A DOCKER-USER -p tcp --dport 80 -j DROP"
-		# Default Docker fall-through for traffic not on those ports.
+		echo "-A DOCKER-USER -p tcp -d $dst_ip --dport 443 -j DROP"
+		echo "-A DOCKER-USER -p udp -d $dst_ip --dport 443 -j DROP"
+		echo "-A DOCKER-USER -p tcp -d $dst_ip --dport 80 -j DROP"
+		# Default Docker fall-through.
 		echo "-A DOCKER-USER -j RETURN"
 		echo "COMMIT"
 		echo "$END_MARKER"
 	} >> "$rules_file"
 }
 
-write_docker_user_block /etc/ufw/after.rules "$v4"
-write_docker_user_block /etc/ufw/after6.rules "$v6"
+write_docker_user_block /etc/ufw/after.rules "$v4" "$CADDY_IPV4"
+write_docker_user_block /etc/ufw/after6.rules "$v6" "$CADDY_IPV6"
 
 # ── Step 6: enable + reload ────────────────────────────────────────────
 echo "[ufw-cloudflare] enabling UFW…"
