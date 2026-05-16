@@ -37,6 +37,11 @@
  2c0f:f248::/32
 		trusted_proxies_strict
 		client_ip_headers CF-Connecting-IP X-Forwarded-For
+		# CF SaaS sends SNI=proxy-fallback.spoo.me but Host=customer-hostname.
+		# Caddy auto-enables strict SNI/Host matching when client_auth is set,
+		# which would reject every CF SaaS request. mTLS (AOP) already proves
+		# the request is from CF, so SNI/Host mismatch is safe to allow.
+		strict_sni_host insecure_off
 	}
 
 	# Structured logs to stdout for Vector → Axiom pickup.

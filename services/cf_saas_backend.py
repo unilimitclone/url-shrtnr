@@ -44,12 +44,17 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
         custom_domain_repo: CustomDomainRepository,
         cname_target: str,
         dcv_delegation_target: str,
+        worker_origin: str,
     ) -> None:
         self._cf = cf_client
         self._repo = custom_domain_repo
         # Strip dots so misconfigured env vars can't produce `foo..bar`.
         self._cname_target = cname_target.strip(".")
         self._dcv_delegation_target = dcv_delegation_target.strip(".")
+        # Set as custom_origin_server on each Custom Hostname so CF
+        # dispatches traffic to the Worker route (fallback origin alone
+        # doesn't dispatch arbitrary customer hostnames on Free plan).
+        self._worker_origin = worker_origin.strip(".")
 
     # ── HostnameRegistrar ───────────────────────────────────────────────
 
@@ -57,7 +62,11 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
         self, fqdn: str, *, dcv_method: str | None = None
     ) -> RegistrationResult:
         cf_method = _DCV_METHOD_MAP.get(dcv_method or "cf_delegated_dcv", "txt")
-        result = await self._cf.create_custom_hostname(fqdn, dcv_method=cf_method)
+        result = await self._cf.create_custom_hostname(
+            fqdn,
+            dcv_method=cf_method,
+            custom_origin_server=self._worker_origin,
+        )
         instructions = self._build_dns_instructions(
             fqdn, dcv_method or "cf_delegated_dcv"
         )

@@ -71,14 +71,16 @@ class CloudflareClient:
         fqdn: str,
         *,
         dcv_method: str,
+        custom_origin_server: str | None = None,
     ) -> CFHostnameResult:
         """Register *fqdn* with CF SaaS.
 
         ``dcv_method`` is one of ``"txt"`` (delegated), ``"http"``, ``"email"``.
-        Spoo uses ``"txt"`` for delegated DCV (CF auto-renews via the
-        permanent ``_acme-challenge`` CNAME) and ``"http"`` as fallback.
+        ``custom_origin_server`` overrides the zone fallback origin per
+        hostname — CF dispatches request to this hostname. Required when a
+        Worker route on the SaaS zone needs to catch dispatched traffic.
         """
-        body = {
+        body: dict = {
             "hostname": fqdn,
             "ssl": {
                 "method": dcv_method,
@@ -86,6 +88,8 @@ class CloudflareClient:
                 "settings": {"min_tls_version": "1.2"},
             },
         }
+        if custom_origin_server:
+            body["custom_origin_server"] = custom_origin_server
         payload = await self._request(
             "POST",
             f"/zones/{self._zone_id}/custom_hostnames",

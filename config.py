@@ -186,6 +186,12 @@ class CustomDomainSettings(BaseSettings):
     # enabled (e.g. <random>.dcv.cloudflare.com). Customer adds
     # _acme-challenge.<fqdn> CNAME to <fqdn>.<this value> so CF can renew.
     cf_dcv_delegation_target: str = ""
+    # Hostname CF SaaS dispatches per-Custom-Hostname traffic to. Must match
+    # the Worker route pattern on the SaaS zone — Worker catches dispatched
+    # traffic and proxies to the actual origin. Usually same as
+    # cf_cname_target, kept separate so the user-facing CNAME and the
+    # internal dispatch hostname can diverge if needed.
+    cf_worker_origin: str = "customers.spoo.me"
     # Retry policy for CF API calls. Three attempts with exponential backoff.
     cf_api_max_retries: int = Field(default=3, ge=1)
     cf_api_initial_backoff_seconds: float = Field(default=1.0, gt=0)
