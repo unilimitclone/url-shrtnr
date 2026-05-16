@@ -31,8 +31,9 @@ echo "[ufw-cloudflare] dropping existing 443 + 80 allow rules…"
 mapfile -t rule_nums < <(
 	ufw status numbered \
 		| awk -F'[][]' '/^\[/ {
-			# print rule number for any ALLOW IN line on 443 or 80
-			if ($0 ~ /(443|80).*ALLOW IN/) print $2
+			# Match exact 443/tcp, 443/udp, 80/tcp tokens — naive 443|80
+			# would also match 4430, 8080, etc.
+			if ($0 ~ /(^|[^0-9])(443\/(tcp|udp)|80\/tcp)([^0-9]|$).*ALLOW IN/) print $2
 		}' \
 		| sort -rn
 )
