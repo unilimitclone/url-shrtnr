@@ -196,6 +196,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
             custom_domain_repo=custom_domain_repo,
             cname_target=cd_settings.cf_cname_target,
             dcv_delegation_target=cd_settings.cf_dcv_delegation_target,
+            worker_origin=cd_settings.cf_worker_origin,
         )
         # Same instance fills three protocol slots — wiring contract.
         verifiers = {

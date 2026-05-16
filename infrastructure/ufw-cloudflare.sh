@@ -1,17 +1,13 @@
 #!/bin/bash
-# Restrict inbound 443 to Cloudflare IP ranges only.
-# Run on VPS as root. Idempotent — safe to re-run from cron.
+# Allowlist inbound 443 + 80 to Cloudflare IP ranges. Idempotent.
+# Ports 80 + 443 both need it: 443 for customer HTTPS, 80 for the
+# CF Worker → origin hop (worker can't do mTLS, see cloudflare-worker/).
 #
-# CF publishes its IP ranges at:
-#   https://www.cloudflare.com/ips-v4
-#   https://www.cloudflare.com/ips-v6
+# CF IP ranges: https://www.cloudflare.com/ips-{v4,v6}
 #
-# Without this allowlist, any attacker who discovers our origin IP could
-# bypass CF (and bypass orange-cloud DDoS / WAF / rate limit).
-#
-# Order matters: fetch CF ranges and validate BEFORE mutating UFW. A failed
-# fetch mid-run could otherwise leave the host with default-deny and no
-# allow rules — locking 443 entirely.
+# Docker-mapped ports bypass UFW's filter chain (DNAT happens in
+# PREROUTING), so we ALSO mirror the rules into DOCKER-USER via
+# /etc/ufw/after.rules. Step 5 below.
 
 set -euo pipefail
 
@@ -30,16 +26,14 @@ if [[ -z "$v4" || -z "$v6" ]]; then
 	exit 2
 fi
 
-# ── Step 2: drop ALL prior 443 allow rules ─────────────────────────────
-# Catches both our own Cloudflare-v[46] tagged rules AND any pre-existing
-# broad rules like `ufw allow 443/tcp` that would let traffic bypass CF.
-# Anything other than CF allow on 443 is a regression we re-establish below.
-echo "[ufw-cloudflare] dropping existing 443 allow rules…"
+# ── Step 2: drop prior 443/80 rules so the re-run rebuilds cleanly ─────
+echo "[ufw-cloudflare] dropping existing 443 + 80 allow rules…"
 mapfile -t rule_nums < <(
 	ufw status numbered \
 		| awk -F'[][]' '/^\[/ {
-			# print rule number for any ALLOW IN line that mentions 443
-			if ($0 ~ /443.*ALLOW IN/) print $2
+			# Match exact 443/tcp, 443/udp, 80/tcp tokens — naive 443|80
+			# would also match 4430, 8080, etc.
+			if ($0 ~ /(^|[^0-9])(443\/(tcp|udp)|80\/tcp)([^0-9]|$).*ALLOW IN/) print $2
 		}' \
 		| sort -rn
 )
@@ -56,25 +50,71 @@ ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
 ufw allow 22/tcp comment 'SSH' >/dev/null
 
-# ── Step 4: add CF allow rules ─────────────────────────────────────────
-# TCP for HTTP/2 + HTTP/1.1, UDP for HTTP/3 (QUIC). Compose maps both.
-echo "[ufw-cloudflare] adding 443 allow rules for CF (TCP + UDP)…"
+# ── Step 4: CF allowlist (443 tcp+udp for HTTP/{2,3}, 80 tcp) ──────────
+echo "[ufw-cloudflare] adding 443 + 80 allow rules for CF…"
 while IFS= read -r ip; do
 	[[ -z "$ip" ]] && continue
 	ufw allow proto tcp from "$ip" to any port 443 comment 'Cloudflare-v4' >/dev/null
 	ufw allow proto udp from "$ip" to any port 443 comment 'Cloudflare-v4' >/dev/null
+	ufw allow proto tcp from "$ip" to any port 80 comment 'Cloudflare-v4' >/dev/null
 done <<< "$v4"
 
 while IFS= read -r ip; do
 	[[ -z "$ip" ]] && continue
 	ufw allow proto tcp from "$ip" to any port 443 comment 'Cloudflare-v6' >/dev/null
 	ufw allow proto udp from "$ip" to any port 443 comment 'Cloudflare-v6' >/dev/null
+	ufw allow proto tcp from "$ip" to any port 80 comment 'Cloudflare-v6' >/dev/null
 done <<< "$v6"
 
-# ── Step 5: enable + reload ────────────────────────────────────────────
+# ── Step 5: mirror the allowlist into DOCKER-USER ──────────────────────
+# Docker bypasses UFW filter; DOCKER-USER is the documented hook.
+# Marker-delimited block in after.rules so re-runs replace cleanly.
+
+BEGIN_MARKER='# BEGIN cf-docker-user (managed by ufw-cloudflare.sh)'
+END_MARKER='# END cf-docker-user'
+
+write_docker_user_block() {
+	local rules_file="$1"
+	local ip_list="$2"
+
+	if grep -qF "$BEGIN_MARKER" "$rules_file"; then
+		echo "[ufw-cloudflare] removing prior managed block from $rules_file…"
+		sed -i "/^$BEGIN_MARKER\$/,/^$END_MARKER\$/d" "$rules_file"
+	fi
+
+	echo "[ufw-cloudflare] writing managed block to $rules_file…"
+	{
+		echo ""
+		echo "$BEGIN_MARKER"
+		echo "*filter"
+		# `:CHAIN - [0:0]` flushes existing rules so re-runs replace.
+		echo ":DOCKER-USER - [0:0]"
+		while IFS= read -r ip; do
+			[[ -z "$ip" ]] && continue
+			echo "-A DOCKER-USER -p tcp -s $ip --dport 443 -j RETURN"
+			echo "-A DOCKER-USER -p udp -s $ip --dport 443 -j RETURN"
+			echo "-A DOCKER-USER -p tcp -s $ip --dport 80 -j RETURN"
+		done <<< "$ip_list"
+		echo "-A DOCKER-USER -p tcp --dport 443 -j DROP"
+		echo "-A DOCKER-USER -p udp --dport 443 -j DROP"
+		echo "-A DOCKER-USER -p tcp --dport 80 -j DROP"
+		# Default Docker fall-through for traffic not on those ports.
+		echo "-A DOCKER-USER -j RETURN"
+		echo "COMMIT"
+		echo "$END_MARKER"
+	} >> "$rules_file"
+}
+
+write_docker_user_block /etc/ufw/after.rules "$v4"
+write_docker_user_block /etc/ufw/after6.rules "$v6"
+
+# ── Step 6: enable + reload ────────────────────────────────────────────
 echo "[ufw-cloudflare] enabling UFW…"
 ufw --force enable >/dev/null
 ufw reload >/dev/null
 
-echo "[ufw-cloudflare] done. Rules:"
+echo "[ufw-cloudflare] done. UFW rules:"
 ufw status | head -60
+echo
+echo "[ufw-cloudflare] DOCKER-USER chain (live, IPv4):"
+iptables -L DOCKER-USER -n --line-numbers | head -20

@@ -179,25 +179,36 @@ class CustomDomainSettings(BaseSettings):
     # customer create.
     cf_zone_id: str | None = None
     cf_api_token: str | None = None
-    # Friendly CNAME target users see in their DNS dashboard. Created once
-    # in the CF zone as a proxied CNAME to the fallback origin.
+    # Friendly CNAME target users see in their DNS dashboard. Backed in
+    # the SaaS zone by a sentinel proxied A record (192.0.2.0) so the
+    # bound Worker route engages; never actually contacted.
     cf_cname_target: str = "customers.spoo.me"
     # Per-zone delegation hostname returned by CF when Delegated DCV is
     # enabled (e.g. <random>.dcv.cloudflare.com). Customer adds
     # _acme-challenge.<fqdn> CNAME to <fqdn>.<this value> so CF can renew.
     cf_dcv_delegation_target: str = ""
+    # Hostname CF SaaS dispatches per-Custom-Hostname traffic to. Must match
+    # the Worker route pattern on the SaaS zone — Worker catches dispatched
+    # traffic and proxies to the actual origin. Usually same as
+    # cf_cname_target, kept separate so the user-facing CNAME and the
+    # internal dispatch hostname can diverge if needed.
+    cf_worker_origin: str = "customers.spoo.me"
     # Retry policy for CF API calls. Three attempts with exponential backoff.
     cf_api_max_retries: int = Field(default=3, ge=1)
     cf_api_initial_backoff_seconds: float = Field(default=1.0, gt=0)
 
     @model_validator(mode="after")
     def _validate_cf_saas_config(self) -> CustomDomainSettings:
+        # Normalise at config boundary so backend code can trust the value.
+        self.cf_worker_origin = self.cf_worker_origin.strip().strip(".")
         if self.cf_zone_id:
             missing = []
             if not self.cf_api_token:
                 missing.append("cf_api_token")
             if not self.cf_dcv_delegation_target:
                 missing.append("cf_dcv_delegation_target")
+            if not self.cf_worker_origin:
+                missing.append("cf_worker_origin")
             if missing:
                 raise ValueError(
                     f"CF SaaS path requires {missing} when cf_zone_id is set."

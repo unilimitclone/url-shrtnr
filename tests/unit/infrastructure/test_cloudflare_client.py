@@ -63,6 +63,7 @@ class TestCloudflareClient:
         assert result.status == "pending"
         request.assert_awaited_once()
         kwargs = request.await_args.kwargs
+        # No custom_origin_server when not passed → key omitted from body.
         assert kwargs["json"] == {
             "hostname": "links.acme.com",
             "ssl": {
@@ -76,6 +77,20 @@ class TestCloudflareClient:
             "POST",
             f"{CF_API_BASE}/zones/zone1/custom_hostnames",
         )
+
+    async def test_create_with_custom_origin_server_includes_it_in_payload(self):
+        http, request = _http_client_with_response({"result": _hostname_payload()})
+        client = CloudflareClient(http_client=http, api_token="t", zone_id="z")
+
+        await client.create_custom_hostname(
+            "links.acme.com",
+            dcv_method="txt",
+            custom_origin_server="customers.spoo.me",
+        )
+
+        request.assert_awaited_once()
+        body = request.await_args.kwargs["json"]
+        assert body["custom_origin_server"] == "customers.spoo.me"
 
     async def test_get_custom_hostname_returns_parsed_result(self):
         http, _ = _http_client_with_response(

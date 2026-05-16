@@ -21,6 +21,7 @@ def _backend(
         custom_domain_repo=repo or MagicMock(),
         cname_target="customers.spoo.me",
         dcv_delegation_target="abc.dcv.cloudflare.com",
+        worker_origin="customers.spoo.me",
     )
 
 
@@ -51,9 +52,11 @@ class TestRegister:
         assert cname["value"] == "customers.spoo.me"
         assert delegation["name"] == "_acme-challenge.links.acme.com"
         assert delegation["value"] == "links.acme.com.abc.dcv.cloudflare.com"
-        # CF API was called with the delegated DCV method ("txt").
+        # CF API was called with the delegated DCV method + custom origin.
         cf_client.create_custom_hostname.assert_awaited_once_with(
-            "links.acme.com", dcv_method="txt"
+            "links.acme.com",
+            dcv_method="txt",
+            custom_origin_server="customers.spoo.me",
         )
 
     async def test_delegation_target_with_stray_dots_is_normalised(self):
@@ -73,11 +76,15 @@ class TestRegister:
             custom_domain_repo=MagicMock(),
             cname_target=".customers.spoo.me.",
             dcv_delegation_target=".abc.dcv.cloudflare.com.",
+            worker_origin=".customers.spoo.me.",
         )
         result = await backend.register("links.acme.com", dcv_method="cf_delegated_dcv")
         cname, delegation = result.instructions
         assert cname["value"] == "customers.spoo.me"
         assert delegation["value"] == "links.acme.com.abc.dcv.cloudflare.com"
+        # Worker origin also stripped.
+        kwargs = cf_client.create_custom_hostname.call_args.kwargs
+        assert kwargs["custom_origin_server"] == "customers.spoo.me"
 
     async def test_register_http_dcv_returns_one_record(self):
         cf_client = MagicMock()
@@ -93,7 +100,9 @@ class TestRegister:
         result = await backend.register("links.acme.com", dcv_method="cf_http_dcv")
         assert len(result.instructions) == 1
         cf_client.create_custom_hostname.assert_awaited_once_with(
-            "links.acme.com", dcv_method="http"
+            "links.acme.com",
+            dcv_method="http",
+            custom_origin_server="customers.spoo.me",
         )
 
 
