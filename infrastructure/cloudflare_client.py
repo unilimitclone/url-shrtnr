@@ -31,12 +31,17 @@ class CFHostnameResult:
     hostname: str
     status: str  # "pending" | "active" | "moved" | "deleted" | "blocked"
     ssl_status: str  # "initializing" | "pending_validation" | "active" | ...
+    ssl_method: str = ""  # "http" | "txt" | "email"
     verification_errors: list[str] = field(default_factory=list)
     # DCV records the customer needs to add. Shape depends on dcv_method:
     # - delegated: empty (handled via permanent CNAME)
     # - http: [{name: "<token>", value: "<expected>", type: "http"}]
     # - txt:  [{name: "_acme-challenge.<host>", value: "<token>", type: "txt"}]
     verification_records: list[dict[str, Any]] = field(default_factory=list)
+    # Pre-validation TXT (zone setting). Populated when CF requires the
+    # customer to prove ownership before DCV runs. None when the zone
+    # has pre-validation disabled.
+    ownership_verification: dict[str, str] | None = None
 
 
 class CloudflareClient:
@@ -94,6 +99,22 @@ class CloudflareClient:
             "POST",
             f"/zones/{self._zone_id}/custom_hostnames",
             json=body,
+        )
+        return _parse_hostname(payload["result"])
+
+    async def recheck_custom_hostname(
+        self, hostname_id: str, *, dcv_method: str
+    ) -> CFHostnameResult:
+        """Trigger an immediate CF DCV re-probe.
+
+        PATCH with the same ssl.method pokes CF to re-validate now instead
+        of waiting for its next scheduled retry. Used on user-initiated
+        verify clicks so they don't sit in CF's 15+ minute backoff window.
+        """
+        payload = await self._request(
+            "PATCH",
+            f"/zones/{self._zone_id}/custom_hostnames/{hostname_id}",
+            json={"ssl": {"method": dcv_method, "type": "dv"}},
         )
         return _parse_hostname(payload["result"])
 
@@ -241,11 +262,21 @@ def _parse_retry_after(response: httpx.Response) -> float | None:
 
 def _parse_hostname(raw: dict[str, Any]) -> CFHostnameResult:
     ssl = raw.get("ssl") or {}
+    ov_raw = raw.get("ownership_verification") or None
+    ownership = None
+    if isinstance(ov_raw, dict) and ov_raw.get("name") and ov_raw.get("value"):
+        ownership = {
+            "type": ov_raw.get("type", "txt"),
+            "name": str(ov_raw["name"]),
+            "value": str(ov_raw["value"]),
+        }
     return CFHostnameResult(
         id=raw["id"],
         hostname=raw["hostname"],
         status=raw.get("status", "unknown"),
         ssl_status=ssl.get("status", "unknown"),
+        ssl_method=ssl.get("method", ""),
         verification_errors=list(ssl.get("validation_errors") or []),
         verification_records=list(ssl.get("validation_records") or []),
+        ownership_verification=ownership,
     )

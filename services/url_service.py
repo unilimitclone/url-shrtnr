@@ -206,9 +206,16 @@ class UrlService:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    async def resolve(self, short_code: str) -> tuple[UrlCacheData, SchemaVersion]:
+    async def resolve(
+        self, short_code: str, *, domain: str | None = None
+    ) -> tuple[UrlCacheData, SchemaVersion]:
         """
         Resolve a short code to UrlCacheData and schema version.
+
+        ``domain`` scopes the lookup to a custom tenant. None or the system
+        default falls back to the original cross-collection path (v2 + v1
+        + emoji). Custom tenants only resolve against urlsV2 — v1/emoji
+        predate per-domain scoping and never live on custom hostnames.
 
         Returns (UrlCacheData, schema_version) where schema_version is
         a SchemaVersion enum member (V2, V1, or EMOJI).
@@ -218,8 +225,10 @@ class UrlService:
             BlockedUrlError: URL status is BLOCKED (v2 only).
             GoneError:       URL status is EXPIRED or INACTIVE (v2 only).
         """
+        scope = domain or self._system_default_domain
+        is_custom = scope != self._system_default_domain
         # 1. Cache hit
-        cached = await self._url_cache.get(short_code, self._system_default_domain)
+        cached = await self._url_cache.get(short_code, scope)
         if cached is not None:
             schema = cached.schema_version
             if schema == SchemaVersion.V2 and cached.url_status in (
@@ -247,9 +256,14 @@ class UrlService:
         # 2. Cache miss — dispatch by length and type
         if should_sample("cache_operation"):
             log.debug("url_cache_miss", short_code=short_code)
-        url_cache_data, schema = await self._dispatch(short_code)
+        if is_custom:
+            url_cache_data, schema = await self._dispatch_custom_domain(
+                short_code, scope
+            )
+        else:
+            url_cache_data, schema = await self._dispatch(short_code)
         if url_cache_data is None:
-            log.info("url_resolve_not_found", short_code=short_code)
+            log.info("url_resolve_not_found", short_code=short_code, domain=scope)
             raise NotFoundError("URL not found")
 
         # 3. Populate cache according to caching rules
@@ -669,6 +683,15 @@ class UrlService:
             return await self._try_v1_then_v2(short_code)
         else:
             return await self._try_v2_then_v1(short_code)
+
+    async def _dispatch_custom_domain(
+        self, short_code: str, domain: str
+    ) -> tuple[UrlCacheData | None, SchemaVersion]:
+        # Custom domains are v2-only by construction.
+        v2_doc = await self._url_repo.find_by_alias(short_code, domain)
+        if v2_doc is None:
+            return None, SchemaVersion.V2
+        return _v2_doc_to_cache(v2_doc), SchemaVersion.V2
 
     async def _try_v2_then_v1(
         self, short_code: str

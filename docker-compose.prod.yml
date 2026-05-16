@@ -116,18 +116,11 @@ services:
     ports:
       - "443:443"
       - "443:443/udp"
-      - "80:80"
-    environment:
-      # Shared with the CF custom-domain Worker; see cloudflare-worker/README.md.
-      # `:?` fails compose up if the var is unset/empty — without it, Caddy's
-      # auth matcher would expand to an empty string and let any request
-      # through with no X-Worker-Auth header.
-      - WORKER_AUTH_SECRET=${WORKER_AUTH_SECRET:?WORKER_AUTH_SECRET must be set in .env}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/origin.crt:/etc/caddy/origin.crt:ro
       - ./caddy/origin.key:/etc/caddy/origin.key:ro
-      - ./caddy/cf-authenticated-origin-pull.crt:/etc/caddy/cf-authenticated-origin-pull.crt:ro
+      - ./caddy/cf-aop-zone-ca.crt:/etc/caddy/cf-aop-zone-ca.crt:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

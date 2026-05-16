@@ -89,12 +89,15 @@ class CachedMongoTenantResolver(TenantResolver):
         if not normalised:
             return None
 
-        # System default short-circuits — no Redis, no Mongo, no cache slot
-        # consumed. Hot path stays trivially fast for the dominant case.
-        if normalised == self._system_default_domain:
+        # System default + its `www.` alias short-circuit. No Redis, no
+        # Mongo, no cache slot consumed.
+        if (
+            normalised == self._system_default_domain
+            or normalised == f"www.{self._system_default_domain}"
+        ):
             return TenantInfo(
                 domain_id=None,
-                fqdn=normalised,
+                fqdn=self._system_default_domain,
                 owner_id=None,
                 status=DomainStatus.ACTIVE,
                 is_system_default=True,

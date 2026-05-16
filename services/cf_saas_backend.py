@@ -1,17 +1,9 @@
-"""CfSaasBackend — single class, three protocols.
-
-CF SaaS owns hostname registration, DCV, and cert issuance/eviction. The
-three concerns map onto three protocols (HostnameRegistrar, DomainVerifier,
-EdgeProvisioner) so the rest of the system stays decoupled from CF's API.
-One backend implements all three because the CF hostname id ties them
-together — splitting the class would force redundant CF lookups.
-
-Wiring instantiates this once and registers the same instance in all three
-protocol slots. Callers see only the protocols.
-"""
+"""CF SaaS backend — one class fills Registrar + Verifier + EdgeProvisioner.
+Single class because the CF hostname id ties all three operations together."""
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
 import httpx
@@ -29,9 +21,8 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
-# Map our VerificationMethod string values to the CF API's "ssl.method" field.
 _DCV_METHOD_MAP = {
-    "cf_delegated_dcv": "txt",  # CF + delegated CNAME = auto-renewing TXT DCV
+    "cf_delegated_dcv": "txt",
     "cf_http_dcv": "http",
 }
 
@@ -44,32 +35,30 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
         custom_domain_repo: CustomDomainRepository,
         cname_target: str,
         dcv_delegation_target: str,
-        worker_origin: str,
     ) -> None:
         self._cf = cf_client
         self._repo = custom_domain_repo
-        # Strip dots so misconfigured env vars can't produce `foo..bar`.
         self._cname_target = cname_target.strip(".")
         self._dcv_delegation_target = dcv_delegation_target.strip(".")
-        # Set as custom_origin_server on each Custom Hostname so CF
-        # dispatches traffic to the Worker route (fallback origin alone
-        # doesn't dispatch arbitrary customer hostnames on Free plan).
-        self._worker_origin = worker_origin.strip(".")
 
     # ── HostnameRegistrar ───────────────────────────────────────────────
 
     async def register(
         self, fqdn: str, *, dcv_method: str | None = None
     ) -> RegistrationResult:
-        cf_method = _DCV_METHOD_MAP.get(dcv_method or "cf_delegated_dcv", "txt")
-        result = await self._cf.create_custom_hostname(
-            fqdn,
-            dcv_method=cf_method,
-            custom_origin_server=self._worker_origin,
-        )
-        instructions = self._build_dns_instructions(
-            fqdn, dcv_method or "cf_delegated_dcv"
-        )
+        method = dcv_method or "cf_http_dcv"
+        cf_method = _DCV_METHOD_MAP.get(method, "http")
+        result = await self._cf.create_custom_hostname(fqdn, dcv_method=cf_method)
+        instructions = self._build_dns_instructions(fqdn, method)
+        if result.ownership_verification:
+            instructions.append(
+                {
+                    "type": result.ownership_verification["type"].upper(),
+                    "name": result.ownership_verification["name"],
+                    "value": result.ownership_verification["value"],
+                    "purpose": "proves domain ownership",
+                }
+            )
         return RegistrationResult(
             backend_id=result.id,
             instructions=instructions,
@@ -79,14 +68,9 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
             },
         )
 
-    # Teardown lives in announce_revoked (EdgeProvisioner). One backend,
-    # three protocols; the CF delete call is the same operation.
-
     # ── DomainVerifier ──────────────────────────────────────────────────
 
     async def verify(self, fqdn: str, token: str | None = None) -> VerificationResult:
-        # ``token`` is reused as the CF hostname id — service layer passes
-        # ``doc.cf_hostname_id``. Callers without an id can't verify CF.
         if not token:
             return VerificationResult(
                 verified=False,
@@ -99,6 +83,14 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
             return VerificationResult(verified=False, reason=str(exc))
         except httpx.HTTPError as exc:
             return VerificationResult(verified=False, reason=f"network error: {exc}")
+
+        # Force re-probe so user's click doesn't sit in CF's 15-min backoff.
+        # Only HTTP DCV runs probes; delegated DCV auto-validates.
+        if result.ssl_status != "active" and result.ssl_method == "http":
+            with contextlib.suppress(CloudflareAPIError):
+                result = await self._cf.recheck_custom_hostname(
+                    token, dcv_method=result.ssl_method
+                )
 
         verified = result.status == "active" and result.ssl_status == "active"
         if verified:
@@ -113,11 +105,8 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
     # ── EdgeProvisioner ─────────────────────────────────────────────────
 
     async def announce_revoked(self, fqdn: str) -> bool:
-        # CF SaaS revoke = delete the custom hostname. Resolve the cf id
-        # from the doc; fall back to CF name lookup if the doc lost it.
-        # Protocol contract: never raise — every failure path returns False
-        # so the orchestrator persists ``eviction_pending=True`` and the
-        # worker retries.
+        # Protocol: never raise. Failures return False so the orchestrator
+        # stamps eviction_pending and the sync worker retries.
         backend_id, status = await self._resolve_backend_id(fqdn)
         if status == "absent":
             log.info("cf_saas_revocation_already_absent", fqdn=fqdn)
@@ -152,10 +141,7 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
         return True
 
     async def _resolve_backend_id(self, fqdn: str) -> tuple[str | None, str]:
-        """Returns (backend_id, status) where status is one of
-        ``"resolved"`` (id usable), ``"absent"`` (CF has no hostname),
-        ``"lookup_failed"`` (transport error — caller should retry later).
-        """
+        """Returns (id, status) — status is "resolved" | "absent" | "lookup_failed"."""
         try:
             doc = await self._repo.find_by_fqdn(fqdn)
         except Exception as exc:
@@ -186,7 +172,6 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
     def _build_dns_instructions(
         self, fqdn: str, dcv_method: str
     ) -> list[dict[str, str]]:
-        # Always need the traffic-routing CNAME.
         records: list[dict[str, str]] = [
             {
                 "type": "CNAME",
@@ -195,8 +180,7 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
                 "purpose": "routes traffic to spoo.me",
             }
         ]
-        if dcv_method == "cf_delegated_dcv":
-            # Delegated DCV: one extra permanent CNAME so CF auto-renews.
+        if dcv_method == "cf_delegated_dcv" and self._dcv_delegation_target:
             records.append(
                 {
                     "type": "CNAME",
@@ -205,6 +189,4 @@ class CfSaasBackend(HostnameRegistrar, DomainVerifier, EdgeProvisioner):
                     "purpose": "auto-renews TLS certificate",
                 }
             )
-        # cf_http_dcv: CF runs HTTP-01 against the routing CNAME — no extra
-        # record needed beyond the one above.
         return records

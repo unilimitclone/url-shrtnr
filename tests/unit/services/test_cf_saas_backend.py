@@ -21,7 +21,6 @@ def _backend(
         custom_domain_repo=repo or MagicMock(),
         cname_target="customers.spoo.me",
         dcv_delegation_target="abc.dcv.cloudflare.com",
-        worker_origin="customers.spoo.me",
     )
 
 
@@ -52,11 +51,11 @@ class TestRegister:
         assert cname["value"] == "customers.spoo.me"
         assert delegation["name"] == "_acme-challenge.links.acme.com"
         assert delegation["value"] == "links.acme.com.abc.dcv.cloudflare.com"
-        # CF API was called with the delegated DCV method + custom origin.
+        # CF API was called with the delegated DCV method; no custom_origin_server
+        # — dispatch goes through the zone fallback_origin.
         cf_client.create_custom_hostname.assert_awaited_once_with(
             "links.acme.com",
             dcv_method="txt",
-            custom_origin_server="customers.spoo.me",
         )
 
     async def test_delegation_target_with_stray_dots_is_normalised(self):
@@ -76,15 +75,11 @@ class TestRegister:
             custom_domain_repo=MagicMock(),
             cname_target=".customers.spoo.me.",
             dcv_delegation_target=".abc.dcv.cloudflare.com.",
-            worker_origin=".customers.spoo.me.",
         )
         result = await backend.register("links.acme.com", dcv_method="cf_delegated_dcv")
         cname, delegation = result.instructions
         assert cname["value"] == "customers.spoo.me"
         assert delegation["value"] == "links.acme.com.abc.dcv.cloudflare.com"
-        # Worker origin also stripped.
-        kwargs = cf_client.create_custom_hostname.call_args.kwargs
-        assert kwargs["custom_origin_server"] == "customers.spoo.me"
 
     async def test_register_http_dcv_returns_one_record(self):
         cf_client = MagicMock()
@@ -102,8 +97,32 @@ class TestRegister:
         cf_client.create_custom_hostname.assert_awaited_once_with(
             "links.acme.com",
             dcv_method="http",
-            custom_origin_server="customers.spoo.me",
         )
+
+    async def test_register_appends_ownership_txt_when_cf_returns_it(self):
+        cf_client = MagicMock()
+        cf_client.create_custom_hostname = AsyncMock(
+            return_value=CFHostnameResult(
+                id="cf-3",
+                hostname="links.acme.com",
+                status="pending",
+                ssl_status="initializing",
+                ownership_verification={
+                    "type": "txt",
+                    "name": "_cf-custom-hostname.links.acme.com",
+                    "value": "7f3e4a92-uuid",
+                },
+            )
+        )
+        backend = _backend(cf_client=cf_client)
+        result = await backend.register("links.acme.com", dcv_method="cf_http_dcv")
+        # Routing CNAME + ownership TXT.
+        assert len(result.instructions) == 2
+        txt = result.instructions[1]
+        assert txt["type"] == "TXT"
+        assert txt["name"] == "_cf-custom-hostname.links.acme.com"
+        assert txt["value"] == "7f3e4a92-uuid"
+        assert "ownership" in txt["purpose"].lower()
 
 
 class TestVerify:

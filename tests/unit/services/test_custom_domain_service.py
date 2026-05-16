@@ -97,10 +97,14 @@ def _build_service(
         a.verify = AsyncMock(return_value=VerificationResult(True))
         txt = AsyncMock()
         txt.verify = AsyncMock(return_value=VerificationResult(True))
+        cf = AsyncMock()
+        cf.verify = AsyncMock(return_value=VerificationResult(True))
         verifiers = {
             VerificationMethod.CNAME: cname,
             VerificationMethod.A_RECORD: a,
             VerificationMethod.TXT_CHALLENGE: txt,
+            VerificationMethod.CF_HTTP_DCV: cf,
+            VerificationMethod.CF_DELEGATED_DCV: cf,
         }
 
     edge = edge or AsyncMock()
@@ -176,15 +180,48 @@ class TestCreate:
     async def test_creates_pending_doc_with_token(self):
         svc, repo, _, _, _ = _build_service()
         repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
-        req = CreateCustomDomainRequest(
-            fqdn="links.acme.com", verification_method=VerificationMethod.TXT_CHALLENGE
-        )
+        req = CreateCustomDomainRequest(fqdn="links.acme.com")
         doc = await svc.create(req, _user())
         assert doc.status == DomainStatus.PENDING
         repo.insert.assert_awaited_once()
-        # Token should be stamped regardless of method.
+        # Token always stamped — lets users switch backends later without re-registering.
         inserted = repo.insert.call_args.args[0]
         assert inserted["verification_token"] is not None
+
+    @pytest.mark.asyncio
+    async def test_picker_chooses_cf_when_backend_wired(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        await svc.create(CreateCustomDomainRequest(fqdn="links.acme.com"), _user())
+        inserted = repo.insert.call_args.args[0]
+        assert inserted["verification_method"] == VerificationMethod.CF_HTTP_DCV
+
+    @pytest.mark.asyncio
+    async def test_picker_falls_back_to_cname_when_only_le_wired(self):
+        cname = AsyncMock()
+        cname.verify = AsyncMock(return_value=VerificationResult(True))
+        verifiers = {VerificationMethod.CNAME: cname}
+        svc, repo, _, _, _ = _build_service(verifiers=verifiers)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        await svc.create(CreateCustomDomainRequest(fqdn="links.acme.com"), _user())
+        inserted = repo.insert.call_args.args[0]
+        assert inserted["verification_method"] == VerificationMethod.CNAME
+
+    @pytest.mark.asyncio
+    async def test_picker_chooses_a_record_for_apex_on_le_path(self):
+        cname = AsyncMock()
+        cname.verify = AsyncMock(return_value=VerificationResult(True))
+        a = AsyncMock()
+        a.verify = AsyncMock(return_value=VerificationResult(True))
+        verifiers = {
+            VerificationMethod.CNAME: cname,
+            VerificationMethod.A_RECORD: a,
+        }
+        svc, repo, _, _, _ = _build_service(verifiers=verifiers)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        await svc.create(CreateCustomDomainRequest(fqdn="acme.com"), _user())
+        inserted = repo.insert.call_args.args[0]
+        assert inserted["verification_method"] == VerificationMethod.A_RECORD
 
     @pytest.mark.asyncio
     async def test_uniqueness_conflict_raises(self):

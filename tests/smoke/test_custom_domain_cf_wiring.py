@@ -106,18 +106,3 @@ class TestCfConfigValidation:
     def test_cf_zone_id_without_token_fails_at_settings_load(self):
         with pytest.raises(ValueError, match="cf_api_token"):
             CustomDomainSettings(cf_zone_id="zone1")
-
-    def test_cf_zone_id_without_delegation_target_fails(self):
-        with pytest.raises(ValueError, match="cf_dcv_delegation_target"):
-            CustomDomainSettings(cf_zone_id="zone1", cf_api_token="tok")
-
-    def test_cf_zone_id_with_empty_worker_origin_fails(self):
-        # Empty/whitespace/dots-only worker_origin would silently omit
-        # custom_origin_server and break dispatch — must fail fast.
-        with pytest.raises(ValueError, match="cf_worker_origin"):
-            CustomDomainSettings(
-                cf_zone_id="zone1",
-                cf_api_token="tok",
-                cf_dcv_delegation_target="abc.dcv.cloudflare.com",
-                cf_worker_origin=" . ",
-            )

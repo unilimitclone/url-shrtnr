@@ -44,6 +44,7 @@ from middleware.security import (
     StaticCacheHeadersMiddleware,
     configure_cors,
 )
+from middleware.tenant import TenantMiddleware
 from repositories.indexes import ensure_indexes
 from routes.api_v1 import router as api_v1_router
 from routes.auth import router as auth_router
@@ -239,7 +240,9 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     app.add_middleware(
         MaxContentLengthMiddleware, max_content_length=settings.max_content_length
     )
-    # 5. Request logging — innermost, logs all requests with request_id
+    # 5. Tenant resolution — populates request.state.tenant from Host
+    app.add_middleware(TenantMiddleware)
+    # 6. Request logging — innermost, logs all requests with request_id
     app.add_middleware(RequestLoggingMiddleware)
 
     # ── Error handlers + rate limiter ────────────────────────────────────
