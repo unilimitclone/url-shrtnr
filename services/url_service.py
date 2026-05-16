@@ -263,7 +263,7 @@ class UrlService:
         else:
             url_cache_data, schema = await self._dispatch(short_code)
         if url_cache_data is None:
-            log.info("url_resolve_not_found", short_code=short_code)
+            log.info("url_resolve_not_found", short_code=short_code, domain=scope)
             raise NotFoundError("URL not found")
 
         # 3. Populate cache according to caching rules

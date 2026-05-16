@@ -11,10 +11,6 @@ import dns.asyncresolver
 import dns.exception
 import dns.resolver
 
-from infrastructure.logging import get_logger
-
-log = get_logger(__name__)
-
 _DNS_TIMEOUT_SECS = 3.0
 _PUBLIC_RESOLVERS = (("1.1.1.1", "1.0.0.1"), ("8.8.8.8", "8.8.4.4"))
 
@@ -26,10 +22,13 @@ class PreflightResult:
 
 
 async def check_cname(fqdn: str, expected_target: str) -> PreflightResult:
-    """Resolve *fqdn* CNAME at each public resolver; pass if any matches *expected_target*."""
+    """Resolve *fqdn* CNAME against *expected_target*. Falls back to A-record
+    comparison when CNAME isn't visible — apex CNAMEs on flattening DNS
+    providers (Cloudflare, Route 53 alias, etc.) hide the CNAME RR and
+    only return the resolved A records."""
     target = expected_target.strip(".").lower()
     results = await asyncio.gather(
-        *(_query_one(fqdn, resolver_ips) for resolver_ips in _PUBLIC_RESOLVERS),
+        *(_query(fqdn, "CNAME", ips) for ips in _PUBLIC_RESOLVERS),
         return_exceptions=False,
     )
     matched: list[str] = []
@@ -42,38 +41,64 @@ async def check_cname(fqdn: str, expected_target: str) -> PreflightResult:
             matched.append(resolver_ips[0])
     if matched:
         return PreflightResult(ok=True)
-    if not seen_targets:
+    if seen_targets:
         return PreflightResult(
             ok=False,
             reason=(
-                f"{fqdn}: no CNAME visible at public resolvers yet. DNS may "
-                f"still be propagating — retry in a few minutes."
+                f"{fqdn}: CNAME currently resolves to {sorted(set(seen_targets))!r}, "
+                f"expected {target!r}. Fix the record at your DNS provider."
             ),
         )
+
+    # No CNAME visible — could be unpropagated, or apex flattening. Check
+    # A records: if fqdn's A set overlaps target's A set, flattening is
+    # working and the routing is correctly wired.
+    fqdn_a = await _resolve_a_pooled(fqdn)
+    target_a = await _resolve_a_pooled(target)
+    if fqdn_a and target_a and fqdn_a & target_a:
+        return PreflightResult(ok=True)
+
     return PreflightResult(
         ok=False,
         reason=(
-            f"{fqdn}: CNAME currently resolves to {sorted(set(seen_targets))!r}, "
-            f"expected {target!r}. Fix the record at your DNS provider."
+            f"{fqdn}: no CNAME visible at public resolvers yet. DNS may "
+            f"still be propagating — retry in a few minutes."
         ),
     )
 
 
-async def _query_one(fqdn: str, nameservers: tuple[str, ...]) -> list[str] | None:
-    """Resolve fqdn's CNAME via the given nameservers. None on transport error."""
+async def _query(
+    fqdn: str, rtype: str, nameservers: tuple[str, ...]
+) -> list[str] | None:
+    """Resolve *fqdn* of *rtype* via the given nameservers. None on transport error."""
     resolver = dns.asyncresolver.Resolver(configure=False)
     resolver.nameservers = list(nameservers)
     resolver.lifetime = _DNS_TIMEOUT_SECS
     try:
         answer = await asyncio.wait_for(
-            resolver.resolve(fqdn, "CNAME"),
+            resolver.resolve(fqdn, rtype),
             timeout=_DNS_TIMEOUT_SECS,
         )
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         return []
     except (dns.exception.Timeout, asyncio.TimeoutError, dns.exception.DNSException):
         return None
-    return [str(rdata.target).rstrip(".").lower() for rdata in answer]
+    if rtype == "CNAME":
+        return [str(rd.target).rstrip(".").lower() for rd in answer]
+    return [str(rd) for rd in answer]
+
+
+async def _resolve_a_pooled(fqdn: str) -> set[str]:
+    """Union of A records seen across all public resolvers."""
+    results = await asyncio.gather(
+        *(_query(fqdn, "A", ips) for ips in _PUBLIC_RESOLVERS),
+        return_exceptions=False,
+    )
+    out: set[str] = set()
+    for observed in results:
+        if observed:
+            out.update(observed)
+    return out
 
 
 async def uses_cloudflare_dns(fqdn: str) -> bool:

@@ -176,18 +176,17 @@ class CustomDomainSettings(BaseSettings):
 
     # Cloudflare for SaaS Custom Hostnames. Setting cf_zone_id flips wiring
     # from the LE on-demand path (self-host fallback) to the CF SaaS path.
-    # When set, cf_api_token + cf_dcv_delegation_target MUST also be set —
-    # validated at startup so a misconfig fails the container, not the first
-    # customer create.
+    # cf_api_token is required when cf_zone_id is set — validated at startup.
     cf_zone_id: str | None = None
     cf_api_token: str | None = None
-    # Friendly CNAME target users see in their DNS dashboard. Backed in
-    # the SaaS zone by a sentinel proxied A record (192.0.2.0) so the
-    # bound Worker route engages; never actually contacted.
+    # CNAME target customers point their hostnames at. Proxied (orange-cloud)
+    # in the spoo.me zone; CF SaaS dispatches matched traffic to the zone
+    # fallback_origin (proxy-fallback.spoo.me) which lands on Caddy :443.
     cf_cname_target: str = "customers.spoo.me"
-    # Per-zone delegation hostname returned by CF when Delegated DCV is
-    # enabled (e.g. <random>.dcv.cloudflare.com). Customer adds
-    # _acme-challenge.<fqdn> CNAME to <fqdn>.<this value> so CF can renew.
+    # Per-zone delegation hostname for Delegated DCV (optional path; HTTP DCV
+    # is the default). When set, customers using cf_delegated_dcv add
+    # `_acme-challenge.<fqdn> CNAME <fqdn>.<this value>` so CF auto-renews
+    # without re-probing. Empty disables the second-CNAME instruction.
     cf_dcv_delegation_target: str = ""
     # Retry policy for CF API calls. Three attempts with exponential backoff.
     cf_api_max_retries: int = Field(default=3, ge=1)

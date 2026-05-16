@@ -56,6 +56,10 @@
 (common_tls) {
 	tls /etc/caddy/origin.crt /etc/caddy/origin.key {
 		protocols tls1.2 tls1.3
+		client_auth {
+			mode require_and_verify
+			trust_pool file /etc/caddy/cf-aop-zone-ca.crt
+		}
 	}
 	log
 	header {
@@ -89,7 +93,7 @@ qr.spoo.me {
 		protocols tls1.2 tls1.3
 		client_auth {
 			mode require_and_verify
-			trust_pool file /etc/caddy/cf-authenticated-origin-pull.crt
+			trust_pool file /etc/caddy/cf-aop-zone-ca.crt
 		}
 	}
 	log

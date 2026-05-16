@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+import tldextract
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
@@ -42,11 +43,14 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+_tld_extractor = tldextract.TLDExtract(cache_dir=None)
+
 
 def _is_apex(fqdn: str) -> bool:
-    # Naive — misses multi-part TLDs (co.uk). False-negative there just
-    # picks the CNAME path which fails at apex without CNAME-flattening.
-    return fqdn.strip(".").count(".") == 1
+    """True when the fqdn is the registrable apex (no subdomain). Uses the
+    public suffix list via tldextract so multi-part TLDs like `co.uk` work."""
+    ext = _tld_extractor(fqdn.strip("."))
+    return bool(ext.domain) and bool(ext.suffix) and not ext.subdomain
 
 
 class CustomDomainService:
@@ -452,6 +456,10 @@ class CustomDomainService:
             raise DomainQuotaExceededError("too many verification attempts this hour")
 
     async def _build_setup_notes(self, fqdn: str) -> list[str]:
+        # NS lookup is only meaningful on the CF SaaS path; grey-cloud is a
+        # CF-SaaS-specific gotcha. Skip on self-host LE.
+        if not self._preflight_cname_target:
+            return []
         notes: list[str] = []
         try:
             if await uses_cloudflare_dns(fqdn):

@@ -41,6 +41,20 @@ class TestCachedMongoTenantResolver:
         repo.find_active_by_fqdn.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_www_alias_short_circuits_to_system_default(self):
+        # Caddy serves both spoo.me and www.spoo.me explicitly; both must
+        # resolve as the system-default tenant.
+        repo = AsyncMock()
+        redis = AsyncMock()
+        r = CachedMongoTenantResolver(repo, redis, system_default_domain="spoo.me")
+        info = await r.resolve("www.spoo.me")
+        assert info is not None
+        assert info.is_system_default is True
+        assert info.fqdn == "spoo.me"
+        redis.get.assert_not_called()
+        repo.find_active_by_fqdn.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_strips_port_from_host_header(self):
         repo = AsyncMock()
         redis = None
