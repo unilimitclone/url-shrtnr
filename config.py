@@ -199,12 +199,16 @@ class CustomDomainSettings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_cf_saas_config(self) -> CustomDomainSettings:
+        # Normalise at config boundary so backend code can trust the value.
+        self.cf_worker_origin = self.cf_worker_origin.strip().strip(".")
         if self.cf_zone_id:
             missing = []
             if not self.cf_api_token:
                 missing.append("cf_api_token")
             if not self.cf_dcv_delegation_target:
                 missing.append("cf_dcv_delegation_target")
+            if not self.cf_worker_origin:
+                missing.append("cf_worker_origin")
             if missing:
                 raise ValueError(
                     f"CF SaaS path requires {missing} when cf_zone_id is set."

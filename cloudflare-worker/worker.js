@@ -17,9 +17,18 @@ const HOP_BY_HOP = new Set([
 
 function buildOutboundHeaders(request, customerHost, authSecret) {
   const out = new Headers();
+  // RFC 7230 §6.1: headers named in Connection are also hop-by-hop.
+  const dynamicHops = new Set(
+    (request.headers.get("connection") || "")
+      .split(",")
+      .map((v) => v.trim().toLowerCase())
+      .filter(Boolean),
+  );
   for (const [name, value] of request.headers.entries()) {
-    if (HOP_BY_HOP.has(name.toLowerCase())) continue;
-    if (name.toLowerCase() === "host") continue;
+    const lower = name.toLowerCase();
+    if (HOP_BY_HOP.has(lower)) continue;
+    if (dynamicHops.has(lower)) continue;
+    if (lower === "host") continue;
     out.set(name, value);
   }
   // Caddy rewrites Host from this header (Workers can't override Host).
@@ -55,8 +64,9 @@ export default {
       );
       return response;
     } catch (err) {
-      console.log(`upstream-fetch-err customer=${customerHost} err=${err.message}`);
-      return new Response(`upstream fetch failed: ${err.message}`, {
+      // Full error stays in Worker logs; client sees a generic message.
+      console.error("upstream fetch failed", customerHost, err);
+      return new Response("upstream fetch failed", {
         status: 502,
         headers: { "content-type": "text/plain; charset=utf-8" },
       });

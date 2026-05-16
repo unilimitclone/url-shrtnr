@@ -88,6 +88,7 @@ class TestCloudflareClient:
             custom_origin_server="customers.spoo.me",
         )
 
+        request.assert_awaited_once()
         body = request.await_args.kwargs["json"]
         assert body["custom_origin_server"] == "customers.spoo.me"
 
