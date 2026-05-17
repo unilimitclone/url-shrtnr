@@ -242,33 +242,43 @@
                         </a>
                     </div>
 
-                    <section class="settings-section settings-disabled" aria-labelledby="settings-routing-heading">
+                    <section class="settings-section" aria-labelledby="settings-routing-heading">
                         <header class="settings-header">
                             <div>
                                 <h3 id="settings-routing-heading">Routing settings</h3>
-                                <p class="settings-hint">Control root and unknown-path behaviour, robots.txt, and indexing.</p>
+                                <p class="settings-hint">Control what visitors see at <code>/</code>, on missing aliases, and at <code>/robots.txt</code>.</p>
+                            </div>
+                            <div class="settings-header-actions">
+                                <button type="button" class="btn btn-ghost btn-sm" id="btn-routing-reset" style="display:none">Reset</button>
+                                <button type="button" class="btn btn-primary btn-sm" id="btn-routing-save" disabled>Save</button>
                             </div>
                         </header>
-                        <div class="settings-grid" aria-hidden="true">
+                        <form class="settings-grid" id="routing-form" autocomplete="off" novalidate>
                             <div class="setting-field">
-                                <label>Root redirect (<code>/</code>)</label>
-                                <input type="text" disabled placeholder="https://yoursite.com" />
+                                <label for="routing-root-redirect">Root redirect</label>
+                                <input type="url" id="routing-root-redirect" name="root_redirect" placeholder="https://yoursite.com" />
+                                <p class="setting-help">Where the root of your domain sends visitors. Leave blank to serve a 404.</p>
                             </div>
                             <div class="setting-field">
-                                <label>Unknown path redirect</label>
-                                <input type="text" disabled placeholder="https://yoursite.com/404" />
+                                <label for="routing-not-found-redirect">Unknown path redirect</label>
+                                <input type="url" id="routing-not-found-redirect" name="not_found_redirect" placeholder="https://yoursite.com/404" />
+                                <p class="setting-help">Fallback for typos and missing aliases. Leave blank to serve a 404.</p>
                             </div>
                             <div class="setting-field setting-full">
-                                <label>Custom robots.txt</label>
-                                <textarea disabled rows="3" placeholder="User-agent: *&#10;Disallow: /"></textarea>
+                                <div class="setting-label-row">
+                                    <label for="routing-robots-txt">Custom robots.txt</label>
+                                    <span class="setting-counter" id="routing-robots-counter">0 / 4096</span>
+                                </div>
+                                <textarea id="routing-robots-txt" name="custom_robots_txt" rows="4" maxlength="4096" placeholder="User-agent: *&#10;Disallow: /"></textarea>
+                                <p class="setting-help">Body served at <span class="inline-path">/robots.txt</span>. Leave blank to serve the default <span class="inline-path">Disallow: /</span>.</p>
                             </div>
                             <div class="setting-field setting-full">
-                                <label class="toggle-label">
-                                    <input type="checkbox" disabled />
-                                    <span>Allow search engines to index links on this domain</span>
-                                </label>
+                                <p class="settings-banner settings-banner-warn">
+                                    <i class="ti ti-alert-triangle"></i>
+                                    <span>Visitors will be sent to whatever URL you configure above. If used for phishing or other abuse, your domain will be revoked.</span>
+                                </p>
                             </div>
-                        </div>
+                        </form>
                     </section>
 
                 </div>

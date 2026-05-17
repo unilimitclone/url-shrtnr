@@ -92,19 +92,53 @@ async def _handle_alias(
     request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
 ) -> None:
     if request.alias is not None and request.alias != existing.alias:
-        # Scope the alias collision check to the URL's actual domain — custom
-        # domains have their own (domain, alias) namespace, so renaming on
-        # `links.acme.com` must not look up against the system default.
-        if not await service.check_alias_available(
-            request.alias, domain=existing.domain
-        ):
+        # Scope the collision check to wherever the URL will land. If the same
+        # request is also moving the URL to a different domain, we must verify
+        # the new alias is free on the *target* tenant — not the current one.
+        scope = (
+            (request.domain or service._system_default_domain)
+            if "domain" in request.model_fields_set
+            else existing.domain
+        )
+        if not await service.check_alias_available(request.alias, domain=scope):
             log.info(
                 "url_alias_conflict",
                 short_code=request.alias,
-                domain=existing.domain,
+                domain=scope,
             )
             raise ConflictError("Alias is already in use")
         ops["alias"] = request.alias
+
+
+async def _handle_domain(
+    request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
+) -> None:
+    """Move a URL to a different domain namespace.
+
+    Route layer is responsible for verifying the caller owns the target as an
+    ACTIVE custom domain (or that it's the system default). Service treats the
+    value as opaque.
+    """
+    if "domain" not in request.model_fields_set:
+        return
+    target = request.domain or service._system_default_domain
+    if target == existing.domain:
+        return
+    # If alias isn't also changing, verify the existing alias is free on the
+    # target tenant. The alias handler already ran (it's listed first in
+    # FIELD_HANDLERS) and validated its own collision against `target`, so we
+    # only need to check when alias is staying put.
+    if "alias" not in ops and not await service.check_alias_available(
+        existing.alias, domain=target
+    ):
+        log.info(
+            "url_domain_move_alias_conflict",
+            short_code=existing.alias,
+            from_domain=existing.domain,
+            to_domain=target,
+        )
+        raise ConflictError(f"Alias '{existing.alias}' is already in use on {target}")
+    ops["domain"] = target
 
 
 async def _handle_password(
@@ -176,6 +210,10 @@ def _simple_field_handler(field_name: str) -> Callable:
 FIELD_HANDLERS: dict[str, Callable[..., Awaitable[None]]] = {
     "long_url": _handle_long_url,
     "alias": _handle_alias,
+    # `domain` must follow `alias` — the alias handler peeks at the incoming
+    # domain to scope its collision check, and the domain handler peeks at
+    # `ops` to decide whether the alias still needs verifying on the target.
+    "domain": _handle_domain,
     "password": _handle_password,
     "max_clicks": _handle_max_clicks,
     "expire_after": _handle_expire_after,
@@ -515,8 +553,16 @@ class UrlService:
         # 4. Persist
         await self._url_repo.update(url_id, {"$set": update_ops})
 
-        # 5. Invalidate cache scoped to the doc's domain
+        # 5. Invalidate cache. Always clear the pre-change (alias, domain) so a
+        # rename or move can't be served stale from the old key. When the new
+        # key differs (alias rename and/or domain move), clear that too —
+        # belt-and-suspenders against a racing populate from another worker
+        # that filled the cache between our read and persist.
         await self._url_cache.invalidate(existing.alias, existing.domain)
+        new_alias = update_ops.get("alias", existing.alias)
+        new_domain = update_ops.get("domain", existing.domain)
+        if (new_alias, new_domain) != (existing.alias, existing.domain):
+            await self._url_cache.invalidate(new_alias, new_domain)
 
         log.info(
             "url_updated",
@@ -525,6 +571,15 @@ class UrlService:
             user_id=str(owner_id),
             fields_changed=list(update_ops.keys()),
         )
+        if "domain" in update_ops:
+            log.info(
+                "url_domain_moved",
+                url_id=str(url_id),
+                short_code=new_alias,
+                from_domain=existing.domain,
+                to_domain=update_ops["domain"],
+                user_id=str(owner_id),
+            )
 
         # Return merged doc (avoids extra DB round-trip)
         merged = existing.model_dump(by_alias=True)

@@ -56,7 +56,7 @@
     function attach(options) {
         const input = document.getElementById(options.inputId);
         if (!input) return;
-        const { diceBtn, indicator, getCurrentAlias, onValidityChange } = options;
+        const { diceBtn, indicator, getCurrentAlias, getDomain, onValidityChange } = options;
 
         let debounceTimer = null;
         let inFlight = null;
@@ -101,10 +101,16 @@
             if (inFlight) inFlight.abort();
             const controller = new AbortController();
             inFlight = controller;
-            fetch(
-                `/api/v1/shorten/check-alias?alias=${encodeURIComponent(alias)}`,
-                { signal: controller.signal, credentials: 'same-origin' },
-            )
+            // Scope the check to the picker's currently-selected domain so
+            // we don't tell the user "available" against the system default
+            // when they're about to shorten on a custom domain. Empty/falsy
+            // getDomain output → omit the param, server falls back to default.
+            let url = `/api/v1/shorten/check-alias?alias=${encodeURIComponent(alias)}`;
+            if (typeof getDomain === 'function') {
+                const dom = getDomain();
+                if (dom) url += `&domain=${encodeURIComponent(dom)}`;
+            }
+            fetch(url, { signal: controller.signal, credentials: 'same-origin' })
                 .then((r) => r.json())
                 .then((data) => {
                     if (data.available) {
@@ -165,7 +171,14 @@
             setIndicator('idle');
         }
 
-        return { reset };
+        // Re-fire whatever an `input` event would fire — useful when the
+        // domain picker changes and the cached "available" state is now
+        // stale against a different (alias, domain) tuple.
+        function recheck() {
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        return { reset, recheck };
     }
 
     window.AliasChecker = { attach, randomAlias };

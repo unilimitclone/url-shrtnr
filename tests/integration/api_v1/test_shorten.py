@@ -228,3 +228,84 @@ class TestShortenWithCustomDomain:
         # Service got the domain on the create call.
         kwargs = url_svc.create.call_args.kwargs
         assert kwargs.get("domain") == "links.acme.com"
+
+
+class TestCheckAliasWithCustomDomain:
+    """`domain` query param on GET /shorten/check-alias triggers the same
+    owner+ACTIVE gate as POST /shorten. Without this gate the create modal's
+    live availability indicator would check against the wrong namespace
+    once the user picks a custom domain in the picker."""
+
+    def test_anonymous_user_cannot_check_against_custom_domain(self):
+        from dependencies import get_custom_domain_service
+
+        url_svc = AsyncMock()
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock(return_value=None)
+        application = _build_test_app(
+            {
+                get_current_user: lambda: None,
+                get_url_service: lambda: url_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.get(
+                "/api/v1/shorten/check-alias",
+                params={"alias": "mylink", "domain": "links.acme.com"},
+            )
+        assert resp.status_code == 401
+        url_svc.check_alias.assert_not_called()
+
+    def test_authed_user_check_scopes_to_custom_domain(self):
+        from dependencies import get_custom_domain_service
+
+        user = _make_user(email_verified=True)
+        url_svc = AsyncMock()
+        url_svc.check_alias = AsyncMock(return_value="available")
+
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock(return_value=None)
+
+        application = _build_test_app(
+            {
+                get_current_user: lambda: user,
+                get_url_service: lambda: url_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.get(
+                "/api/v1/shorten/check-alias",
+                params={"alias": "mylink", "domain": "links.acme.com"},
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"available": True, "reason": None}
+        # Owner check fired and the service got the scope on the call.
+        assert custom_svc.assert_owned_and_active.await_count == 1
+        kwargs = url_svc.check_alias.call_args.kwargs
+        assert kwargs.get("domain") == "links.acme.com"
+
+    def test_omitted_domain_falls_back_to_system_default(self):
+        """When `domain` isn't supplied (or is empty), no owner check fires
+        and the service receives `domain=None` so it uses its default."""
+        from dependencies import get_custom_domain_service
+
+        url_svc = AsyncMock()
+        url_svc.check_alias = AsyncMock(return_value="available")
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock(return_value=None)
+
+        application = _build_test_app(
+            {
+                get_current_user: lambda: None,
+                get_url_service: lambda: url_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.get("/api/v1/shorten/check-alias", params={"alias": "mylink"})
+        assert resp.status_code == 200
+        assert custom_svc.assert_owned_and_active.await_count == 0
+        kwargs = url_svc.check_alias.call_args.kwargs
+        assert kwargs.get("domain") is None

@@ -1,0 +1,107 @@
+{# Shared domain-picker dropdown.
+
+Used in PR4.5 in three places:
+  - Create-link modal:   inline as the alias prefix    (display="prefix")
+  - Edit-URL modal:      inline as the alias prefix    (display="prefix")
+  - URL list filter:     standalone dropdown           (display="picker", mode="filter")
+
+Built on the existing `.dropdown` primitive (`static/js/dropdown.js`) so
+keyboard nav + click-outside-to-close + escape handling come for free.
+Behavior layer in `static/js/components/domain-picker.js` listens for
+`dropdown:select` events, syncs the hidden input, and fires a `change`
+event so callers can react with stock DOM APIs.
+
+Args:
+  id            — id of the hidden input the form submits
+  name          — name of the hidden input
+  value         — initial selected value (None = default)
+  domains       — list of {fqdn, id} dicts for the user's ACTIVE custom domains
+  system_default — fqdn of the system-default host (spoo.me in prod)
+  mode          — "select" (default) or "filter" (adds an "All" option, sentinel "")
+  display       — "picker" (default standalone trigger) or "prefix" (renders
+                  inside an .input-group; label formatted as https://<fqdn>/)
+  show_add_cta  — show "Add a domain" link when the user has zero ACTIVE domains
+  label_for     — id of the associated <label> element (a11y; optional)
+#}
+
+{% macro domain_picker(
+    id,
+    name,
+    domains=[],
+    system_default="spoo.me",
+    value=None,
+    mode="select",
+    display="picker",
+    show_add_cta=True,
+    label_for=None
+) %}
+{%- set is_filter = mode == "filter" -%}
+{%- set is_prefix = display == "prefix" -%}
+{%- if value is none -%}
+    {%- set initial = "" if is_filter else system_default -%}
+{%- else -%}
+    {%- set initial = value -%}
+{%- endif -%}
+{%- if is_filter and initial == "" -%}
+    {%- set initial_label = "All domains" -%}
+{%- elif is_prefix -%}
+    {%- set initial_label = "https://" ~ initial ~ "/" -%}
+{%- else -%}
+    {%- set initial_label = initial -%}
+{%- endif -%}
+<div class="dropdown domain-picker{% if is_prefix %} domain-picker-prefix{% endif %}"
+     data-domain-picker
+     data-mode="{{ mode }}"
+     data-display="{{ display }}"
+     data-system-default="{{ system_default }}">
+    <button type="button"
+            class="dropdown-trigger domain-picker-trigger"
+            data-dropdown-trigger
+            aria-haspopup="listbox"
+            aria-expanded="false"
+            {%- if label_for %} aria-labelledby="{{ label_for }}"{% endif %}>
+        {% if not is_prefix %}<i class="ti ti-world domain-picker-icon" aria-hidden="true"></i>{% endif %}
+        <span class="domain-picker-value" data-picker-value>{{ initial_label }}</span>
+        <i class="ti ti-chevron-down domain-picker-chevron" aria-hidden="true"></i>
+    </button>
+    <div class="dropdown-menu domain-picker-menu" data-dropdown-menu role="listbox">
+        {% if is_filter %}
+        <button type="button"
+                class="dropdown-item domain-picker-item {% if initial == '' %}is-selected{% endif %}"
+                data-value=""
+                role="option">
+            <i class="ti ti-asterisk" aria-hidden="true"></i>
+            <span class="domain-picker-fqdn">All domains</span>
+        </button>
+        <div class="dropdown-divider"></div>
+        {% endif %}
+        <button type="button"
+                class="dropdown-item domain-picker-item {% if initial == system_default %}is-selected{% endif %}"
+                data-value="{{ system_default }}"
+                role="option">
+            <i class="ti ti-link" aria-hidden="true"></i>
+            <span class="domain-picker-fqdn">{{ system_default }}</span>
+            <span class="domain-picker-meta">default</span>
+        </button>
+        {% for d in domains %}
+        <button type="button"
+                class="dropdown-item domain-picker-item {% if initial == d.fqdn %}is-selected{% endif %}"
+                data-value="{{ d.fqdn }}"
+                role="option">
+            <i class="ti ti-world" aria-hidden="true"></i>
+            <span class="domain-picker-fqdn">{{ d.fqdn }}</span>
+            <span class="domain-picker-meta">custom</span>
+        </button>
+        {% endfor %}
+        {% if show_add_cta and not domains %}
+        <div class="dropdown-divider"></div>
+        <a href="/dashboard/domains?new=1" class="dropdown-item domain-picker-add">
+            <i class="ti ti-plus" aria-hidden="true"></i>
+            <span>Add a custom domain</span>
+            <i class="ti ti-arrow-right domain-picker-add-arrow" aria-hidden="true"></i>
+        </a>
+        {% endif %}
+    </div>
+    <input type="hidden" id="{{ id }}" name="{{ name }}" value="{{ initial }}">
+</div>
+{% endmacro %}

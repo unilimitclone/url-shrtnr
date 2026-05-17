@@ -61,6 +61,40 @@ async def _render_dashboard_page(
             show_custom_domains = await flag_svc.is_enabled("custom_domains", user)
         except Exception as exc:
             log.warning("dashboard_flag_lookup_failed", error=str(exc))
+
+    # User's ACTIVE custom domains for the shared domain-picker partial.
+    # Fetched here (rendered server-side) so the modal/filter chip never
+    # flickers a loading state on first paint. Skipped entirely when the
+    # flag is off — saves a Mongo round-trip on the hot dashboard path.
+    user_domains: list[dict[str, str]] = []
+    if show_custom_domains:
+        cd_svc = getattr(request.app.state, "custom_domain_service", None)
+        if cd_svc is not None:
+            try:
+                from schemas.dto.requests.custom_domain import ListCustomDomainsQuery
+                from schemas.enums.domain_status import DomainStatus
+
+                items, _ = await cd_svc.list_by_owner(
+                    user, ListCustomDomainsQuery(page=1, page_size=100)
+                )
+                user_domains = [
+                    {"fqdn": d.fqdn, "id": str(d.id)}
+                    for d in items
+                    if d.status == DomainStatus.ACTIVE
+                ]
+            except Exception as exc:
+                log.warning("dashboard_user_domains_fetch_failed", error=str(exc))
+
+    # The domain picker's "DEFAULT" item must use the same fqdn the service
+    # writes to `urls.domain` for system-default URLs. In dev these diverge
+    # from the request host (settings=spoo.local, base_url=localhost:8000)
+    # so deriving from host_url alone breaks the `is-selected` highlight on
+    # default-domain URLs. Pull the actual setting instead.
+    settings = getattr(request.app.state, "settings", None)
+    system_default_domain = (
+        settings.system_default_domain if settings is not None else None
+    )
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -68,6 +102,8 @@ async def _render_dashboard_page(
             "host_url": str(request.base_url),
             "user": profile,
             "show_custom_domains": show_custom_domains,
+            "user_domains": user_domains,
+            "system_default_domain": system_default_domain,
         },
     )
 

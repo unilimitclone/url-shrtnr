@@ -18,7 +18,13 @@
 
     function closeAll(except) {
         document.querySelectorAll('.dropdown.' + OPEN_CLASS).forEach(function (d) {
-            if (d !== except) close(d);
+            if (d === except) return;
+            // Don't close ancestors of the dropdown we just opened — a nested
+            // dropdown (e.g. the domain picker living inside the filter
+            // panel) opening must not collapse its parent, otherwise the
+            // parent's `display: none` hides the child too.
+            if (except && d.contains(except)) return;
+            close(d);
         });
     }
 

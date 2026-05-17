@@ -744,6 +744,134 @@ class TestUrlServiceUpdate:
         url_repo.update.assert_not_called()
         url_cache.invalidate.assert_not_called()
 
+    # ── Domain move (Part C) ─────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_update_domain_move_invalidates_both_cache_keys(self):
+        """Moving a URL between domains must clear the old AND new cache keys
+        so a worker that populated the new key during the rename can't serve
+        stale data."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc(domain="spoo.me")
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+        # Alias is free on the target tenant.
+        url_repo.check_alias_exists.return_value = False
+        legacy_repo.check_exists.return_value = False
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(domain="links.acme.com")
+        await svc.update(URL_OID, req, USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["domain"] == "links.acme.com"
+        # Both keys cleared — order doesn't matter, just both calls happened.
+        invalidated = {tuple(c.args) for c in url_cache.invalidate.await_args_list}
+        assert (ALIAS, "spoo.me") in invalidated
+        assert (ALIAS, "links.acme.com") in invalidated
+
+    @pytest.mark.asyncio
+    async def test_update_domain_unchanged_is_noop(self):
+        """`domain` set to the URL's current value shouldn't trigger a write."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc(domain="links.acme.com")
+        url_repo.find_by_id.return_value = existing
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(domain="links.acme.com")
+        await svc.update(URL_OID, req, USER_OID)
+
+        url_repo.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_domain_null_moves_to_system_default(self):
+        """Passing `domain=null` moves the URL back to the system default."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc(domain="links.acme.com")
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+        url_repo.check_alias_exists.return_value = False
+        legacy_repo.check_exists.return_value = False
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        # `UpdateUrlRequest(domain=None)` populates model_fields_set via the
+        # constructor signature; using model_validate keeps it explicit that
+        # we're sending a "clear to default" intent vs. an omitted field.
+        req = UpdateUrlRequest.model_validate({"domain": None})
+        await svc.update(URL_OID, req, USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["domain"] == SYSTEM_DEFAULT_DOMAIN
+
+    @pytest.mark.asyncio
+    async def test_update_domain_alias_collision_on_target_raises_conflict(self):
+        """An alias that's taken on the target domain blocks the move with a
+        409, even if it's free on the source."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc(domain="spoo.me")
+        url_repo.find_by_id.return_value = existing
+        # Target domain already has this alias.
+        url_repo.check_alias_exists.return_value = True
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(domain="links.acme.com")
+        with pytest.raises(ConflictError, match="is already in use on"):
+            await svc.update(URL_OID, req, USER_OID)
+
+        url_repo.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_alias_and_domain_together_checks_target_combo(self):
+        """When both fields change in one request, the alias collision check
+        must scope to the *target* domain — not the source."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc(alias=ALIAS, domain="spoo.me")
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+        url_repo.check_alias_exists.return_value = False
+        legacy_repo.check_exists.return_value = False
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(alias="newalias", domain="links.acme.com")
+        await svc.update(URL_OID, req, USER_OID)
+
+        # Pin the scope of the collision check — it should be the target
+        # tenant, not the current one. Every call's domain arg must be the
+        # target. (Domain handler short-circuits when ops["alias"] was set,
+        # so only the alias handler should fire its check.)
+        assert url_repo.check_alias_exists.await_count >= 1
+        for call in url_repo.check_alias_exists.await_args_list:
+            assert call.args[1] == "links.acme.com"
+
+        update_doc = url_repo.update.call_args[0][1]["$set"]
+        assert update_doc["alias"] == "newalias"
+        assert update_doc["domain"] == "links.acme.com"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestUrlServiceAutoReactivate

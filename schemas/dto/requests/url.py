@@ -175,6 +175,17 @@ class UpdateUrlRequest(RequestBase):
         description="URL status. ACTIVE enables redirects, INACTIVE disables them.",
         examples=["ACTIVE"],
     )
+    domain: str | None = Field(
+        default=None,
+        max_length=253,
+        description=(
+            "Move the URL to a different domain namespace. Pass an owned ACTIVE "
+            "custom-domain fqdn (e.g. `links.acme.com`) to move it there, or "
+            "`null`/empty to move it back to the system default. Alias must be "
+            "available on the target domain."
+        ),
+        examples=["links.acme.com"],
+    )
 
     @field_validator("expire_after", mode="before")
     @classmethod
@@ -185,6 +196,13 @@ class UpdateUrlRequest(RequestBase):
         if result is None:
             raise ValueError("Invalid expire_after format")
         return result
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _norm_domain(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        return normalise_fqdn(v)
 
 
 class UpdateUrlStatusRequest(BaseModel):
@@ -297,3 +315,20 @@ class AliasCheckQuery(RequestBase):
         description="Candidate alias to check.",
         examples=["mylink"],
     )
+    domain: str | None = Field(
+        default=None,
+        max_length=253,
+        description=(
+            "Scope the availability check to a custom domain fqdn. Requires "
+            "authentication + ownership of an ACTIVE custom domain. Omit for "
+            "the system default namespace."
+        ),
+        examples=["links.acme.com"],
+    )
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _norm_domain(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        return normalise_fqdn(v)

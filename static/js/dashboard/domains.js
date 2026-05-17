@@ -76,6 +76,15 @@ const el = {
     liveShortenCta: document.getElementById('live-shorten-cta'),
     btnRevokeFooter: document.getElementById('btn-revoke-footer'),
 
+    // Routing settings (Part A backend, Part B UI)
+    routingForm: document.getElementById('routing-form'),
+    routingRoot: document.getElementById('routing-root-redirect'),
+    routingNotFound: document.getElementById('routing-not-found-redirect'),
+    routingRobots: document.getElementById('routing-robots-txt'),
+    routingRobotsCounter: document.getElementById('routing-robots-counter'),
+    routingSave: document.getElementById('btn-routing-save'),
+    routingReset: document.getElementById('btn-routing-reset'),
+
     // Revoked slot
     revokedAt: document.getElementById('revoked-at'),
     revokedCreated: document.getElementById('revoked-created'),
@@ -113,6 +122,12 @@ let revokeSelectedCascade = false;   // sync with .cascade-card[aria-pressed]
 let revokeUrlCount = 0;              // captured at modal open
 let pollTimer = null;
 let pollDomainId = null;
+
+// Routing settings: snapshot of doc values at modal open, so the save handler
+// can diff against current input values and PATCH only the fields the user
+// actually changed (and use explicit `null` for fields they cleared).
+let routingLoaded = { root_redirect: null, not_found_redirect: null, custom_robots_txt: null };
+let routingSaving = false;
 
 // ── Generic helpers ───────────────────────────────────────────────────────
 
@@ -494,6 +509,8 @@ function renderLiveMode(doc) {
     // Even though links.html doesn't yet honour ?domain= as a default, the
     // param is harmless; PR4.5 Part B will wire it.
     el.liveShortenCta.href = `/dashboard/links?domain=${encodeURIComponent(doc.fqdn)}`;
+
+    populateRoutingForm(doc);
 
     setStepper(4, { completed: new Set([1, 2, 3]) });
     setMode('live');
@@ -1094,6 +1111,136 @@ async function confirmRemove() {
     }
 }
 
+// ── Routing settings ──────────────────────────────────────────────────────
+//
+// Wires the PATCH /api/v1/custom-domains/{id} endpoint to the modal's
+// "Routing settings" section. Only rendered when status == ACTIVE; backend
+// 422s on any other state.
+//
+// Save semantics mirror the backend's partial-update contract: only changed
+// fields go in the PATCH body, and a field the user cleared is sent as
+// explicit `null` (vs. omitted = "leave alone").
+
+function populateRoutingForm(doc) {
+    routingLoaded = {
+        root_redirect: doc.root_redirect || null,
+        not_found_redirect: doc.not_found_redirect || null,
+        custom_robots_txt: doc.custom_robots_txt || null,
+    };
+    el.routingRoot.value = routingLoaded.root_redirect || '';
+    el.routingNotFound.value = routingLoaded.not_found_redirect || '';
+    el.routingRobots.value = routingLoaded.custom_robots_txt || '';
+
+    updateRobotsCounter();
+    syncRoutingDirty();
+}
+
+function updateRobotsCounter() {
+    if (!el.routingRobotsCounter) return;
+    const len = el.routingRobots.value.length;
+    el.routingRobotsCounter.textContent = `${len} / 4096`;
+}
+
+function _normCurrent() {
+    // Empty / whitespace inputs map to null — matches the backend's
+    // empty-string normaliser so the diff doesn't show a phantom change
+    // when the user only added/removed spaces.
+    const norm = (v) => {
+        const s = (v || '').trim();
+        return s || null;
+    };
+    return {
+        root_redirect: norm(el.routingRoot.value),
+        not_found_redirect: norm(el.routingNotFound.value),
+        custom_robots_txt: el.routingRobots.value ? el.routingRobots.value : null,
+    };
+}
+
+function _diffRoutingFields() {
+    const current = _normCurrent();
+    const body = {};
+    for (const key of ['root_redirect', 'not_found_redirect', 'custom_robots_txt']) {
+        if (current[key] !== routingLoaded[key]) {
+            body[key] = current[key];  // null when cleared, string when set/changed
+        }
+    }
+    return body;
+}
+
+function syncRoutingDirty() {
+    if (routingSaving) return;
+    const body = _diffRoutingFields();
+    const dirty = Object.keys(body).length > 0;
+    el.routingSave.disabled = !dirty;
+    el.routingReset.style.display = dirty ? '' : 'none';
+}
+
+function resetRoutingForm() {
+    el.routingRoot.value = routingLoaded.root_redirect || '';
+    el.routingNotFound.value = routingLoaded.not_found_redirect || '';
+    el.routingRobots.value = routingLoaded.custom_robots_txt || '';
+    updateRobotsCounter();
+    syncRoutingDirty();
+}
+
+async function saveRoutingForm() {
+    if (!currentDomain || routingSaving) return;
+    const body = _diffRoutingFields();
+    if (Object.keys(body).length === 0) return;
+
+    routingSaving = true;
+    const prevLabel = el.routingSave.textContent;
+    el.routingSave.disabled = true;
+    el.routingSave.textContent = 'Saving…';
+
+    try {
+        const res = await authFetch(
+            `/api/v1/custom-domains/${encodeURIComponent(currentDomain.id)}`,
+            {
+                method: 'PATCH',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(body),
+            }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const msg = _routingErrorMessage(res.status, data);
+            showNotification(msg, 'error');
+            return;
+        }
+        // Success — re-seed the loaded snapshot from the server's view so
+        // the diff resets to "no pending changes". Don't trust local input
+        // text; the backend may have normalised (e.g. trailing-slash on URLs).
+        currentDomain = data;
+        populateRoutingForm(data);
+        showNotification('Routing settings saved.', 'success');
+    } catch (err) {
+        console.error('routing save failed', err);
+        showNotification('Network error — try again.', 'error');
+    } finally {
+        routingSaving = false;
+        el.routingSave.textContent = prevLabel;
+        syncRoutingDirty();
+    }
+}
+
+function _routingErrorMessage(status, body) {
+    // Backend error shapes: {detail: "..."} for service-level, or
+    // {detail: [{msg: "...", loc: [...]}]} for Pydantic 422s.
+    if (status === 422 && Array.isArray(body?.detail) && body.detail[0]?.msg) {
+        const first = body.detail[0];
+        const fieldLabel = (first.loc || []).slice(-1)[0] || 'field';
+        return `${fieldLabel}: ${first.msg}`;
+    }
+    if (typeof body?.detail === 'string') return body.detail;
+    if (status === 403) return "You don't own this domain.";
+    if (status === 404) return 'Domain not found.';
+    return `Couldn't save settings (HTTP ${status}).`;
+}
+
 // ── Wire-up ───────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1153,6 +1300,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Live mode revoke action (footer)
     el.btnRevokeFooter.addEventListener('click', openRevokeModal);
+
+    // Routing-settings form (only rendered in live mode)
+    if (el.routingForm) {
+        const onDirty = () => syncRoutingDirty();
+        el.routingRoot.addEventListener('input', onDirty);
+        el.routingNotFound.addEventListener('input', onDirty);
+        el.routingRobots.addEventListener('input', () => {
+            updateRobotsCounter();
+            syncRoutingDirty();
+        });
+        el.routingSave.addEventListener('click', saveRoutingForm);
+        el.routingReset.addEventListener('click', resetRoutingForm);
+        // Submit on Enter from URL inputs (textarea allows Enter for new
+        // lines — common robots.txt body has multiple lines).
+        el.routingForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            saveRoutingForm();
+        });
+    }
 
     // Revoke sub-modal
     el.revokeCards.forEach((card, idx) => {
