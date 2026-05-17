@@ -96,7 +96,6 @@ class CustomDomainService:
         await self._enforce_blocklist(request.fqdn)
         await self._enforce_uniqueness(request.fqdn)
         await self._enforce_per_user_quota(user.user_id)
-        await self._enforce_create_attempts_quota(user.user_id)
 
         method = self._pick_verification_method(request.fqdn)
         if method not in self._verifiers:
@@ -121,7 +120,7 @@ class CustomDomainService:
         except DuplicateKeyError:
             # Race with concurrent insert — translate to 409 instead of 500.
             raise DomainAlreadyRegisteredError(
-                f"{request.fqdn} is already registered."
+                f"{request.fqdn} is registered to another account."
             ) from None
 
         try:
@@ -329,6 +328,36 @@ class CustomDomainService:
         refreshed = await self._repo.find_by_id(doc.id)
         return refreshed or doc, urls_deleted
 
+    async def remove_revoked(
+        self,
+        domain_id: ObjectId,
+        user: CurrentUser,
+    ) -> CustomDomainDoc:
+        """Hard-delete a REVOKED domain doc to free the caller's slot.
+
+        Revoke is soft (audit trail preserved), so the slot stays occupied
+        until the user explicitly reclaims it via this call. Refuses any
+        non-REVOKED status so the caller can't accidentally nuke an active
+        domain — they must Revoke first, then Remove.
+        """
+        self._require_enabled()
+
+        doc = await self._load_owned(domain_id, user)
+        if doc.status != DomainStatus.REVOKED:
+            raise InvalidDomainTransitionError(
+                "Only revoked domains can be removed. Revoke this domain first."
+            )
+
+        await self._repo.delete_by_id(doc.id)
+
+        log.info(
+            "audit.domain.removed",
+            fqdn=doc.fqdn,
+            domain_id=str(doc.id),
+            owner_id=str(user.user_id),
+        )
+        return doc
+
     async def assert_owned(
         self,
         user: CurrentUser,
@@ -519,34 +548,27 @@ class CustomDomainService:
         )
 
     async def _enforce_uniqueness(self, fqdn: str) -> None:
-        existing = await self._repo.find_by_fqdn(fqdn)
+        # REVOKED docs are terminal and don't reserve the fqdn — same posture
+        # as Vercel/Netlify/CF SaaS. DCV at register-time is the security
+        # gate against takeover.
+        existing = await self._repo.find_blocking_by_fqdn(fqdn)
         if existing is not None:
-            raise DomainAlreadyRegisteredError(f"{fqdn} is already registered.")
+            raise DomainAlreadyRegisteredError(
+                f"{fqdn} is registered to another account."
+            )
 
     async def _enforce_per_user_quota(self, owner_id: ObjectId) -> None:
         current = await self._repo.count_by_owner(owner_id)
         if current >= self._settings.max_per_user:
             cap = self._settings.max_per_user
             suffix = "domain" if cap == 1 else "domains"
+            # Revoked docs still count — they hold the slot until the user
+            # explicitly removes them via the Remove action. Surface both
+            # reclamation paths so the user knows what to do.
             raise DomainQuotaExceededError(
-                f"You've reached the limit of {cap} custom {suffix} for your account."
-            )
-
-    async def _enforce_create_attempts_quota(self, owner_id: ObjectId) -> None:
-        # Fails open without Redis; per-user count still bounds totals.
-        if self._redis is None:
-            return
-        key = f"domain_create_attempts:{owner_id}"
-        try:
-            count = await self._redis.incr(key)
-            if count == 1:
-                await self._redis.expire(key, 24 * 3600)
-        except Exception as exc:
-            log.warning("create_quota_redis_error", error=str(exc))
-            return
-        if count > self._settings.create_attempts_per_day:
-            raise DomainQuotaExceededError(
-                "You've added too many domains today. Try again tomorrow."
+                f"You already have {cap} custom {suffix} on this account. "
+                f"Remove a revoked one or revoke an active one before adding "
+                f"another."
             )
 
     async def _enforce_verify_attempts_quota(self, domain_id: ObjectId) -> None:

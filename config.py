@@ -150,15 +150,9 @@ class CustomDomainSettings(BaseSettings):
     # (every create raises QuotaExceeded with no log signal that the cause
     # is config, not abuse). Validators below fail container startup instead.
     max_per_user: int = Field(default=1, ge=1)
-    create_attempts_per_day: int = Field(default=3, ge=1)
     # Generous because CF's own DCV cadence can take 5-15 min per probe;
     # legitimate users may poll many times during initial activation.
     verify_attempts_per_hour: int = Field(default=60, ge=1)
-
-    # Re-register cooldown after a user revokes their own domain — discourages
-    # rapid hostname-cycling abuse against the LE rate limit. Zero allowed
-    # (disables the cooldown); negative meaningless.
-    re_register_cooldown_days: int = Field(default=30, ge=0)
 
     # Background re-verify worker tunables.
     # interval=0 would busy-loop the worker; batch=0 wastes a tick;

@@ -52,6 +52,18 @@ class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
             {"fqdn": _canonical(fqdn), "status": DomainStatus.ACTIVE}
         )
 
+    async def find_blocking_by_fqdn(self, fqdn: str) -> CustomDomainDoc | None:
+        """Find a doc that would block re-registration of *fqdn*.
+
+        Returns any doc whose status is not REVOKED. REVOKED docs are
+        terminal records of past registrations — they don't reserve the
+        fqdn for future use (no cooldown). Used by uniqueness enforcement
+        in the service layer.
+        """
+        return await self._find_one(
+            {"fqdn": _canonical(fqdn), "status": {"$ne": DomainStatus.REVOKED}}
+        )
+
     async def list_by_owner(
         self,
         owner_id: ObjectId,

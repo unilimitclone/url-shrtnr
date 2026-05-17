@@ -84,6 +84,7 @@ def _build_service(
     repo.update_edge_metadata = AsyncMock(return_value=True)
     repo.count_by_owner = AsyncMock(return_value=0)
     repo.find_by_fqdn = AsyncMock(return_value=None)
+    repo.find_blocking_by_fqdn = AsyncMock(return_value=None)
     repo.find_by_id = AsyncMock(return_value=None)
     repo.update_status = AsyncMock(return_value=True)
     repo.set_eviction_pending = AsyncMock(return_value=True)
@@ -231,10 +232,26 @@ class TestCreate:
     @pytest.mark.asyncio
     async def test_uniqueness_conflict_raises(self):
         svc, repo, _, _, _ = _build_service()
-        repo.find_by_fqdn = AsyncMock(return_value=_doc())
+        repo.find_blocking_by_fqdn = AsyncMock(return_value=_doc())
         req = CreateCustomDomainRequest(fqdn="links.acme.com")
         with pytest.raises(DomainAlreadyRegisteredError):
             await svc.create(req, _user())
+
+    @pytest.mark.asyncio
+    async def test_uniqueness_ignores_revoked_docs(self):
+        # REVOKED doc does NOT block re-registration of the same fqdn —
+        # different owner can claim it (DCV gates takeover), or the same
+        # owner can re-register after Remove. find_blocking_by_fqdn must
+        # return None when the only matching doc is REVOKED.
+        svc, repo, _, _, _ = _build_service()
+        # Repo's find_blocking_by_fqdn is the gate; default mock returns
+        # None to simulate "no blocking doc found" (REVOKED docs would be
+        # filtered out at the query level).
+        repo.find_blocking_by_fqdn = AsyncMock(return_value=None)
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        req = CreateCustomDomainRequest(fqdn="links.acme.com")
+        await svc.create(req, _user())  # must not raise
+        repo.insert.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_per_user_quota_enforced(self):
@@ -265,16 +282,6 @@ class TestCreate:
         req = CreateCustomDomainRequest(fqdn="anything.example.com")
         # Must not raise — just skip the check.
         await svc.create(req, _user())
-
-    @pytest.mark.asyncio
-    async def test_create_attempts_quota_via_redis(self):
-        redis = AsyncMock()
-        redis.incr = AsyncMock(return_value=99)  # way over cap of 3
-        redis.expire = AsyncMock()
-        svc, _, _, _, _ = _build_service(redis=redis)
-        req = CreateCustomDomainRequest(fqdn="links.acme.com")
-        with pytest.raises(DomainQuotaExceededError):
-            await svc.create(req, _user())
 
     @pytest.mark.asyncio
     async def test_duplicate_key_during_race_translates_to_friendly_error(self):
@@ -567,6 +574,50 @@ class TestSuspendNotFound:
 
         repo.update_status.assert_not_called()
         edge.announce_revoked.assert_not_called()
+
+
+class TestRemoveRevoked:
+    @pytest.mark.asyncio
+    async def test_hard_deletes_revoked_doc(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.REVOKED))
+        await svc.remove_revoked(DOMAIN_OID, _user())
+        repo.delete_by_id.assert_awaited_once_with(DOMAIN_OID)
+
+    @pytest.mark.asyncio
+    async def test_refuses_active_doc(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
+        with pytest.raises(InvalidDomainTransitionError):
+            await svc.remove_revoked(DOMAIN_OID, _user())
+        repo.delete_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refuses_pending_doc(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        with pytest.raises(InvalidDomainTransitionError):
+            await svc.remove_revoked(DOMAIN_OID, _user())
+        repo.delete_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refuses_non_owner(self):
+        # _load_owned raises ForbiddenError before status check fires.
+        svc, repo, _, _, _ = _build_service()
+        other = _doc(status=DomainStatus.REVOKED)
+        other.owner_id = ObjectId()  # different from _user()'s id
+        repo.find_by_id = AsyncMock(return_value=other)
+        with pytest.raises(ForbiddenError):
+            await svc.remove_revoked(DOMAIN_OID, _user())
+        repo.delete_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refuses_missing_doc(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=None)
+        with pytest.raises(NotFoundError):
+            await svc.remove_revoked(DOMAIN_OID, _user())
+        repo.delete_by_id.assert_not_called()
 
 
 class TestVerifyAttemptsQuota:

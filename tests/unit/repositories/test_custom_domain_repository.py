@@ -77,6 +77,36 @@ class TestCustomDomainRepository:
         )
 
     @pytest.mark.asyncio
+    async def test_find_blocking_by_fqdn_excludes_revoked(self):
+        # Uniqueness gate must not consider REVOKED docs — they're terminal
+        # records of past registrations and don't reserve the fqdn for
+        # future use. New registrations of the same fqdn are gated by DCV,
+        # not by a database cooldown.
+        col = AsyncMock()
+        col.find_one = AsyncMock(return_value=None)
+        col.name = "custom_domains"
+        repo = CustomDomainRepository(col)
+
+        await repo.find_blocking_by_fqdn("links.example.com")
+        col.find_one.assert_awaited_once_with(
+            {
+                "fqdn": "links.example.com",
+                "status": {"$ne": DomainStatus.REVOKED},
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_find_blocking_by_fqdn_normalises_lookup_input(self):
+        col = AsyncMock()
+        col.find_one = AsyncMock(return_value=None)
+        col.name = "custom_domains"
+        repo = CustomDomainRepository(col)
+
+        await repo.find_blocking_by_fqdn("LINKS.Example.COM.")
+        args = col.find_one.call_args.args[0]
+        assert args["fqdn"] == "links.example.com"
+
+    @pytest.mark.asyncio
     async def test_count_by_owner_runs_on_owner_id(self):
         col = AsyncMock()
         col.count_documents = AsyncMock(return_value=2)
