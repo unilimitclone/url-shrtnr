@@ -71,7 +71,14 @@ class TestEnsureIndexes:
         )
         app_grants_col.create_index.assert_any_await([("app_id", 1), ("revoked_at", 1)])
         feature_flags_col.create_index.assert_any_await([("name", 1)], unique=True)
-        custom_domains_col.create_index.assert_any_await([("fqdn", 1)], unique=True)
+        custom_domains_col.create_index.assert_any_await(
+            [("fqdn", 1)],
+            unique=True,
+            partialFilterExpression={
+                "status": {"$in": ["pending", "verifying", "active", "suspended"]}
+            },
+            name="fqdn_unique_non_revoked",
+        )
         custom_domains_col.create_index.assert_any_await(
             [("owner_id", 1), ("created_at", -1)]
         )

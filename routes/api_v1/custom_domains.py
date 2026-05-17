@@ -230,4 +230,40 @@ async def delete_custom_domain(
     )
 
 
+@router.delete(
+    "/custom-domains/{domain_id}/permanent",
+    status_code=204,
+    responses=AUTH_RESPONSES,
+    operation_id="removeCustomDomain",
+    summary="Remove Revoked Custom Domain",
+)
+@limiter.limit(Limits.DOMAIN_DELETE)
+async def remove_custom_domain(
+    request: Request,
+    domain_id: Annotated[str, Path(description="MongoDB ObjectId of the domain.")],
+    service: CustomDomainSvc,
+    user: CurrentUser = Depends(require_scopes(DOMAIN_MANAGE_SCOPES)),  # noqa: B008
+) -> None:
+    """Permanently delete a revoked custom domain to free the account slot.
+
+    Soft-deleted (REVOKED) domains continue to occupy the caller's per-account
+    quota so revoke is reversible and the audit trail stays intact. To free
+    the slot, the caller explicitly removes the doc via this endpoint. Only
+    REVOKED docs are removable — call DELETE first to revoke an active one.
+
+    **Authentication**: Required (JWT or API key with `domains:manage`).
+
+    **Rate Limits**: 10/min.
+
+    **Responses**:
+    - 204 — removed
+    - 403 — caller does not own this domain
+    - 404 — domain not found (or invalid id)
+    - 422 — domain isn't REVOKED
+    """
+    oid = _parse_domain_id(domain_id)
+    await service.remove_revoked(oid, user)
+    return None
+
+
 __all__ = ["router"]

@@ -27,6 +27,7 @@ from dependencies import (
 from errors import (
     DomainAlreadyRegisteredError,
     ForbiddenError,
+    InvalidDomainTransitionError,
     NotFoundError,
 )
 from routes.api_v1 import router as api_v1_router
@@ -298,3 +299,45 @@ class TestDeleteCustomDomain:
         client = TestClient(_make_app(svc), raise_server_exceptions=False)
         resp = client.delete(f"/api/v1/custom-domains/{_DOMAIN_ID}")
         assert resp.status_code == 403
+
+
+class TestRemoveCustomDomain:
+    def test_happy_path_returns_204(self):
+        svc = AsyncMock()
+        svc.remove_revoked = AsyncMock(return_value=_doc(status=DomainStatus.REVOKED))
+        client = TestClient(_make_app(svc), raise_server_exceptions=False)
+        resp = client.delete(f"/api/v1/custom-domains/{_DOMAIN_ID}/permanent")
+        assert resp.status_code == 204
+        svc.remove_revoked.assert_awaited_once()
+
+    def test_not_revoked_returns_422(self):
+        svc = AsyncMock()
+        svc.remove_revoked = AsyncMock(
+            side_effect=InvalidDomainTransitionError(
+                "Only revoked domains can be removed. Revoke this domain first."
+            )
+        )
+        client = TestClient(_make_app(svc), raise_server_exceptions=False)
+        resp = client.delete(f"/api/v1/custom-domains/{_DOMAIN_ID}/permanent")
+        assert resp.status_code == 422
+
+    def test_not_found_returns_404(self):
+        svc = AsyncMock()
+        svc.remove_revoked = AsyncMock(side_effect=NotFoundError("domain not found"))
+        client = TestClient(_make_app(svc), raise_server_exceptions=False)
+        resp = client.delete(f"/api/v1/custom-domains/{_DOMAIN_ID}/permanent")
+        assert resp.status_code == 404
+
+    def test_not_owner_returns_403(self):
+        svc = AsyncMock()
+        svc.remove_revoked = AsyncMock(side_effect=ForbiddenError("not yours"))
+        client = TestClient(_make_app(svc), raise_server_exceptions=False)
+        resp = client.delete(f"/api/v1/custom-domains/{_DOMAIN_ID}/permanent")
+        assert resp.status_code == 403
+
+    def test_invalid_id_returns_404(self):
+        svc = AsyncMock()
+        client = TestClient(_make_app(svc), raise_server_exceptions=False)
+        resp = client.delete("/api/v1/custom-domains/not-an-objectid/permanent")
+        assert resp.status_code == 404
+        svc.remove_revoked.assert_not_called()

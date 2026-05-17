@@ -4,7 +4,7 @@
 
 {% block head_css %}
 <link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/keys.css') }}?v=7">
-<link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/domains.css') }}?v=4">
+<link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/domains.css') }}?v=21">
 <meta name="robots" content="noindex">
 {% endblock %}
 
@@ -54,95 +54,287 @@
     </div>
 </div>
 
-<!-- One large modal, four content slots — JS swaps which slot is visible -->
-<div id="domainModal" class="modal modal-large" aria-hidden="true" style="display:none">
+<!--
+    Domain modal. Single shell, mode-driven width + stepper visibility.
+    Modes: add | dns | verify | live | revoked
+        add / revoked → narrow (no stepper)
+        dns / verify  → wide   (vertical stepper rail)
+        live          → medium (no stepper, management view)
+-->
+<div id="domainModal" class="modal domain-modal" aria-hidden="true" style="display:none">
     <div class="modal-overlay"></div>
     <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="domainModalTitle">
         <div class="modal-header">
             <div class="modal-header-left">
-                <h2 id="domainModalTitle">Add a domain</h2>
-                <span class="status-badge modal-status-badge" id="modalStatusBadge" style="display:none"></span>
+                <div class="modal-header-titlerow">
+                    <h2 id="domainModalTitle">Add a domain</h2>
+                    <span class="status-badge modal-status-badge" id="modalStatusBadge" style="display:none"></span>
+                </div>
+                <p id="domainModalSub" class="modal-header-sub" style="display:none"></p>
             </div>
             <button class="modal-close" id="btn-close-domain-modal" aria-label="Close">
                 <i class="ti ti-x"></i>
             </button>
         </div>
 
-        <div class="modal-body">
-            <!-- Add mode -->
-            <div class="modal-slot" data-mode="add">
-                <div class="form-grid">
-                    <div class="field">
-                        <label for="domain-fqdn">Your domain</label>
-                        <input id="domain-fqdn" type="text" placeholder="links.yoursite.com" autocomplete="off" />
-                        <small class="field-hint">
-                            Subdomains like <code>links.yoursite.com</code> work best.
-                            Root domains need DNS that supports CNAME flattening (Cloudflare, Route 53, DNSimple).
-                        </small>
+        <div class="modal-shell">
+            <!-- Stepper rail — visibility controlled per-mode via [data-show-stepper] on .modal-content -->
+            <aside class="stepper-rail" id="stepper-rail" aria-label="Setup progress">
+                <ol class="stepper" id="stepper">
+                    <li class="stepper-item" data-step="1" role="button" tabindex="-1" aria-label="Step 1: Domain">
+                        <div class="stepper-rail-line"></div>
+                        <div class="stepper-dot">
+                            <span class="stepper-num">1</span>
+                            <i class="ti ti-check stepper-check"></i>
+                        </div>
+                        <div class="stepper-meta">
+                            <div class="stepper-tag">Step 1</div>
+                            <div class="stepper-label">Domain</div>
+                            <div class="stepper-status"></div>
+                        </div>
+                    </li>
+                    <li class="stepper-item" data-step="2" role="button" tabindex="-1" aria-label="Step 2: DNS records">
+                        <div class="stepper-rail-line"></div>
+                        <div class="stepper-dot">
+                            <span class="stepper-num">2</span>
+                            <i class="ti ti-check stepper-check"></i>
+                        </div>
+                        <div class="stepper-meta">
+                            <div class="stepper-tag">Step 2</div>
+                            <div class="stepper-label">DNS records</div>
+                            <div class="stepper-status"></div>
+                        </div>
+                    </li>
+                    <li class="stepper-item" data-step="3" role="button" tabindex="-1" aria-label="Step 3: Verification">
+                        <div class="stepper-rail-line"></div>
+                        <div class="stepper-dot">
+                            <span class="stepper-num">3</span>
+                            <i class="ti ti-check stepper-check"></i>
+                        </div>
+                        <div class="stepper-meta">
+                            <div class="stepper-tag">Step 3</div>
+                            <div class="stepper-label">Verification</div>
+                            <div class="stepper-status"></div>
+                        </div>
+                    </li>
+                    <li class="stepper-item" data-step="4" role="button" tabindex="-1" aria-label="Step 4: Live">
+                        <div class="stepper-rail-line"></div>
+                        <div class="stepper-dot">
+                            <span class="stepper-num">4</span>
+                            <i class="ti ti-check stepper-check"></i>
+                        </div>
+                        <div class="stepper-meta">
+                            <div class="stepper-tag">Step 4</div>
+                            <div class="stepper-label">Live</div>
+                            <div class="stepper-status"></div>
+                        </div>
+                    </li>
+                </ol>
+            </aside>
+
+            <div class="modal-body">
+                <!-- ==================== Add slot (Step 1) ==================== -->
+                <div class="modal-slot" data-mode="add">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="domain-fqdn">Your domain</label>
+                            <input id="domain-fqdn" type="text" placeholder="links.yoursite.com" autocomplete="off" />
+                            <small class="field-hint">
+                                Works with subdomains like <code>links.yoursite.com</code> or root
+                                domains like <code>yoursite.com</code>. You'll need access to your
+                                DNS provider to add a record in the next step.
+                            </small>
+                        </div>
+                        <div id="add-domain-error" class="inline-error" style="display:none"></div>
                     </div>
-                    <div id="add-domain-error" class="inline-error" style="display:none"></div>
-                </div>
-            </div>
-
-            <!-- Setup mode (PENDING / SUSPENDED) -->
-            <div class="modal-slot" data-mode="setup" style="display:none">
-                <div class="banner banner-pending" id="setup-banner">
-                    Add the DNS record(s) below at your DNS provider, then click Verify.
                 </div>
 
-                <h3 class="section-title">DNS record</h3>
-                <div class="dns-records" id="dns-records"></div>
-                <div class="setup-notes" id="setup-notes" style="display:none"></div>
+                <!-- ==================== DNS slot (Step 2) ==================== -->
+                <div class="modal-slot" data-mode="dns" style="display:none">
+                    <div class="slot-intro">
+                        <h3 class="slot-heading">Add the DNS records</h3>
+                        <p class="slot-sub" id="dns-sub">
+                            Publish the record(s) below at your DNS provider. We'll verify once they propagate.
+                        </p>
+                    </div>
 
-                <div id="setup-error" class="inline-error" style="display:none"></div>
-                <div id="setup-poll-status" class="inline-info" style="display:none">
-                    Checking DNS… we'll keep watching for a minute.
+                    <div class="dns-records-section">
+                        <div class="dns-records-list" id="dns-records"></div>
+                        <div class="setup-notes" id="setup-notes" style="display:none"></div>
+                    </div>
+
+                    <p class="setup-help">
+                        Not sure where to add these?
+                        <a href="https://docs.spoo.me/custom-domains/dns-setup"
+                           target="_blank" rel="noopener noreferrer" class="setup-help-link">
+                            View the DNS setup guide
+                            <i class="ti ti-external-link"></i>
+                        </a>
+                    </p>
+
+                    <div id="dns-error" class="inline-error" style="display:none"></div>
                 </div>
-            </div>
 
-            <!-- Active mode -->
-            <div class="modal-slot" data-mode="active" style="display:none">
-                <div class="banner banner-active">
-                    <i class="ti ti-check"></i>
-                    Live. Short links work on this domain.
+                <!-- ==================== Verify slot (Step 3) ==================== -->
+                <div class="modal-slot" data-mode="verify" style="display:none">
+                    <div class="slot-intro">
+                        <h3 class="slot-heading">Verifying your domain</h3>
+                        <p class="slot-sub">
+                            We're checking that the DNS records resolve and that the certificate is issued.
+                            This can take from a few minutes to a few hours, depending on your DNS provider.
+                        </p>
+                    </div>
+
+                    <div class="status-panel" id="verify-status-panel">
+                        <div class="status-row" data-step="dns" id="status-row-dns">
+                            <div class="status-icon">
+                                <i class="ti ti-loader-2 spinning status-spinner"></i>
+                                <i class="ti ti-check status-success"></i>
+                                <i class="ti ti-x status-fail"></i>
+                            </div>
+                            <div class="status-content">
+                                <div class="status-label">Domain connection</div>
+                                <div class="status-message" id="status-dns-message">Waiting for DNS to propagate</div>
+                            </div>
+                        </div>
+                        <div class="status-row" data-step="ssl" id="status-row-ssl">
+                            <div class="status-icon">
+                                <i class="ti ti-loader-2 spinning status-spinner"></i>
+                                <i class="ti ti-check status-success"></i>
+                                <i class="ti ti-x status-fail"></i>
+                            </div>
+                            <div class="status-content">
+                                <div class="status-label">SSL certificate</div>
+                                <div class="status-message" id="status-ssl-message">Waiting for certificate to be issued</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="verify-error" class="inline-error" style="display:none"></div>
                 </div>
 
-                <a id="active-open-link" class="btn btn-secondary btn-block" target="_blank" rel="noopener noreferrer">
-                    <i class="ti ti-external-link"></i>
-                    <span id="active-open-label">Open your domain</span>
-                </a>
+                <!-- ==================== Live slot (Step 4) — Management view ==================== -->
+                <div class="modal-slot" data-mode="live" style="display:none">
+                    <div class="live-hero">
+                        <div class="live-hero-text">
+                            <h3 class="slot-heading">
+                                <i class="ti ti-circle-check live-hero-check"></i>
+                                Your domain is live
+                            </h3>
+                            <p class="slot-sub">Short links resolve from
+                                <code id="live-hero-fqdn"></code>.
+                            </p>
+                        </div>
+                        <a class="btn btn-ghost btn-icon-text" id="live-open-icon-link"
+                           target="_blank" rel="noopener noreferrer" title="Open in new tab">
+                            <i class="ti ti-external-link"></i>
+                            <span>Open</span>
+                        </a>
+                    </div>
 
-                <p class="active-meta" id="active-meta"></p>
+                    <div class="live-actions">
+                        <a class="action-card" id="live-shorten-cta" href="/dashboard/links?domain=">
+                            <div class="action-icon"><i class="ti ti-link"></i></div>
+                            <div class="action-text">
+                                <div class="action-title">Shorten a link on this domain</div>
+                                <div class="action-desc">Create a branded short link →</div>
+                            </div>
+                        </a>
+                    </div>
 
-                <details class="collapsible">
-                    <summary>DNS record (for reference)</summary>
-                    <div class="dns-records" id="active-dns-records"></div>
-                </details>
-            </div>
+                    <section class="settings-section settings-disabled" aria-labelledby="settings-routing-heading">
+                        <header class="settings-header">
+                            <div>
+                                <h3 id="settings-routing-heading">Routing settings</h3>
+                                <p class="settings-hint">Control root and unknown-path behaviour, robots.txt, and indexing.</p>
+                            </div>
+                        </header>
+                        <div class="settings-grid" aria-hidden="true">
+                            <div class="setting-field">
+                                <label>Root redirect (<code>/</code>)</label>
+                                <input type="text" disabled placeholder="https://yoursite.com" />
+                            </div>
+                            <div class="setting-field">
+                                <label>Unknown path redirect</label>
+                                <input type="text" disabled placeholder="https://yoursite.com/404" />
+                            </div>
+                            <div class="setting-field setting-full">
+                                <label>Custom robots.txt</label>
+                                <textarea disabled rows="3" placeholder="User-agent: *&#10;Disallow: /"></textarea>
+                            </div>
+                            <div class="setting-field setting-full">
+                                <label class="toggle-label">
+                                    <input type="checkbox" disabled />
+                                    <span>Allow search engines to index links on this domain</span>
+                                </label>
+                            </div>
+                        </div>
+                    </section>
 
-            <!-- Revoked mode -->
-            <div class="modal-slot" data-mode="revoked" style="display:none">
-                <div class="banner banner-revoked">
-                    This domain was revoked. Re-registration available 30 days after revocation.
+                </div>
+
+                <!-- ==================== Revoked slot ==================== -->
+                <div class="modal-slot" data-mode="revoked" style="display:none">
+                    <div class="banner banner-revoked">
+                        <i class="ti ti-ban banner-icon"></i>
+                        <div>
+                            <strong>This domain has been revoked.</strong>
+                            <p>Short links on it no longer resolve. The domain still occupies a
+                                slot on your account — Remove it to free the slot, or leave it for
+                                the audit record.</p>
+                        </div>
+                    </div>
+                    <dl class="diag-list revoked-meta">
+                        <dt>Revoked</dt><dd id="revoked-at">—</dd>
+                        <dt>Originally registered</dt><dd id="revoked-created">—</dd>
+                    </dl>
                 </div>
             </div>
         </div>
 
         <div class="modal-footer" id="domain-modal-footer">
-            <button type="button" class="btn btn-danger-ghost" id="btn-domain-revoke" style="display:none">Revoke</button>
-            <button type="button" class="btn btn-ghost" id="btn-domain-modal-cancel" style="display:none">Cancel</button>
-            <button type="button" class="btn btn-primary" id="btn-domain-modal-submit" style="display:none">Add</button>
-            <button type="button" class="btn btn-primary" id="btn-verify" style="display:none">
-                <span class="btn-label">Verify</span>
-                <span class="btn-spinner" style="display:none">
-                    <i class="ti ti-loader-2"></i>
-                </span>
-            </button>
+            <!-- Left-aligned secondary actions -->
+            <div class="modal-footer-left">
+                <button type="button" class="btn btn-ghost" id="btn-step-back" style="display:none">
+                    <i class="ti ti-arrow-left"></i>
+                    <span>Back</span>
+                </button>
+                <button type="button" class="btn btn-link-danger" id="btn-cancel-registration" style="display:none">
+                    Cancel registration
+                </button>
+            </div>
+
+            <!-- Right-aligned primary actions -->
+            <div class="modal-footer-right">
+                <button type="button" class="btn btn-ghost" id="btn-domain-modal-cancel" style="display:none">Cancel</button>
+                <button type="button" class="btn btn-primary" id="btn-domain-modal-submit" style="display:none">Add domain</button>
+                <button type="button" class="btn btn-primary" id="btn-step-next" style="display:none">
+                    <span class="btn-label">I've added the records</span>
+                    <i class="ti ti-arrow-right"></i>
+                </button>
+                <button type="button" class="btn btn-primary" id="btn-verify-footer" style="display:none">
+                    <i class="ti ti-refresh btn-verify-icon"></i>
+                    <span class="btn-label">Check now</span>
+                </button>
+                <button type="button" class="btn btn-danger" id="btn-revoke-footer" style="display:none">
+                    <i class="ti ti-trash"></i>
+                    <span>Revoke domain</span>
+                </button>
+                <button type="button" class="btn btn-danger" id="btn-domain-remove" style="display:none">
+                    <i class="ti ti-trash"></i>
+                    <span>Remove permanently</span>
+                </button>
+            </div>
         </div>
     </div>
+
+    <!-- Confetti canvas (overlays the entire modal viewport on Live transition) -->
+    <canvas id="confetti-canvas" class="confetti-canvas" aria-hidden="true"></canvas>
 </div>
 
-<!-- Revoke confirmation sub-modal — same pattern as #delete-key-modal -->
+<!-- ===================================================================== -->
+<!-- Revoke confirmation sub-modal — card-as-target + type-to-confirm -->
+<!-- ===================================================================== -->
 <div id="delete-domain-modal" aria-hidden="true">
     <div class="modal-backdrop"></div>
     <div class="modal-container">
@@ -161,24 +353,41 @@
                 <p id="deleteDomainModalDesc">
                     <strong id="delete-domain-fqdn"></strong> has
                     <strong id="delete-domain-url-count">…</strong> URL(s) on it.
-                    What should happen to them?
+                    Pick what should happen to them.
                 </p>
-                <div class="cascade-choice">
-                    <label class="cascade-option">
-                        <input type="radio" name="cascade" value="false" checked>
-                        <span class="cascade-option-label">Keep the URLs (orphan)</span>
-                        <div class="cascade-option-desc">
-                            URLs become unreachable. If you re-register this domain later, they resume working.
+                <div class="cascade-choice" role="radiogroup" aria-label="URL handling">
+                    <div class="cascade-card" data-cascade="false" role="radio" aria-checked="true" tabindex="0">
+                        <i class="ti ti-archive cascade-icon"></i>
+                        <div class="cascade-text">
+                            <span class="cascade-card-title">Keep URLs (orphan)</span>
+                            <span class="cascade-card-desc">
+                                URLs stop resolving while the domain is revoked. If you re-register
+                                the same domain later, they resume.
+                            </span>
                         </div>
-                    </label>
-                    <label class="cascade-option">
-                        <input type="radio" name="cascade" value="true">
-                        <span class="cascade-option-label">Delete all URLs permanently</span>
-                        <div class="cascade-option-desc warning">
-                            Destination data is lost. Aliases free up for reuse. Cannot be undone.
+                    </div>
+                    <div class="cascade-card cascade-card-destructive" data-cascade="true" role="radio" aria-checked="false" tabindex="-1">
+                        <i class="ti ti-trash cascade-icon"></i>
+                        <div class="cascade-text">
+                            <span class="cascade-card-title">Delete URLs permanently</span>
+                            <span class="cascade-card-desc">
+                                Every short link on this domain is permanently deleted - destinations, click stats, and short codes all gone. Cannot be undone.
+                            </span>
                         </div>
-                    </label>
+                    </div>
                 </div>
+
+                <div class="field type-to-confirm-field">
+                    <label for="delete-domain-confirm-input">
+                        Type the domain name to confirm
+                    </label>
+                    <input
+                        type="text"
+                        id="delete-domain-confirm-input"
+                        autocomplete="off"
+                        spellcheck="false" />
+                </div>
+
                 <div id="delete-domain-error" class="inline-error" style="display:none"></div>
             </div>
 
@@ -186,9 +395,60 @@
                 <button type="button" class="btn btn-cancel" id="btn-cancel-domain-delete">
                     <span>Cancel</span>
                 </button>
-                <button type="button" class="btn btn-delete" id="btn-confirm-domain-delete">
+                <button type="button" class="btn btn-delete" id="btn-confirm-domain-delete" disabled>
                     <i class="ti ti-trash"></i>
-                    <span>Revoke domain</span>
+                    <span id="btn-confirm-domain-delete-label">Revoke domain</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===================================================================== -->
+<!-- Remove (hard delete) confirmation sub-modal — REVOKED docs only -->
+<!-- ===================================================================== -->
+<div id="remove-domain-modal" aria-hidden="true">
+    <div class="modal-backdrop"></div>
+    <div class="modal-container">
+        <div class="modal-content" role="dialog" aria-modal="true"
+            aria-labelledby="removeDomainModalTitle" aria-describedby="removeDomainModalDesc">
+            <div class="modal-header">
+                <div class="modal-title-section-delete">
+                    <div class="modal-icon">
+                        <i class="ti ti-alert-triangle"></i>
+                    </div>
+                    <h2 class="modal-title" id="removeDomainModalTitle">Remove revoked domain?</h2>
+                </div>
+            </div>
+
+            <div class="modal-body">
+                <p id="removeDomainModalDesc">
+                    Permanently deletes <strong id="remove-domain-fqdn"></strong> from
+                    your account. The audit record is preserved, but the domain stops
+                    counting toward your slot and the row is gone from the dashboard.
+                    This cannot be undone.
+                </p>
+                <div class="field type-to-confirm-field">
+                    <label for="remove-domain-confirm-input">
+                        Type the domain name to confirm
+                    </label>
+                    <input
+                        type="text"
+                        id="remove-domain-confirm-input"
+                        autocomplete="off"
+                        spellcheck="false"
+                        placeholder="" />
+                </div>
+                <div id="remove-domain-error" class="inline-error" style="display:none"></div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-cancel" id="btn-cancel-domain-remove">
+                    <span>Cancel</span>
+                </button>
+                <button type="button" class="btn btn-delete" id="btn-confirm-domain-remove" disabled>
+                    <i class="ti ti-trash"></i>
+                    <span>Remove permanently</span>
                 </button>
             </div>
         </div>
@@ -208,25 +468,35 @@
 
 <template id="tpl-dns-record">
     <div class="dns-record">
-        <span class="rec-type"></span>
-        <div class="rec-fields">
-            <div class="rec-field">
-                <span class="rec-label">Name</span>
-                <code class="rec-name"></code>
-            </div>
-            <div class="rec-field">
-                <span class="rec-label">Value</span>
-                <code class="rec-value"></code>
+        <div class="rec-cell rec-cell-type">
+            <span class="rec-cell-label">Type</span>
+            <div class="rec-cell-box rec-cell-box-static">
+                <span class="rec-type-text"></span>
             </div>
         </div>
-        <button type="button" class="rec-copy" title="Copy value">
-            <i class="ti ti-copy"></i>
-        </button>
+        <div class="rec-cell rec-cell-name">
+            <span class="rec-cell-label">Host-Name</span>
+            <div class="rec-cell-box">
+                <code class="rec-name"></code>
+                <button type="button" class="rec-copy-btn" data-field="name" title="Copy host name" aria-label="Copy host name">
+                    <i class="ti ti-copy"></i>
+                </button>
+            </div>
+        </div>
+        <div class="rec-cell rec-cell-value">
+            <span class="rec-cell-label">Value</span>
+            <div class="rec-cell-box">
+                <code class="rec-value"></code>
+                <button type="button" class="rec-copy-btn" data-field="value" title="Copy value" aria-label="Copy record value">
+                    <i class="ti ti-copy"></i>
+                </button>
+            </div>
+        </div>
     </div>
 </template>
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', path='js/verification-check.js') }}?v=1"></script>
-<script src="{{ url_for('static', path='js/dashboard/domains.js') }}?v=4"></script>
+<script src="{{ url_for('static', path='js/dashboard/domains.js') }}?v=19"></script>
 {% endblock %}
