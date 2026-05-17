@@ -219,8 +219,12 @@ class TestShortenWithCustomDomain:
         body = resp.json()
         # short_url is built off the custom host, not the system default.
         assert body["short_url"].startswith("https://links.acme.com/")
-        # Owner check fired with the normalised fqdn.
-        custom_svc.assert_owned_and_active.assert_awaited_once()
+        # Owner check fired with (user, normalised fqdn). Pin both — the
+        # contract isn't just "fired", it's "fired with the right args".
+        assert custom_svc.assert_owned_and_active.await_count == 1
+        own_args = custom_svc.assert_owned_and_active.call_args.args
+        assert own_args[0].user_id == user.user_id
+        assert own_args[1] == "links.acme.com"
         # Service got the domain on the create call.
         kwargs = url_svc.create.call_args.kwargs
         assert kwargs.get("domain") == "links.acme.com"

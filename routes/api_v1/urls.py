@@ -20,6 +20,7 @@ from dependencies import (
     UrlSvc,
     require_scopes,
 )
+from errors import ValidationError
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.dto.requests.url import ListUrlsQuery
@@ -106,7 +107,10 @@ async def bulk_delete_urls_v1(
     accidental nuke of the user's entire spoo.me URL inventory. Caller must
     own the domain.
     """
-    fqdn = normalise_fqdn(domain)
+    try:
+        fqdn = normalise_fqdn(domain)
+    except ValueError as exc:
+        raise ValidationError(str(exc), field="domain") from exc
     await custom_domain_service.assert_owned(user, fqdn)
     count = await url_service.delete_all_by_domain(user.user_id, fqdn)
     return BulkDeleteUrlsResponse(

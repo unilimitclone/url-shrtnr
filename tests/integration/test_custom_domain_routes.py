@@ -98,6 +98,11 @@ class TestCreateCustomDomain:
         # Internal field NOT exposed.
         assert "verification_token" not in body
         assert "setup_instructions" not in body
+        # Service got the normalised fqdn + authed user.
+        svc.create.assert_awaited_once()
+        req_arg, user_arg = svc.create.call_args.args
+        assert req_arg.fqdn == "links.acme.com"
+        assert user_arg.user_id == _USER_ID
 
     def test_flag_not_enabled_returns_404(self):
         svc = AsyncMock()
@@ -155,6 +160,19 @@ class TestVerifyCustomDomain:
         resp = client.post(f"/api/v1/custom-domains/{_DOMAIN_ID}/verify", json={})
         assert resp.status_code == 200
         assert resp.json()["status"].lower() == "active"
+        # Service got the parsed ObjectId + the authed user.
+        svc.verify.assert_awaited_once()
+        oid_arg, user_arg = svc.verify.call_args.args
+        assert oid_arg == _DOMAIN_ID
+        assert user_arg.user_id == _USER_ID
+
+    def test_no_body_required(self):
+        # Trigger endpoint accepts a bare POST with no JSON payload.
+        svc = AsyncMock()
+        svc.verify = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
+        client = TestClient(_make_app(svc), raise_server_exceptions=False)
+        resp = client.post(f"/api/v1/custom-domains/{_DOMAIN_ID}/verify")
+        assert resp.status_code == 200
 
     def test_not_owner_returns_403(self):
         svc = AsyncMock()
@@ -163,12 +181,13 @@ class TestVerifyCustomDomain:
         resp = client.post(f"/api/v1/custom-domains/{_DOMAIN_ID}/verify", json={})
         assert resp.status_code == 403
 
-    def test_invalid_id_returns_422(self):
-        # Path pattern rejects bad ids before service is called.
+    def test_invalid_id_returns_404(self):
+        # Bad id is mapped to 404 by `_parse_domain_id` so unauthenticated
+        # callers can't fingerprint the feature by ID format.
         svc = AsyncMock()
         client = TestClient(_make_app(svc), raise_server_exceptions=False)
         resp = client.post("/api/v1/custom-domains/notanid/verify", json={})
-        assert resp.status_code == 422
+        assert resp.status_code == 404
         svc.verify.assert_not_called()
 
 

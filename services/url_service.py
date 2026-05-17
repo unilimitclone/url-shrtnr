@@ -92,10 +92,16 @@ async def _handle_alias(
     request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
 ) -> None:
     if request.alias is not None and request.alias != existing.alias:
-        if not await service.check_alias_available(request.alias):
+        # Scope the alias collision check to the URL's actual domain — custom
+        # domains have their own (domain, alias) namespace, so renaming on
+        # `links.acme.com` must not look up against the system default.
+        if not await service.check_alias_available(
+            request.alias, domain=existing.domain
+        ):
             log.info(
                 "url_alias_conflict",
                 short_code=request.alias,
+                domain=existing.domain,
             )
             raise ConflictError("Alias is already in use")
         ops["alias"] = request.alias
@@ -305,10 +311,11 @@ class UrlService:
     ) -> bool:
         """Return True if alias is free under the given domain namespace.
 
-        ``domain=None`` means the system default — that path also checks the
-        legacy ``urls`` collection (v1 alias collisions still matter on the
-        original namespace). Custom domains only check v2 since v1/emoji
-        predate per-domain scoping and never live on custom hostnames.
+        When ``domain`` is explicitly the system default (or omitted), also
+        checks the legacy ``urls`` collection — v1 alias collisions still
+        matter on the original namespace. Custom domains only check v2 since
+        v1/emoji predate per-domain scoping and never live on custom
+        hostnames.
         """
         target_domain = domain or self._system_default_domain
         if await self._url_repo.check_alias_exists(alias, target_domain):

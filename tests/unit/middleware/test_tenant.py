@@ -154,19 +154,26 @@ class TestCustomTenantRouting:
         assert r.headers["X-Robots-Tag"] == "noindex, nofollow, noarchive"
 
     def test_custom_alias_with_password_subpath_allowed(self):
+        # Password verification is POST-only — GET on `/<alias>/password` must
+        # 404 like any other disallowed method/path combination.
         resolver = MagicMock()
         resolver.resolve = AsyncMock(return_value=_custom_tenant())
-        app = _app(resolver)
+        from starlette.testclient import TestClient
 
         async def password_handler(request):
             return PlainTextResponse("password-ok")
 
-        app.routes.append(Route("/{alias}/password", password_handler))
-        from starlette.testclient import TestClient
+        app = Starlette(
+            routes=[Route("/{alias}/password", password_handler, methods=["POST"])]
+        )
+        app.state.tenant_resolver = resolver
+        app.add_middleware(TenantMiddleware)
 
         with TestClient(app) as client:
-            r = client.get("/abc/password", headers={"host": "links.acme.com"})
-        assert r.status_code == 200
+            ok = client.post("/abc/password", headers={"host": "links.acme.com"})
+            bad = client.get("/abc/password", headers={"host": "links.acme.com"})
+        assert ok.status_code == 200
+        assert bad.status_code == 404
 
     def test_custom_robots_txt_inline_disallow(self):
         resolver = MagicMock()

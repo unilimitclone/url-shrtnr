@@ -1336,6 +1336,37 @@ class TestUrlServiceCreateOnCustomDomain:
         assert inserted["domain"] == "links.acme.com"
 
     @pytest.mark.asyncio
+    async def test_create_auto_generates_alias_against_custom_domain(self):
+        # Regression guard: previously _generate_unique_alias() probed the
+        # system default namespace regardless of which tenant the URL was
+        # being created on. With the domain= kwarg threaded through, the
+        # candidate must be checked against the custom domain.
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_repo.check_alias_exists = AsyncMock(return_value=False)
+        url_repo.insert = AsyncMock(return_value=ObjectId())
+        blocked_url_repo.get_patterns = AsyncMock(return_value=[])
+
+        # No alias provided → service auto-generates one.
+        req = CreateUrlRequest(url="https://example.com/auto-alias")
+
+        await svc.create(req, USER_OID, "1.2.3.4", domain="links.acme.com")
+
+        # The probe was scoped to the custom domain, never the system default.
+        url_repo.check_alias_exists.assert_awaited_once()
+        _, probed_domain = url_repo.check_alias_exists.call_args.args
+        assert probed_domain == "links.acme.com"
+
+        # Persisted doc lands on the custom tenant.
+        inserted = url_repo.insert.call_args[0][0]
+        assert inserted["domain"] == "links.acme.com"
+
+    @pytest.mark.asyncio
     async def test_create_with_no_domain_uses_system_default(self):
         from schemas.dto.requests.url import CreateUrlRequest
 

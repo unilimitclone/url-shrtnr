@@ -34,7 +34,6 @@ from middleware.rate_limiter import Limits, limiter
 from schemas.dto.requests.custom_domain import (
     CreateCustomDomainRequest,
     ListCustomDomainsQuery,
-    VerifyCustomDomainRequest,
 )
 from schemas.dto.responses.custom_domain import (
     CustomDomainDeleteResponse,
@@ -108,10 +107,7 @@ async def create_custom_domain(
 @limiter.limit(Limits.DOMAIN_VERIFY)
 async def verify_custom_domain(
     request: Request,
-    domain_id: Annotated[
-        str, Path(min_length=24, max_length=24, pattern=r"^[0-9a-f]{24}$")
-    ],
-    body: VerifyCustomDomainRequest,
+    domain_id: Annotated[str, Path(description="MongoDB ObjectId of the domain.")],
     service: CustomDomainSvc,
     user: CurrentUser = Depends(require_scopes(DOMAIN_MANAGE_SCOPES)),  # noqa: B008
 ) -> CustomDomainResponse:
@@ -174,9 +170,7 @@ async def list_custom_domains(
 @limiter.limit(Limits.DOMAIN_DELETE)
 async def delete_custom_domain(
     request: Request,
-    domain_id: Annotated[
-        str, Path(min_length=24, max_length=24, pattern=r"^[0-9a-f]{24}$")
-    ],
+    domain_id: Annotated[str, Path(description="MongoDB ObjectId of the domain.")],
     service: CustomDomainSvc,
     cascade: bool = Query(
         default=False,

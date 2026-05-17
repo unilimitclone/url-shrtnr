@@ -107,14 +107,24 @@ def _is_reserved_path(path: str) -> bool:
     return False
 
 
-def _is_allowed_on_custom_tenant(path: str) -> bool:
+def _is_allowed_on_custom_tenant(path: str, method: str) -> bool:
+    """Custom-tenant allowlist gate. Path-and-method check so disallowed
+    methods on allowed paths (e.g. ``DELETE /<alias>``) return our 404
+    instead of Starlette's 405, preserving the strict deny policy."""
     if path == "/":
         return False
     if _is_reserved_path(path):
         return False
     if path in _ALLOWED_EXACT_PATHS:
-        return True
-    return bool(_ALIAS_PATTERN.match(path))
+        # Static assets (favicon) are read-only.
+        return method in {"GET", "HEAD"}
+    if _ALIAS_PATTERN.match(path):
+        # `/<alias>/password` is a form POST; everything else under the alias
+        # namespace (the redirect) is GET/HEAD only.
+        if path.endswith("/password"):
+            return method == "POST"
+        return method in {"GET", "HEAD"}
+    return False
 
 
 class TenantMiddleware(BaseHTTPMiddleware):
@@ -150,12 +160,18 @@ class TenantMiddleware(BaseHTTPMiddleware):
         path = request.url.path
 
         if path == "/robots.txt":
+            if request.method not in {"GET", "HEAD"}:
+                return HTMLResponse(
+                    _NOT_FOUND_BODY,
+                    status_code=404,
+                    headers={"X-Robots-Tag": _NOINDEX_HEADER},
+                )
             return PlainTextResponse(
                 _CUSTOM_TENANT_ROBOTS_BODY,
                 headers={"X-Robots-Tag": _NOINDEX_HEADER},
             )
 
-        if not _is_allowed_on_custom_tenant(path):
+        if not _is_allowed_on_custom_tenant(path, request.method):
             log.info(
                 "tenant_path_denied",
                 host=host,
