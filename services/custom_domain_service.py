@@ -15,7 +15,6 @@ from config import CustomDomainSettings
 from errors import (
     DomainAlreadyRegisteredError,
     DomainBlocklistedError,
-    DomainDnsNotPropagatedError,
     DomainNotVerifiedError,
     DomainQuotaExceededError,
     ForbiddenError,
@@ -98,7 +97,6 @@ class CustomDomainService:
         await self._enforce_uniqueness(request.fqdn)
         await self._enforce_per_user_quota(user.user_id)
         await self._enforce_create_attempts_quota(user.user_id)
-        await self._enforce_dns_preflight(request.fqdn)
 
         method = self._pick_verification_method(request.fqdn)
         if method not in self._verifiers:
@@ -188,6 +186,27 @@ class CustomDomainService:
 
         doc = await self._load_owned(domain_id, user)
         await self._enforce_verify_attempts_quota(domain_id)
+
+        # DNS preflight short-circuits CF API calls so unpropagated domains
+        # don't trigger CF's 15-min backoff. Soft failure: recorded as
+        # last_verification_error, not raised.
+        if self._preflight_cname_target:
+            preflight = await check_cname(doc.fqdn, self._preflight_cname_target)
+            if not preflight.ok:
+                await self._repo.update_status(
+                    doc.id,
+                    doc.status,
+                    last_verification_error=preflight.reason,
+                )
+                log.info(
+                    "audit.domain.preflight_failed",
+                    fqdn=doc.fqdn,
+                    domain_id=str(doc.id),
+                    owner_id=str(user.user_id),
+                    reason=preflight.reason,
+                )
+                refreshed = await self._repo.find_by_id(doc.id)
+                return refreshed or doc
 
         verifier = self._verifiers.get(doc.verification_method)
         if verifier is None:
@@ -448,6 +467,18 @@ class CustomDomainService:
             error=None if ok else f"caddy {kind} eviction failed",
         )
 
+    async def get_owned_by_id(
+        self,
+        domain_id: ObjectId,
+        user: CurrentUser,
+    ) -> CustomDomainDoc:
+        """Public read for the caller's domain by id. 403/404 same as mutations.
+
+        Used by the detail view, refresh-after-verify, and auto-poll. Bypasses
+        the master `enabled` flag so owners can see their state during rollback.
+        """
+        return await self._load_owned(domain_id, user)
+
     async def _load_owned(
         self, domain_id: ObjectId, user: CurrentUser
     ) -> CustomDomainDoc:
@@ -544,13 +575,6 @@ class CustomDomainService:
         except Exception as exc:
             log.warning("setup_notes_ns_lookup_failed", fqdn=fqdn, error=str(exc))
         return notes
-
-    async def _enforce_dns_preflight(self, fqdn: str) -> None:
-        if not self._preflight_cname_target:
-            return
-        result = await check_cname(fqdn, self._preflight_cname_target)
-        if not result.ok:
-            raise DomainDnsNotPropagatedError(result.reason)
 
     async def _enforce_blocklist(self, fqdn: str) -> None:
         # Live Mongo — operator can add an abuse domain via mongosh and the

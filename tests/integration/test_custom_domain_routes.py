@@ -191,6 +191,44 @@ class TestVerifyCustomDomain:
         svc.verify.assert_not_called()
 
 
+class TestGetCustomDomain:
+    def test_happy_path(self):
+        svc = AsyncMock()
+        svc.get_owned_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        client = TestClient(_make_app(svc), raise_server_exceptions=False)
+        resp = client.get(f"/api/v1/custom-domains/{_DOMAIN_ID}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["fqdn"] == "links.acme.com"
+        assert body["status"].lower() == "pending"
+        # Service got the parsed ObjectId + authed user.
+        svc.get_owned_by_id.assert_awaited_once()
+        oid_arg, user_arg = svc.get_owned_by_id.call_args.args
+        assert oid_arg == _DOMAIN_ID
+        assert user_arg.user_id == _USER_ID
+
+    def test_invalid_id_returns_404(self):
+        svc = AsyncMock()
+        client = TestClient(_make_app(svc), raise_server_exceptions=False)
+        resp = client.get("/api/v1/custom-domains/notanid")
+        assert resp.status_code == 404
+        svc.get_owned_by_id.assert_not_called()
+
+    def test_not_found_returns_404(self):
+        svc = AsyncMock()
+        svc.get_owned_by_id = AsyncMock(side_effect=NotFoundError("not found"))
+        client = TestClient(_make_app(svc), raise_server_exceptions=False)
+        resp = client.get(f"/api/v1/custom-domains/{_DOMAIN_ID}")
+        assert resp.status_code == 404
+
+    def test_other_owner_returns_403(self):
+        svc = AsyncMock()
+        svc.get_owned_by_id = AsyncMock(side_effect=ForbiddenError("not yours"))
+        client = TestClient(_make_app(svc), raise_server_exceptions=False)
+        resp = client.get(f"/api/v1/custom-domains/{_DOMAIN_ID}")
+        assert resp.status_code == 403
+
+
 class TestListCustomDomains:
     def test_paginated_response(self):
         svc = AsyncMock()

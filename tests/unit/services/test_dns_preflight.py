@@ -61,7 +61,7 @@ class TestCheckCname:
         ):
             result = await check_cname("links.acme.com", "customers.spoo.me")
         assert result.ok is False
-        assert "propagating" in result.reason
+        assert "Try again" in result.reason
 
     @pytest.mark.asyncio
     async def test_wrong_target_yields_diagnostic_message(self):
@@ -118,7 +118,7 @@ class TestCheckCname:
         ):
             result = await check_cname("acme.com", "customers.spoo.me")
         assert result.ok is False
-        assert "propagating" in result.reason
+        assert "Try again" in result.reason
 
 
 class TestUsesCloudflareDns:

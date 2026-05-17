@@ -161,6 +161,33 @@ async def list_custom_domains(
     )
 
 
+@router.get(
+    "/custom-domains/{domain_id}",
+    responses=ERROR_RESPONSES,
+    operation_id="getCustomDomain",
+    summary="Get Custom Domain",
+)
+@limiter.limit(Limits.DOMAIN_READ)
+async def get_custom_domain(
+    request: Request,
+    domain_id: Annotated[str, Path(description="MongoDB ObjectId of the domain.")],
+    service: CustomDomainSvc,
+    user: CurrentUser = Depends(require_scopes(DOMAIN_READ_SCOPES)),  # noqa: B008
+) -> CustomDomainResponse:
+    """Fetch a single custom domain owned by the caller.
+
+    Used by the dashboard detail view + auto-poll after Verify. Bypasses the
+    feature flag like other read endpoints.
+
+    **Authentication**: Required (JWT or API key with `domains:read`).
+
+    **Rate Limits**: 60/min.
+    """
+    oid = _parse_domain_id(domain_id)
+    doc = await service.get_owned_by_id(oid, user)
+    return CustomDomainResponse.from_doc(doc)
+
+
 @router.delete(
     "/custom-domains/{domain_id}",
     responses=AUTH_RESPONSES,
