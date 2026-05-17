@@ -257,7 +257,8 @@ async def remove_custom_domain(
 
     **Responses**:
     - 204 — removed
-    - 404 — domain not found / not owned by caller
+    - 403 — caller does not own this domain
+    - 404 — domain not found (or invalid id)
     - 422 — domain isn't REVOKED
     """
     oid = _parse_domain_id(domain_id)

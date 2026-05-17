@@ -258,6 +258,12 @@ function setStepper(activeStep, { completed = new Set(), failed = null } = {}) {
         else if (completed.has(n)) statusNode.textContent = 'Completed';
         else if (n === activeStep) statusNode.textContent = 'In progress';
         else statusNode.textContent = 'Pending';
+
+        // Keyboard focusability mirrors interactivity (completed or active
+        // steps are reachable; pending/failed are not).
+        const interactive = completed.has(n) || n === activeStep;
+        item.tabIndex = interactive ? 0 : -1;
+        item.setAttribute('aria-disabled', interactive ? 'false' : 'true');
     });
 }
 
@@ -710,9 +716,18 @@ async function pollTick({ method }) {
               }
             : { headers: { 'Accept': 'application/json' } };
 
-        const res = await authFetch(url, init);
+        let res;
+        try {
+            res = await authFetch(url, init);
+        } catch (netErr) {
+            setError(el.verifyError, `Couldn't reach the server: ${netErr.message}`);
+            return;
+        }
         const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
+        if (!res.ok) {
+            setError(el.verifyError, body.error || `Server returned ${res.status}.`);
+            return;
+        }
 
         // Modal may have been closed / changed while we were in flight.
         if (!currentDomain || currentDomain.id !== body.id || currentMode !== 'verify') {
@@ -734,8 +749,6 @@ async function pollTick({ method }) {
 
         // Domain-side failures (NXDOMAIN, etc.) live on the status row only.
         setError(el.verifyError, '');
-    } catch (err) {
-        setError(el.verifyError, `Couldn't reach the server: ${err.message}`);
     } finally {
         setVerifyBtnBusy(false);
         if (currentMode === 'verify' && currentDomain && currentDomain.id === pollDomainId) {
@@ -891,18 +904,28 @@ function clearConfetti() {
 async function cancelRegistration() {
     if (!currentDomain) return;
     const fqdn = currentDomain.fqdn;
+    const id = currentDomain.id;
     if (!window.confirm(
         `Cancel registration of ${fqdn}?\n\n` +
-        `The domain will be revoked. You can re-add it later.`
+        `The domain will be removed from your account. You can re-add it later.`
     )) return;
 
     el.btnCancelRegistration.disabled = true;
     stopPoll();
     try {
-        const url = `/api/v1/custom-domains/${encodeURIComponent(currentDomain.id)}?cascade=false`;
-        const res = await authFetch(url, { method: 'DELETE' });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
+        // Revoke then hard-delete so the slot frees immediately.
+        const revokeUrl = `/api/v1/custom-domains/${encodeURIComponent(id)}?cascade=false`;
+        const revokeRes = await authFetch(revokeUrl, { method: 'DELETE' });
+        if (!revokeRes.ok) {
+            const body = await revokeRes.json().catch(() => ({}));
+            throw new Error(body.error || `Revoke failed (${revokeRes.status})`);
+        }
+        const removeUrl = `/api/v1/custom-domains/${encodeURIComponent(id)}/permanent`;
+        const removeRes = await authFetch(removeUrl, { method: 'DELETE' });
+        if (removeRes.status !== 204) {
+            const body = await removeRes.json().catch(() => ({}));
+            throw new Error(body.error || `Remove failed (${removeRes.status})`);
+        }
         showNotification(`${fqdn} registration cancelled`, 'success');
         closeModal();
         fetchDomains();
@@ -921,7 +944,8 @@ async function openRevokeModal() {
     revokeSelectedCascade = false;
     el.revokeCards.forEach(c => {
         const isOrphan = c.dataset.cascade === 'false';
-        c.setAttribute('aria-pressed', isOrphan ? 'true' : 'false');
+        c.setAttribute('aria-checked', isOrphan ? 'true' : 'false');
+        c.tabIndex = isOrphan ? 0 : -1;
         c.classList.toggle('is-selected', isOrphan);
     });
 
@@ -967,9 +991,11 @@ function pickCascadeCard(card) {
     revokeSelectedCascade = card.dataset.cascade === 'true';
     el.revokeCards.forEach(c => {
         const isThis = c === card;
-        c.setAttribute('aria-pressed', isThis ? 'true' : 'false');
+        c.setAttribute('aria-checked', isThis ? 'true' : 'false');
+        c.tabIndex = isThis ? 0 : -1;
         c.classList.toggle('is-selected', isThis);
     });
+    card.focus();
     syncRevokeConfirmState();
 }
 
@@ -1110,11 +1136,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     el.btnCancelRegistration.addEventListener('click', cancelRegistration);
 
-    // Stepper navigation
+    // Stepper navigation (mouse + keyboard)
     el.stepperItems.forEach(item => {
-        item.addEventListener('click', () => {
+        const fire = () => {
             const n = parseInt(item.dataset.step, 10);
             attemptJumpToStep(n);
+        };
+        item.addEventListener('click', fire);
+        item.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                fire();
+            }
         });
     });
 
@@ -1122,12 +1155,22 @@ document.addEventListener('DOMContentLoaded', () => {
     el.btnRevokeFooter.addEventListener('click', openRevokeModal);
 
     // Revoke sub-modal
-    el.revokeCards.forEach(card => {
+    el.revokeCards.forEach((card, idx) => {
         card.addEventListener('click', () => pickCascadeCard(card));
         card.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
                 pickCascadeCard(card);
+            } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+                e.preventDefault();
+                const next = el.revokeCards[(idx + 1) % el.revokeCards.length];
+                pickCascadeCard(next);
+            } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+                e.preventDefault();
+                const prev = el.revokeCards[
+                    (idx - 1 + el.revokeCards.length) % el.revokeCards.length
+                ];
+                pickCascadeCard(prev);
             }
         });
     });

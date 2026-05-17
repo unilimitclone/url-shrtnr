@@ -108,11 +108,23 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
     await feature_flags_col.create_index([("name", 1)], unique=True)
 
     # ── custom_domains ────────────────────────────────────────────────
-    # One row per fqdn — uniqueness enforced globally (no two users can claim
-    # the same domain). Owner+created_at supports the dashboard list view.
-    # status+last_verified_at backs the background re-verify worker query.
     custom_domains_col = db["custom_domains"]
-    await custom_domains_col.create_index([("fqdn", 1)], unique=True)
+    # Partial unique on fqdn — REVOKED docs preserved for audit don't reserve
+    # the fqdn. DCV at register-time is the takeover gate.
+    try:
+        await custom_domains_col.drop_index("fqdn_1")
+        log.info("legacy_custom_domain_fqdn_index_dropped", index="fqdn_1")
+    except OperationFailure as e:
+        if getattr(e, "code", None) != 27:
+            raise
+    await custom_domains_col.create_index(
+        [("fqdn", 1)],
+        unique=True,
+        partialFilterExpression={
+            "status": {"$in": ["pending", "verifying", "active", "suspended"]}
+        },
+        name="fqdn_unique_non_revoked",
+    )
     await custom_domains_col.create_index([("owner_id", 1), ("created_at", -1)])
     await custom_domains_col.create_index([("status", 1), ("last_verified_at", 1)])
 

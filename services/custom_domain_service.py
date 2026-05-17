@@ -118,9 +118,10 @@ class CustomDomainService:
         try:
             new_id = await self._repo.insert(doc.to_mongo())
         except DuplicateKeyError:
-            # Race with concurrent insert — translate to 409 instead of 500.
+            # Service-level uniqueness check already caught the common cases;
+            # this is the index backstop for concurrent insert races.
             raise DomainAlreadyRegisteredError(
-                f"{request.fqdn} is registered to another account."
+                f"{request.fqdn} is already registered."
             ) from None
 
         try:
@@ -348,7 +349,9 @@ class CustomDomainService:
                 "Only revoked domains can be removed. Revoke this domain first."
             )
 
-        await self._repo.delete_by_id(doc.id)
+        deleted = await self._repo.delete_by_id(doc.id)
+        if not deleted:
+            raise NotFoundError("Domain not found.")
 
         log.info(
             "audit.domain.removed",
@@ -562,13 +565,10 @@ class CustomDomainService:
         if current >= self._settings.max_per_user:
             cap = self._settings.max_per_user
             suffix = "domain" if cap == 1 else "domains"
-            # Revoked docs still count — they hold the slot until the user
-            # explicitly removes them via the Remove action. Surface both
-            # reclamation paths so the user knows what to do.
             raise DomainQuotaExceededError(
                 f"You already have {cap} custom {suffix} on this account. "
-                f"Remove a revoked one or revoke an active one before adding "
-                f"another."
+                f"Remove a revoked one, or revoke an active one and then "
+                f"remove it, before adding another."
             )
 
     async def _enforce_verify_attempts_quota(self, domain_id: ObjectId) -> None:

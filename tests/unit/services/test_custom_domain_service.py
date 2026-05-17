@@ -234,7 +234,10 @@ class TestCreate:
         svc, repo, _, _, _ = _build_service()
         repo.find_blocking_by_fqdn = AsyncMock(return_value=_doc())
         req = CreateCustomDomainRequest(fqdn="links.acme.com")
-        with pytest.raises(DomainAlreadyRegisteredError):
+        with pytest.raises(
+            DomainAlreadyRegisteredError,
+            match="registered to another account",
+        ):
             await svc.create(req, _user())
 
     @pytest.mark.asyncio
@@ -617,6 +620,23 @@ class TestRemoveRevoked:
         repo.find_by_id = AsyncMock(return_value=None)
         with pytest.raises(NotFoundError):
             await svc.remove_revoked(DOMAIN_OID, _user())
+        repo.delete_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_raises_not_found_when_hard_delete_noops(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.REVOKED))
+        repo.delete_by_id = AsyncMock(return_value=False)
+        with pytest.raises(NotFoundError):
+            await svc.remove_revoked(DOMAIN_OID, _user())
+        repo.delete_by_id.assert_awaited_once_with(DOMAIN_OID)
+
+    @pytest.mark.asyncio
+    async def test_respects_feature_flag(self):
+        svc, repo, _, _, _ = _build_service(enabled=False)
+        with pytest.raises(DomainQuotaExceededError):
+            await svc.remove_revoked(DOMAIN_OID, _user())
+        repo.find_by_id.assert_not_called()
         repo.delete_by_id.assert_not_called()
 
 
