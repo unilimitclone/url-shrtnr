@@ -39,13 +39,23 @@ def _app(resolver=None, omit_resolver: bool = False) -> Starlette:
     return app
 
 
-def _custom_tenant(fqdn: str = "links.acme.com") -> TenantInfo:
+def _custom_tenant(
+    fqdn: str = "links.acme.com",
+    *,
+    status: DomainStatus = DomainStatus.ACTIVE,
+    root_redirect: str | None = None,
+    not_found_redirect: str | None = None,
+    custom_robots_txt: str | None = None,
+) -> TenantInfo:
     return TenantInfo(
         domain_id=None,
         fqdn=fqdn,
         owner_id=None,
-        status=DomainStatus.ACTIVE,
+        status=status,
         is_system_default=False,
+        root_redirect=root_redirect,
+        not_found_redirect=not_found_redirect,
+        custom_robots_txt=custom_robots_txt,
     )
 
 
@@ -242,3 +252,150 @@ class TestCustomTenantRouting:
                     f"expected 404 on {path}, got {r.status_code}"
                 )
                 assert r.headers["X-Robots-Tag"] == "noindex, nofollow, noarchive"
+
+
+class TestRoutingConfig:
+    """PR4.5 per-domain routing config — root_redirect / not_found_redirect / custom_robots_txt."""
+
+    def test_root_redirect_302_when_active_and_set(self):
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(
+            return_value=_custom_tenant(root_redirect="https://acme.com/landing")
+        )
+        with _client(resolver) as client:
+            r = client.get(
+                "/", headers={"host": "links.acme.com"}, follow_redirects=False
+            )
+        assert r.status_code == 302
+        assert r.headers["location"] == "https://acme.com/landing"
+        assert r.headers["X-Robots-Tag"] == "noindex, nofollow, noarchive"
+
+    def test_root_redirect_ignored_on_non_active(self):
+        # Suspended/pending/revoked domains 404 on /, not redirect — stops a
+        # stale config from firing after the owner takes the domain down.
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(
+            return_value=_custom_tenant(
+                status=DomainStatus.SUSPENDED,
+                root_redirect="https://acme.com/landing",
+            )
+        )
+        with _client(resolver) as client:
+            r = client.get(
+                "/", headers={"host": "links.acme.com"}, follow_redirects=False
+            )
+        assert r.status_code == 404
+
+    def test_root_redirect_ignored_on_post(self):
+        # `/` only redirects on GET/HEAD — POST/PUT/DELETE 404 to avoid
+        # silently dropping a request body to an unrelated URL.
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(
+            return_value=_custom_tenant(root_redirect="https://acme.com/")
+        )
+        with _client(resolver) as client:
+            r = client.post(
+                "/", headers={"host": "links.acme.com"}, follow_redirects=False
+            )
+        assert r.status_code == 404
+
+    def test_root_without_redirect_returns_404_not_not_found_redirect(self):
+        # The `/` surface is distinct from "any other unmatched path". Owner
+        # who configured only not_found_redirect must still see 404 on root.
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(
+            return_value=_custom_tenant(not_found_redirect="https://acme.com/404")
+        )
+        with _client(resolver) as client:
+            r = client.get(
+                "/", headers={"host": "links.acme.com"}, follow_redirects=False
+            )
+        assert r.status_code == 404
+
+    def test_not_found_redirect_302_on_disallowed_path(self):
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(
+            return_value=_custom_tenant(not_found_redirect="https://acme.com/404")
+        )
+        with _client(resolver) as client:
+            r = client.get(
+                "/about", headers={"host": "links.acme.com"}, follow_redirects=False
+            )
+        assert r.status_code == 302
+        assert r.headers["location"] == "https://acme.com/404"
+
+    def test_not_found_redirect_ignored_on_non_get(self):
+        # Body-bearing methods don't redirect — caller's payload would be
+        # silently dropped, which looks broken.
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(
+            return_value=_custom_tenant(not_found_redirect="https://acme.com/404")
+        )
+        with _client(resolver) as client:
+            r = client.post(
+                "/about", headers={"host": "links.acme.com"}, follow_redirects=False
+            )
+        assert r.status_code == 404
+
+    def test_not_found_redirect_ignored_on_non_active(self):
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(
+            return_value=_custom_tenant(
+                status=DomainStatus.PENDING,
+                not_found_redirect="https://acme.com/404",
+            )
+        )
+        with _client(resolver) as client:
+            r = client.get(
+                "/about", headers={"host": "links.acme.com"}, follow_redirects=False
+            )
+        assert r.status_code == 404
+
+    def test_custom_robots_txt_served_when_set(self):
+        body = "User-agent: *\nAllow: /\nSitemap: https://acme.com/sitemap.xml\n"
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(
+            return_value=_custom_tenant(custom_robots_txt=body)
+        )
+        with _client(resolver) as client:
+            r = client.get("/robots.txt", headers={"host": "links.acme.com"})
+        assert r.status_code == 200
+        assert r.text == body
+        # Header stays put regardless of robots.txt content — short URLs are
+        # pure redirects, never indexable.
+        assert r.headers["X-Robots-Tag"] == "noindex, nofollow, noarchive"
+
+    def test_custom_robots_txt_ignored_on_non_active(self):
+        body = "User-agent: *\nAllow: /\n"
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(
+            return_value=_custom_tenant(
+                status=DomainStatus.SUSPENDED,
+                custom_robots_txt=body,
+            )
+        )
+        with _client(resolver) as client:
+            r = client.get("/robots.txt", headers={"host": "links.acme.com"})
+        assert r.status_code == 200
+        assert "Disallow: /" in r.text
+        assert "Allow: /" not in r.text
+
+    def test_alias_still_passes_through_with_routing_config(self):
+        # Routing config only changes behavior on / and non-alias paths.
+        # Real alias requests must still flow to the redirect router.
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(
+            return_value=_custom_tenant(
+                root_redirect="https://acme.com/landing",
+                not_found_redirect="https://acme.com/404",
+                custom_robots_txt="User-agent: *\nAllow: /\n",
+            )
+        )
+        with _client(resolver) as client:
+            r = client.get(
+                "/abc123",
+                headers={"host": "links.acme.com"},
+                follow_redirects=False,
+            )
+        assert r.status_code == 200
+        assert r.text == "links.acme.com"

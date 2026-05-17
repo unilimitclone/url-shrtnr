@@ -80,6 +80,7 @@ class Limits:
     DOMAIN_VERIFY = "10 per minute"
     DOMAIN_READ = "60 per minute"
     DOMAIN_DELETE = "10 per minute"
+    DOMAIN_WRITE = "30 per minute"
 
     # Dashboard — profile pictures
     PROFILE_PICTURE_SET = "10 per minute"

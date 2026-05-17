@@ -27,6 +27,7 @@ from repositories.custom_domain_repository import CustomDomainRepository
 from schemas.dto.requests.custom_domain import (
     CreateCustomDomainRequest,
     ListCustomDomainsQuery,
+    UpdateCustomDomainRequest,
 )
 from schemas.enums.domain_status import DomainStatus, VerificationMethod
 from schemas.models.custom_domain import LEGAL_TRANSITIONS, CustomDomainDoc
@@ -269,6 +270,63 @@ class CustomDomainService:
         )
         total = await self._repo.count_by_owner(user.user_id)
         return items, total
+
+    async def update_routing(
+        self,
+        domain_id: ObjectId,
+        user: CurrentUser,
+        request: UpdateCustomDomainRequest,
+    ) -> CustomDomainDoc:
+        """Update the per-domain routing config (root/404 redirects + robots.txt).
+
+        Partial update: only fields the caller explicitly set are touched.
+        Empty body is a no-op. Refuses non-ACTIVE domains — surprising UX
+        otherwise (you set a redirect on a PENDING domain, then forget, then
+        verify weeks later, and suddenly traffic redirects to a destination
+        you no longer remember).
+        """
+        self._require_enabled()
+
+        doc = await self._load_owned(domain_id, user)
+        if doc.status != DomainStatus.ACTIVE:
+            raise DomainNotVerifiedError(
+                f"{doc.fqdn} isn't active yet. Verify the domain before "
+                f"configuring routing."
+            )
+
+        ops: dict = {}
+        # model_fields_set distinguishes "field omitted" (don't touch) from
+        # "field set to None" (clear stored value). HttpUrl needs str()
+        # coercion before persistence.
+        if "root_redirect" in request.model_fields_set:
+            ops["root_redirect"] = (
+                str(request.root_redirect) if request.root_redirect else None
+            )
+        if "not_found_redirect" in request.model_fields_set:
+            ops["not_found_redirect"] = (
+                str(request.not_found_redirect) if request.not_found_redirect else None
+            )
+        if "custom_robots_txt" in request.model_fields_set:
+            ops["custom_robots_txt"] = request.custom_robots_txt or None
+
+        if not ops:
+            return doc
+
+        await self._repo.update_routing(doc.id, ops)
+        # Tenant cache holds the routing fields; without invalidate, the next
+        # ``tenant_cache_ttl`` seconds keep serving the old config.
+        await self._invalidate_cache(doc.fqdn)
+
+        log.info(
+            "audit.domain.routing_updated",
+            fqdn=doc.fqdn,
+            domain_id=str(doc.id),
+            owner_id=str(user.user_id),
+            fields=list(ops.keys()),
+        )
+
+        refreshed = await self._repo.find_by_id(doc.id)
+        return refreshed or doc
 
     async def delete(
         self,

@@ -6,20 +6,26 @@ reads it to scope the URL lookup to the right tenant.
 Routing policy for custom tenants is a strict allowlist:
   - `GET /<alias>` and `POST /<alias>/password` → redirect router
   - `GET /favicon.ico`                         → static router (generic favicon)
-  - `GET /robots.txt`                          → inline `Disallow: /`
-  - Everything else                            → 404
+  - `GET /robots.txt`                          → tenant's `custom_robots_txt` or default `Disallow: /`
+  - `GET /`                                    → tenant's `root_redirect` (302) or 404
+  - Disallowed paths                           → tenant's `not_found_redirect` (302) or 404
 
 Operator surface (`/api/*`, `/dashboard/*`, `/auth/*`, `/oauth/*`, `/health`)
 and brand pages (`/about`, `/contact`, `/api-docs`, `/<alias>+`, `/report`)
-all 404 on custom tenants. Per-domain routing config (`root_redirect`,
-`not_found_redirect`, `custom_robots_txt`) lands in PR4.5.
+all 404 on custom tenants (or get the configured `not_found_redirect`).
+
+Per-domain routing config is only honored when ``tenant.status == ACTIVE``.
+Revoked/suspended domains 404 like the PR4 baseline so a stale redirect
+doesn't keep firing after the owner takes a domain down.
 
 System-default tenant behaves exactly as before — full app surface.
 
 Every custom-tenant response carries `X-Robots-Tag: noindex, nofollow,
-noarchive` (post-handler). Combined with the disallow-all robots.txt, this
-keeps short links out of search indexes. Preview crawlers (Twitter/Slack/
-Discord/etc.) ignore these signals and continue to unfurl correctly.
+noarchive` (post-handler). Short URLs are pure redirects with no indexable
+content; this header is unconditional and not user-configurable. The
+`custom_robots_txt` field changes what's served at `/robots.txt`, but
+`X-Robots-Tag` on alias responses stays put — well-behaved crawlers respect
+both signals.
 """
 
 from __future__ import annotations
@@ -29,9 +35,15 @@ from urllib.parse import urlsplit
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import HTMLResponse, PlainTextResponse, Response
+from starlette.responses import (
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 
 from infrastructure.logging import get_logger
+from schemas.enums.domain_status import DomainStatus
 from services.tenant_resolver.protocol import TenantInfo, TenantResolver
 
 log = get_logger(__name__)
@@ -158,6 +170,11 @@ class TenantMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
+        # Routing config only takes effect on ACTIVE tenants. PENDING /
+        # SUSPENDED / REVOKED domains behave like the PR4 baseline (404 /
+        # default robots.txt) so a stale redirect on a taken-down domain
+        # can't keep firing.
+        config_active = tenant.status == DomainStatus.ACTIVE
 
         if path == "/robots.txt":
             if request.method not in {"GET", "HEAD"}:
@@ -166,12 +183,51 @@ class TenantMiddleware(BaseHTTPMiddleware):
                     status_code=404,
                     headers={"X-Robots-Tag": _NOINDEX_HEADER},
                 )
+            body = (
+                tenant.custom_robots_txt
+                if config_active and tenant.custom_robots_txt
+                else _CUSTOM_TENANT_ROBOTS_BODY
+            )
             return PlainTextResponse(
-                _CUSTOM_TENANT_ROBOTS_BODY,
+                body,
+                headers={"X-Robots-Tag": _NOINDEX_HEADER},
+            )
+
+        # `/` is its own surface — either honors root_redirect or 404s. It
+        # does NOT fall through to not_found_redirect; the two fields are
+        # deliberately separate so an owner who configures only one doesn't
+        # accidentally activate the other on the root.
+        if path == "/":
+            if (
+                request.method in {"GET", "HEAD"}
+                and config_active
+                and tenant.root_redirect
+            ):
+                return RedirectResponse(
+                    tenant.root_redirect,
+                    status_code=302,
+                    headers={"X-Robots-Tag": _NOINDEX_HEADER},
+                )
+            return HTMLResponse(
+                _NOT_FOUND_BODY,
+                status_code=404,
                 headers={"X-Robots-Tag": _NOINDEX_HEADER},
             )
 
         if not _is_allowed_on_custom_tenant(path, request.method):
+            # not_found_redirect only fires on GET/HEAD — redirecting a
+            # POST/PUT/DELETE to an arbitrary URL silently drops the body
+            # and looks broken to the caller.
+            if (
+                config_active
+                and tenant.not_found_redirect
+                and request.method in {"GET", "HEAD"}
+            ):
+                return RedirectResponse(
+                    tenant.not_found_redirect,
+                    status_code=302,
+                    headers={"X-Robots-Tag": _NOINDEX_HEADER},
+                )
             log.info(
                 "tenant_path_denied",
                 host=host,

@@ -43,6 +43,18 @@ class CustomDomainResponse(ResponseBase):
     updated_at: datetime | None = None
     last_verified_at: datetime | None = None
     last_verification_error: str | None = None
+    root_redirect: str | None = Field(
+        default=None,
+        description="Destination for `GET /` on this domain. Honored only when status=ACTIVE.",
+    )
+    not_found_redirect: str | None = Field(
+        default=None,
+        description="Fallback for non-alias paths. Honored only when status=ACTIVE.",
+    )
+    custom_robots_txt: str | None = Field(
+        default=None,
+        description="Override body served at /robots.txt. Honored only when status=ACTIVE.",
+    )
 
     @field_serializer("created_at", "updated_at", "last_verified_at")
     def _ser_as_utc(self, dt: datetime | None) -> str | None:
@@ -68,6 +80,9 @@ class CustomDomainResponse(ResponseBase):
             updated_at=doc.updated_at,
             last_verified_at=doc.last_verified_at,
             last_verification_error=doc.last_verification_error,
+            root_redirect=doc.root_redirect,
+            not_found_redirect=doc.not_found_redirect,
+            custom_robots_txt=doc.custom_robots_txt,
         )
 
 

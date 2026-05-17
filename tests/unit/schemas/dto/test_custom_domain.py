@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
 from bson import ObjectId
+from pydantic import ValidationError
 
+from schemas.dto.requests.custom_domain import UpdateCustomDomainRequest
 from schemas.dto.responses.custom_domain import (
     CustomDomainDeleteResponse,
     CustomDomainListResponse,
@@ -106,8 +109,94 @@ class TestCustomDomainDeleteResponse:
 class TestDnsRecord:
     def test_types_constrained_to_known(self):
         # Loose validation by Literal — pydantic raises on unknown
-        import pytest
-        from pydantic import ValidationError
-
         with pytest.raises(ValidationError):
             DnsRecord(type="MX", name="x", value="y")  # type: ignore[arg-type]
+
+
+class TestUpdateCustomDomainRequest:
+    def test_empty_body_has_no_fields_set(self):
+        # Empty body = no-op upstream — service must distinguish this from
+        # "all fields explicitly null".
+        req = UpdateCustomDomainRequest()
+        assert req.model_fields_set == set()
+
+    def test_partial_field_set_only_includes_that_field(self):
+        req = UpdateCustomDomainRequest(root_redirect="https://acme.com/landing")
+        assert req.model_fields_set == {"root_redirect"}
+
+    def test_explicit_null_is_in_fields_set(self):
+        # Explicit `null` clears the stored value; field omitted leaves it
+        # alone. The two must be distinguishable.
+        req = UpdateCustomDomainRequest(root_redirect=None)
+        assert "root_redirect" in req.model_fields_set
+
+    def test_http_url_rejects_non_url_string(self):
+        with pytest.raises(ValidationError):
+            UpdateCustomDomainRequest(root_redirect="not-a-url")  # type: ignore[arg-type]
+
+    def test_http_url_rejects_javascript_scheme(self):
+        # HttpUrl only accepts http/https; javascript: would otherwise be a
+        # dashboard-controlled XSS vector via the Location header.
+        with pytest.raises(ValidationError):
+            UpdateCustomDomainRequest(root_redirect="javascript:alert(1)")  # type: ignore[arg-type]
+
+    def test_http_url_accepts_https(self):
+        req = UpdateCustomDomainRequest(root_redirect="https://acme.com/")
+        assert "root_redirect" in req.model_fields_set
+
+    def test_http_url_accepts_http(self):
+        req = UpdateCustomDomainRequest(not_found_redirect="http://acme.com/404")
+        assert "not_found_redirect" in req.model_fields_set
+
+    def test_robots_txt_size_cap(self):
+        # 4097 chars — one past the cap.
+        oversized = "x" * 4097
+        with pytest.raises(ValidationError):
+            UpdateCustomDomainRequest(custom_robots_txt=oversized)
+
+    def test_robots_txt_at_cap_allowed(self):
+        # Exactly 4096 chars is fine.
+        req = UpdateCustomDomainRequest(custom_robots_txt="x" * 4096)
+        assert req.custom_robots_txt is not None
+        assert len(req.custom_robots_txt) == 4096
+
+    def test_empty_string_robots_normalised_to_none(self):
+        # Empty body in a form submission means "clear" semantically.
+        req = UpdateCustomDomainRequest(custom_robots_txt="")
+        assert req.custom_robots_txt is None
+        # Still counts as "field was set" so service issues the clear.
+        assert "custom_robots_txt" in req.model_fields_set
+
+    def test_whitespace_only_robots_normalised_to_none(self):
+        req = UpdateCustomDomainRequest(custom_robots_txt="   \n\t  ")
+        assert req.custom_robots_txt is None
+
+
+class TestCustomDomainDocRoutingFields:
+    def test_routing_fields_default_to_none(self):
+        # Backwards compatibility: existing docs without these fields
+        # deserialise cleanly with None defaults.
+        doc = _doc()
+        assert doc.root_redirect is None
+        assert doc.not_found_redirect is None
+        assert doc.custom_robots_txt is None
+
+    def test_empty_string_redirect_normalised_to_none_at_doc_level(self):
+        # Belt-and-braces: even if Mongo somehow has an empty string (legacy
+        # row, manual edit), the doc model normalises to None so middleware
+        # `if tenant.root_redirect:` short-circuits the way it should.
+        doc = _doc(root_redirect="", custom_robots_txt="  ")
+        assert doc.root_redirect is None
+        assert doc.custom_robots_txt is None
+
+    def test_response_round_trip_carries_routing_fields(self):
+        doc = _doc(
+            status=DomainStatus.ACTIVE,
+            root_redirect="https://acme.com/landing",
+            not_found_redirect="https://acme.com/404",
+            custom_robots_txt="User-agent: *\nAllow: /\n",
+        )
+        r = CustomDomainResponse.from_doc(doc)
+        assert r.root_redirect == "https://acme.com/landing"
+        assert r.not_found_redirect == "https://acme.com/404"
+        assert r.custom_robots_txt == "User-agent: *\nAllow: /\n"

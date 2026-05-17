@@ -154,6 +154,22 @@ class CustomDomainRepository(BaseRepository[CustomDomainDoc]):
             },
         )
 
+    async def update_routing(
+        self,
+        domain_id: ObjectId,
+        ops: dict,
+    ) -> bool:
+        """Persist a partial update to the per-domain routing config.
+
+        ``ops`` is the already-built ``{field: value}`` dict from the service —
+        only keys the caller explicitly set are present. ``None`` values are
+        passed through (a ``$set: {field: None}`` clears the stored value).
+        """
+        if not ops:
+            return False
+        ops = {**ops, "updated_at": datetime.now(timezone.utc)}
+        return await self._update({"_id": domain_id}, {"$set": ops})
+
     async def update_edge_metadata(
         self,
         domain_id: ObjectId,

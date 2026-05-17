@@ -25,6 +25,12 @@ class TenantInfo:
     owner_id: ObjectId | None  # None for the system default (anonymous owner)
     status: DomainStatus
     is_system_default: bool
+    # Per-domain routing config (PR4.5). All None on the system default and
+    # on docs that haven't configured anything. Middleware reads these on
+    # every custom-tenant request — populated from cache, so no extra DB hits.
+    root_redirect: str | None = None
+    not_found_redirect: str | None = None
+    custom_robots_txt: str | None = None
 
 
 class TenantResolver(Protocol):

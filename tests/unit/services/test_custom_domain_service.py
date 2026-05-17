@@ -22,6 +22,7 @@ from errors import (
 from schemas.dto.requests.custom_domain import (
     CreateCustomDomainRequest,
     ListCustomDomainsQuery,
+    UpdateCustomDomainRequest,
 )
 from schemas.enums.domain_status import DomainStatus, VerificationMethod
 from schemas.models.custom_domain import CustomDomainDoc
@@ -1004,3 +1005,139 @@ class TestDeleteCascade:
         doc, deleted = await svc.delete(DOMAIN_OID, _user(), cascade=True)
         assert deleted == 0
         assert doc.status == DomainStatus.REVOKED
+
+
+class TestUpdateRouting:
+    @pytest.mark.asyncio
+    async def test_refused_when_disabled(self):
+        svc, _, _, _, _ = _build_service(enabled=False)
+        with pytest.raises(DomainQuotaExceededError):
+            await svc.update_routing(DOMAIN_OID, _user(), UpdateCustomDomainRequest())
+
+    @pytest.mark.asyncio
+    async def test_refused_on_non_active(self):
+        # PENDING domains can't be configured — would surprise the owner later.
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        with pytest.raises(DomainNotVerifiedError):
+            await svc.update_routing(
+                DOMAIN_OID,
+                _user(),
+                UpdateCustomDomainRequest(root_redirect="https://acme.com/"),
+            )
+
+    @pytest.mark.asyncio
+    async def test_404_when_not_found(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=None)
+        with pytest.raises(NotFoundError):
+            await svc.update_routing(DOMAIN_OID, _user(), UpdateCustomDomainRequest())
+
+    @pytest.mark.asyncio
+    async def test_403_when_not_owner(self):
+        svc, repo, _, _, _ = _build_service()
+        other_user_doc = _doc(
+            status=DomainStatus.ACTIVE,
+            owner_id=ObjectId("cccccccccccccccccccccccc"),
+        )
+        repo.find_by_id = AsyncMock(return_value=other_user_doc)
+        with pytest.raises(ForbiddenError):
+            await svc.update_routing(DOMAIN_OID, _user(), UpdateCustomDomainRequest())
+
+    @pytest.mark.asyncio
+    async def test_happy_path_sets_root_redirect(self):
+        svc, repo, _, _, resolver = _build_service()
+        active = _doc(status=DomainStatus.ACTIVE)
+        # Second find_by_id call returns the post-update doc.
+        updated = _doc(status=DomainStatus.ACTIVE)
+        updated.root_redirect = "https://acme.com/landing"
+        repo.find_by_id = AsyncMock(side_effect=[active, updated])
+        repo.update_routing = AsyncMock(return_value=True)
+        resolver.invalidate = AsyncMock(return_value=None)
+
+        req = UpdateCustomDomainRequest(root_redirect="https://acme.com/landing")
+        result = await svc.update_routing(DOMAIN_OID, _user(), req)
+
+        repo.update_routing.assert_awaited_once()
+        ops = repo.update_routing.call_args.args[1]
+        # Only the field the caller actually set — partial update semantics.
+        assert ops == {"root_redirect": "https://acme.com/landing"}
+        # Tenant cache invalidated so middleware sees the new config next request.
+        resolver.invalidate.assert_awaited_once_with("links.acme.com")
+        assert result.root_redirect == "https://acme.com/landing"
+
+    @pytest.mark.asyncio
+    async def test_empty_body_noop(self):
+        # No model_fields_set members → service short-circuits before touching
+        # Mongo or the cache. Lets clients PATCH with no body to revalidate
+        # ownership without side effects.
+        svc, repo, _, _, resolver = _build_service()
+        active = _doc(status=DomainStatus.ACTIVE)
+        repo.find_by_id = AsyncMock(return_value=active)
+        repo.update_routing = AsyncMock(return_value=True)
+        resolver.invalidate = AsyncMock(return_value=None)
+
+        result = await svc.update_routing(
+            DOMAIN_OID, _user(), UpdateCustomDomainRequest()
+        )
+
+        repo.update_routing.assert_not_awaited()
+        resolver.invalidate.assert_not_awaited()
+        assert result is active
+
+    @pytest.mark.asyncio
+    async def test_partial_update_only_touches_set_fields(self):
+        # Caller sends only `custom_robots_txt`. Other fields must NOT appear
+        # in the ops dict — otherwise we'd overwrite root_redirect with None.
+        svc, repo, _, _, _ = _build_service()
+        active = _doc(status=DomainStatus.ACTIVE)
+        repo.find_by_id = AsyncMock(side_effect=[active, active])
+        repo.update_routing = AsyncMock(return_value=True)
+
+        req = UpdateCustomDomainRequest(custom_robots_txt="User-agent: *\nAllow: /\n")
+        await svc.update_routing(DOMAIN_OID, _user(), req)
+
+        ops = repo.update_routing.call_args.args[1]
+        assert set(ops.keys()) == {"custom_robots_txt"}
+        assert ops["custom_robots_txt"] == "User-agent: *\nAllow: /\n"
+
+    @pytest.mark.asyncio
+    async def test_explicit_null_clears_value(self):
+        # PATCH {"root_redirect": null} must set the field to None, distinct
+        # from "field omitted" which leaves the current value alone.
+        svc, repo, _, _, _ = _build_service()
+        active = _doc(status=DomainStatus.ACTIVE)
+        repo.find_by_id = AsyncMock(side_effect=[active, active])
+        repo.update_routing = AsyncMock(return_value=True)
+
+        # Pydantic accepts None for HttpUrl | None — model_fields_set will
+        # still contain the key because the caller explicitly set it.
+        req = UpdateCustomDomainRequest(root_redirect=None)
+        # Sanity: prove the test setup actually creates the explicit-null shape.
+        assert "root_redirect" in req.model_fields_set
+
+        await svc.update_routing(DOMAIN_OID, _user(), req)
+        ops = repo.update_routing.call_args.args[1]
+        assert ops == {"root_redirect": None}
+
+    @pytest.mark.asyncio
+    async def test_audit_log_emitted(self, caplog):
+        svc, repo, _, _, _ = _build_service()
+        active = _doc(status=DomainStatus.ACTIVE)
+        repo.find_by_id = AsyncMock(side_effect=[active, active])
+        repo.update_routing = AsyncMock(return_value=True)
+
+        with patch(
+            "services.custom_domain_service.log",
+            new=MagicMock(),
+        ) as mock_log:
+            await svc.update_routing(
+                DOMAIN_OID,
+                _user(),
+                UpdateCustomDomainRequest(not_found_redirect="https://acme.com/404"),
+            )
+            mock_log.info.assert_called_once()
+            event_name = mock_log.info.call_args.args[0]
+            assert event_name == "audit.domain.routing_updated"
+            kwargs = mock_log.info.call_args.kwargs
+            assert kwargs["fields"] == ["not_found_redirect"]
