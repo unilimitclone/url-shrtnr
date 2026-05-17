@@ -4,7 +4,7 @@
 
 {% block head_css %}
 <link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/keys.css') }}?v=7">
-<link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/domains.css') }}?v=2">
+<link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/domains.css') }}?v=4">
 <meta name="robots" content="noindex">
 {% endblock %}
 
@@ -14,7 +14,7 @@
         <div class="page-header-text">
             <h1 class="page-title">Custom Domains</h1>
             <p class="page-subtitle">Serve branded short links from your own domain.
-                <small style="color: var(--text-secondary);">Beta — staff allowlist only.</small>
+                <small style="color: var(--text-secondary);">Private beta.</small>
             </p>
         </div>
         <div class="page-header-actions">
@@ -87,19 +87,13 @@
             <!-- Setup mode (PENDING / SUSPENDED) -->
             <div class="modal-slot" data-mode="setup" style="display:none">
                 <div class="banner banner-pending" id="setup-banner">
-                    Add the DNS record below at your DNS provider, then click Verify.
+                    Add the DNS record(s) below at your DNS provider, then click Verify.
                 </div>
 
                 <h3 class="section-title">DNS record</h3>
                 <div class="dns-records" id="dns-records"></div>
                 <div class="setup-notes" id="setup-notes" style="display:none"></div>
 
-                <button class="btn btn-primary btn-block" id="btn-verify">
-                    <span class="btn-label">Verify domain</span>
-                    <span class="btn-spinner" style="display:none">
-                        <i class="ti ti-loader-2"></i>
-                    </span>
-                </button>
                 <div id="setup-error" class="inline-error" style="display:none"></div>
                 <div id="setup-poll-status" class="inline-info" style="display:none">
                     Checking DNS… we'll keep watching for a minute.
@@ -110,7 +104,7 @@
             <div class="modal-slot" data-mode="active" style="display:none">
                 <div class="banner banner-active">
                     <i class="ti ti-check"></i>
-                    Live — short links work on this domain.
+                    Live. Short links work on this domain.
                 </div>
 
                 <a id="active-open-link" class="btn btn-secondary btn-block" target="_blank" rel="noopener noreferrer">
@@ -135,10 +129,15 @@
         </div>
 
         <div class="modal-footer" id="domain-modal-footer">
-            <!-- Footer button set per mode (rendered by JS) -->
-            <button type="button" class="btn btn-ghost" id="btn-domain-modal-cancel">Cancel</button>
             <button type="button" class="btn btn-danger-ghost" id="btn-domain-revoke" style="display:none">Revoke</button>
-            <button type="button" class="btn btn-primary" id="btn-domain-modal-submit">Add</button>
+            <button type="button" class="btn btn-ghost" id="btn-domain-modal-cancel" style="display:none">Cancel</button>
+            <button type="button" class="btn btn-primary" id="btn-domain-modal-submit" style="display:none">Add</button>
+            <button type="button" class="btn btn-primary" id="btn-verify" style="display:none">
+                <span class="btn-label">Verify</span>
+                <span class="btn-spinner" style="display:none">
+                    <i class="ti ti-loader-2"></i>
+                </span>
+            </button>
         </div>
     </div>
 </div>
@@ -229,5 +228,5 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', path='js/verification-check.js') }}?v=1"></script>
-<script src="{{ url_for('static', path='js/dashboard/domains.js') }}?v=2"></script>
+<script src="{{ url_for('static', path='js/dashboard/domains.js') }}?v=4"></script>
 {% endblock %}

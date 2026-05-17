@@ -46,7 +46,7 @@ async def check_cname(fqdn: str, expected_target: str) -> PreflightResult:
         return PreflightResult(
             ok=False,
             reason=(
-                f"Your CNAME points to {observed} — it should point to {target}. "
+                f"Your CNAME points to {observed} - It should point to {target}. "
                 f"Update the record at your DNS provider."
             ),
         )
@@ -62,7 +62,7 @@ async def check_cname(fqdn: str, expected_target: str) -> PreflightResult:
     return PreflightResult(
         ok=False,
         reason=(
-            "DNS isn't reaching us yet — this is normal right after adding the "
+            "DNS isn't reaching us yet - This is normal right after adding the "
             "records. Try again in a few minutes."
         ),
     )

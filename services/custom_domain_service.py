@@ -121,7 +121,7 @@ class CustomDomainService:
         except DuplicateKeyError:
             # Race with concurrent insert — translate to 409 instead of 500.
             raise DomainAlreadyRegisteredError(
-                f"domain {request.fqdn!r} is already registered"
+                f"{request.fqdn} is already registered."
             ) from None
 
         try:
@@ -340,9 +340,9 @@ class CustomDomainService:
         too (cleanup path)."""
         doc = await self._repo.find_by_fqdn(fqdn)
         if doc is None:
-            raise NotFoundError(f"domain {fqdn!r} not found")
+            raise NotFoundError(f"{fqdn} is not registered.")
         if doc.owner_id != user.user_id:
-            raise ForbiddenError("you do not own this domain")
+            raise ForbiddenError("You do not own this domain.")
         return doc
 
     async def assert_owned_and_active(
@@ -354,7 +354,7 @@ class CustomDomainService:
         doc = await self.assert_owned(user, fqdn)
         if doc.status != DomainStatus.ACTIVE:
             raise DomainNotVerifiedError(
-                f"domain {fqdn!r} is {doc.status.value}, not ACTIVE"
+                f"{fqdn} isn't verified yet. Set up DNS and verify it first."
             )
         return doc
 
@@ -442,7 +442,7 @@ class CustomDomainService:
 
     def _require_enabled(self) -> None:
         if not self._settings.enabled:
-            raise DomainQuotaExceededError("custom domains are not currently enabled")
+            raise DomainQuotaExceededError("Custom domains aren't available yet.")
 
     async def _invalidate_cache(self, fqdn: str) -> None:
         """Best-effort tenant-cache eviction. Staleness is degraded UX, not data loss."""
@@ -484,9 +484,9 @@ class CustomDomainService:
     ) -> CustomDomainDoc:
         doc = await self._repo.find_by_id(domain_id)
         if doc is None:
-            raise NotFoundError(f"domain {domain_id} not found")
+            raise NotFoundError("Domain not found.")
         if doc.owner_id != user.user_id:
-            raise ForbiddenError("you do not own this domain")
+            raise ForbiddenError("You do not own this domain.")
         return doc
 
     async def _transition(
@@ -521,13 +521,15 @@ class CustomDomainService:
     async def _enforce_uniqueness(self, fqdn: str) -> None:
         existing = await self._repo.find_by_fqdn(fqdn)
         if existing is not None:
-            raise DomainAlreadyRegisteredError(f"domain {fqdn!r} is already registered")
+            raise DomainAlreadyRegisteredError(f"{fqdn} is already registered.")
 
     async def _enforce_per_user_quota(self, owner_id: ObjectId) -> None:
         current = await self._repo.count_by_owner(owner_id)
         if current >= self._settings.max_per_user:
+            cap = self._settings.max_per_user
+            suffix = "domain" if cap == 1 else "domains"
             raise DomainQuotaExceededError(
-                f"max custom domains per user reached ({self._settings.max_per_user})"
+                f"You've reached the limit of {cap} custom {suffix} for your account."
             )
 
     async def _enforce_create_attempts_quota(self, owner_id: ObjectId) -> None:
@@ -543,7 +545,9 @@ class CustomDomainService:
             log.warning("create_quota_redis_error", error=str(exc))
             return
         if count > self._settings.create_attempts_per_day:
-            raise DomainQuotaExceededError("too many domain create attempts today")
+            raise DomainQuotaExceededError(
+                "You've added too many domains today. Try again tomorrow."
+            )
 
     async def _enforce_verify_attempts_quota(self, domain_id: ObjectId) -> None:
         if self._redis is None:
@@ -557,7 +561,9 @@ class CustomDomainService:
             log.warning("verify_quota_redis_error", error=str(exc))
             return
         if count > self._settings.verify_attempts_per_hour:
-            raise DomainQuotaExceededError("too many verification attempts this hour")
+            raise DomainQuotaExceededError(
+                "Too many verification attempts. Try again in an hour."
+            )
 
     async def _build_setup_notes(self, fqdn: str) -> list[str]:
         # NS lookup is only meaningful on the CF SaaS path; grey-cloud is a
@@ -568,9 +574,9 @@ class CustomDomainService:
         try:
             if await uses_cloudflare_dns(fqdn):
                 notes.append(
-                    "Your domain uses Cloudflare DNS. Both DNS records must be "
-                    "set to **DNS only** (grey cloud), not Proxied (orange cloud), "
-                    "or CF SaaS validation will fail."
+                    "Cloudflare DNS detected. Set the record to DNS only "
+                    "(grey cloud icon), not Proxied (orange cloud), or "
+                    "verification will fail."
                 )
         except Exception as exc:
             log.warning("setup_notes_ns_lookup_failed", fqdn=fqdn, error=str(exc))
@@ -582,4 +588,4 @@ class CustomDomainService:
         if self._blocked_repo is None:
             return
         if await self._blocked_repo.is_blocked(fqdn):
-            raise DomainBlocklistedError(f"domain {fqdn!r} is on the blocklist")
+            raise DomainBlocklistedError("This domain isn't available.")

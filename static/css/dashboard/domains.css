@@ -185,8 +185,19 @@
    .modal-large overrides width + enforces fixed-height-no-scroll content. */
 
 .modal.modal-large .modal-content {
-    width: 640px;
+    width: 720px;
     max-width: calc(100vw - 32px);
+    /* Sit at natural content height, never stretch to viewport. */
+    height: auto;
+    max-height: 90vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal.modal-large .modal-body {
+    flex: 0 1 auto;
+    overflow-y: auto;
 }
 
 .modal.modal-large .modal-header {
@@ -205,15 +216,17 @@
 }
 
 .modal.modal-large .modal-body {
-    padding: 20px 24px;
+    padding: 24px 28px 28px;
 }
 
 .modal.modal-large .modal-footer {
     border-top: 1px solid var(--border-color);
     display: flex;
+    align-items: center;
     justify-content: flex-end;
-    gap: 8px;
-    padding: 16px 24px;
+    gap: 10px;
+    padding: 16px 28px;
+    min-height: 64px;
 }
 
 .modal-footer .btn-danger-ghost {
@@ -225,6 +238,7 @@
 
 .modal-footer .btn-danger-ghost:hover {
     background: rgba(239, 68, 68, 0.1);
+    color: var(--color-danger);
 }
 
 /* Mobile: full-screen overlay */
@@ -240,10 +254,11 @@
 /* ── Banner (status indicator inside modal) ────────────────────────── */
 
 .banner {
-    padding: 12px 14px;
-    border-radius: var(--radius-sm);
-    margin-bottom: 18px;
+    padding: 14px 16px;
+    border-radius: var(--radius-md);
+    margin-bottom: 24px;
     font-size: 14px;
+    line-height: 1.5;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -252,19 +267,16 @@
 .banner-pending {
     background: rgba(245, 158, 11, 0.08);
     color: var(--text-primary);
-    border-left: 3px solid var(--color-warning);
 }
 
 .banner-suspended {
     background: rgba(239, 68, 68, 0.08);
     color: var(--text-primary);
-    border-left: 3px solid var(--color-danger);
 }
 
 .banner-active {
     background: rgba(34, 197, 94, 0.08);
     color: var(--text-primary);
-    border-left: 3px solid var(--color-success);
 }
 
 .banner-active i {
@@ -275,10 +287,18 @@
 .banner-revoked {
     background: rgba(148, 163, 184, 0.05);
     color: var(--text-secondary);
-    border-left: 3px solid rgba(148, 163, 184, 0.4);
 }
 
 /* ── Section + DNS records ─────────────────────────────────────────── */
+
+.section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin: 0 0 12px;
+    min-height: 32px;
+}
 
 .section-title {
     font-size: 12px;
@@ -286,25 +306,25 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-secondary);
-    margin: 0 0 10px;
+    margin: 0;
 }
 
 .dns-records {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    margin-bottom: 14px;
+    gap: 10px;
+    margin-bottom: 20px;
 }
 
 .dns-record {
     display: grid;
     grid-template-columns: auto 1fr auto;
-    gap: 14px;
+    gap: 16px;
     align-items: center;
-    padding: 12px 14px;
+    padding: 16px 18px;
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid var(--border-color);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
 }
 
 .rec-type {
@@ -318,7 +338,7 @@
 .rec-fields {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
     min-width: 0;
 }
 
@@ -374,38 +394,38 @@
 /* ── Setup notes (CF orange-cloud, etc.) ───────────────────────────── */
 
 .setup-notes {
-    margin: 0 0 14px;
-    padding: 10px 12px;
-    background: rgba(96, 165, 250, 0.08);
-    border-left: 3px solid #60a5fa;
-    border-radius: var(--radius-sm);
+    margin: 0 0 18px;
+    padding: 12px 14px;
+    background: rgba(96, 165, 250, 0.07);
+    border-radius: var(--radius-md);
     color: var(--text-primary);
     font-size: 13px;
+    line-height: 1.5;
 }
 
 .setup-notes p { margin: 0; }
-.setup-notes p + p { margin-top: 4px; }
+.setup-notes p + p { margin-top: 6px; }
 
 /* ── Inline feedback messages ─────────────────────────────────────── */
 
 .inline-error {
-    margin-top: 10px;
-    padding: 10px 12px;
+    margin-top: 14px;
+    padding: 12px 14px;
     background: rgba(239, 68, 68, 0.08);
-    border-left: 3px solid var(--color-danger);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     color: var(--color-danger);
     font-size: 13px;
+    line-height: 1.5;
 }
 
 .inline-info {
-    margin-top: 10px;
-    padding: 10px 12px;
-    background: rgba(96, 165, 250, 0.08);
-    border-left: 3px solid #60a5fa;
-    border-radius: var(--radius-sm);
+    margin-top: 14px;
+    padding: 12px 14px;
+    background: rgba(96, 165, 250, 0.07);
+    border-radius: var(--radius-md);
     color: var(--text-secondary);
     font-size: 13px;
+    line-height: 1.5;
 }
 
 .field-hint {
@@ -458,7 +478,7 @@
 /* ── Active mode extras ───────────────────────────────────────────── */
 
 .active-meta {
-    margin: 14px 0;
+    margin: 20px 0;
     color: var(--text-secondary);
     font-size: 13px;
     text-align: center;

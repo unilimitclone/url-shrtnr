@@ -99,6 +99,20 @@ function showSlot(mode) {
     currentMode = mode;
 }
 
+// Footer button visibility per mode. `submit` accepts a label string (shows
+// the button with that label) or false (hides).
+function setFooter({ cancel = false, submit = false, revoke = false, verify = false }) {
+    el.modalCancel.style.display = cancel ? '' : 'none';
+    if (submit) {
+        el.modalSubmit.style.display = '';
+        el.modalSubmit.textContent = submit;
+    } else {
+        el.modalSubmit.style.display = 'none';
+    }
+    el.modalRevoke.style.display = revoke ? '' : 'none';
+    el.setupVerify.style.display = verify ? '' : 'none';
+}
+
 // ── List fetch + render ───────────────────────────────────────────────────
 
 async function fetchDomains() {
@@ -169,10 +183,7 @@ function openAddModal({ push = true } = {}) {
     el.modalTitle.textContent = 'Add a domain';
     el.modalBadge.style.display = 'none';
 
-    el.modalCancel.style.display = '';
-    el.modalSubmit.style.display = '';
-    el.modalSubmit.textContent = 'Add';
-    el.modalRevoke.style.display = 'none';
+    setFooter({ cancel: true, submit: 'Add', revoke: false, verify: false });
 
     showSlot('add');
     showModal();
@@ -186,9 +197,7 @@ async function openDomainModal(id, { push = true } = {}) {
 
     el.modalTitle.textContent = 'Loading…';
     el.modalBadge.style.display = 'none';
-    el.modalCancel.style.display = '';
-    el.modalSubmit.style.display = 'none';
-    el.modalRevoke.style.display = 'none';
+    setFooter({ cancel: false, submit: false, revoke: false, verify: false });
 
     showModal();
     if (push) syncUrl({ domain: id });
@@ -242,9 +251,6 @@ function renderForStatus(doc) {
     el.modalBadge.className = `status-badge modal-status-badge ${statusClass(status)}`;
     el.modalBadge.style.display = '';
 
-    el.modalSubmit.style.display = 'none';
-    el.modalCancel.textContent = 'Close';
-
     if (status === 'PENDING' || status === 'SUSPENDED') {
         renderSetup(doc, status);
     } else if (status === 'ACTIVE') {
@@ -281,7 +287,7 @@ function renderSetup(doc, status) {
     el.setupPoll.style.display = 'none';
     resetVerifyButton();
 
-    el.modalRevoke.style.display = '';
+    setFooter({ revoke: true, verify: true });
 
     showSlot('setup');
 }
@@ -297,13 +303,13 @@ function renderActive(doc) {
 
     renderDnsRecords(el.activeDnsRecords, doc.dns_records || []);
 
-    el.modalRevoke.style.display = '';
+    setFooter({ revoke: true });
 
     showSlot('active');
 }
 
 function renderRevoked(doc) {
-    el.modalRevoke.style.display = 'none';
+    setFooter({});
     showSlot('revoked');
 }
 
@@ -336,7 +342,7 @@ async function copyToClipboard(text, btn) {
             btn.classList.remove('copied');
         }, 1200);
     } catch (_) {
-        showNotification('Copy failed — select and copy manually', 'error');
+        showNotification('Copy failed - Select and copy manually.', 'error');
     }
 }
 
@@ -358,7 +364,7 @@ async function submitAdd() {
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
-        showNotification(`${body.fqdn} added — add the DNS record, then verify.`, 'success');
+        showNotification(`${body.fqdn} added - Add the DNS record, then verify.`, 'success');
         // Refresh list in background; morph current modal to setup mode.
         fetchDomains();
         currentDomain = body;
@@ -439,7 +445,7 @@ function startPoll(id) {
             const status = String(doc.status || '').toUpperCase();
             if (status === 'ACTIVE') {
                 stopPoll();
-                showNotification('Domain verified — it\'s now live.', 'success');
+                showNotification("Domain verified - It's now live.", 'success');
                 renderForStatus(doc);
                 fetchDomains();
             }
@@ -459,7 +465,7 @@ function stopPoll() {
 function setVerifyBusy(busy) {
     el.setupVerify.disabled = busy;
     el.setupVerify.querySelector('.btn-label').textContent =
-        busy ? 'Verifying…' : 'Verify domain';
+        busy ? 'Verifying…' : 'Verify';
     el.setupVerify.querySelector('.btn-spinner').style.display =
         busy ? '' : 'none';
 }
