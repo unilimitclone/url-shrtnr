@@ -21,6 +21,7 @@ from schemas.dto.base import RequestBase
 from schemas.dto.requests._descriptions import LIST_URLS_FILTER_DESC
 from schemas.models.url import UrlStatus
 from shared.datetime_utils import parse_datetime
+from shared.url_utils import normalise_fqdn
 
 ALLOWED_SORT_FIELDS = frozenset({"created_at", "last_click", "total_clicks"})
 
@@ -90,6 +91,16 @@ class CreateUrlRequest(RequestBase):
         default=None,
         description="Make statistics private (only owner can view). Requires authentication.",
     )
+    domain: str | None = Field(
+        default=None,
+        max_length=253,
+        description=(
+            "Custom domain fqdn to scope the short link under (e.g. "
+            "`links.acme.com`). Requires authentication and ownership of an "
+            "ACTIVE custom domain. Omit for the default spoo.me namespace."
+        ),
+        examples=["links.acme.com"],
+    )
 
     @field_validator("expire_after", mode="before")
     @classmethod
@@ -100,6 +111,13 @@ class CreateUrlRequest(RequestBase):
         if result is None:
             raise ValueError("Invalid expire_after format")
         return result
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _norm_domain(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        return normalise_fqdn(v)
 
 
 class UpdateUrlRequest(RequestBase):
@@ -230,8 +248,21 @@ class ListUrlsQuery(RequestBase):
         alias="filterBy",
         description="Alias for filter parameter.",
     )
+    domain: str | None = Field(
+        default=None,
+        max_length=253,
+        description="Filter URLs by exact custom domain fqdn.",
+        examples=["links.acme.com"],
+    )
     # Parsed result — populated by the model validator, invisible to FastAPI/OpenAPI
     _parsed_filter: UrlFilter | None = PrivateAttr(default=None)
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _norm_domain(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        return normalise_fqdn(v)
 
     @model_validator(mode="after")
     def _parse_filter_json(self) -> ListUrlsQuery:

@@ -16,6 +16,7 @@ from errors import (
     DomainAlreadyRegisteredError,
     DomainBlocklistedError,
     DomainDnsNotPropagatedError,
+    DomainNotVerifiedError,
     DomainQuotaExceededError,
     ForbiddenError,
     InvalidDomainTransitionError,
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
     import redis.asyncio as aioredis
 
     from dependencies.auth import CurrentUser
+    from services.url_service import UrlService
 
 log = get_logger(__name__)
 
@@ -67,6 +69,7 @@ class CustomDomainService:
         blocked_domain_repo: BlockedDomainRepository | None = None,
         redis_client: aioredis.Redis | None = None,
         preflight_cname_target: str | None = None,
+        url_service: UrlService | None = None,
     ) -> None:
         self._repo = repo
         self._verifiers = verifiers
@@ -78,6 +81,8 @@ class CustomDomainService:
         self._redis = redis_client
         # None = preflight off (tests, self-host LE).
         self._preflight_cname_target = preflight_cname_target
+        # None = cascade delete unavailable (tests). Production wiring sets this.
+        self._url_service = url_service
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -250,12 +255,46 @@ class CustomDomainService:
         self,
         domain_id: ObjectId,
         user: CurrentUser,
-    ) -> None:
-        """Revoke a custom domain. REVOKED is terminal."""
+        *,
+        cascade: bool = False,
+    ) -> tuple[CustomDomainDoc, int]:
+        """Revoke a custom domain. REVOKED is terminal.
+
+        When ``cascade=True``, bulk-deletes all URLs owned by the user on the
+        revoked fqdn. Returns ``(doc, urls_deleted)`` so callers can surface
+        the deletion count.
+
+        Order: transition to REVOKED FIRST so concurrent shortens can't sneak
+        in. Then bulk delete (best-effort — partial failure leaves orphans
+        for the PR5 GC worker). Then announce eviction + invalidate cache.
+        """
         self._require_enabled()
 
         doc = await self._load_owned(domain_id, user)
         await self._transition(doc, DomainStatus.REVOKED)
+
+        urls_deleted = 0
+        if cascade:
+            if self._url_service is None:
+                log.error(
+                    "audit.domain.cascade_unavailable",
+                    fqdn=doc.fqdn,
+                    domain_id=str(doc.id),
+                )
+            else:
+                try:
+                    urls_deleted = await self._url_service.delete_all_by_domain(
+                        user.user_id, doc.fqdn
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "audit.domain.cascade_partial",
+                        fqdn=doc.fqdn,
+                        domain_id=str(doc.id),
+                        owner_id=str(user.user_id),
+                        error=str(exc),
+                    )
+
         await self._announce_eviction(doc, kind="revoked")
         await self._invalidate_cache(doc.fqdn)
 
@@ -264,7 +303,41 @@ class CustomDomainService:
             fqdn=doc.fqdn,
             domain_id=str(doc.id),
             owner_id=str(user.user_id),
+            cascade=cascade,
+            urls_deleted=urls_deleted,
         )
+
+        refreshed = await self._repo.find_by_id(doc.id)
+        return refreshed or doc, urls_deleted
+
+    async def assert_owned(
+        self,
+        user: CurrentUser,
+        fqdn: str,
+    ) -> CustomDomainDoc:
+        """Find domain by fqdn, raise 403/404. No status check.
+
+        Used by bulk URL delete which should work on revoked/suspended domains
+        too (cleanup path)."""
+        doc = await self._repo.find_by_fqdn(fqdn)
+        if doc is None:
+            raise NotFoundError(f"domain {fqdn!r} not found")
+        if doc.owner_id != user.user_id:
+            raise ForbiddenError("you do not own this domain")
+        return doc
+
+    async def assert_owned_and_active(
+        self,
+        user: CurrentUser,
+        fqdn: str,
+    ) -> CustomDomainDoc:
+        """Find domain, assert ownership + ACTIVE. Used by shorten flow."""
+        doc = await self.assert_owned(user, fqdn)
+        if doc.status != DomainStatus.ACTIVE:
+            raise DomainNotVerifiedError(
+                f"domain {fqdn!r} is {doc.status.value}, not ACTIVE"
+            )
+        return doc
 
     async def is_allowed_for_caddy(self, fqdn: str) -> bool:
         """Caddy on-demand TLS ask endpoint. Default-deny; wired when the

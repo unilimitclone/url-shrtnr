@@ -6,6 +6,8 @@ Re-exports all dependencies from sub-modules for convenient
 """
 
 from dependencies.auth import (
+    DOMAIN_MANAGE_SCOPES,
+    DOMAIN_READ_SCOPES,
     SHORTEN_SCOPES,
     STATS_SCOPES,
     URL_MANAGEMENT_SCOPES,
@@ -24,6 +26,7 @@ from dependencies.auth import (
     require_jwt,
     require_jwt_verified,
     require_scopes,
+    require_scopes_verified,
     require_verified_email,
 )
 from dependencies.infra import (
@@ -46,8 +49,10 @@ from dependencies.services import (
     ClickSvc,
     ContactSvc,
     CredentialSvc,
+    CustomDomainSvc,
     DeviceAuthSvc,
     ExportSvc,
+    FeatureFlagSvc,
     OAuthSvc,
     PasswordSvc,
     ProfilePictureSvc,
@@ -61,8 +66,10 @@ from dependencies.services import (
     get_click_service,
     get_contact_service,
     get_credential_service,
+    get_custom_domain_service,
     get_device_auth_service,
     get_export_service,
+    get_feature_flag_service,
     get_oauth_service,
     get_password_service,
     get_profile_picture_service,
@@ -73,6 +80,8 @@ from dependencies.services import (
 )
 
 __all__ = [
+    "DOMAIN_MANAGE_SCOPES",
+    "DOMAIN_READ_SCOPES",
     "SHORTEN_SCOPES",
     "STATS_SCOPES",
     "URL_MANAGEMENT_SCOPES",
@@ -88,8 +97,10 @@ __all__ = [
     "ContactSvc",
     "CredentialSvc",
     "CurrentUser",
+    "CustomDomainSvc",
     "DeviceAuthSvc",
     "ExportSvc",
+    "FeatureFlagSvc",
     "JwtConfig",
     "JwtUser",
     "JwtVerifiedUser",
@@ -114,10 +125,12 @@ __all__ = [
     "get_contact_service",
     "get_credential_service",
     "get_current_user",
+    "get_custom_domain_service",
     "get_db",
     "get_device_auth_service",
     "get_email_provider",
     "get_export_service",
+    "get_feature_flag_service",
     "get_geoip_service",
     "get_jwt_config",
     "get_oauth_providers",
@@ -136,5 +149,6 @@ __all__ = [
     "require_jwt",
     "require_jwt_verified",
     "require_scopes",
+    "require_scopes_verified",
     "require_verified_email",
 ]

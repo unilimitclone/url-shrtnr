@@ -382,3 +382,51 @@ class TestUrlListItemFromDoc:
     def test_expire_after_none(self):
         r = UrlListItem.from_doc(_make_doc(expire_after=None))
         assert r.expire_after is None
+
+
+class TestUrlListItemDomain:
+    def test_domain_propagates(self):
+        from schemas.dto.responses.url import UrlListItem
+
+        r = UrlListItem.from_doc(_make_doc(domain="links.acme.com"))
+        assert r.domain == "links.acme.com"
+
+    def test_domain_default_system(self):
+        from schemas.dto.responses.url import UrlListItem
+
+        r = UrlListItem.from_doc(_make_doc())  # domain = spoo.me
+        assert r.domain == "spoo.me"
+
+
+class TestCreateUrlRequestDomainField:
+    def test_lowercases_and_strips_dot(self):
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(url="https://example.com", domain="LINKS.ACME.COM.")
+        assert req.domain == "links.acme.com"
+
+    def test_empty_string_normalised_to_none(self):
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(url="https://example.com", domain="")
+        assert req.domain is None
+
+    def test_omitted_domain_is_none(self):
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(url="https://example.com")
+        assert req.domain is None
+
+
+class TestListUrlsQueryDomainFilter:
+    def test_domain_filter_normalised(self):
+        from schemas.dto.requests.url import ListUrlsQuery
+
+        q = ListUrlsQuery(domain="Links.Acme.COM")
+        assert q.domain == "links.acme.com"
+
+    def test_no_domain_filter(self):
+        from schemas.dto.requests.url import ListUrlsQuery
+
+        q = ListUrlsQuery()
+        assert q.domain is None

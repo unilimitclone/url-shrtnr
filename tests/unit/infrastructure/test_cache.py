@@ -75,6 +75,26 @@ class TestUrlCache:
         cache = UrlCache(redis_client=None)
         await cache.invalidate("abc", DOMAIN)  # must not raise
 
+    async def test_invalidate_many_deletes_all_keys(self):
+        r = _fake_redis()
+        cache = UrlCache(r)
+        await cache.invalidate_many(["a", "b", "c"], DOMAIN)
+        r.delete.assert_called_once_with(
+            f"url_cache:{DOMAIN}:a",
+            f"url_cache:{DOMAIN}:b",
+            f"url_cache:{DOMAIN}:c",
+        )
+
+    async def test_invalidate_many_noop_on_empty_list(self):
+        r = _fake_redis()
+        cache = UrlCache(r)
+        await cache.invalidate_many([], DOMAIN)
+        r.delete.assert_not_called()
+
+    async def test_invalidate_many_noop_when_redis_none(self):
+        cache = UrlCache(redis_client=None)
+        await cache.invalidate_many(["a", "b"], DOMAIN)  # must not raise
+
     async def test_set_stores_json_serialisable_data(self):
         r = _fake_redis()
         cache = UrlCache(r)

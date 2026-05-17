@@ -247,3 +247,48 @@ class TestUrlRepository:
         col.find_one = AsyncMock(side_effect=ValueError("unexpected"))
         with pytest.raises(ValueError, match="unexpected"):
             await self._repo(col).find_by_alias("abc", DOMAIN)
+
+
+class TestUrlRepositoryBulkDelete:
+    def _repo(self, col=None):
+        from repositories.url_repository import UrlRepository
+
+        return UrlRepository(col or make_collection())
+
+    @pytest.mark.asyncio
+    async def test_list_aliases_returns_list_of_strings(self):
+        col = make_collection()
+        cursor = MagicMock()
+        cursor.to_list = AsyncMock(
+            return_value=[{"alias": "abc"}, {"alias": "xyz"}, {"alias": "qq"}]
+        )
+        col.find = MagicMock(return_value=cursor)
+        result = await self._repo(col).list_aliases_by_owner_and_domain(
+            USER_OID, "links.acme.com"
+        )
+        assert result == ["abc", "xyz", "qq"]
+        col.find.assert_called_once()
+        # Both filters must be present in the query.
+        query = col.find.call_args[0][0]
+        assert query["owner_id"] == USER_OID
+        assert query["domain"] == "links.acme.com"
+
+    @pytest.mark.asyncio
+    async def test_delete_many_returns_count(self):
+        col = make_collection()
+        col.delete_many = AsyncMock(return_value=MagicMock(deleted_count=7))
+        count = await self._repo(col).delete_many_by_owner_and_domain(
+            USER_OID, "links.acme.com"
+        )
+        assert count == 7
+        col.delete_many.assert_awaited_once()
+        query = col.delete_many.call_args[0][0]
+        assert query == {"owner_id": USER_OID, "domain": "links.acme.com"}
+
+    @pytest.mark.asyncio
+    async def test_delete_many_refuses_missing_filters(self):
+        repo = self._repo()
+        with pytest.raises(ValueError):
+            await repo.delete_many_by_owner_and_domain(None, "links.acme.com")
+        with pytest.raises(ValueError):
+            await repo.delete_many_by_owner_and_domain(USER_OID, "")

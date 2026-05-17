@@ -1,0 +1,184 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Custom Domains | Dashboard | spoo.me{% endblock %}
+
+{% block head_css %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/keys.css') }}?v=7">
+<link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/domains.css') }}?v=1">
+<meta name="robots" content="noindex">
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="page-header-content">
+        <div class="page-header-text">
+            <h1 class="page-title">Custom Domains</h1>
+            <p class="page-subtitle">Serve branded short links from your own domain.
+                <small style="color: var(--text-secondary);">Beta — staff allowlist only.</small>
+            </p>
+        </div>
+        <div class="page-header-actions">
+            <a href="https://docs.spoo.me" target="_blank" rel="noopener noreferrer" class="btn btn-ghost">
+                <i class="ti ti-book"></i>
+                <span>Setup Guide</span>
+            </a>
+        </div>
+    </div>
+</div>
+
+<div class="keys-container domains-container surface">
+    <div class="keys-toolbar domains-toolbar">
+        <div class="toolbar-left">
+            <h3>Your Custom Domains</h3>
+        </div>
+        <div class="toolbar-right">
+            <button class="btn btn-primary" id="btn-new-domain">
+                <i class="ti ti-plus"></i>
+                <span>Add Domain</span>
+            </button>
+        </div>
+    </div>
+
+    <div id="domains-container" class="domains-list-container">
+        <div id="domains-loading" class="loading">Loading…</div>
+        <div id="domains-empty" class="empty" style="display:none">
+            <div class="empty-state">
+                <div class="empty-icon">
+                    <i class="ti ti-world-off"></i>
+                </div>
+                <h3 class="empty-title">No Custom Domains Yet</h3>
+                <p class="empty-message">Register a domain to start serving short links from your own brand.</p>
+            </div>
+        </div>
+
+        <div id="domains-list" class="domains-list" style="display:none"></div>
+    </div>
+</div>
+
+<!-- Add domain modal -->
+<div id="createDomainModal" class="modal create-domain-modal" aria-hidden="true" style="display:none">
+    <div class="modal-overlay"></div>
+    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="createDomainModalTitle">
+        <div class="modal-header">
+            <h2 id="createDomainModalTitle">Register Custom Domain</h2>
+            <button class="modal-close" onclick="closeCreateDomainModal()" aria-label="Close modal">
+                <i class="ti ti-x"></i>
+            </button>
+        </div>
+
+        <div class="modal-body">
+            <div class="form-grid">
+                <div class="field">
+                    <label for="domain-fqdn">Domain (fqdn)</label>
+                    <input id="domain-fqdn" type="text" placeholder="links.acme.com" autocomplete="off" />
+                    <small style="color: var(--text-secondary); display:block; margin-top:6px;">
+                        For apex domains (e.g. <code>acme.com</code>), your DNS provider must support
+                        CNAME flattening — Cloudflare, Route 53 ALIAS, or DNSimple.
+                    </small>
+                </div>
+                <div id="add-domain-error" class="verification-error" style="display:none"></div>
+            </div>
+        </div>
+
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeCreateDomainModal()">Cancel</button>
+            <button class="btn btn-primary" id="btn-create-domain">Register</button>
+        </div>
+    </div>
+</div>
+
+<!-- Delete (revoke) confirmation modal -->
+<div id="delete-domain-modal" aria-hidden="true">
+    <div class="modal-backdrop"></div>
+    <div class="modal-container">
+        <div class="modal-content" role="dialog" aria-modal="true"
+            aria-labelledby="deleteDomainModalTitle" aria-describedby="deleteDomainModalDesc">
+            <div class="modal-header">
+                <div class="modal-title-section-delete">
+                    <div class="modal-icon">
+                        <i class="ti ti-alert-triangle"></i>
+                    </div>
+                    <h2 class="modal-title" id="deleteDomainModalTitle">Revoke Custom Domain?</h2>
+                </div>
+            </div>
+
+            <div class="modal-body">
+                <p id="deleteDomainModalDesc">
+                    <strong id="delete-domain-fqdn"></strong> has
+                    <strong id="delete-domain-url-count">…</strong> URL(s) on it.
+                    What should happen to them?
+                </p>
+                <div class="cascade-choice">
+                    <label class="cascade-option">
+                        <input type="radio" name="cascade" value="false" checked>
+                        <span class="cascade-option-label">Keep the URLs (orphan)</span>
+                        <div class="cascade-option-desc">
+                            URLs become unreachable. If you re-register this domain later, they resume working.
+                        </div>
+                    </label>
+                    <label class="cascade-option">
+                        <input type="radio" name="cascade" value="true">
+                        <span class="cascade-option-label">Delete all URLs permanently</span>
+                        <div class="cascade-option-desc warning">
+                            Destination data is lost. Aliases free up for reuse. Cannot be undone.
+                        </div>
+                    </label>
+                </div>
+                <div id="delete-domain-error" class="verification-error" style="display:none"></div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-cancel" id="btn-cancel-domain-delete">
+                    <span>Cancel</span>
+                </button>
+                <button type="button" class="btn btn-delete" id="btn-confirm-domain-delete">
+                    <i class="ti ti-trash"></i>
+                    <span>Revoke Domain</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Per-domain card template -->
+<template id="tpl-domain-item">
+    <div class="domain-card fade-in">
+        <div class="domain-card-head">
+            <span class="domain-fqdn"></span>
+            <span class="status-badge"></span>
+            <span class="domain-meta"></span>
+            <div class="domain-actions">
+                <button class="btn btn-ghost btn-sm btn-verify">
+                    <i class="ti ti-refresh"></i><span>Verify</span>
+                </button>
+                <button class="btn btn-danger btn-sm btn-revoke">
+                    <i class="ti ti-trash"></i><span>Revoke</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="dns-instructions">
+            <p class="dns-instructions-title">DNS records to publish</p>
+            <div class="dns-records"></div>
+        </div>
+
+        <div class="setup-notes"></div>
+        <div class="verification-error"></div>
+    </div>
+</template>
+
+<!-- Per-DNS-record template -->
+<template id="tpl-dns-record">
+    <div class="dns-record">
+        <span class="rec-type"></span>
+        <span class="rec-name"></span>
+        <span class="rec-value"></span>
+        <span class="rec-purpose"></span>
+    </div>
+</template>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='js/verification-check.js') }}?v=1"></script>
+<script src="{{ url_for('static', path='js/dashboard/domains.js') }}?v=1"></script>
+{% endblock %}

@@ -54,11 +54,16 @@ class UrlResponse(ResponseBase):
     )
 
     @classmethod
-    def from_doc(cls, doc: UrlV2Doc, app_url: str) -> UrlResponse:
-        """Build from a UrlV2Doc and the application base URL."""
+    def from_doc(cls, doc: UrlV2Doc, base_url: str) -> UrlResponse:
+        """Build from a UrlV2Doc and the canonical base URL.
+
+        ``base_url`` is the public origin under which the short link will be
+        served — ``settings.app_url`` for system-default URLs and
+        ``https://<fqdn>`` for custom domains. Built at the route layer.
+        """
         return cls(
             alias=doc.alias,
-            short_url=f"{app_url.rstrip('/')}/{doc.alias}",
+            short_url=f"{base_url.rstrip('/')}/{doc.alias}",
             long_url=doc.long_url,
             owner_id=str(doc.owner_id)
             if doc.owner_id and doc.owner_id != ANONYMOUS_OWNER_ID
@@ -143,6 +148,7 @@ class UrlListItem(ResponseBase):
     password_set: bool
     total_clicks: int | None = None
     last_click: datetime | None = None
+    domain: str | None = None
 
     @classmethod
     def from_doc(cls, doc: UrlV2Doc) -> UrlListItem:
@@ -168,6 +174,7 @@ class UrlListItem(ResponseBase):
             password_set=doc.password is not None,
             total_clicks=doc.total_clicks,
             last_click=_ensure_utc(doc.last_click),
+            domain=doc.domain,
         )
 
 
@@ -177,6 +184,19 @@ class DeleteUrlResponse(ResponseBase):
     message: str = Field(description="Confirmation message.", examples=["URL deleted"])
     id: str = Field(
         description="ID of the deleted URL.", examples=["507f1f77bcf86cd799439011"]
+    )
+
+
+class BulkDeleteUrlsResponse(ResponseBase):
+    """Response body for DELETE /api/v1/urls?domain=<fqdn> (bulk delete)."""
+
+    message: str = Field(
+        description="Confirmation message.",
+        examples=["deleted 42 URLs on links.acme.com"],
+    )
+    count: int = Field(description="Number of URLs deleted.", examples=[42])
+    domain: str = Field(
+        description="Domain whose URLs were deleted.", examples=["links.acme.com"]
     )
 
 

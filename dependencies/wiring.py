@@ -232,4 +232,5 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         preflight_cname_target=cd_settings.cf_cname_target
         if cd_settings.cf_zone_id
         else None,
+        url_service=app.state.url_service,
     )

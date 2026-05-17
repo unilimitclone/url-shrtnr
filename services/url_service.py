@@ -300,13 +300,26 @@ class UrlService:
 
         return url_cache_data, schema
 
-    async def check_alias_available(self, alias: str) -> bool:
-        """Return True if alias is free in both urlsV2 and legacy urls collections."""
-        if await self._url_repo.check_alias_exists(alias, self._system_default_domain):
-            return False
-        return not await self._legacy_repo.check_exists(alias)
+    async def check_alias_available(
+        self, alias: str, *, domain: str | None = None
+    ) -> bool:
+        """Return True if alias is free under the given domain namespace.
 
-    async def check_alias(self, alias: str) -> AliasCheckResult:
+        ``domain=None`` means the system default — that path also checks the
+        legacy ``urls`` collection (v1 alias collisions still matter on the
+        original namespace). Custom domains only check v2 since v1/emoji
+        predate per-domain scoping and never live on custom hostnames.
+        """
+        target_domain = domain or self._system_default_domain
+        if await self._url_repo.check_alias_exists(alias, target_domain):
+            return False
+        if target_domain == self._system_default_domain:
+            return not await self._legacy_repo.check_exists(alias)
+        return True
+
+    async def check_alias(
+        self, alias: str, *, domain: str | None = None
+    ) -> AliasCheckResult:
         """Evaluate a candidate alias against the full creation rules.
 
         Mirrors what POST /api/v1/shorten would enforce (length, charset,
@@ -318,7 +331,7 @@ class UrlService:
             return "length"
         if not validate_alias(alias):
             return "format"
-        if not await self.check_alias_available(alias):
+        if not await self.check_alias_available(alias, domain=domain):
             return "taken"
         return "available"
 
@@ -327,14 +340,21 @@ class UrlService:
         request: CreateUrlRequest,
         owner_id: ObjectId | None,
         client_ip: str,
+        *,
+        domain: str | None = None,
     ) -> UrlV2Doc:
         """
         Create a new shortened URL.
+
+        ``domain`` scopes the new URL to a tenant. None or omitted defaults to
+        the system default. Callers MUST validate domain ownership + ACTIVE
+        status before calling — service treats the value as opaque.
 
         Raises:
             ValidationError: URL is invalid, blocked, or field validation fails.
             ConflictError:   The requested alias is already taken.
         """
+        target_domain = domain or self._system_default_domain
         now = datetime.now(timezone.utc)
 
         # 1. Validate the long URL (self-link check + format)
@@ -379,12 +399,14 @@ class UrlService:
                 raise ValidationError(
                     "Alias contains invalid characters", field="alias"
                 )
-            if not await self.check_alias_available(request.alias):
+            if not await self.check_alias_available(
+                request.alias, domain=target_domain
+            ):
                 log.info("url_alias_conflict", short_code=request.alias)
                 raise ConflictError("Alias is already in use")
             alias = request.alias
         else:
-            alias = await self._generate_unique_alias()
+            alias = await self._generate_unique_alias(domain=target_domain)
 
         # 6. private_stats default depends on auth state
         private_stats: bool | None = request.private_stats
@@ -396,7 +418,7 @@ class UrlService:
         url_doc = UrlV2Doc(
             alias=alias,
             owner_id=owner_oid,
-            domain=self._system_default_domain,
+            domain=target_domain,
             created_at=now,
             creation_ip=client_ip,
             long_url=request.long_url,
@@ -431,6 +453,7 @@ class UrlService:
             has_expiration=bool(expire_ts),
             private_stats=private_stats,
             alias_custom=bool(getattr(request, "alias", None)),
+            domain=target_domain,
         )
 
         return url_doc
@@ -562,6 +585,45 @@ class UrlService:
             user_id=str(owner_id),
         )
 
+    async def delete_all_by_domain(
+        self,
+        owner_id: ObjectId,
+        domain: str,
+    ) -> int:
+        """Bulk-delete all URLs owned by *owner_id* under *domain*.
+
+        Refuses the system default — that would nuke all of a user's spoo.me
+        URLs in one call. Returns number of URLs deleted.
+
+        Used by:
+          - `DELETE /api/v1/urls?domain=` (standalone bulk delete)
+          - `CustomDomainService.delete(cascade=True)` (domain revoke cascade)
+        """
+        if domain == self._system_default_domain:
+            raise ValidationError(
+                "cannot bulk-delete URLs on the system default domain",
+                field="domain",
+            )
+
+        aliases = await self._url_repo.list_aliases_by_owner_and_domain(
+            owner_id, domain
+        )
+        if not aliases:
+            return 0
+
+        deleted = await self._url_repo.delete_many_by_owner_and_domain(owner_id, domain)
+
+        # Best-effort cache cleanup; cache miss after delete is correct anyway.
+        await self._url_cache.invalidate_many(aliases, domain)
+
+        log.info(
+            "urls_bulk_deleted",
+            user_id=str(owner_id),
+            domain=domain,
+            count=deleted,
+        )
+        return deleted
+
     async def list_by_owner(
         self,
         owner_id: ObjectId,
@@ -575,6 +637,10 @@ class UrlService:
         """
         start_time = time.perf_counter()
         mongo_query: dict = {"owner_id": owner_id}
+
+        if getattr(query, "domain", None):
+            mongo_query["domain"] = query.domain
+
         f = query.parsed_filter
 
         if f:
@@ -743,15 +809,14 @@ class UrlService:
         ):
             await self._url_cache.set(short_code, url_cache_data)
 
-    async def _generate_unique_alias(self) -> str:
-        """Generate a 7-character alias not already in urlsV2."""
+    async def _generate_unique_alias(self, *, domain: str | None = None) -> str:
+        """Generate a 7-character alias not already in urlsV2 for *domain*."""
+        target_domain = domain or self._system_default_domain
         for _ in range(10):
             candidate = generate_short_code_v2(7)
-            if not await self._url_repo.check_alias_exists(
-                candidate, self._system_default_domain
-            ):
+            if not await self._url_repo.check_alias_exists(candidate, target_domain):
                 return candidate
-        log.error("url_alias_generation_exhausted")
+        log.error("url_alias_generation_exhausted", domain=target_domain)
         raise AppError("Could not generate a unique alias; please try again")
 
 

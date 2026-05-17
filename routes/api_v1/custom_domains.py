@@ -1,0 +1,212 @@
+"""
+POST   /api/v1/custom-domains              — register a new custom domain
+POST   /api/v1/custom-domains/{id}/verify  — trigger verification
+GET    /api/v1/custom-domains              — list owned domains (paginated)
+DELETE /api/v1/custom-domains/{id}         — revoke (?cascade=true also deletes URLs)
+
+CREATE is gated on a verified email + the ``custom_domains`` feature flag.
+Read/verify/delete bypass the flag so existing owners can manage state during
+rollback.
+
+API key scopes: ``domains:manage`` (create/verify/delete) and ``domains:read``
+(list). JWT bearer works for any operation without scopes.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+from bson import ObjectId
+from fastapi import APIRouter, Depends, Path, Query, Request
+
+from dependencies import (
+    DOMAIN_MANAGE_SCOPES,
+    DOMAIN_READ_SCOPES,
+    CurrentUser,
+    CustomDomainSvc,
+    FeatureFlagSvc,
+    require_scopes,
+    require_scopes_verified,
+)
+from errors import NotFoundError
+from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
+from middleware.rate_limiter import Limits, limiter
+from schemas.dto.requests.custom_domain import (
+    CreateCustomDomainRequest,
+    ListCustomDomainsQuery,
+    VerifyCustomDomainRequest,
+)
+from schemas.dto.responses.custom_domain import (
+    CustomDomainDeleteResponse,
+    CustomDomainListResponse,
+    CustomDomainResponse,
+)
+
+router = APIRouter(tags=["Custom Domains"])
+
+_FEATURE_FLAG = "custom_domains"
+
+
+def _parse_domain_id(domain_id: str) -> ObjectId:
+    """Parse the path param to ObjectId or raise 404.
+
+    404 (not 400) hides existence of the feature for non-allowlisted users
+    poking the endpoint with bogus IDs."""
+    try:
+        return ObjectId(domain_id)
+    except Exception:
+        raise NotFoundError("domain not found") from None
+
+
+async def _require_create_enabled(flag_svc: FeatureFlagSvc, user: CurrentUser) -> None:
+    """Flag gate for CREATE. 404 (not 403) — don't leak feature existence."""
+    if not await flag_svc.is_enabled(_FEATURE_FLAG, user):
+        raise NotFoundError("not found")
+
+
+@router.post(
+    "/custom-domains",
+    status_code=201,
+    responses=AUTH_RESPONSES,
+    operation_id="createCustomDomain",
+    summary="Register Custom Domain",
+)
+@limiter.limit(Limits.DOMAIN_CREATE)
+async def create_custom_domain(
+    request: Request,
+    body: CreateCustomDomainRequest,
+    service: CustomDomainSvc,
+    flag_svc: FeatureFlagSvc,
+    user: CurrentUser = Depends(require_scopes_verified(DOMAIN_MANAGE_SCOPES)),  # noqa: B008
+) -> CustomDomainResponse:
+    """Register a new custom domain for branded short links.
+
+    The domain is born in `PENDING` state. The user must publish the DNS
+    records returned in `dns_records` at their DNS provider, then call
+    `POST /custom-domains/{id}/verify` to trigger verification. Cloudflare
+    auto-verifies via HTTP DCV once the CNAME is live and propagated.
+
+    **Authentication**: Required (JWT Bearer or API key with `domains:manage`).
+
+    **Email verification**: Required (applies to API key callers too).
+
+    **Feature gate**: Must be enabled for the calling user.
+
+    **Rate Limits**: 5/hour (route) + 3/day per user (service quota).
+    """
+    await _require_create_enabled(flag_svc, user)
+    doc = await service.create(body, user)
+    return CustomDomainResponse.from_doc(doc)
+
+
+@router.post(
+    "/custom-domains/{domain_id}/verify",
+    responses=AUTH_RESPONSES,
+    operation_id="verifyCustomDomain",
+    summary="Verify Custom Domain",
+)
+@limiter.limit(Limits.DOMAIN_VERIFY)
+async def verify_custom_domain(
+    request: Request,
+    domain_id: Annotated[
+        str, Path(min_length=24, max_length=24, pattern=r"^[0-9a-f]{24}$")
+    ],
+    body: VerifyCustomDomainRequest,
+    service: CustomDomainSvc,
+    user: CurrentUser = Depends(require_scopes(DOMAIN_MANAGE_SCOPES)),  # noqa: B008
+) -> CustomDomainResponse:
+    """Trigger a fresh verification check for a custom domain.
+
+    The verifier dispatched depends on the chosen DCV method (CF HTTP DCV on
+    CF SaaS deployments, CNAME/A/TXT on self-host). On success the domain
+    transitions to `ACTIVE` and short links on the domain start resolving.
+
+    **Authentication**: Required (JWT or API key with `domains:manage`).
+
+    **Rate Limits**: 10/min (route) + 60/hour per domain (service quota).
+    """
+    oid = _parse_domain_id(domain_id)
+    doc = await service.verify(oid, user)
+    return CustomDomainResponse.from_doc(doc)
+
+
+@router.get(
+    "/custom-domains",
+    responses=ERROR_RESPONSES,
+    operation_id="listCustomDomains",
+    summary="List Custom Domains",
+)
+@limiter.limit(Limits.DOMAIN_READ)
+async def list_custom_domains(
+    request: Request,
+    query: Annotated[ListCustomDomainsQuery, Query()],
+    service: CustomDomainSvc,
+    user: CurrentUser = Depends(require_scopes(DOMAIN_READ_SCOPES)),  # noqa: B008
+) -> CustomDomainListResponse:
+    """List custom domains owned by the authenticated user.
+
+    Reads bypass the feature flag so owners can still see state during a
+    rollback.
+
+    **Authentication**: Required (JWT or API key with `domains:read`).
+
+    **Rate Limits**: 60/min.
+
+    **Pagination**: `page` (default 1) + `pageSize` (default 20, max 100).
+    """
+    items, total = await service.list_by_owner(user, query)
+    has_next = query.page * query.page_size < total
+    return CustomDomainListResponse(
+        items=[CustomDomainResponse.from_doc(doc) for doc in items],
+        page=query.page,
+        pageSize=query.page_size,
+        total=total,
+        hasNext=has_next,
+    )
+
+
+@router.delete(
+    "/custom-domains/{domain_id}",
+    responses=AUTH_RESPONSES,
+    operation_id="deleteCustomDomain",
+    summary="Revoke Custom Domain",
+)
+@limiter.limit(Limits.DOMAIN_DELETE)
+async def delete_custom_domain(
+    request: Request,
+    domain_id: Annotated[
+        str, Path(min_length=24, max_length=24, pattern=r"^[0-9a-f]{24}$")
+    ],
+    service: CustomDomainSvc,
+    cascade: bool = Query(
+        default=False,
+        description=(
+            "When true, all URLs on this domain are deleted alongside the "
+            "domain revoke. When false (default), URLs remain in the database "
+            "but become unreachable (the domain stops resolving)."
+        ),
+    ),
+    user: CurrentUser = Depends(require_scopes(DOMAIN_MANAGE_SCOPES)),  # noqa: B008
+) -> CustomDomainDeleteResponse:
+    """Revoke a custom domain. `REVOKED` is terminal.
+
+    With `?cascade=true`, all URLs owned by the caller on the domain are
+    bulk-deleted. With `?cascade=false` (default), URLs remain in the
+    database and the domain stops serving — the URLs effectively become
+    orphans until the domain is re-registered or garbage-collected.
+
+    **Authentication**: Required (JWT or API key with `domains:manage`).
+
+    **Rate Limits**: 10/min.
+    """
+    oid = _parse_domain_id(domain_id)
+    doc, urls_deleted = await service.delete(oid, user, cascade=cascade)
+    return CustomDomainDeleteResponse(
+        id=str(doc.id),
+        fqdn=doc.fqdn,
+        cascade=cascade,
+        urls_deleted=urls_deleted,
+    )
+
+
+__all__ = ["router"]

@@ -8,11 +8,12 @@ dependency_overrides and a mock lifespan — no real infrastructure needed.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock
 
 from bson import ObjectId
 from fastapi import FastAPI
 
-from dependencies import CurrentUser
+from dependencies import CurrentUser, get_custom_domain_service
 from routes.api_v1 import router as api_v1_router
 from schemas.models.api_key import ApiKeyDoc
 from schemas.models.url import UrlV2Doc
@@ -20,8 +21,16 @@ from tests.conftest import build_test_app
 
 
 def _build_test_app(overrides: dict) -> FastAPI:
-    """Thin wrapper around the shared builder for api_v1 tests."""
-    return build_test_app(api_v1_router, overrides=overrides)
+    """Thin wrapper around the shared builder for api_v1 tests.
+
+    Auto-injects a default ``custom_domain_service`` mock so tests that don't
+    care about the domain selector don't have to wire one. Specific tests
+    that need to assert against the service can pass their own override.
+    """
+    final_overrides = dict(overrides)
+    if get_custom_domain_service not in final_overrides:
+        final_overrides[get_custom_domain_service] = lambda: AsyncMock()
+    return build_test_app(api_v1_router, overrides=final_overrides)
 
 
 def _make_url_doc(alias: str = "testme", owner_id: ObjectId | None = None) -> UrlV2Doc:

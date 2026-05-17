@@ -81,7 +81,7 @@ def test_redirect_v2_url():
         resp = client.get("/abc1234")
     assert resp.status_code == 302
     assert resp.headers["location"] == "https://example.com/target"
-    assert resp.headers.get("x-robots-tag") == "noindex, nofollow"
+    assert resp.headers.get("x-robots-tag") == "noindex, nofollow, noarchive"
 
 
 def test_redirect_not_found_returns_404_html():

@@ -158,3 +158,69 @@ class TestShorten:
             )
 
         assert resp.status_code == 409
+
+
+class TestShortenWithCustomDomain:
+    """``domain`` field on POST /shorten triggers owner+ACTIVE check."""
+
+    def test_anonymous_user_cannot_use_custom_domain(self):
+        from dependencies import get_custom_domain_service
+
+        url_svc = AsyncMock()
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock(return_value=None)
+        application = _build_test_app(
+            {
+                get_current_user: lambda: None,
+                get_url_service: lambda: url_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/api/v1/shorten",
+                json={
+                    "long_url": "https://example.com",
+                    "domain": "links.acme.com",
+                },
+            )
+        assert resp.status_code == 401
+        assert custom_svc.assert_owned_and_active.await_count == 0
+        url_svc.create.assert_not_called()
+
+    def test_authed_user_with_owned_active_domain_succeeds(self):
+        from dependencies import get_custom_domain_service
+
+        user = _make_user(email_verified=True)
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.domain = "links.acme.com"
+        url_svc = AsyncMock()
+        url_svc.create = AsyncMock(return_value=url_doc)
+
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock(return_value=None)
+
+        application = _build_test_app(
+            {
+                get_current_user: lambda: user,
+                get_url_service: lambda: url_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.post(
+                "/api/v1/shorten",
+                json={
+                    "long_url": "https://example.com",
+                    "domain": "links.acme.com",
+                },
+            )
+        assert resp.status_code == 201
+        body = resp.json()
+        # short_url is built off the custom host, not the system default.
+        assert body["short_url"].startswith("https://links.acme.com/")
+        # Owner check fired with the normalised fqdn.
+        custom_svc.assert_owned_and_active.assert_awaited_once()
+        # Service got the domain on the create call.
+        kwargs = url_svc.create.call_args.kwargs
+        assert kwargs.get("domain") == "links.acme.com"

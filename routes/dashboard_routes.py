@@ -96,6 +96,16 @@ async def dashboard_keys(
     return await _render_dashboard_page("dashboard/keys.html", request, user, svc)
 
 
+@router.get("/domains")
+@limiter.limit(Limits.DASHBOARD_READ)
+async def dashboard_domains(
+    request: Request,
+    user: OptionalUser,
+    svc: ProfilePictureSvc,
+) -> Response:
+    return await _render_dashboard_page("dashboard/domains.html", request, user, svc)
+
+
 @router.get("/statistics")
 @limiter.limit(Limits.DASHBOARD_READ)
 async def dashboard_statistics(

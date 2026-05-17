@@ -1293,3 +1293,165 @@ class TestUrlServiceListByOwner:
 
         assert result["hasNext"] is True
         assert result["total"] == 50
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestUrlServiceCreateOnCustomDomain
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestUrlServiceCreateOnCustomDomain:
+    """create(..., domain=) writes the doc on the right tenant and routes
+    alias-availability checks through the right namespace."""
+
+    @pytest.mark.asyncio
+    async def test_create_uses_provided_domain_for_doc_and_alias_check(self):
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_repo.check_alias_exists = AsyncMock(return_value=False)
+        url_repo.insert = AsyncMock(return_value=ObjectId())
+        blocked_url_repo.get_patterns = AsyncMock(return_value=[])
+
+        req = CreateUrlRequest(
+            url="https://example.com/x",
+            alias="myalias",
+        )
+
+        await svc.create(req, USER_OID, "1.2.3.4", domain="links.acme.com")
+
+        # Alias-availability scoped to custom domain — and only that namespace
+        # (no legacy fallback check).
+        url_repo.check_alias_exists.assert_awaited_once_with(
+            "myalias", "links.acme.com"
+        )
+        legacy_repo.check_exists.assert_not_called()
+
+        # Doc inserted carries the custom domain.
+        inserted = url_repo.insert.call_args[0][0]
+        assert inserted["domain"] == "links.acme.com"
+
+    @pytest.mark.asyncio
+    async def test_create_with_no_domain_uses_system_default(self):
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_repo.check_alias_exists = AsyncMock(return_value=False)
+        legacy_repo.check_exists = AsyncMock(return_value=False)
+        url_repo.insert = AsyncMock(return_value=ObjectId())
+        blocked_url_repo.get_patterns = AsyncMock(return_value=[])
+
+        req = CreateUrlRequest(url="https://example.com/x", alias="mine")
+
+        await svc.create(req, USER_OID, "1.2.3.4")
+
+        # System default uses both v2 + legacy alias check.
+        url_repo.check_alias_exists.assert_awaited_once_with(
+            "mine", SYSTEM_DEFAULT_DOMAIN
+        )
+        legacy_repo.check_exists.assert_awaited_once_with("mine")
+        inserted = url_repo.insert.call_args[0][0]
+        assert inserted["domain"] == SYSTEM_DEFAULT_DOMAIN
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestUrlServiceBulkDelete
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestUrlServiceBulkDelete:
+    @pytest.mark.asyncio
+    async def test_bulk_delete_refuses_system_default(self):
+        from errors import ValidationError
+
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        with pytest.raises(ValidationError):
+            await svc.delete_all_by_domain(USER_OID, SYSTEM_DEFAULT_DOMAIN)
+        url_repo.delete_many_by_owner_and_domain.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_zero_match_returns_zero(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        url_repo.list_aliases_by_owner_and_domain = AsyncMock(return_value=[])
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        count = await svc.delete_all_by_domain(USER_OID, "links.acme.com")
+        assert count == 0
+        url_repo.delete_many_by_owner_and_domain.assert_not_called()
+        url_cache.invalidate_many.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_invalidates_cache_after_delete(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        url_repo.list_aliases_by_owner_and_domain = AsyncMock(
+            return_value=["a", "b", "c"]
+        )
+        url_repo.delete_many_by_owner_and_domain = AsyncMock(return_value=3)
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        count = await svc.delete_all_by_domain(USER_OID, "links.acme.com")
+
+        assert count == 3
+        url_repo.delete_many_by_owner_and_domain.assert_awaited_once_with(
+            USER_OID, "links.acme.com"
+        )
+        url_cache.invalidate_many.assert_awaited_once_with(
+            ["a", "b", "c"], "links.acme.com"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestUrlServiceListByOwnerDomainFilter
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestUrlServiceListByOwnerDomainFilter:
+    @pytest.mark.asyncio
+    async def test_list_with_domain_filter_passes_to_query(self):
+        from schemas.dto.requests.url import ListUrlsQuery
+
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_repo.count_by_query.return_value = 0
+        url_repo.find_by_owner.return_value = []
+
+        q = ListUrlsQuery(domain="links.acme.com")
+        await svc.list_by_owner(USER_OID, q)
+
+        call_query = url_repo.count_by_query.call_args[0][0]
+        assert call_query.get("domain") == "links.acme.com"
+
+    @pytest.mark.asyncio
+    async def test_list_without_domain_filter_omits_field(self):
+        from schemas.dto.requests.url import ListUrlsQuery
+
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_repo.count_by_query.return_value = 0
+        url_repo.find_by_owner.return_value = []
+
+        q = ListUrlsQuery()
+        await svc.list_by_owner(USER_OID, q)
+
+        call_query = url_repo.count_by_query.call_args[0][0]
+        assert "domain" not in call_query

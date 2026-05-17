@@ -26,6 +26,12 @@
             <span class="nav-text">API Keys</span>
         </a>
 
+        <a href="/dashboard/domains" class="nav-item {% if request.path == '/dashboard/domains' %}active{% endif %}"
+            data-tooltip="Custom Domains">
+            <i class="ti ti-world"></i>
+            <span class="nav-text">Domains</span>
+        </a>
+
         <a href="/dashboard/statistics"
             class="nav-item {% if request.path == '/dashboard/statistics' %}active{% endif %}"
             data-tooltip="Statistics">
