@@ -126,13 +126,6 @@ class InvalidDomainTransitionError(ValidationError):
     error_code = "invalid_domain_transition"
 
 
-class DomainDnsNotPropagatedError(ValidationError):
-    """Pre-register DNS check didn't see the routing CNAME yet."""
-
-    status_code = 422
-    error_code = "domain_dns_not_propagated"
-
-
 class CloudflareAPIError(AppError):
     """Cloudflare API call failed (4xx, 5xx, or network)."""
 

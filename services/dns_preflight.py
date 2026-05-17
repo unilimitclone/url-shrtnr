@@ -42,11 +42,12 @@ async def check_cname(fqdn: str, expected_target: str) -> PreflightResult:
     if matched:
         return PreflightResult(ok=True)
     if seen_targets:
+        observed = sorted(set(seen_targets))[0]
         return PreflightResult(
             ok=False,
             reason=(
-                f"{fqdn}: CNAME currently resolves to {sorted(set(seen_targets))!r}, "
-                f"expected {target!r}. Fix the record at your DNS provider."
+                f"Your CNAME points to {observed} - It should point to {target}. "
+                f"Update the record at your DNS provider."
             ),
         )
 
@@ -61,8 +62,8 @@ async def check_cname(fqdn: str, expected_target: str) -> PreflightResult:
     return PreflightResult(
         ok=False,
         reason=(
-            f"{fqdn}: no CNAME visible at public resolvers yet. DNS may "
-            f"still be propagating — retry in a few minutes."
+            "DNS isn't reaching us yet - This is normal right after adding the "
+            "records. Try again in a few minutes."
         ),
     )
 

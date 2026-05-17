@@ -20,6 +20,8 @@ class ApiKeyScope(str, Enum):
     URLS_MANAGE = "urls:manage"
     URLS_READ = "urls:read"
     STATS_READ = "stats:read"
+    DOMAINS_MANAGE = "domains:manage"
+    DOMAINS_READ = "domains:read"
     ADMIN_ALL = "admin:all"
 
 

@@ -146,7 +146,7 @@ async def redirect_url(
             slow=total_ms > 100,
         )
     resp = RedirectResponse(url_data.long_url, status_code=302)
-    resp.headers["X-Robots-Tag"] = "noindex, nofollow"
+    resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
     return resp
 
 

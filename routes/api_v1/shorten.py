@@ -3,6 +3,10 @@ POST /api/v1/shorten — create a shortened URL.
 
 Returns 201 on success with the URL details.
 Auth is optional; API key users require `shorten:create` or `admin:all` scope.
+
+When ``domain`` is supplied the route layer asserts the caller owns an ACTIVE
+custom domain with that fqdn before delegating to ``UrlService.create``. Short
+URL is built from the custom host. Anonymous callers cannot specify ``domain``.
 """
 
 from __future__ import annotations
@@ -14,10 +18,12 @@ from fastapi import APIRouter, Depends, Query, Request
 from dependencies import (
     SHORTEN_SCOPES,
     CurrentUser,
+    CustomDomainSvc,
     Settings,
     UrlSvc,
     optional_scopes_verified,
 )
+from errors import AuthenticationError
 from middleware.openapi import AUTH_RESPONSES, OPTIONAL_AUTH_SECURITY
 from middleware.rate_limiter import Limits, dynamic_limit, limiter
 from schemas.dto.requests.url import AliasCheckQuery, CreateUrlRequest
@@ -43,15 +49,18 @@ async def shorten_v1(
     request: Request,
     body: CreateUrlRequest,
     url_service: UrlSvc,
+    custom_domain_service: CustomDomainSvc,
     settings: Settings,
     user: CurrentUser | None = Depends(optional_scopes_verified(SHORTEN_SCOPES)),  # noqa: B008
 ) -> UrlResponse:
     """Create a new shortened URL.
 
-    Create a shortened URL with optional customization including password protection,
-    expiration, click limits, and bot blocking.
+    Create a shortened URL with optional customization including password
+    protection, expiration, click limits, and bot blocking. Authenticated
+    users may target an owned, ACTIVE custom domain via the ``domain`` field.
 
     **Authentication**: Optional — higher rate limits when authenticated.
+    Required if ``domain`` is supplied.
 
     **API Key Scope**: `shorten:create` or `admin:all`
 
@@ -66,12 +75,25 @@ async def shorten_v1(
     - Cannot manage or view URLs later
     - Cannot use private stats
     - URLs not linked to any account
+    - Cannot use custom domains
     """
     owner_id = user.user_id if user is not None else None
     client_ip = get_client_ip(request)
 
-    doc = await url_service.create(body, owner_id, client_ip)
-    return UrlResponse.from_doc(doc, settings.app_url)
+    if body.domain and body.domain != settings.system_default_domain:
+        if user is None:
+            raise AuthenticationError(
+                "Authentication required to shorten on a custom domain"
+            )
+        await custom_domain_service.assert_owned_and_active(user, body.domain)
+        base_url = f"https://{body.domain}"
+        scoped_domain: str | None = body.domain
+    else:
+        base_url = settings.app_url
+        scoped_domain = None
+
+    doc = await url_service.create(body, owner_id, client_ip, domain=scoped_domain)
+    return UrlResponse.from_doc(doc, base_url)
 
 
 @router.get(

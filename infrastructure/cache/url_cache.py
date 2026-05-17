@@ -93,3 +93,19 @@ class UrlCache:
             )
         except Exception as e:
             log.error("url_cache_invalidate_error", short_code=short_code, error=str(e))
+
+    async def invalidate_many(self, short_codes: list[str], domain: str) -> None:
+        """Bulk-invalidate cache entries for a list of aliases on one domain."""
+        if not short_codes or self._redis is None:
+            return
+        keys = [self._key(c, domain) for c in short_codes]
+        try:
+            await self._redis.delete(*keys)
+            log.info(
+                "cache_invalidated_bulk",
+                count=len(short_codes),
+                domain=domain,
+                reason="bulk_invalidation",
+            )
+        except Exception as e:
+            log.error("url_cache_invalidate_many_error", domain=domain, error=str(e))

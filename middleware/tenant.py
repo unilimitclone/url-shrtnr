@@ -1,18 +1,35 @@
 """Resolve Host header → TenantInfo on every request.
 
 Lands `request.state.tenant` for downstream handlers. Redirect route
-reads it to scope the URL lookup to the right tenant. Unknown public
-hosts get an HTML 404; internal/loopback hosts pass through with
-tenant=None so /health doesn't break.
+reads it to scope the URL lookup to the right tenant.
+
+Routing policy for custom tenants is a strict allowlist:
+  - `GET /<alias>` and `POST /<alias>/password` → redirect router
+  - `GET /favicon.ico`                         → static router (generic favicon)
+  - `GET /robots.txt`                          → inline `Disallow: /`
+  - Everything else                            → 404
+
+Operator surface (`/api/*`, `/dashboard/*`, `/auth/*`, `/oauth/*`, `/health`)
+and brand pages (`/about`, `/contact`, `/api-docs`, `/<alias>+`, `/report`)
+all 404 on custom tenants. Per-domain routing config (`root_redirect`,
+`not_found_redirect`, `custom_robots_txt`) lands in PR4.5.
+
+System-default tenant behaves exactly as before — full app surface.
+
+Every custom-tenant response carries `X-Robots-Tag: noindex, nofollow,
+noarchive` (post-handler). Combined with the disallow-all robots.txt, this
+keeps short links out of search indexes. Preview crawlers (Twitter/Slack/
+Discord/etc.) ignore these signals and continue to unfurl correctly.
 """
 
 from __future__ import annotations
 
+import re
 from urllib.parse import urlsplit
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import HTMLResponse, Response
+from starlette.responses import HTMLResponse, PlainTextResponse, Response
 
 from infrastructure.logging import get_logger
 from services.tenant_resolver.protocol import TenantInfo, TenantResolver
@@ -20,6 +37,55 @@ from services.tenant_resolver.protocol import TenantInfo, TenantResolver
 log = get_logger(__name__)
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "app"})
+
+_NOT_FOUND_BODY = (
+    "<!doctype html><html><head><title>404 — Not Found</title></head>"
+    "<body><h1>404</h1><p>URL not found.</p></body></html>"
+)
+
+_CUSTOM_TENANT_ROBOTS_BODY = "User-agent: *\nDisallow: /\n"
+_NOINDEX_HEADER = "noindex, nofollow, noarchive"
+
+# Allowed exact paths on custom tenants (besides the alias pattern).
+_ALLOWED_EXACT_PATHS = frozenset({"/favicon.ico"})
+
+# Reserved path prefixes — match these *before* the alias allowlist so
+# operator surface (`/dashboard/*`, `/api/*`, …) and brand pages
+# (`/about`, `/contact`, …) cannot be exposed through the alias namespace.
+# A path is reserved if it equals one of these strings exactly or starts
+# with one followed by `/`. Bare alias collisions (e.g. a customer creating
+# an alias literally named `dashboard`) are sacrificed for tenant isolation.
+_RESERVED_PREFIXES = (
+    "/api",
+    "/dashboard",
+    "/auth",
+    "/oauth",
+    "/health",
+    "/report",
+    "/about",
+    "/contact",
+    "/privacy",
+    "/api-docs",
+    "/api-reference",
+)
+
+# Alias paths allowed on custom tenants. Match `/<alias>` and
+# `/<alias>/password` only. Alias body is `[A-Za-z0-9_-]{3,16}` per
+# `shared.validators.validate_alias` plus the URL-safe slice of the emoji
+# range used in v2. Stats suffix (`+`) is intentionally NOT matched so
+# `/<alias>+` falls through to 404 — analytics surface stays on spoo.me.
+#
+# Emoji ranges: Misc Symbols & Pictographs (1F300-1F5FF), Emoticons
+# (1F600-1F64F), Transport & Map (1F680-1F6FF), Supplemental Symbols
+# (1F900-1F9FF), Extended-A (1FA70-1FAFF), and percent-encoded forms.
+_ALIAS_PATTERN = re.compile(
+    r"^/"
+    r"(?:[A-Za-z0-9_\-]"
+    r"|[\U0001F300-\U0001F5FF\U0001F600-\U0001F64F"
+    r"\U0001F680-\U0001F6FF\U0001F900-\U0001F9FF\U0001FA70-\U0001FAFF]"
+    r"|%[0-9A-Fa-f]{2})+"
+    r"(?:/password)?$"
+)
 
 
 def _normalise_host(raw: str) -> str:
@@ -34,8 +100,40 @@ def _normalise_host(raw: str) -> str:
     return (parsed or "").rstrip(".").lower()
 
 
+def _is_reserved_path(path: str) -> bool:
+    for prefix in _RESERVED_PREFIXES:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def _is_allowed_on_custom_tenant(path: str, method: str) -> bool:
+    """Custom-tenant allowlist gate. Path-and-method check so disallowed
+    methods on allowed paths (e.g. ``DELETE /<alias>``) return our 404
+    instead of Starlette's 405, preserving the strict deny policy."""
+    if path == "/":
+        return False
+    if _is_reserved_path(path):
+        return False
+    if path in _ALLOWED_EXACT_PATHS:
+        # Static assets (favicon) are read-only.
+        return method in {"GET", "HEAD"}
+    if _ALIAS_PATTERN.match(path):
+        # `/<alias>/password` is a form POST; everything else under the alias
+        # namespace (the redirect) is GET/HEAD only.
+        if path.endswith("/password"):
+            return method == "POST"
+        return method in {"GET", "HEAD"}
+    return False
+
+
 class TenantMiddleware(BaseHTTPMiddleware):
-    """Populates request.state.tenant from the request Host header."""
+    """Populates request.state.tenant from the request Host header.
+
+    On custom tenants additionally enforces the allowlist routing policy
+    documented at the top of this module and stamps the noindex header on
+    every response.
+    """
 
     async def dispatch(self, request: Request, call_next) -> Response:
         resolver: TenantResolver | None = getattr(
@@ -51,15 +149,41 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
         tenant: TenantInfo | None = await resolver.resolve(host)
         request.state.tenant = tenant
+
         if tenant is None:
             log.info("tenant_unknown_host", host=host)
-            # Static HTML 404 — browser-friendly, no template deps, no
-            # tenancy details leaked.
             return HTMLResponse(_NOT_FOUND_BODY, status_code=404)
-        return await call_next(request)
 
+        if tenant.is_system_default:
+            return await call_next(request)
 
-_NOT_FOUND_BODY = (
-    "<!doctype html><html><head><title>404 — Not Found</title></head>"
-    "<body><h1>404</h1><p>URL not found.</p></body></html>"
-)
+        path = request.url.path
+
+        if path == "/robots.txt":
+            if request.method not in {"GET", "HEAD"}:
+                return HTMLResponse(
+                    _NOT_FOUND_BODY,
+                    status_code=404,
+                    headers={"X-Robots-Tag": _NOINDEX_HEADER},
+                )
+            return PlainTextResponse(
+                _CUSTOM_TENANT_ROBOTS_BODY,
+                headers={"X-Robots-Tag": _NOINDEX_HEADER},
+            )
+
+        if not _is_allowed_on_custom_tenant(path, request.method):
+            log.info(
+                "tenant_path_denied",
+                host=host,
+                path=path,
+                method=request.method,
+            )
+            return HTMLResponse(
+                _NOT_FOUND_BODY,
+                status_code=404,
+                headers={"X-Robots-Tag": _NOINDEX_HEADER},
+            )
+
+        response = await call_next(request)
+        response.headers["X-Robots-Tag"] = _NOINDEX_HEADER
+        return response

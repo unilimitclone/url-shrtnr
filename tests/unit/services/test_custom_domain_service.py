@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from bson import ObjectId
@@ -13,6 +13,7 @@ from config import CustomDomainSettings
 from errors import (
     DomainAlreadyRegisteredError,
     DomainBlocklistedError,
+    DomainNotVerifiedError,
     DomainQuotaExceededError,
     ForbiddenError,
     InvalidDomainTransitionError,
@@ -74,6 +75,8 @@ def _build_service(
     blocked_domain_repo=None,
     redis=None,
     extra_settings=None,
+    url_service=None,
+    preflight_cname_target=None,
 ):
     repo = repo or AsyncMock()
     repo.insert = AsyncMock(return_value=DOMAIN_OID)
@@ -129,6 +132,8 @@ def _build_service(
             tenant_resolver=tenant_resolver,
             blocked_domain_repo=blocked_domain_repo,
             redis_client=redis,
+            url_service=url_service,
+            preflight_cname_target=preflight_cname_target,
         ),
         repo,
         verifiers,
@@ -347,6 +352,57 @@ class TestVerify:
         repo.find_by_id = AsyncMock(return_value=None)
         with pytest.raises(NotFoundError):
             await svc.verify(DOMAIN_OID, _user())
+
+    @pytest.mark.asyncio
+    async def test_preflight_failure_records_reason_and_skips_verifier(self):
+        # When preflight fails, CF/verifier MUST NOT be invoked — otherwise CF
+        # enters its 15-min backoff for unpropagated domains. The reason is
+        # surfaced as last_verification_error on the doc; status unchanged.
+        from services import dns_preflight as preflight_module
+
+        svc, repo, verifiers, _, _ = _build_service(
+            preflight_cname_target="customers.spoo.me"
+        )
+        verifier = verifiers[VerificationMethod.CNAME]
+        starting = _doc(status=DomainStatus.PENDING)
+        repo.find_by_id = AsyncMock(side_effect=[starting, starting])
+
+        async def _bad_preflight(fqdn, target):
+            return preflight_module.PreflightResult(
+                ok=False, reason="DNS isn't reaching us yet"
+            )
+
+        with patch(
+            "services.custom_domain_service.check_cname",
+            side_effect=_bad_preflight,
+        ):
+            await svc.verify(DOMAIN_OID, _user())
+
+        verifier.verify.assert_not_called()
+        args, kwargs = repo.update_status.call_args
+        assert args[1] == DomainStatus.PENDING
+        assert kwargs["last_verification_error"] == "DNS isn't reaching us yet"
+
+    @pytest.mark.asyncio
+    async def test_preflight_success_lets_verifier_run(self):
+        from services import dns_preflight as preflight_module
+
+        svc, repo, verifiers, _, _ = _build_service(
+            preflight_cname_target="customers.spoo.me"
+        )
+        verifier = verifiers[VerificationMethod.CNAME]
+        starting = _doc(status=DomainStatus.PENDING)
+        repo.find_by_id = AsyncMock(
+            side_effect=[starting, _doc(status=DomainStatus.ACTIVE)]
+        )
+
+        async def _ok(fqdn, target):
+            return preflight_module.PreflightResult(ok=True)
+
+        with patch("services.custom_domain_service.check_cname", side_effect=_ok):
+            await svc.verify(DOMAIN_OID, _user())
+
+        verifier.verify.assert_awaited_once()
 
 
 class TestDelete:
@@ -725,3 +781,155 @@ class TestVerifierTokenSelection:
         await svc.verify(DOMAIN_OID, _user())
 
         cname_verifier.verify.assert_awaited_once_with("links.acme.com", "token-abc")
+
+
+class TestGetOwnedById:
+    @pytest.mark.asyncio
+    async def test_returns_doc(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        result = await svc.get_owned_by_id(DOMAIN_OID, _user())
+        assert result.id == DOMAIN_OID
+
+    @pytest.mark.asyncio
+    async def test_unknown_id_raises_404(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(return_value=None)
+        with pytest.raises(NotFoundError):
+            await svc.get_owned_by_id(DOMAIN_OID, _user())
+
+    @pytest.mark.asyncio
+    async def test_other_owner_raises_403(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_id = AsyncMock(
+            return_value=_doc(owner_id=ObjectId("ffffffffffffffffffffffff"))
+        )
+        with pytest.raises(ForbiddenError):
+            await svc.get_owned_by_id(DOMAIN_OID, _user())
+
+
+class TestAssertOwned:
+    @pytest.mark.asyncio
+    async def test_owned_returns_doc(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_fqdn = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
+        result = await svc.assert_owned(_user(), "links.acme.com")
+        assert result.fqdn == "links.acme.com"
+
+    @pytest.mark.asyncio
+    async def test_unknown_domain_raises_404(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_fqdn = AsyncMock(return_value=None)
+        with pytest.raises(NotFoundError):
+            await svc.assert_owned(_user(), "nope.example.com")
+
+    @pytest.mark.asyncio
+    async def test_other_owner_raises_403(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_fqdn = AsyncMock(
+            return_value=_doc(owner_id=ObjectId("ffffffffffffffffffffffff"))
+        )
+        with pytest.raises(ForbiddenError):
+            await svc.assert_owned(_user(), "links.acme.com")
+
+    @pytest.mark.asyncio
+    async def test_owned_accepts_any_status(self):
+        # Bulk-delete cleanup path needs to work on revoked/suspended domains too.
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_fqdn = AsyncMock(return_value=_doc(status=DomainStatus.SUSPENDED))
+        doc = await svc.assert_owned(_user(), "links.acme.com")
+        assert doc.status == DomainStatus.SUSPENDED
+
+
+class TestAssertOwnedAndActive:
+    @pytest.mark.asyncio
+    async def test_active_returns_doc(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_fqdn = AsyncMock(return_value=_doc(status=DomainStatus.ACTIVE))
+        doc = await svc.assert_owned_and_active(_user(), "links.acme.com")
+        assert doc.status == DomainStatus.ACTIVE
+
+    @pytest.mark.asyncio
+    async def test_pending_raises_422(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_fqdn = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
+        with pytest.raises(DomainNotVerifiedError):
+            await svc.assert_owned_and_active(_user(), "links.acme.com")
+
+    @pytest.mark.asyncio
+    async def test_suspended_raises_422(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_fqdn = AsyncMock(return_value=_doc(status=DomainStatus.SUSPENDED))
+        with pytest.raises(DomainNotVerifiedError):
+            await svc.assert_owned_and_active(_user(), "links.acme.com")
+
+    @pytest.mark.asyncio
+    async def test_revoked_raises_422(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.find_by_fqdn = AsyncMock(return_value=_doc(status=DomainStatus.REVOKED))
+        with pytest.raises(DomainNotVerifiedError):
+            await svc.assert_owned_and_active(_user(), "links.acme.com")
+
+
+class TestDeleteCascade:
+    @pytest.mark.asyncio
+    async def test_delete_without_cascade_doesnt_touch_url_service(self):
+        url_service = AsyncMock()
+        url_service.delete_all_by_domain = AsyncMock(return_value=0)
+        svc, repo, _, _, _ = _build_service(url_service=url_service)
+        active = _doc(status=DomainStatus.ACTIVE)
+        # First find_by_id loads the doc for ownership; second refreshes after.
+        revoked = _doc(status=DomainStatus.REVOKED)
+        repo.find_by_id = AsyncMock(side_effect=[active, revoked])
+
+        doc, deleted = await svc.delete(DOMAIN_OID, _user())
+
+        url_service.delete_all_by_domain.assert_not_called()
+        assert deleted == 0
+        assert doc.status == DomainStatus.REVOKED
+
+    @pytest.mark.asyncio
+    async def test_delete_with_cascade_calls_url_service(self):
+        url_service = AsyncMock()
+        url_service.delete_all_by_domain = AsyncMock(return_value=42)
+        svc, repo, _, _, _ = _build_service(url_service=url_service)
+        active = _doc(status=DomainStatus.ACTIVE)
+        revoked = _doc(status=DomainStatus.REVOKED)
+        repo.find_by_id = AsyncMock(side_effect=[active, revoked])
+
+        doc, deleted = await svc.delete(DOMAIN_OID, _user(), cascade=True)
+
+        url_service.delete_all_by_domain.assert_awaited_once_with(
+            USER_OID, "links.acme.com"
+        )
+        assert deleted == 42
+        assert doc.status == DomainStatus.REVOKED
+
+    @pytest.mark.asyncio
+    async def test_cascade_partial_failure_still_revokes(self):
+        # bulk delete throws → service swallows, domain still ends REVOKED
+        url_service = AsyncMock()
+        url_service.delete_all_by_domain = AsyncMock(
+            side_effect=RuntimeError("mongo timeout")
+        )
+        svc, repo, _, _, _ = _build_service(url_service=url_service)
+        active = _doc(status=DomainStatus.ACTIVE)
+        revoked = _doc(status=DomainStatus.REVOKED)
+        repo.find_by_id = AsyncMock(side_effect=[active, revoked])
+
+        doc, deleted = await svc.delete(DOMAIN_OID, _user(), cascade=True)
+        assert deleted == 0
+        assert doc.status == DomainStatus.REVOKED
+
+    @pytest.mark.asyncio
+    async def test_cascade_without_url_service_logs_and_continues(self):
+        # Edge case: cascade=True but no url_service wired (test config).
+        # Service must not blow up; just log and continue with the revoke.
+        svc, repo, _, _, _ = _build_service(url_service=None)
+        active = _doc(status=DomainStatus.ACTIVE)
+        revoked = _doc(status=DomainStatus.REVOKED)
+        repo.find_by_id = AsyncMock(side_effect=[active, revoked])
+
+        doc, deleted = await svc.delete(DOMAIN_OID, _user(), cascade=True)
+        assert deleted == 0
+        assert doc.status == DomainStatus.REVOKED

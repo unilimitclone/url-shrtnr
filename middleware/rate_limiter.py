@@ -73,6 +73,13 @@ class Limits:
     # URL management
     URL_MANAGE = "120 per minute; 2000 per day"
     URL_DELETE = "60 per minute; 1000 per day"
+    URL_BULK_DELETE = "5 per minute; 50 per day"
+
+    # Custom domains
+    DOMAIN_CREATE = "5 per hour"
+    DOMAIN_VERIFY = "10 per minute"
+    DOMAIN_READ = "60 per minute"
+    DOMAIN_DELETE = "10 per minute"
 
     # Dashboard — profile pictures
     PROFILE_PICTURE_SET = "10 per minute"

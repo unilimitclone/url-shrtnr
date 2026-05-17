@@ -422,7 +422,7 @@ def test_redirect_sets_x_robots_tag():
     resp = client.get("/abc123", follow_redirects=False)
 
     assert resp.status_code == 302
-    assert resp.headers.get("X-Robots-Tag") == "noindex, nofollow"
+    assert resp.headers.get("X-Robots-Tag") == "noindex, nofollow, noarchive"
 
 
 def test_password_form_submit_correct():

@@ -200,6 +200,12 @@ URL_READ_SCOPES: set[str] = {
     ApiKeyScope.ADMIN_ALL,
 }
 SHORTEN_SCOPES: set[str] = {ApiKeyScope.SHORTEN_CREATE, ApiKeyScope.ADMIN_ALL}
+DOMAIN_MANAGE_SCOPES: set[str] = {ApiKeyScope.DOMAINS_MANAGE, ApiKeyScope.ADMIN_ALL}
+DOMAIN_READ_SCOPES: set[str] = {
+    ApiKeyScope.DOMAINS_MANAGE,
+    ApiKeyScope.DOMAINS_READ,
+    ApiKeyScope.ADMIN_ALL,
+}
 
 
 # ── Parameterised scope dependency factories ─────────────────────────────────
@@ -259,6 +265,24 @@ def optional_scopes_verified(scopes: set[str]):
         user: CurrentUser | None = Depends(optional_scopes(scopes)),
     ) -> CurrentUser | None:
         if user is not None and not user.email_verified:
+            raise EmailNotVerifiedError("Email verification required")
+        return user
+
+    return _dep
+
+
+def require_scopes_verified(scopes: set[str]):
+    """``require_scopes`` plus email-verification gate.
+
+    Use on protected create endpoints that accept BOTH JWT and API key auth.
+    API key callers must also be email-verified (their underlying user must
+    have verified the email at signup time).
+    """
+
+    async def _dep(
+        user: CurrentUser = Depends(require_scopes(scopes)),
+    ) -> CurrentUser:
+        if not user.email_verified:
             raise EmailNotVerifiedError("Email verification required")
         return user
 

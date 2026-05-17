@@ -54,10 +54,21 @@ async def _render_dashboard_page(
     if user is None:
         return _unauth_redirect()
     profile = await svc.get_dashboard_profile(user.user_id)
+    flag_svc = getattr(request.app.state, "feature_flag_service", None)
+    show_custom_domains = False
+    if flag_svc is not None:
+        try:
+            show_custom_domains = await flag_svc.is_enabled("custom_domains", user)
+        except Exception as exc:
+            log.warning("dashboard_flag_lookup_failed", error=str(exc))
     return templates.TemplateResponse(
         request,
         template_name,
-        {"host_url": str(request.base_url), "user": profile},
+        {
+            "host_url": str(request.base_url),
+            "user": profile,
+            "show_custom_domains": show_custom_domains,
+        },
     )
 
 
@@ -94,6 +105,23 @@ async def dashboard_keys(
     svc: ProfilePictureSvc,
 ) -> Response:
     return await _render_dashboard_page("dashboard/keys.html", request, user, svc)
+
+
+@router.get("/domains")
+@limiter.limit(Limits.DASHBOARD_READ)
+async def dashboard_domains(
+    request: Request,
+    user: OptionalUser,
+    svc: ProfilePictureSvc,
+) -> Response:
+    if user is None:
+        return _unauth_redirect()
+    # Direct-URL guard: non-allowlisted users get bounced to /dashboard/links
+    # instead of seeing an empty/teaser page. Sidebar nav is hidden the same way.
+    flag_svc = getattr(request.app.state, "feature_flag_service", None)
+    if flag_svc is not None and not await flag_svc.is_enabled("custom_domains", user):
+        return RedirectResponse("/dashboard/links", status_code=302)
+    return await _render_dashboard_page("dashboard/domains.html", request, user, svc)
 
 
 @router.get("/statistics")

@@ -53,6 +53,53 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         """Hard-delete a URL document. Returns True if a document was deleted."""
         return await self._delete({"_id": url_id})
 
+    async def list_aliases_by_owner_and_domain(
+        self, owner_id: ObjectId, domain: str
+    ) -> list[str]:
+        """Return all aliases owned by *owner_id* under *domain*.
+
+        Used by bulk-delete to drive cache invalidation. Two-step (list then
+        delete) trades atomicity for explicit cache cleanup — a cache miss
+        post-delete is correct behavior anyway.
+        """
+        try:
+            cursor = self._col.find(
+                {"owner_id": owner_id, "domain": domain},
+                projection={"alias": 1, "_id": 0},
+            )
+            docs = await cursor.to_list(length=None)
+            return [d["alias"] for d in docs if "alias" in d]
+        except PyMongoError as exc:
+            log.error(
+                "repo_list_aliases_failed",
+                collection=self._collection_name,
+                error=str(exc),
+            )
+            raise
+
+    async def delete_many_by_owner_and_domain(
+        self, owner_id: ObjectId, domain: str
+    ) -> int:
+        """Bulk-delete all URLs owned by *owner_id* under *domain*.
+
+        Both filters required defensively — a missing or empty arg here would
+        silently delete more than intended.
+        """
+        if not owner_id or not domain:
+            raise ValueError("owner_id and domain are both required for bulk delete")
+        try:
+            result = await self._col.delete_many(
+                {"owner_id": owner_id, "domain": domain}
+            )
+            return int(result.deleted_count or 0)
+        except PyMongoError as exc:
+            log.error(
+                "repo_delete_many_failed",
+                collection=self._collection_name,
+                error=str(exc),
+            )
+            raise
+
     async def check_alias_exists(self, alias: str, domain: str) -> bool:
         """Return True if the alias is taken under the given domain namespace."""
         doc = await self._find_one_raw({"alias": alias, "domain": domain}, {"_id": 1})

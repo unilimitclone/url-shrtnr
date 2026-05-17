@@ -282,7 +282,7 @@ def test_click_emoji_schema_sets_is_emoji_true():
 
 
 def test_redirect_sets_noindex_nofollow_header():
-    """Redirect response should include X-Robots-Tag: noindex, nofollow."""
+    """Redirect response should include X-Robots-Tag: noindex, nofollow, noarchive."""
     url_data = _make_url_cache(long_url="https://example.com")
     url_svc = _mock_url_service(url_data)
     click_svc = _mock_click_service()
@@ -295,4 +295,4 @@ def test_redirect_sets_noindex_nofollow_header():
     )
     with TestClient(app, follow_redirects=False, raise_server_exceptions=False) as c:
         resp = c.get("/abc1234")
-    assert resp.headers.get("x-robots-tag") == "noindex, nofollow"
+    assert resp.headers.get("x-robots-tag") == "noindex, nofollow, noarchive"
