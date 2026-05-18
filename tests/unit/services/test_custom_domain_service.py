@@ -113,12 +113,13 @@ def _build_service(
         }
 
     edge = edge or AsyncMock()
-    # Default to "Caddy acked" so existing tests don't have to opt in.
+    # Default to "edge acked the eviction" so existing tests don't have to opt in.
     edge.announce_revoked = AsyncMock(return_value=True)
 
     if registrar is None:
         registrar = AsyncMock()
-        # Default to NoOp-style result so existing tests pass through unchanged.
+        # Default to backend_id=None so tests not exercising the metadata
+        # writeback path pass through unchanged.
         registrar.register = AsyncMock(return_value=RegistrationResult(backend_id=None))
 
     tenant_resolver = tenant_resolver or AsyncMock()
@@ -174,12 +175,6 @@ class TestEnabledGate:
         items, total = await svc.list_by_owner(_user(), ListCustomDomainsQuery())
         assert items == []
         assert total == 0
-
-    @pytest.mark.asyncio
-    async def test_is_allowed_for_caddy_returns_false_in_pr2(self):
-        # Default-deny on the cert ask endpoint; PR3 wires up the real check.
-        svc, _, _, _, _ = _build_service(enabled=True)
-        assert await svc.is_allowed_for_caddy("anything.example.com") is False
 
 
 class TestCreate:
@@ -816,10 +811,12 @@ class TestRegistrarIntegration:
         assert kwargs["dns_instructions"] == instructions
 
     @pytest.mark.asyncio
-    async def test_create_skips_metadata_update_when_noop_registrar(self):
-        # NoOpRegistrar (self-host path) returns backend_id=None and no
-        # metadata. Service must not bother calling update_edge_metadata.
-        svc, repo, _, _, _ = _build_service()  # default registrar = NoOp
+    async def test_create_skips_metadata_update_when_registrar_returns_no_backend_id(
+        self,
+    ):
+        # When a registrar returns backend_id=None (no backend metadata to
+        # persist), the service must not bother calling update_edge_metadata.
+        svc, repo, _, _, _ = _build_service()  # default registrar returns None
         repo.find_by_id = AsyncMock(return_value=_doc(status=DomainStatus.PENDING))
         req = CreateCustomDomainRequest(fqdn="links.acme.com")
 

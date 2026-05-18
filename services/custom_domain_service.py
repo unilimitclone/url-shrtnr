@@ -455,11 +455,6 @@ class CustomDomainService:
             )
         return doc
 
-    async def is_allowed_for_caddy(self, fqdn: str) -> bool:
-        """Caddy on-demand TLS ask endpoint. Default-deny; wired when the
-        LE path ever ships routes for it."""
-        return False
-
     # ── PR5 sync worker helpers ──────────────────────────────────────
 
     async def reverify_active(
