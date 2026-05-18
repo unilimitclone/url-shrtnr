@@ -17,6 +17,7 @@ from errors import (
     DomainBlocklistedError,
     DomainNotVerifiedError,
     DomainQuotaExceededError,
+    FeatureDisabledError,
     ForbiddenError,
     InvalidDomainTransitionError,
     NotFoundError,
@@ -534,7 +535,10 @@ class CustomDomainService:
 
     def _require_enabled(self) -> None:
         if not self._settings.enabled:
-            raise DomainQuotaExceededError("Custom domains aren't available yet.")
+            raise FeatureDisabledError(
+                feature="custom_domains",
+                message="Custom domains aren't available yet.",
+            )
 
     async def _invalidate_cache(self, fqdn: str) -> None:
         """Best-effort tenant-cache eviction. Staleness is degraded UX, not data loss."""

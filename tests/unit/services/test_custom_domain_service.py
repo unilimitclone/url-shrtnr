@@ -15,6 +15,7 @@ from errors import (
     DomainBlocklistedError,
     DomainNotVerifiedError,
     DomainQuotaExceededError,
+    FeatureDisabledError,
     ForbiddenError,
     InvalidDomainTransitionError,
     NotFoundError,
@@ -150,19 +151,19 @@ class TestEnabledGate:
     async def test_create_refused_when_disabled(self):
         svc, _, _, _, _ = _build_service(enabled=False)
         req = CreateCustomDomainRequest(fqdn="links.acme.com")
-        with pytest.raises(DomainQuotaExceededError):
+        with pytest.raises(FeatureDisabledError):
             await svc.create(req, _user())
 
     @pytest.mark.asyncio
     async def test_verify_refused_when_disabled(self):
         svc, _, _, _, _ = _build_service(enabled=False)
-        with pytest.raises(DomainQuotaExceededError):
+        with pytest.raises(FeatureDisabledError):
             await svc.verify(DOMAIN_OID, _user())
 
     @pytest.mark.asyncio
     async def test_delete_refused_when_disabled(self):
         svc, _, _, _, _ = _build_service(enabled=False)
-        with pytest.raises(DomainQuotaExceededError):
+        with pytest.raises(FeatureDisabledError):
             await svc.delete(DOMAIN_OID, _user())
 
     @pytest.mark.asyncio
@@ -630,7 +631,7 @@ class TestRemoveRevoked:
     @pytest.mark.asyncio
     async def test_respects_feature_flag(self):
         svc, repo, _, _, _ = _build_service(enabled=False)
-        with pytest.raises(DomainQuotaExceededError):
+        with pytest.raises(FeatureDisabledError):
             await svc.remove_revoked(DOMAIN_OID, _user())
         repo.find_by_id.assert_not_called()
         repo.delete_by_id.assert_not_called()
@@ -1008,7 +1009,7 @@ class TestUpdateRouting:
     @pytest.mark.asyncio
     async def test_refused_when_disabled(self):
         svc, _, _, _, _ = _build_service(enabled=False)
-        with pytest.raises(DomainQuotaExceededError):
+        with pytest.raises(FeatureDisabledError):
             await svc.update_routing(DOMAIN_OID, _user(), UpdateCustomDomainRequest())
 
     @pytest.mark.asyncio
