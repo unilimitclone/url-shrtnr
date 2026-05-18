@@ -24,6 +24,7 @@ from errors import (
 from infrastructure.logging import get_logger, should_sample
 from infrastructure.templates import templates
 from middleware.rate_limiter import Limits, limiter
+from schemas.enums.domain_status import DomainStatus
 from schemas.models.url import SchemaVersion
 from shared.ip_utils import get_client_ip
 from shared.url_utils import extract_hostname
@@ -32,9 +33,57 @@ log = get_logger(__name__)
 
 router = APIRouter()
 
+# Status-specific copy for the tenant fallback page. Maps the same status
+# codes _error_page already emits today; keys must stay in sync.
+_TENANT_ERROR_COPY = {
+    "404": ("Not found", "This URL doesn't exist on {fqdn}."),
+    "410": ("Expired", "This URL has expired and no longer redirects."),
+    "451": ("Blocked", "This URL has been blocked for abuse."),
+    "403": ("Access denied", "You don't have permission to view this URL."),
+}
+_NOINDEX_HEADER = "noindex, nofollow, noarchive"
+
 
 def _error_page(request: Request, code: str, message: str, status: int) -> Response:
-    """Render error.html with consistent structure."""
+    """Render the error page for a resolve/redirect failure.
+
+    Custom-tenant requests get a self-contained minimal page (no external
+    asset references — `spoo.ink/static/...` would 404 on a custom domain,
+    leaving the marketing template unstyled). System-default requests keep
+    the original branded ``error.html``.
+
+    On 404, an ACTIVE tenant's ``not_found_redirect`` overrides the page
+    entirely so owners control the UX for unknown paths consistently with
+    the middleware-level disallowed-path branch.
+    """
+    tenant = getattr(request.state, "tenant", None)
+    is_custom = tenant is not None and not tenant.is_system_default
+
+    if is_custom and status == 404:
+        active = tenant.status == DomainStatus.ACTIVE
+        if active and tenant.not_found_redirect and request.method in {"GET", "HEAD"}:
+            return RedirectResponse(
+                tenant.not_found_redirect,
+                status_code=302,
+                headers={"X-Robots-Tag": _NOINDEX_HEADER},
+            )
+
+    if is_custom:
+        title, body_tpl = _TENANT_ERROR_COPY.get(
+            code, ("Error", "Something went wrong.")
+        )
+        return templates.TemplateResponse(
+            request,
+            "tenant_error.html",
+            {
+                "error_code": code,
+                "error_title": title,
+                "error_message": body_tpl.format(fqdn=tenant.fqdn),
+            },
+            status_code=status,
+            headers={"X-Robots-Tag": _NOINDEX_HEADER},
+        )
+
     return templates.TemplateResponse(
         request,
         "error.html",

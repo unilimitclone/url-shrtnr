@@ -17,6 +17,7 @@ from errors import (
     DomainBlocklistedError,
     DomainNotVerifiedError,
     DomainQuotaExceededError,
+    FeatureDisabledError,
     ForbiddenError,
     InvalidDomainTransitionError,
     NotFoundError,
@@ -27,6 +28,7 @@ from repositories.custom_domain_repository import CustomDomainRepository
 from schemas.dto.requests.custom_domain import (
     CreateCustomDomainRequest,
     ListCustomDomainsQuery,
+    UpdateCustomDomainRequest,
 )
 from schemas.enums.domain_status import DomainStatus, VerificationMethod
 from schemas.models.custom_domain import LEGAL_TRANSITIONS, CustomDomainDoc
@@ -270,6 +272,70 @@ class CustomDomainService:
         total = await self._repo.count_by_owner(user.user_id)
         return items, total
 
+    async def update_routing(
+        self,
+        domain_id: ObjectId,
+        user: CurrentUser,
+        request: UpdateCustomDomainRequest,
+    ) -> CustomDomainDoc:
+        """Update the per-domain routing config (root/404 redirects + robots.txt).
+
+        Partial update: only fields the caller explicitly set are touched.
+        Empty body is a no-op. Refuses non-ACTIVE domains — surprising UX
+        otherwise (you set a redirect on a PENDING domain, then forget, then
+        verify weeks later, and suddenly traffic redirects to a destination
+        you no longer remember).
+        """
+        self._require_enabled()
+
+        doc = await self._load_owned(domain_id, user)
+        if doc.status != DomainStatus.ACTIVE:
+            raise DomainNotVerifiedError(
+                f"{doc.fqdn} isn't active yet. Verify the domain before "
+                f"configuring routing."
+            )
+
+        ops: dict = {}
+        # model_fields_set distinguishes "field omitted" (don't touch) from
+        # "field set to None" (clear stored value). HttpUrl needs str()
+        # coercion before persistence.
+        if "root_redirect" in request.model_fields_set:
+            ops["root_redirect"] = (
+                str(request.root_redirect) if request.root_redirect else None
+            )
+        if "not_found_redirect" in request.model_fields_set:
+            ops["not_found_redirect"] = (
+                str(request.not_found_redirect) if request.not_found_redirect else None
+            )
+        if "custom_robots_txt" in request.model_fields_set:
+            ops["custom_robots_txt"] = request.custom_robots_txt or None
+
+        if not ops:
+            return doc
+
+        updated = await self._repo.update_routing(doc.id, ops)
+        if not updated:
+            # Doc was deleted or its _id changed between our load and the
+            # update — surface this rather than logging a successful audit
+            # event for a write that didn't happen.
+            raise NotFoundError(
+                f"{doc.fqdn} was modified or deleted concurrently; retry."
+            )
+        # Tenant cache holds the routing fields; without invalidate, the next
+        # ``tenant_cache_ttl`` seconds keep serving the old config.
+        await self._invalidate_cache(doc.fqdn)
+
+        log.info(
+            "audit.domain.routing_updated",
+            fqdn=doc.fqdn,
+            domain_id=str(doc.id),
+            owner_id=str(user.user_id),
+            fields=list(ops.keys()),
+        )
+
+        refreshed = await self._repo.find_by_id(doc.id)
+        return refreshed or doc
+
     async def delete(
         self,
         domain_id: ObjectId,
@@ -390,11 +456,6 @@ class CustomDomainService:
             )
         return doc
 
-    async def is_allowed_for_caddy(self, fqdn: str) -> bool:
-        """Caddy on-demand TLS ask endpoint. Default-deny; wired when the
-        LE path ever ships routes for it."""
-        return False
-
     # ── PR5 sync worker helpers ──────────────────────────────────────
 
     async def reverify_active(
@@ -474,7 +535,10 @@ class CustomDomainService:
 
     def _require_enabled(self) -> None:
         if not self._settings.enabled:
-            raise DomainQuotaExceededError("Custom domains aren't available yet.")
+            raise FeatureDisabledError(
+                feature="custom_domains",
+                message="Custom domains aren't available yet.",
+            )
 
     async def _invalidate_cache(self, fqdn: str) -> None:
         """Best-effort tenant-cache eviction. Staleness is degraded UX, not data loss."""

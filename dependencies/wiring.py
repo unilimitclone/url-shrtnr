@@ -16,6 +16,7 @@ from infrastructure.cache.feature_flag_cache import FeatureFlagCache
 from infrastructure.cache.url_cache import UrlCache
 from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.cloudflare_client import CloudflareClient
+from infrastructure.logging import get_logger
 from infrastructure.webhook.discord import DiscordWebhookProvider
 from repositories.api_key_repository import ApiKeyRepository
 from repositories.app_grant_repository import AppGrantRepository
@@ -40,22 +41,17 @@ from services.cf_saas_backend import CfSaasBackend
 from services.click import ClickService, LegacyClickHandler, V2ClickHandler
 from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
-from services.edge_provisioner import CaddyAskProvisioner
 from services.export.formatters import default_formatters
 from services.export.service import ExportService
 from services.feature_flag_service import FeatureFlagService
 from services.oauth_service import OAuthService
 from services.profile_picture_service import ProfilePictureService
-from services.registrar import HostnameRegistrar, NoOpRegistrar
 from services.stats_service import StatsService
 from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
 from services.url_service import UrlService
-from services.verifiers import (
-    ARecordVerifier,
-    CnameVerifier,
-    TxtChallengeVerifier,
-)
+
+log = get_logger(__name__)
 
 
 def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
@@ -173,45 +169,54 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # ── Custom-domains feature ───────────────────────────────────────
     # Wired unconditionally so the data plumbing is in place even when the
     # master flag is off. Mutations short-circuit inside the service via
-    # ``settings.custom_domains.enabled``; the route layer (PR4) further
-    # gates per-user access via the FeatureFlagService.
+    # ``settings.custom_domains.enabled``; the route layer further gates
+    # per-user access via the FeatureFlagService.
     #
-    # Backend selection: ``cf_zone_id`` set ⇒ CF SaaS path (one CfSaasBackend
-    # registered against all three protocol slots). Unset ⇒ self-host LE
-    # on-demand path (DNS verifiers + CaddyAskProvisioner + NoOpRegistrar).
+    # Backend: one CfSaasBackend instance fills all three protocol slots
+    # (verifier, registrar, edge provisioner). If ``cf_zone_id`` is unset,
+    # the service still constructs but its mutating paths no-op — operators
+    # who haven't configured CF get a feature that registers as "off" via
+    # ``custom_domains.enabled`` instead of crashing at boot.
     custom_domain_repo = CustomDomainRepository(db["custom_domains"])
     blocked_domain_repo = BlockedDomainRepository(db["blocked_domains"])
     cd_settings = settings.custom_domains
 
-    if cd_settings.cf_zone_id:
-        cf_client = CloudflareClient(
-            http_client=http_client,
-            api_token=cd_settings.cf_api_token,
-            zone_id=cd_settings.cf_zone_id,
-            max_retries=cd_settings.cf_api_max_retries,
-            initial_backoff_seconds=cd_settings.cf_api_initial_backoff_seconds,
+    # Surface the "enabled but unconfigured" misconfig in startup logs so
+    # operators don't have to wait for a request-time 500 to find out.
+    # We still boot — the feature just no-ops until creds land.
+    if cd_settings.enabled and not (
+        cd_settings.cf_zone_id and cd_settings.cf_api_token
+    ):
+        log.warning(
+            "custom_domains_enabled_but_unconfigured",
+            detail=(
+                "custom_domains.enabled=True but cf_zone_id/cf_api_token "
+                "unset — feature will fail at request time until configured."
+            ),
         )
-        cf_backend = CfSaasBackend(
-            cf_client=cf_client,
-            custom_domain_repo=custom_domain_repo,
-            cname_target=cd_settings.cf_cname_target,
-            dcv_delegation_target=cd_settings.cf_dcv_delegation_target,
-        )
-        # Same instance fills three protocol slots — wiring contract.
-        verifiers = {
-            VerificationMethod.CF_DELEGATED_DCV: cf_backend,
-            VerificationMethod.CF_HTTP_DCV: cf_backend,
-        }
-        edge_provisioner = cf_backend
-        registrar: HostnameRegistrar = cf_backend
-    else:
-        verifiers = {
-            VerificationMethod.CNAME: CnameVerifier(cd_settings.cname_target),
-            VerificationMethod.A_RECORD: ARecordVerifier(cd_settings.origin_ipv4),
-            VerificationMethod.TXT_CHALLENGE: TxtChallengeVerifier(),
-        }
-        edge_provisioner = CaddyAskProvisioner(http_client, cd_settings.caddy_admin_url)
-        registrar = NoOpRegistrar()
+
+    # CloudflareClient takes Optional[str] and only raises
+    # CloudflareNotConfiguredError on first request, never at construction —
+    # so the operator-hasn't-set-CF-up case is fine to wire here.
+    cf_client = CloudflareClient(
+        http_client=http_client,
+        api_token=cd_settings.cf_api_token,
+        zone_id=cd_settings.cf_zone_id,
+        max_retries=cd_settings.cf_api_max_retries,
+        initial_backoff_seconds=cd_settings.cf_api_initial_backoff_seconds,
+    )
+    cf_backend = CfSaasBackend(
+        cf_client=cf_client,
+        custom_domain_repo=custom_domain_repo,
+        cname_target=cd_settings.cf_cname_target,
+        dcv_delegation_target=cd_settings.cf_dcv_delegation_target,
+    )
+    verifiers = {
+        VerificationMethod.CF_DELEGATED_DCV: cf_backend,
+        VerificationMethod.CF_HTTP_DCV: cf_backend,
+    }
+    edge_provisioner = cf_backend
+    registrar = cf_backend
 
     # Build the resolver before the service so the service can take it as a dep
     tenant_resolver = CachedMongoTenantResolver(

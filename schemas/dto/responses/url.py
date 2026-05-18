@@ -107,6 +107,11 @@ class UpdateUrlResponse(ResponseBase):
     private_stats: bool | None = Field(
         default=None, description="Whether statistics are private."
     )
+    domain: str | None = Field(
+        default=None,
+        description="Domain fqdn the URL is served on. Null for the system default.",
+        examples=["links.acme.com"],
+    )
     updated_at: int = Field(
         description="Last update time as Unix timestamp.", examples=[1704067200]
     )
@@ -124,6 +129,7 @@ class UpdateUrlResponse(ResponseBase):
             expire_after=to_unix_timestamp(doc.expire_after),
             block_bots=doc.block_bots,
             private_stats=doc.private_stats,
+            domain=doc.domain,
             updated_at=to_unix_timestamp(doc.updated_at, default=0),
         )
 

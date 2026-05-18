@@ -182,25 +182,40 @@ class CloudflareClient:
 
             # Retry on 5xx and 429. 429 honours Retry-After when present
             # so we don't hammer past CF's window (1200 req/5min/zone).
+            #
+            # Raw bodies + CF's `errors`/`messages` go to logs only;
+            # `CloudflareAPIError.to_dict()` strips `details` entirely from
+            # the API response so zone IDs / internal metadata can't leak.
+            # The status code stays on `details` because internal callers
+            # use it for control flow (e.g. 404 = idempotent delete).
             if response.status_code >= 500 or response.status_code == 429:
+                log.warning(
+                    "cf_api_retryable_error",
+                    method=method,
+                    path=path,
+                    cf_status_code=response.status_code,
+                    cf_body_preview=response.text[:500],
+                    attempt=attempt,
+                )
                 last_exc = CloudflareAPIError(
                     f"CF API {method} {path} returned {response.status_code}",
-                    details={
-                        "status_code": response.status_code,
-                        "body": response.text[:500],
-                    },
+                    details={"status_code": response.status_code},
                 )
                 retry_after = _parse_retry_after(response)
                 await self._sleep_backoff(attempt, override_seconds=retry_after)
                 continue
 
             if not response.is_success:
+                log.error(
+                    "cf_api_error",
+                    method=method,
+                    path=path,
+                    cf_status_code=response.status_code,
+                    cf_body_preview=response.text[:500],
+                )
                 raise CloudflareAPIError(
                     f"CF API {method} {path} returned {response.status_code}",
-                    details={
-                        "status_code": response.status_code,
-                        "body": response.text[:500],
-                    },
+                    details={"status_code": response.status_code},
                 )
 
             # CF v4 can return 2xx with `success: false` for validation
@@ -209,19 +224,30 @@ class CloudflareClient:
             try:
                 payload = response.json()
             except ValueError as exc:
+                log.error(
+                    "cf_api_malformed_json",
+                    method=method,
+                    path=path,
+                    cf_status_code=response.status_code,
+                    cf_body_preview=response.text[:500],
+                )
                 raise CloudflareAPIError(
                     f"CF API {method} {path} returned malformed JSON",
                     details={"status_code": response.status_code},
                 ) from exc
 
             if isinstance(payload, dict) and payload.get("success") is False:
+                log.error(
+                    "cf_api_success_false",
+                    method=method,
+                    path=path,
+                    cf_status_code=response.status_code,
+                    cf_errors=payload.get("errors"),
+                    cf_messages=payload.get("messages"),
+                )
                 raise CloudflareAPIError(
                     f"CF API {method} {path} reported success=false",
-                    details={
-                        "status_code": response.status_code,
-                        "errors": payload.get("errors"),
-                        "messages": payload.get("messages"),
-                    },
+                    details={"status_code": response.status_code},
                 )
 
             return payload
@@ -229,9 +255,15 @@ class CloudflareClient:
         # All retries failed.
         if isinstance(last_exc, CloudflareAPIError):
             raise last_exc
+        log.error(
+            "cf_api_retries_exhausted",
+            method=method,
+            path=path,
+            attempts=self._max_retries,
+            underlying_error=str(last_exc) if last_exc else None,
+        )
         raise CloudflareAPIError(
             f"CF API {method} {path} failed after {self._max_retries} attempts",
-            details={"underlying_error": str(last_exc)},
         ) from last_exc
 
     async def _sleep_backoff(

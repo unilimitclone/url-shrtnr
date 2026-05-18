@@ -1,10 +1,15 @@
 {% extends "dashboard/base.html" %}
+{% from "partials/domain_picker.html" import domain_picker %}
 
 {% block title %}Links | Dashboard | spoo.me{% endblock %}
 
 {% block head_css %}
-<link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/links.css') }}?v=20">
+<link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/links.css') }}?v=21">
 <link rel="stylesheet" href="{{ url_for('static', path='css/dashboard/url-modal.css') }}?v=7">
+{% if show_custom_domains %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/components/domain-picker.css') }}?v=5">
+<script defer src="{{ url_for('static', path='js/components/domain-picker.js') }}?v=2"></script>
+{% endif %}
 <script defer src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/relativeTime.js"></script>
@@ -57,6 +62,20 @@
                                 <i class="ti ti-chevron-down select-icon"></i>
                             </div>
                         </div>
+                        {% if show_custom_domains %}
+                        <div class="field">
+                            <label for="f-domain">Domain</label>
+                            {{ domain_picker(
+                                id="f-domain",
+                                name="domain",
+                                domains=user_domains,
+                                system_default=system_default_domain or host_url.split("//")[-1].rstrip("/"),
+                                mode="filter",
+                                show_add_cta=False,
+                                label_for="f-domain"
+                            ) }}
+                        </div>
+                        {% endif %}
                         <div class="field">
                             <label>Password</label>
                             <div class="seg seg--3" data-target="f-password">
@@ -266,7 +285,19 @@
                                 <div class="field">
                                     <label for="create-alias">Custom Alias (optional)</label>
                                     <div class="input-group">
-                                        <span class="input-prefix">{{ host_url }}</span>
+                                        {% if show_custom_domains %}
+                                        {{ domain_picker(
+                                            id="create-domain",
+                                            name="domain",
+                                            domains=user_domains,
+                                            system_default=system_default_domain or host_url.split("//")[-1].rstrip("/"),
+                                            mode="select",
+                                            display="prefix",
+                                            label_for="create-alias"
+                                        ) }}
+                                        {% else %}
+                                        <span class="input-prefix" id="create-alias-prefix">{{ host_url }}</span>
+                                        {% endif %}
                                         <input type="text" id="create-alias" name="alias" placeholder="my-link"
                                             autocomplete="off">
                                         <span class="alias-status" id="create-alias-status" aria-hidden="true"></span>
@@ -275,7 +306,7 @@
                                             <i class="ti ti-arrows-shuffle"></i>
                                         </button>
                                     </div>
-                                    <small class="field-hint">Leave empty for auto-generated alias</small>
+                                    <small class="field-hint">{% if show_custom_domains %}Click the prefix to pick a domain. {% endif %}Leave the alias empty for an auto-generated one.</small>
                                 </div>
                             </div>
                         </div>
@@ -456,7 +487,19 @@
                                 <div class="field">
                                     <label for="edit-alias">Short URL Alias</label>
                                     <div class="input-group">
-                                        <span class="input-prefix">{{ host_url }}</span>
+                                        {% if show_custom_domains %}
+                                        {{ domain_picker(
+                                            id="edit-domain",
+                                            name="domain",
+                                            domains=user_domains,
+                                            system_default=system_default_domain or host_url.split("//")[-1].rstrip("/"),
+                                            mode="select",
+                                            display="prefix",
+                                            label_for="edit-alias"
+                                        ) }}
+                                        {% else %}
+                                        <span class="input-prefix" id="edit-alias-prefix">{{ host_url }}</span>
+                                        {% endif %}
                                         <input type="text" id="edit-alias" name="alias" placeholder="custom-alias"
                                             autocomplete="off">
                                         <span class="alias-status" id="edit-alias-status" aria-hidden="true"></span>
@@ -465,7 +508,7 @@
                                             <i class="ti ti-arrows-shuffle"></i>
                                         </button>
                                     </div>
-                                    <small class="field-hint">Choose a custom alias for your short URL</small>
+                                    <small class="field-hint">{% if show_custom_domains %}Click the prefix to move the URL to another domain.{% else %}Choose a custom alias for your short URL.{% endif %}</small>
                                 </div>
 
                                 <div class="field">
@@ -621,9 +664,13 @@
 </div>
 
 <script>
-    // Pass host URL to the dashboard script
+    // Pass host URL to the dashboard script. systemDefaultDomain is the
+    // canonical fqdn the backend writes to `urls.domain` for default-host
+    // links — diverges from hostUrl's hostname in dev (localhost:8000 vs
+    // spoo.local) so the picker can't derive it from hostUrl alone.
     window.dashboardConfig = {
-        hostUrl: "{{ host_url }}"
+        hostUrl: "{{ host_url }}",
+        systemDefaultDomain: "{{ system_default_domain or '' }}"
     };
 </script>
 {% endblock %}
@@ -634,7 +681,7 @@
 <script src="{{ url_for('static', path='js/sheet-handle.js') }}?v=1"></script>
 <script src="{{ url_for('static', path='js/modal-tabs.js') }}?v=2"></script>
 <script src="{{ url_for('static', path='js/dashboard/smart-datetime.js') }}?v=1"></script>
-<script src="{{ url_for('static', path='js/alias-checker.js') }}?v=1" defer></script>
-<script src="{{ url_for('static', path='js/url-manager.js') }}?v=7" defer></script>
-<script src="{{ url_for('static', path='js/dashboard/links.js') }}?v=14" defer></script>
+<script src="{{ url_for('static', path='js/alias-checker.js') }}?v=3" defer></script>
+<script src="{{ url_for('static', path='js/url-manager.js') }}?v=12" defer></script>
+<script src="{{ url_for('static', path='js/dashboard/links.js') }}?v=19" defer></script>
 {% endblock %}

@@ -11,6 +11,23 @@ function normalizeUrl(raw) {
     return 'https://' + trimmed;
 }
 
+// System-default fqdn — used by populateForm() when a URL doc lacks an
+// explicit `domain` (legacy v1 rows or pre-PR1 v2 rows). Prefer the
+// canonical setting; fall back to hostUrl for older templates.
+function _editDefaultHost() {
+    const cfg = window.dashboardConfig || {};
+    if (cfg.systemDefaultDomain) return cfg.systemDefaultDomain;
+    const raw = cfg.hostUrl
+        || document.querySelector('[data-host]')?.getAttribute('data-host')
+        || '';
+    try {
+        const h = new URL(raw).host;
+        if (h) return h;
+    } catch (_) { /* fall through */ }
+    const stripped = raw.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    return stripped || window.location.host;
+}
+
 class UrlManager {
     constructor() {
         this.currentUrlData = null;
@@ -88,12 +105,26 @@ class UrlManager {
         });
 
         if (window.AliasChecker) {
+            // Scope the check to the picker's current value so renaming an
+            // alias on a custom domain doesn't get checked against the
+            // system default.
+            const editDomainInput = document.getElementById('edit-domain');
             this.aliasCheck = window.AliasChecker.attach({
                 inputId: 'edit-alias',
                 diceBtn: document.getElementById('edit-alias-dice'),
                 indicator: document.getElementById('edit-alias-status'),
                 getCurrentAlias: () => this.currentUrlData?.alias || '',
+                getDomain: () => {
+                    if (!editDomainInput) return null;
+                    const v = editDomainInput.value;
+                    return v && v !== _editDefaultHost() ? v : null;
+                },
             });
+            if (editDomainInput) {
+                editDomainInput.addEventListener('change', () => {
+                    this.aliasCheck?.recheck();
+                });
+            }
         }
 
         // Attach to row action buttons
@@ -136,6 +167,20 @@ class UrlManager {
         // Basic tab
         if (this.aliasInput) this.aliasInput.value = urlData.alias || '';
         if (this.longUrlInput) this.longUrlInput.value = urlData.long_url || '';
+
+        // Domain — when the custom_domains flag is on for this user, the
+        // alias prefix is a `domain_picker` (prefix display). Seed its value
+        // to the URL's current domain so the dropdown reflects reality and a
+        // subsequent change registers as a move. When the flag is off we
+        // still keep the static prefix span synced for legacy v1/v2 rows.
+        const picker = document.querySelector('#url-management-modal [data-domain-picker]');
+        const prefixEl = document.getElementById('edit-alias-prefix');
+        const fqdn = urlData.domain || _editDefaultHost();
+        if (picker && window.DomainPicker) {
+            window.DomainPicker.setValue(picker, fqdn, { silent: true });
+        } else if (prefixEl) {
+            prefixEl.textContent = `https://${fqdn}/`;
+        }
 
         // Security tab - Password handling
         if (this.passwordInput) this.passwordInput.value = ''; // Never populate actual password
@@ -268,6 +313,20 @@ class UrlManager {
         if (currentLongUrl && currentLongUrl !== this.currentUrlData.long_url) {
             updateData.long_url = currentLongUrl;
             hasChanges = true;
+        }
+
+        // Check domain changes — when the picker is on the page (flag on)
+        // and the user has picked a different fqdn, include it in the PATCH.
+        // Move back to system default is signalled by passing null so the
+        // backend's `_norm_domain` resolves it to the default.
+        const domainInput = document.getElementById('edit-domain');
+        if (domainInput) {
+            const newFqdn = domainInput.value;
+            const oldFqdn = this.currentUrlData.domain || _editDefaultHost();
+            if (newFqdn && newFqdn !== oldFqdn) {
+                updateData.domain = newFqdn === _editDefaultHost() ? null : newFqdn;
+                hasChanges = true;
+            }
         }
 
         // Check password changes
@@ -632,9 +691,24 @@ class UrlManager {
 
                         const shortUrlElement = row.querySelector('.link-short');
                         if (shortUrlElement && updatedUrlData.alias) {
-                            const displayHost = this.hostUrl.replace(/\/+$/, '') + '/';
-                            shortUrlElement.textContent = displayHost.replace(/^https?:\/\//i, '') + updatedUrlData.alias;
-                            shortUrlElement.href = '/' + updatedUrlData.alias;
+                            // After a cross-tenant move, the row must reflect
+                            // the URL's new host — not the dashboard's host.
+                            // Match the list-renderer's logic + the same
+                            // `new URL` sanitization so a malicious `domain`
+                            // value can't poison the anchor's href.
+                            const defaultHost = this.hostUrl
+                                .replace(/^https?:\/\//i, '')
+                                .replace(/\/+$/, '');
+                            const rowHost = updatedUrlData.domain || defaultHost;
+                            shortUrlElement.textContent =
+                                `${rowHost}/${updatedUrlData.alias}`;
+                            try {
+                                shortUrlElement.href = new URL(
+                                    `https://${rowHost}/${updatedUrlData.alias}`,
+                                ).href;
+                            } catch (_) {
+                                shortUrlElement.href = '#';
+                            }
                         }
 
                         // Update status badges

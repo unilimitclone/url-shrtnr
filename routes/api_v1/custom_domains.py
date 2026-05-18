@@ -2,14 +2,16 @@
 POST   /api/v1/custom-domains              — register a new custom domain
 POST   /api/v1/custom-domains/{id}/verify  — trigger verification
 GET    /api/v1/custom-domains              — list owned domains (paginated)
+GET    /api/v1/custom-domains/{id}         — fetch a single domain
+PATCH  /api/v1/custom-domains/{id}         — update per-domain routing config
 DELETE /api/v1/custom-domains/{id}         — revoke (?cascade=true also deletes URLs)
 
 CREATE is gated on a verified email + the ``custom_domains`` feature flag.
 Read/verify/delete bypass the flag so existing owners can manage state during
 rollback.
 
-API key scopes: ``domains:manage`` (create/verify/delete) and ``domains:read``
-(list). JWT bearer works for any operation without scopes.
+API key scopes: ``domains:manage`` (create/verify/delete/update) and
+``domains:read`` (list/get). JWT bearer works for any operation without scopes.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from middleware.rate_limiter import Limits, limiter
 from schemas.dto.requests.custom_domain import (
     CreateCustomDomainRequest,
     ListCustomDomainsQuery,
+    UpdateCustomDomainRequest,
 )
 from schemas.dto.responses.custom_domain import (
     CustomDomainDeleteResponse,
@@ -185,6 +188,47 @@ async def get_custom_domain(
     """
     oid = _parse_domain_id(domain_id)
     doc = await service.get_owned_by_id(oid, user)
+    return CustomDomainResponse.from_doc(doc)
+
+
+@router.patch(
+    "/custom-domains/{domain_id}",
+    responses=AUTH_RESPONSES,
+    operation_id="updateCustomDomain",
+    summary="Update Custom Domain Routing",
+)
+@limiter.limit(Limits.DOMAIN_WRITE)
+async def update_custom_domain(
+    request: Request,
+    domain_id: Annotated[str, Path(description="MongoDB ObjectId of the domain.")],
+    body: UpdateCustomDomainRequest,
+    service: CustomDomainSvc,
+    user: CurrentUser = Depends(require_scopes(DOMAIN_MANAGE_SCOPES)),  # noqa: B008
+) -> CustomDomainResponse:
+    """Update the per-domain routing config.
+
+    Partial update — send only the fields you want to change. Omit a field to
+    leave it untouched. Send explicit `null` to clear a stored value. The
+    config takes effect only when the domain is `ACTIVE`; non-ACTIVE domains
+    return 422.
+
+    **Configurable fields**:
+    - `root_redirect` — destination for `GET /` (302).
+    - `not_found_redirect` — fallback for any path that doesn't match an alias.
+    - `custom_robots_txt` — body served at `/robots.txt` (≤4096 chars).
+
+    **Authentication**: Required (JWT or API key with `domains:manage`).
+
+    **Rate Limits**: 30/min.
+
+    **Responses**:
+    - 200 — updated; full domain response returned
+    - 403 — caller does not own this domain
+    - 404 — domain not found (or invalid id)
+    - 422 — domain isn't ACTIVE, or body fails validation
+    """
+    oid = _parse_domain_id(domain_id)
+    doc = await service.update_routing(oid, user, body)
     return CustomDomainResponse.from_doc(doc)
 
 

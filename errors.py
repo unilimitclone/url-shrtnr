@@ -126,11 +126,44 @@ class InvalidDomainTransitionError(ValidationError):
     error_code = "invalid_domain_transition"
 
 
+class FeatureDisabledError(AppError):
+    """Feature flag is off / config missing; the feature isn't available.
+
+    Returns 404 to match the route-layer's existing "hide the feature
+    from non-allowlisted users" posture. 429 (the previous behavior via
+    DomainQuotaExceededError) misled clients into retrying — retry won't
+    help when a feature is simply off.
+    """
+
+    status_code = 404
+    error_code = "feature_disabled"
+
+    def __init__(self, feature: str, message: str | None = None) -> None:
+        self.feature = feature
+        super().__init__(message or f"The {feature} feature is not available.")
+
+
 class CloudflareAPIError(AppError):
-    """Cloudflare API call failed (4xx, 5xx, or network)."""
+    """Cloudflare API call failed (4xx, 5xx, or network).
+
+    Raw CF response bodies are intentionally stripped from the API
+    response by ``to_dict()`` — they can carry zone IDs, internal account
+    metadata, or token-scoped messages that have no business reaching
+    the API caller. The underlying ``details`` payload stays on the
+    exception instance for upstream logging.
+    """
 
     status_code = 502
     error_code = "cloudflare_api_error"
+
+    def to_dict(self) -> dict:
+        return {
+            "error": (
+                "Upstream certificate service is temporarily unavailable. "
+                "Please try again in a moment."
+            ),
+            "code": self.error_code,
+        }
 
 
 class CloudflareNotConfiguredError(AppError):

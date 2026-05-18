@@ -56,7 +56,7 @@
     function attach(options) {
         const input = document.getElementById(options.inputId);
         if (!input) return;
-        const { diceBtn, indicator, getCurrentAlias, onValidityChange } = options;
+        const { diceBtn, indicator, getCurrentAlias, getDomain, onValidityChange } = options;
 
         let debounceTimer = null;
         let inFlight = null;
@@ -101,11 +101,34 @@
             if (inFlight) inFlight.abort();
             const controller = new AbortController();
             inFlight = controller;
-            fetch(
-                `/api/v1/shorten/check-alias?alias=${encodeURIComponent(alias)}`,
-                { signal: controller.signal, credentials: 'same-origin' },
-            )
-                .then((r) => r.json())
+            // Scope the check to the picker's currently-selected domain so
+            // we don't tell the user "available" against the system default
+            // when they're about to shorten on a custom domain. Empty/falsy
+            // getDomain output → omit the param, server falls back to default.
+            let url = `/api/v1/shorten/check-alias?alias=${encodeURIComponent(alias)}`;
+            if (typeof getDomain === 'function') {
+                const dom = getDomain();
+                if (dom) url += `&domain=${encodeURIComponent(dom)}`;
+            }
+            fetch(url, { signal: controller.signal, credentials: 'same-origin' })
+                .then(async (r) => {
+                    // Parse the body either way — error responses still carry
+                    // structured info we may want to surface.
+                    const data = await r.json().catch(() => ({}));
+                    if (!r.ok) {
+                        // 401/403 happen when auth expired mid-typing or the
+                        // domain ownership check rejects (shouldn't normally
+                        // happen since the picker only lists owned domains,
+                        // but defend anyway). Other errors fall through to
+                        // a generic message.
+                        const err = new Error(
+                            data.error || data.detail || 'alias_check_failed',
+                        );
+                        err.status = r.status;
+                        throw err;
+                    }
+                    return data;
+                })
                 .then((data) => {
                     if (data.available) {
                         applyResult(alias, true);
@@ -115,7 +138,14 @@
                 })
                 .catch((err) => {
                     if (err.name === 'AbortError') return;
-                    setIndicator('idle');
+                    if (input.value.trim() !== alias) return;
+                    const message =
+                        err.status === 401 || err.status === 403
+                            ? 'Sign in to check availability on this domain'
+                            : 'Could not verify alias — try again';
+                    setIndicator('unavailable');
+                    window.setFieldError(options.inputId, message);
+                    emit(false);
                 });
         }
 
@@ -165,7 +195,14 @@
             setIndicator('idle');
         }
 
-        return { reset };
+        // Re-fire whatever an `input` event would fire — useful when the
+        // domain picker changes and the cached "available" state is now
+        // stale against a different (alias, domain) tuple.
+        function recheck() {
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        return { reset, recheck };
     }
 
     window.AliasChecker = { attach, randomAlias };

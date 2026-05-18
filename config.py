@@ -138,12 +138,8 @@ class CustomDomainSettings(BaseSettings):
     )
 
     # Master switch consulted by CustomDomainService. Until True, every
-    # public method short-circuits with DomainQuotaExceededError or similar.
+    # public method short-circuits with FeatureDisabledError.
     enabled: bool = False
-
-    # Verifier targets — change in env when the canonical edge IP shifts.
-    cname_target: str = "custom.spoo.me"
-    origin_ipv4: list[str] = ["178.156.161.168"]
 
     # Quotas. Flat for all users in v1 (no tier branching).
     # All counts must be >= 1 — a zero quota silently bricks the feature
@@ -162,15 +158,9 @@ class CustomDomainSettings(BaseSettings):
     max_verify_age_seconds: int = Field(default=7 * 24 * 3600, ge=1)
     suspend_after_consecutive_failures: int = Field(default=3, ge=1)
 
-    # Caddy admin API — used by CaddyAskProvisioner to evict revoked certs.
-    caddy_admin_url: str = "http://caddy:2019"
-    # IP that Caddy uses to call the /internal/caddy-ask endpoint. Only this
-    # source IP is allowed by the require_caddy_caller dependency.
-    caddy_caller_ip: str = "172.30.0.20"
-
-    # Cloudflare for SaaS Custom Hostnames. Setting cf_zone_id flips wiring
-    # from the LE on-demand path (self-host fallback) to the CF SaaS path.
-    # cf_api_token is required when cf_zone_id is set — validated at startup.
+    # Cloudflare for SaaS Custom Hostnames. Both required when `enabled=True` —
+    # the service raises FeatureDisabledError when missing so OSS forks without
+    # CF still boot cleanly.
     cf_zone_id: str | None = None
     cf_api_token: str | None = None
     # CNAME target customers point their hostnames at. Proxied (orange-cloud)

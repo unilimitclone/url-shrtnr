@@ -125,6 +125,9 @@ class CachedMongoTenantResolver(TenantResolver):
             else None,
             status=doc.status,
             is_system_default=bool(doc.is_system_default),
+            root_redirect=doc.root_redirect,
+            not_found_redirect=doc.not_found_redirect,
+            custom_robots_txt=doc.custom_robots_txt,
         )
         await self._cache_set(normalised, info)
         return info
@@ -199,6 +202,9 @@ class CachedMongoTenantResolver(TenantResolver):
                 else None,
                 status=DomainStatus(payload["status"]),
                 is_system_default=payload.get("is_system_default", False),
+                root_redirect=payload.get("root_redirect"),
+                not_found_redirect=payload.get("not_found_redirect"),
+                custom_robots_txt=payload.get("custom_robots_txt"),
             )
         except Exception as exc:
             # Corrupt cache entry — log and treat as a miss so the caller
@@ -222,6 +228,9 @@ class CachedMongoTenantResolver(TenantResolver):
                     "owner_id": str(info.owner_id) if info.owner_id else None,
                     "status": info.status.value,
                     "is_system_default": info.is_system_default,
+                    "root_redirect": info.root_redirect,
+                    "not_found_redirect": info.not_found_redirect,
+                    "custom_robots_txt": info.custom_robots_txt,
                 }
             )
             await self._redis.setex(self._key(host), self._positive_ttl, payload)

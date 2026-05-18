@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock
 from bson import ObjectId
 from fastapi.testclient import TestClient
 
-from dependencies import get_url_service, require_auth
+from dependencies import (
+    get_custom_domain_service,
+    get_url_service,
+    require_auth,
+)
 from errors import ForbiddenError, NotFoundError
 
 from .conftest import _build_test_app, _make_api_key_doc, _make_url_doc, _make_user
@@ -149,3 +153,100 @@ class TestManagement:
             resp = client.delete(f"/api/v1/urls/{ObjectId()}")
 
         assert resp.status_code == 403
+
+
+class TestUpdateUrlWithDomain:
+    """`domain` field on PATCH /urls/{id} triggers owner+ACTIVE check at the
+    route layer before delegating to the service (Part C cross-tenant move)."""
+
+    def test_update_with_custom_domain_triggers_owner_check(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.domain = "links.acme.com"
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+
+        url_svc = AsyncMock()
+        url_svc.update = AsyncMock(return_value=url_doc)
+
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock(return_value=None)
+
+        application = _build_test_app(
+            {
+                require_auth: lambda: user,
+                get_url_service: lambda: url_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}", json={"domain": "links.acme.com"}
+            )
+
+        assert resp.status_code == 200
+        # Pin both args — the contract isn't just "fired", it's "fired with
+        # the right user + the normalised fqdn".
+        assert custom_svc.assert_owned_and_active.await_count == 1
+        own_args = custom_svc.assert_owned_and_active.call_args.args
+        assert own_args[0].user_id == user.user_id
+        assert own_args[1] == "links.acme.com"
+        # Service got the move request.
+        update_req = url_svc.update.call_args[0][1]
+        assert update_req.domain == "links.acme.com"
+        # Response carries the new domain so the client can re-render.
+        assert resp.json()["domain"] == "links.acme.com"
+
+    def test_update_with_null_domain_skips_owner_check(self):
+        """Moving back to the system default doesn't need an ownership check
+        — anyone can use the default namespace."""
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+
+        url_svc = AsyncMock()
+        url_svc.update = AsyncMock(return_value=url_doc)
+
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock(return_value=None)
+
+        application = _build_test_app(
+            {
+                require_auth: lambda: user,
+                get_url_service: lambda: url_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(f"/api/v1/urls/{ObjectId()}", json={"domain": None})
+
+        assert resp.status_code == 200
+        assert custom_svc.assert_owned_and_active.await_count == 0
+
+    def test_update_with_unauthorized_domain_returns_403(self):
+        from errors import ForbiddenError
+
+        user = _make_user()
+        url_svc = AsyncMock()
+        url_svc.update = AsyncMock()  # should never fire
+
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock(
+            side_effect=ForbiddenError("You do not own this domain.")
+        )
+
+        application = _build_test_app(
+            {
+                require_auth: lambda: user,
+                get_url_service: lambda: url_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}", json={"domain": "someone-elses.com"}
+            )
+
+        assert resp.status_code == 403
+        # Crucially: the service must not have been called. The route guard
+        # must reject *before* the move attempt.
+        url_svc.update.assert_not_called()

@@ -107,17 +107,34 @@ async def shorten_v1(
 async def check_alias(
     request: Request,
     url_service: UrlSvc,
+    custom_domain_service: CustomDomainSvc,
+    settings: Settings,
     query: Annotated[AliasCheckQuery, Query()],
-    _user: CurrentUser | None = Depends(optional_scopes_verified(SHORTEN_SCOPES)),  # noqa: B008
+    user: CurrentUser | None = Depends(optional_scopes_verified(SHORTEN_SCOPES)),  # noqa: B008
 ) -> AliasCheckResponse:
     """Check whether a proposed alias would be accepted by POST /api/v1/shorten.
 
     Reason codes on a negative result (``length``/``format``/``taken``) let the
     UI render precise inline feedback without duplicating the validation rules.
 
+    Pass ``domain`` to scope the check to a custom-domain tenant — required
+    for the create modal's live availability indicator when the user has
+    picked a non-default domain. Authz mirrors the shorten endpoint: anon
+    callers can't probe custom domains; authed callers must own the target.
+
     **Authentication**: Optional — higher rate limits when authenticated.
+    Required if ``domain`` is supplied.
     """
-    result = await url_service.check_alias(query.alias)
+    if query.domain and query.domain != settings.system_default_domain:
+        if user is None:
+            raise AuthenticationError(
+                "Authentication required to check aliases on a custom domain"
+            )
+        await custom_domain_service.assert_owned_and_active(user, query.domain)
+        scope: str | None = query.domain
+    else:
+        scope = None
+    result = await url_service.check_alias(query.alias, domain=scope)
     return AliasCheckResponse(
         available=result == "available",
         reason=None if result == "available" else result,

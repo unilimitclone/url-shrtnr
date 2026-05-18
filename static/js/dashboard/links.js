@@ -52,12 +52,43 @@ window.confettiAnimationId = null;
 window.confettiActive = false;
 
 // Create Link Modal Functions
+// System-default fqdn (e.g. "spoo.me"). Prefer the explicit setting passed
+// from the server because it's the canonical value the backend writes to
+// `urls.domain`. Fall back to deriving from hostUrl if the setting wasn't
+// exposed — keeps prod-only paths working until everywhere is upgraded.
+function _systemDefaultHost() {
+    const cfg = window.dashboardConfig || {};
+    if (cfg.systemDefaultDomain) return cfg.systemDefaultDomain;
+    const raw = cfg.hostUrl
+        || document.querySelector('[data-host]')?.getAttribute('data-host')
+        || '';
+    try {
+        const h = new URL(raw).host;
+        if (h) return h;
+    } catch (_) { /* fall through to manual strip */ }
+    const stripped = raw.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    // Never return '' — empty would mis-scope alias/domain submission and
+    // reset the picker to an invalid value. Treat the current page host as
+    // a last-resort default; it's always at least syntactically a hostname.
+    return stripped || window.location.host;
+}
+
 function openCreateLinkModal() {
     const modal = document.getElementById('create-link-modal');
 
     if (modal) {
         modal.classList.add('active');
         document.body.style.overflow = 'hidden';
+
+        // Reset the domain picker back to the system default whenever the
+        // modal opens. Sticking with the previous selection would surprise
+        // users who don't see the picker change between sessions. The picker
+        // is now the prefix inside the alias input — its trigger label
+        // re-renders as `https://<fqdn>/` on the setValue call.
+        const picker = document.querySelector('#create-link-modal [data-domain-picker]');
+        if (picker && window.DomainPicker) {
+            window.DomainPicker.setValue(picker, _systemDefaultHost(), { silent: true });
+        }
 
         // Focus on the first input
         setTimeout(() => {
@@ -481,9 +512,17 @@ async function submitCreateForm(event) {
 
     try {
         // Prepare form data
+        const domainInput = document.getElementById('create-domain');
         const formData = {
             long_url: normalizeUrl(document.getElementById('create-long-url').value.trim()),
             alias: document.getElementById('create-alias').value.trim() || undefined,
+            // domain only flows through when the picker rendered (flag on) AND
+            // user selected a custom domain. Sending the system default would
+            // be a no-op for the backend, so we omit it to keep the payload
+            // small and the path through `routes/api_v1/shorten.py` simple.
+            domain: domainInput && domainInput.value &&
+                domainInput.value !== _systemDefaultHost() ?
+                domainInput.value : undefined,
             password: document.getElementById('create-password').value || undefined,
             max_clicks: document.getElementById('create-max-clicks').value ?
                 parseInt(document.getElementById('create-max-clicks').value) : undefined,
@@ -630,11 +669,27 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     if (window.AliasChecker) {
+        // Scope the live availability check to the picker's current domain
+        // so the indicator doesn't say "available" against spoo.me when the
+        // user has selected a custom tenant.
+        const createDomainInput = document.getElementById('create-domain');
         window.createAliasCheck = window.AliasChecker.attach({
             inputId: 'create-alias',
             diceBtn: document.getElementById('create-alias-dice'),
             indicator: document.getElementById('create-alias-status'),
+            getDomain: () => {
+                if (!createDomainInput) return null;
+                const v = createDomainInput.value;
+                return v && v !== _systemDefaultHost() ? v : null;
+            },
         });
+        // Re-fire the check when the user switches domain mid-flow — the
+        // (alias, domain) tuple changed so the cached "available" is stale.
+        if (createDomainInput) {
+            createDomainInput.addEventListener('change', () => {
+                window.createAliasCheck?.recheck();
+            });
+        }
     }
 
     // Close modal on backdrop click
@@ -699,6 +754,9 @@ document.addEventListener('DOMContentLoaded', function () {
         sortBy: document.getElementById('f-sortby'),
         order: document.getElementById('f-order'),
         pageSize: document.getElementById('f-pagesize'),
+        // Domain filter — only rendered when the custom_domains flag is on
+        // for this user. Null-guarded everywhere it's read.
+        domain: document.getElementById('f-domain'),
         apply: document.getElementById('btn-apply'),
         reset: document.getElementById('btn-reset'),
         optionsBtn: document.getElementById('btn-options'),
@@ -740,6 +798,12 @@ document.addEventListener('DOMContentLoaded', function () {
         params.set('sortBy', els.sortBy.value || state.sortBy);
         params.set('sortOrder', els.order.value || state.sortOrder);
         if (Object.keys(filter).length) { params.set('filter', JSON.stringify(filter)); }
+        // `domain` is a top-level query param on /api/v1/urls (not part of
+        // the `filter` JSON blob) because the backend treats it specially —
+        // see routes/api_v1/urls.py.
+        if (els.domain && els.domain.value) {
+            params.set('domain', els.domain.value);
+        }
         return params.toString();
     }
 
@@ -784,9 +848,20 @@ document.addEventListener('DOMContentLoaded', function () {
         const last = node.querySelector('.last-click-date');
         const total = node.querySelector('.total-clicks-count');
 
-        // Short URL
-        shortA.textContent = trimProtocol(displayHost) + (it.alias ? it.alias : '');
-        shortA.href = '/' + (it.alias || '');
+        // Short URL — prefer the URL doc's `domain` so rows on custom
+        // hostnames render their actual host instead of the system default.
+        // Open links in a new tab using the full URL so custom-domain rows
+        // resolve through their real tenant edge. Route through `new URL`
+        // so anything that isn't a real http(s) URL (e.g. a malicious
+        // `data-host` value that contains `javascript:`) can't slip into the
+        // anchor's href as a script URL.
+        const rowHost = it.domain || trimProtocol(displayHost).replace(/\/+$/, '');
+        shortA.textContent = `${rowHost}/${it.alias || ''}`;
+        try {
+            shortA.href = new URL(`https://${rowHost}/${it.alias || ''}`).href;
+        } catch (_) {
+            shortA.href = '#';
+        }
 
         // Long URL
         long.textContent = it.long_url || '';
@@ -947,6 +1022,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 sortBy: els.sortBy.value,
                 order: els.order.value,
                 pageSize: els.pageSize.value,
+                domain: els.domain ? els.domain.value : '',
             };
             localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(snapshot));
         } catch (_) { /* localStorage may be unavailable */ }
@@ -959,6 +1035,15 @@ document.addEventListener('DOMContentLoaded', function () {
             const saved = JSON.parse(raw);
             for (const [key, value] of Object.entries(saved)) {
                 if (els[key] && typeof value === 'string') {
+                    // Custom dropdown — DomainPicker keeps the trigger label
+                    // and visual selected state in sync with the hidden input.
+                    if (key === 'domain' && window.DomainPicker) {
+                        const wrapper = els.domain.closest('[data-domain-picker]');
+                        if (wrapper) {
+                            window.DomainPicker.setValue(wrapper, value, { silent: true });
+                            continue;
+                        }
+                    }
                     els[key].value = value;
                 }
             }
@@ -991,6 +1076,10 @@ document.addEventListener('DOMContentLoaded', function () {
             seg.setAttribute('data-active', (targetId === 'f-order') ? '0' : '2');
         });
         if (els.pageSize) els.pageSize.value = '20';
+        if (els.domain && window.DomainPicker) {
+            const wrapper = els.domain.closest('[data-domain-picker]');
+            if (wrapper) window.DomainPicker.setValue(wrapper, '', { silent: true });
+        }
         applyFilters();
     }
 
@@ -998,6 +1087,11 @@ document.addEventListener('DOMContentLoaded', function () {
     els.apply.addEventListener('click', applyFilters);
     els.reset.addEventListener('click', resetFilters);
     els.search.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyFilters(); } });
+    // Domain picker fires a `change` event on its hidden input — refetch
+    // immediately (no Apply click needed) so the filter chip feels live.
+    if (els.domain) {
+        els.domain.addEventListener('change', applyFilters);
+    }
 
     // Options dropdown open/close/outside-click handled by the shared Dropdown primitive.
 

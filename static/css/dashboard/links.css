@@ -359,7 +359,10 @@
     backdrop-filter: blur(20px);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-lg);
-    overflow: hidden;
+    /* `overflow: visible` lets the Options dropdown extend past the
+       container's bottom edge — important when the table is short. Children
+       that touch the bottom edge (pagination-bar) carry their own matching
+       border-radius so the rounded look survives. */
 }
 
 /* Toolbar */
@@ -936,6 +939,10 @@ input[type="datetime-local"]::-webkit-inner-spin-button {
     padding: 16px 24px;
     border-top: 1px solid var(--border-color);
     background: rgba(255, 255, 255, 0.02);
+    /* Match the container's bottom corners — since .links-container no
+       longer clips overflow, the pagination bar paints its own background
+       all the way to the (formerly clipped) edge. */
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
 .pagination-controls {

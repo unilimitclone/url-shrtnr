@@ -17,6 +17,8 @@ from fastapi import APIRouter, Depends, Path, Request
 from dependencies import (
     URL_MANAGEMENT_SCOPES,
     CurrentUser,
+    CustomDomainSvc,
+    Settings,
     UrlSvc,
     require_scopes,
 )
@@ -57,6 +59,8 @@ async def update_url_v1(
     ],
     body: UpdateUrlRequest,
     url_service: UrlSvc,
+    custom_domain_service: CustomDomainSvc,
+    settings: Settings,
     user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
 ) -> UpdateUrlResponse:
     """Update an existing URL's properties.
@@ -72,15 +76,23 @@ async def update_url_v1(
     **Rate Limits**: 120/min, 2,000/day
 
     **Updatable Fields**: `long_url`, `alias`, `password`, `block_bots`,
-    `max_clicks`, `expire_after`, `private_stats`, `status`
+    `max_clicks`, `expire_after`, `private_stats`, `status`, `domain`
 
     **Notes**:
 
     - Setting `max_clicks` to `0` or `null` removes the click limit
     - Changing the `alias` checks availability and may fail with 409 Conflict
+    - Setting `domain` moves the URL to a different tenant; caller must own
+      the target as an ACTIVE custom domain, or pass `null` to move back to
+      the system default. Alias collision is verified on the target.
     - The `url_id` is the MongoDB ObjectId, not the alias
     """
     oid = _parse_url_id(url_id)
+    # Verify domain ownership at the edge so the service can stay opaque about
+    # tenancy. `domain` field-set with null means "move to system default" —
+    # no ownership check needed for the default namespace.
+    if body.domain and body.domain != settings.system_default_domain:
+        await custom_domain_service.assert_owned_and_active(user, body.domain)
     doc = await url_service.update(oid, body, user.user_id)
     return UpdateUrlResponse.from_doc(doc)
 

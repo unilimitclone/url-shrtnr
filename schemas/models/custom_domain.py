@@ -46,10 +46,31 @@ class CustomDomainDoc(MongoBaseModel):
     dns_instructions: list[dict[str, str]] = Field(default_factory=list)
     setup_notes: list[str] = Field(default_factory=list)
 
+    # Per-domain routing config (PR4.5). All optional; absence preserves the
+    # PR4 behavior (404 on root + non-alias paths, default robots.txt
+    # `Disallow: /`). Read by `middleware/tenant.py` from the cached
+    # `TenantInfo` — no extra DB hits per request. Only honored when
+    # ``status == ACTIVE`` so revoked/suspended domains don't keep redirecting.
+    root_redirect: str | None = None
+    not_found_redirect: str | None = None
+    custom_robots_txt: str | None = Field(default=None, max_length=4096)
+
     @field_validator("fqdn", mode="before")
     @classmethod
     def _normalise(cls, v: Any) -> str:
         return normalise_fqdn(v)
+
+    @field_validator(
+        "root_redirect", "not_found_redirect", "custom_robots_txt", mode="before"
+    )
+    @classmethod
+    def _empty_to_none(cls, v: Any) -> Any:
+        # Mongo stores `None` for "unset"; an empty string from the API would
+        # otherwise sneak through as a real value that the middleware treats
+        # as truthy (`if tenant.root_redirect:` short-circuits, etc.).
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 # State machine. VERIFYING reserved for future async verification flows.

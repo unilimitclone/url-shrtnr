@@ -1,8 +1,11 @@
-"""Smoke test: wire_services picks the right backend based on CF config.
+"""Smoke test: wire_services constructs the CF backend in all three
+protocol slots and exposes the expected verification methods.
 
-CF zone id set ⇒ same CfSaasBackend instance fills all three protocol
-slots (verifiers, edge_provisioner, registrar). Unset ⇒ DNS verifiers
-+ Caddy provisioner + NoOp registrar.
+CF SaaS is the only backend after the LE/Caddy on-demand path was
+removed; the wiring is now unconditional (no `cf_zone_id` branch). When
+the operator hasn't configured CF, the service still wires but its
+mutating methods short-circuit via the feature flag — see the
+`CustomDomainSettings.enabled` gate.
 """
 
 from __future__ import annotations
@@ -15,9 +18,6 @@ from config import AppSettings, CustomDomainSettings
 from dependencies.wiring import wire_services
 from schemas.enums.domain_status import VerificationMethod
 from services.cf_saas_backend import CfSaasBackend
-from services.edge_provisioner import CaddyAskProvisioner
-from services.registrar import NoOpRegistrar
-from services.verifiers import ARecordVerifier, CnameVerifier, TxtChallengeVerifier
 
 
 def _wire(custom_domains: CustomDomainSettings):
@@ -46,30 +46,7 @@ def _wire(custom_domains: CustomDomainSettings):
     return app
 
 
-class TestSelfHostPathWhenCfNotConfigured:
-    def test_dns_verifiers_wired_for_each_legacy_method(self):
-        app = _wire(CustomDomainSettings(enabled=True))
-        svc = app.state.custom_domain_service
-        assert isinstance(svc._verifiers[VerificationMethod.CNAME], CnameVerifier)
-        assert isinstance(svc._verifiers[VerificationMethod.A_RECORD], ARecordVerifier)
-        assert isinstance(
-            svc._verifiers[VerificationMethod.TXT_CHALLENGE], TxtChallengeVerifier
-        )
-
-    def test_caddy_provisioner_and_noop_registrar(self):
-        app = _wire(CustomDomainSettings(enabled=True))
-        svc = app.state.custom_domain_service
-        assert isinstance(svc._edge, CaddyAskProvisioner)
-        assert isinstance(svc._registrar, NoOpRegistrar)
-
-    def test_cf_methods_absent_in_self_host_path(self):
-        app = _wire(CustomDomainSettings(enabled=True))
-        svc = app.state.custom_domain_service
-        assert VerificationMethod.CF_DELEGATED_DCV not in svc._verifiers
-        assert VerificationMethod.CF_HTTP_DCV not in svc._verifiers
-
-
-class TestCfSaasPathWhenCfConfigured:
+class TestCfSaasWiring:
     def test_single_cf_backend_fills_three_slots(self):
         app = _wire(
             CustomDomainSettings(
@@ -87,7 +64,7 @@ class TestCfSaasPathWhenCfConfigured:
         assert svc._verifiers[VerificationMethod.CF_DELEGATED_DCV] is svc._edge
         assert svc._verifiers[VerificationMethod.CF_HTTP_DCV] is svc._edge
 
-    def test_dns_verifiers_absent_in_cf_path(self):
+    def test_only_cf_methods_registered(self):
         app = _wire(
             CustomDomainSettings(
                 enabled=True,
@@ -97,9 +74,24 @@ class TestCfSaasPathWhenCfConfigured:
             )
         )
         svc = app.state.custom_domain_service
-        assert VerificationMethod.CNAME not in svc._verifiers
-        assert VerificationMethod.A_RECORD not in svc._verifiers
-        assert VerificationMethod.TXT_CHALLENGE not in svc._verifiers
+        # Legacy DNS methods are no longer wired by anything in the codebase.
+        assert set(svc._verifiers.keys()) == {
+            VerificationMethod.CF_DELEGATED_DCV,
+            VerificationMethod.CF_HTTP_DCV,
+        }
+
+
+class TestWiringWithoutCfConfigured:
+    """OSS posture: a fork that hasn't set CF env vars must still boot.
+    Wiring constructs the CF backend with None credentials; the service's
+    own `_require_enabled` gate (Phase 4.5) is what hides the feature."""
+
+    def test_wires_cleanly_when_cf_unset(self):
+        # No cf_zone_id / cf_api_token — should not raise at wire time.
+        app = _wire(CustomDomainSettings(enabled=False))
+        svc = app.state.custom_domain_service
+        assert svc is not None
+        assert isinstance(svc._edge, CfSaasBackend)
 
 
 class TestCfConfigValidation:
