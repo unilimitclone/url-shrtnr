@@ -16,6 +16,7 @@ from infrastructure.cache.feature_flag_cache import FeatureFlagCache
 from infrastructure.cache.url_cache import UrlCache
 from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.cloudflare_client import CloudflareClient
+from infrastructure.logging import get_logger
 from infrastructure.webhook.discord import DiscordWebhookProvider
 from repositories.api_key_repository import ApiKeyRepository
 from repositories.app_grant_repository import AppGrantRepository
@@ -49,6 +50,8 @@ from services.stats_service import StatsService
 from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
 from services.url_service import UrlService
+
+log = get_logger(__name__)
 
 
 def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
@@ -177,6 +180,20 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     custom_domain_repo = CustomDomainRepository(db["custom_domains"])
     blocked_domain_repo = BlockedDomainRepository(db["blocked_domains"])
     cd_settings = settings.custom_domains
+
+    # Surface the "enabled but unconfigured" misconfig in startup logs so
+    # operators don't have to wait for a request-time 500 to find out.
+    # We still boot — the feature just no-ops until creds land.
+    if cd_settings.enabled and not (
+        cd_settings.cf_zone_id and cd_settings.cf_api_token
+    ):
+        log.warning(
+            "custom_domains_enabled_but_unconfigured",
+            detail=(
+                "custom_domains.enabled=True but cf_zone_id/cf_api_token "
+                "unset — feature will fail at request time until configured."
+            ),
+        )
 
     # CloudflareClient takes Optional[str] and only raises
     # CloudflareNotConfiguredError on first request, never at construction —
