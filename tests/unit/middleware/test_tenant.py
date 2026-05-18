@@ -91,7 +91,10 @@ class TestTenantMiddleware:
             r = client.get("/", headers={"host": "bogus.example.com"})
         assert r.status_code == 404
         assert "text/html" in r.headers.get("content-type", "")
-        assert "URL not found" in r.text
+        # Shared tenant-error page; unknown host has no tenant fqdn so the
+        # message stays generic. Jinja auto-escapes the apostrophe.
+        assert "This URL doesn" in r.text and "t exist" in r.text
+        assert "Not found" in r.text
 
     def test_system_tenant_root_passes_through(self):
         resolver = MagicMock()

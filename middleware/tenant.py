@@ -36,13 +36,13 @@ from urllib.parse import urlsplit
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import (
-    HTMLResponse,
     PlainTextResponse,
     RedirectResponse,
     Response,
 )
 
 from infrastructure.logging import get_logger
+from infrastructure.templates import templates
 from schemas.enums.domain_status import DomainStatus
 from services.tenant_resolver.protocol import TenantInfo, TenantResolver
 
@@ -50,13 +50,34 @@ log = get_logger(__name__)
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "app"})
 
-_NOT_FOUND_BODY = (
-    "<!doctype html><html><head><title>404 — Not Found</title></head>"
-    "<body><h1>404</h1><p>URL not found.</p></body></html>"
-)
-
 _CUSTOM_TENANT_ROBOTS_BODY = "User-agent: *\nDisallow: /\n"
 _NOINDEX_HEADER = "noindex, nofollow, noarchive"
+
+
+def _tenant_not_found(request: Request, *, tenant: TenantInfo | None) -> Response:
+    """Render the shared minimal 404 page for custom-tenant rejections.
+
+    Same template the redirect route uses on alias misses, so the unknown-
+    path and unknown-alias surfaces feel like one product. Self-contained
+    HTML/CSS — `/static/*` would 404 on a custom domain, so the page must
+    not reference any external asset.
+    """
+    fqdn = tenant.fqdn if tenant is not None else None
+    message = (
+        f"This URL doesn't exist on {fqdn}." if fqdn else "This URL doesn't exist."
+    )
+    return templates.TemplateResponse(
+        request,
+        "tenant_error.html",
+        {
+            "error_code": "404",
+            "error_title": "Not found",
+            "error_message": message,
+        },
+        status_code=404,
+        headers={"X-Robots-Tag": _NOINDEX_HEADER},
+    )
+
 
 # Allowed exact paths on custom tenants (besides the alias pattern).
 _ALLOWED_EXACT_PATHS = frozenset({"/favicon.ico"})
@@ -164,7 +185,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
         if tenant is None:
             log.info("tenant_unknown_host", host=host)
-            return HTMLResponse(_NOT_FOUND_BODY, status_code=404)
+            return _tenant_not_found(request, tenant=None)
 
         if tenant.is_system_default:
             return await call_next(request)
@@ -178,11 +199,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
         if path == "/robots.txt":
             if request.method not in {"GET", "HEAD"}:
-                return HTMLResponse(
-                    _NOT_FOUND_BODY,
-                    status_code=404,
-                    headers={"X-Robots-Tag": _NOINDEX_HEADER},
-                )
+                return _tenant_not_found(request, tenant=tenant)
             body = (
                 tenant.custom_robots_txt
                 if config_active and tenant.custom_robots_txt
@@ -208,11 +225,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
                     status_code=302,
                     headers={"X-Robots-Tag": _NOINDEX_HEADER},
                 )
-            return HTMLResponse(
-                _NOT_FOUND_BODY,
-                status_code=404,
-                headers={"X-Robots-Tag": _NOINDEX_HEADER},
-            )
+            return _tenant_not_found(request, tenant=tenant)
 
         if not _is_allowed_on_custom_tenant(path, request.method):
             # not_found_redirect only fires on GET/HEAD — redirecting a
@@ -234,11 +247,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 path=path,
                 method=request.method,
             )
-            return HTMLResponse(
-                _NOT_FOUND_BODY,
-                status_code=404,
-                headers={"X-Robots-Tag": _NOINDEX_HEADER},
-            )
+            return _tenant_not_found(request, tenant=tenant)
 
         response = await call_next(request)
         response.headers["X-Robots-Tag"] = _NOINDEX_HEADER
