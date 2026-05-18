@@ -59,12 +59,18 @@ window.confettiActive = false;
 function _systemDefaultHost() {
     const cfg = window.dashboardConfig || {};
     if (cfg.systemDefaultDomain) return cfg.systemDefaultDomain;
-    const raw = cfg.hostUrl || '';
+    const raw = cfg.hostUrl
+        || document.querySelector('[data-host]')?.getAttribute('data-host')
+        || '';
     try {
-        return new URL(raw).host;
-    } catch (e) {
-        return raw.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-    }
+        const h = new URL(raw).host;
+        if (h) return h;
+    } catch (_) { /* fall through to manual strip */ }
+    const stripped = raw.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    // Never return '' — empty would mis-scope alias/domain submission and
+    // reset the picker to an invalid value. Treat the current page host as
+    // a last-resort default; it's always at least syntactically a hostname.
+    return stripped || window.location.host;
 }
 
 function openCreateLinkModal() {
@@ -845,10 +851,17 @@ document.addEventListener('DOMContentLoaded', function () {
         // Short URL — prefer the URL doc's `domain` so rows on custom
         // hostnames render their actual host instead of the system default.
         // Open links in a new tab using the full URL so custom-domain rows
-        // resolve through their real tenant edge.
+        // resolve through their real tenant edge. Route through `new URL`
+        // so anything that isn't a real http(s) URL (e.g. a malicious
+        // `data-host` value that contains `javascript:`) can't slip into the
+        // anchor's href as a script URL.
         const rowHost = it.domain || trimProtocol(displayHost).replace(/\/+$/, '');
         shortA.textContent = `${rowHost}/${it.alias || ''}`;
-        shortA.href = `https://${rowHost}/${it.alias || ''}`;
+        try {
+            shortA.href = new URL(`https://${rowHost}/${it.alias || ''}`).href;
+        } catch (_) {
+            shortA.href = '#';
+        }
 
         // Long URL
         long.textContent = it.long_url || '';

@@ -17,12 +17,15 @@ function normalizeUrl(raw) {
 function _editDefaultHost() {
     const cfg = window.dashboardConfig || {};
     if (cfg.systemDefaultDomain) return cfg.systemDefaultDomain;
-    const raw = cfg.hostUrl || '';
+    const raw = cfg.hostUrl
+        || document.querySelector('[data-host]')?.getAttribute('data-host')
+        || '';
     try {
-        return new URL(raw).host;
-    } catch (e) {
-        return raw.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-    }
+        const h = new URL(raw).host;
+        if (h) return h;
+    } catch (_) { /* fall through */ }
+    const stripped = raw.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    return stripped || window.location.host;
 }
 
 class UrlManager {
@@ -688,9 +691,24 @@ class UrlManager {
 
                         const shortUrlElement = row.querySelector('.link-short');
                         if (shortUrlElement && updatedUrlData.alias) {
-                            const displayHost = this.hostUrl.replace(/\/+$/, '') + '/';
-                            shortUrlElement.textContent = displayHost.replace(/^https?:\/\//i, '') + updatedUrlData.alias;
-                            shortUrlElement.href = '/' + updatedUrlData.alias;
+                            // After a cross-tenant move, the row must reflect
+                            // the URL's new host — not the dashboard's host.
+                            // Match the list-renderer's logic + the same
+                            // `new URL` sanitization so a malicious `domain`
+                            // value can't poison the anchor's href.
+                            const defaultHost = this.hostUrl
+                                .replace(/^https?:\/\//i, '')
+                                .replace(/\/+$/, '');
+                            const rowHost = updatedUrlData.domain || defaultHost;
+                            shortUrlElement.textContent =
+                                `${rowHost}/${updatedUrlData.alias}`;
+                            try {
+                                shortUrlElement.href = new URL(
+                                    `https://${rowHost}/${updatedUrlData.alias}`,
+                                ).href;
+                            } catch (_) {
+                                shortUrlElement.href = '#';
+                            }
                         }
 
                         // Update status badges

@@ -312,7 +312,14 @@ class CustomDomainService:
         if not ops:
             return doc
 
-        await self._repo.update_routing(doc.id, ops)
+        updated = await self._repo.update_routing(doc.id, ops)
+        if not updated:
+            # Doc was deleted or its _id changed between our load and the
+            # update — surface this rather than logging a successful audit
+            # event for a write that didn't happen.
+            raise NotFoundError(
+                f"{doc.fqdn} was modified or deleted concurrently; retry."
+            )
         # Tenant cache holds the routing fields; without invalidate, the next
         # ``tenant_cache_ttl`` seconds keep serving the old config.
         await self._invalidate_cache(doc.fqdn)

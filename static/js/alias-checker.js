@@ -111,7 +111,24 @@
                 if (dom) url += `&domain=${encodeURIComponent(dom)}`;
             }
             fetch(url, { signal: controller.signal, credentials: 'same-origin' })
-                .then((r) => r.json())
+                .then(async (r) => {
+                    // Parse the body either way — error responses still carry
+                    // structured info we may want to surface.
+                    const data = await r.json().catch(() => ({}));
+                    if (!r.ok) {
+                        // 401/403 happen when auth expired mid-typing or the
+                        // domain ownership check rejects (shouldn't normally
+                        // happen since the picker only lists owned domains,
+                        // but defend anyway). Other errors fall through to
+                        // a generic message.
+                        const err = new Error(
+                            data.error || data.detail || 'alias_check_failed',
+                        );
+                        err.status = r.status;
+                        throw err;
+                    }
+                    return data;
+                })
                 .then((data) => {
                     if (data.available) {
                         applyResult(alias, true);
@@ -121,7 +138,14 @@
                 })
                 .catch((err) => {
                     if (err.name === 'AbortError') return;
-                    setIndicator('idle');
+                    if (input.value.trim() !== alias) return;
+                    const message =
+                        err.status === 401 || err.status === 403
+                            ? 'Sign in to check availability on this domain'
+                            : 'Could not verify alias — try again';
+                    setIndicator('unavailable');
+                    window.setFieldError(options.inputId, message);
+                    emit(false);
                 });
         }
 
