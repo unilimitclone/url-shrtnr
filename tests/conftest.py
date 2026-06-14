@@ -18,6 +18,11 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017/")
+# Tests sign/verify JWTs with the HS256 symmetric secret. CI (and a typical local
+# .env) does not set JWT_SECRET, leaving it "" — and pyjwt >= 2.13 rejects empty
+# HMAC keys ("HMAC key must not be empty."). Provide a non-prod test secret here,
+# before any test module constructs AppSettings(), so signing/verification match.
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-not-for-production")
 
 from config import AppSettings
 from middleware.error_handler import register_error_handlers
