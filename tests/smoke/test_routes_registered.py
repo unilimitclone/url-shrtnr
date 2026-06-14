@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import NamedTuple
 
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017/")
 
@@ -10,9 +11,42 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 
-def _get_api_routes(app: FastAPI) -> list[APIRoute]:
-    """Extract all APIRoute objects from the app (excluding mount/static)."""
-    return [r for r in app.routes if isinstance(r, APIRoute)]
+class _ResolvedRoute(NamedTuple):
+    """A flattened API route with its fully-qualified path and HTTP methods."""
+
+    path: str
+    methods: frozenset[str]
+
+
+def _get_api_routes(app: FastAPI) -> list[_ResolvedRoute]:
+    """Return every API route as ``(full_path, methods)`` in registration order.
+
+    FastAPI >= 0.137 no longer flattens ``include_router()`` routes into
+    ``app.routes``; included routers appear as ``_IncludedRouter`` wrapper nodes
+    whose real routes live under ``.original_router.routes`` and whose mount
+    prefix lives on ``.include_context.prefix``. Walk that tree accumulating
+    prefixes so full paths (e.g. ``/api/v1/shorten``) and methods (incl. the
+    auto-added ``HEAD``) are reconstructed. Falls back to flat ``APIRoute``
+    objects on older FastAPI, where they appear directly in ``app.routes``.
+    """
+
+    def _collect(routes, prefix: str = "") -> list[_ResolvedRoute]:
+        found: list[_ResolvedRoute] = []
+        for route in routes:
+            if isinstance(route, APIRoute):
+                found.append(
+                    _ResolvedRoute(prefix + route.path, frozenset(route.methods))
+                )
+            elif hasattr(route, "original_router"):
+                child_prefix = (
+                    getattr(getattr(route, "include_context", None), "prefix", "") or ""
+                )
+                found.extend(
+                    _collect(route.original_router.routes, prefix + child_prefix)
+                )
+        return found
+
+    return _collect(app.routes)
 
 
 def _get_path_method_pairs(app: FastAPI) -> set[tuple[str, str]]:
