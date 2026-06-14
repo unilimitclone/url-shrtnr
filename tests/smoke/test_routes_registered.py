@@ -15,7 +15,7 @@ class _ResolvedRoute(NamedTuple):
     """A flattened API route with its fully-qualified path and HTTP methods."""
 
     path: str
-    methods: set[str]
+    methods: frozenset[str]
 
 
 def _get_api_routes(app: FastAPI) -> list[_ResolvedRoute]:
@@ -34,7 +34,9 @@ def _get_api_routes(app: FastAPI) -> list[_ResolvedRoute]:
         found: list[_ResolvedRoute] = []
         for route in routes:
             if isinstance(route, APIRoute):
-                found.append(_ResolvedRoute(prefix + route.path, set(route.methods)))
+                found.append(
+                    _ResolvedRoute(prefix + route.path, frozenset(route.methods))
+                )
             elif hasattr(route, "original_router"):
                 child_prefix = (
                     getattr(getattr(route, "include_context", None), "prefix", "") or ""

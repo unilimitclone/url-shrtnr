@@ -22,7 +22,9 @@ os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017/")
 # .env) does not set JWT_SECRET, leaving it "" — and pyjwt >= 2.13 rejects empty
 # HMAC keys ("HMAC key must not be empty."). Provide a non-prod test secret here,
 # before any test module constructs AppSettings(), so signing/verification match.
-os.environ.setdefault("JWT_SECRET", "test-jwt-secret-not-for-production")
+# Set when missing *or* empty (setdefault would keep an explicit JWT_SECRET="").
+if not os.environ.get("JWT_SECRET"):
+    os.environ["JWT_SECRET"] = "test-jwt-secret-not-for-production"
 
 from config import AppSettings
 from middleware.error_handler import register_error_handlers
