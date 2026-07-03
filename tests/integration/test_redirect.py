@@ -310,9 +310,7 @@ def test_redirect_bot_blocked_v1():
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v1"))
     mock_click_sink = AsyncMock()
-    mock_click_sink.emit = AsyncMock(
-        side_effect=ForbiddenError("Bot access denied")
-    )
+    mock_click_sink.emit = AsyncMock(side_effect=ForbiddenError("Bot access denied"))
 
     app = build_test_app(
         redirect_router,
@@ -334,9 +332,7 @@ def test_redirect_bot_blocked_v2():
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
     mock_click_sink = AsyncMock()
-    mock_click_sink.emit = AsyncMock(
-        side_effect=ForbiddenError("Bot access denied")
-    )
+    mock_click_sink.emit = AsyncMock(side_effect=ForbiddenError("Bot access denied"))
 
     app = build_test_app(
         redirect_router,
@@ -358,9 +354,7 @@ def test_redirect_bad_user_agent_still_redirects():
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
     mock_click_sink = AsyncMock()
-    mock_click_sink.emit = AsyncMock(
-        side_effect=ValidationError("Bad User-Agent")
-    )
+    mock_click_sink.emit = AsyncMock(side_effect=ValidationError("Bad User-Agent"))
 
     app = build_test_app(
         redirect_router,
