@@ -144,7 +144,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    mem_limit: 256m
+    # raised from 256m after the 2026-06-20 OOM incident (slow upstream →
+    # buffered responses); keep in sync with the value live on the VPS
+    mem_limit: 1g
     mem_reservation: 64m
     networks:
       spoonet:
