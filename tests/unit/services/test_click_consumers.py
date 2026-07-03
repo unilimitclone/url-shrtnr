@@ -14,7 +14,7 @@ from services.click.consumers import (
     LogHotUrlAction,
     StatsClickConsumer,
 )
-from tests.unit.services.test_click_events import make_event
+from tests.factories import make_click_event as make_event
 
 
 def _payload(**overrides) -> dict[str, Any]:

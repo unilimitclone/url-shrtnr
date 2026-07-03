@@ -13,7 +13,7 @@ from services.click.events import (
     ClickEvent,
 )
 from services.click.sinks import InlineSink, RedisStreamSink
-from tests.unit.services.test_click_events import make_event
+from tests.factories import make_click_event as make_event
 
 
 def assert_track_click_matches_event(

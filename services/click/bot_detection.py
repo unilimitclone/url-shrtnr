@@ -14,8 +14,14 @@ from __future__ import annotations
 import os
 import re
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from crawlerdetect import CrawlerDetect
+
+from schemas.models.url import SchemaVersion
+
+if TYPE_CHECKING:
+    from infrastructure.cache.url_cache import UrlCacheData
 
 _BOT_UA_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "bot_user_agents.txt"
@@ -86,3 +92,27 @@ def get_bot_name(user_agent: str) -> str | None:
             return pattern
 
     return None
+
+
+def should_block_bot(
+    method: str,
+    user_agent: str,
+    url_data: UrlCacheData,
+    schema: str,
+) -> bool:
+    """Pre-emit redirect-blocking decision for the hot path.
+
+    Only v1/emoji URLs with ``block_bots`` return 403 instead of the
+    redirect (v2 never blocks redirects — its bot handling is
+    analytics-skip inside the click pipeline). HEAD/OPTIONS are exempt
+    from tracking and therefore from the decision; an empty User-Agent
+    cannot be classified and falls through to the pipeline's
+    ValidationError path — both matching the pre-sink inline behavior.
+    """
+    return (
+        method not in ("HEAD", "OPTIONS")
+        and bool(user_agent)
+        and url_data.block_bots
+        and schema != SchemaVersion.V2
+        and is_bot_request(user_agent)
+    )

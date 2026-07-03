@@ -24,37 +24,20 @@ from infrastructure.cache.url_cache import UrlCacheData
 from routes.redirect_routes import router as redirect_router
 from services.click.events import ClickEvent
 from tests.conftest import build_test_app
+from tests.factories import make_url_cache
+
+
+def _make_url_cache(schema: str = "v2", **overrides) -> UrlCacheData:
+    # Shape lives in tests/factories.py; this file's tests spell the
+    # schema kwarg without the _version suffix.
+    return make_url_cache(schema_version=schema, domain="", **overrides)
+
 
 BOT_UA = "Googlebot/2.1 (+http://www.google.com/bot.html)"
 BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
-
-
-def _make_url_cache(
-    alias: str = "abc1234",
-    long_url: str = "https://example.com",
-    schema: str = "v2",
-    password_hash: str | None = None,
-    block_bots: bool = False,
-    max_clicks: int | None = None,
-    total_clicks: int = 0,
-    url_status: str = "ACTIVE",
-) -> UrlCacheData:
-    return UrlCacheData(
-        id="507f1f77bcf86cd799439011",
-        alias=alias,
-        long_url=long_url,
-        block_bots=block_bots,
-        password_hash=password_hash,
-        expiration_time=None,
-        max_clicks=max_clicks,
-        url_status=url_status,
-        schema_version=schema,
-        owner_id=None,
-        total_clicks=total_clicks,
-    )
 
 
 # ── Mock services ─────────────────────────────────────────────────────────────

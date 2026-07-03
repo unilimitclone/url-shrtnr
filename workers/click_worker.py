@@ -33,10 +33,11 @@ healthcheck.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 from dotenv import load_dotenv
 from faststream.asgi import AsgiFastStream, make_ping_asgi
@@ -55,11 +56,13 @@ from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
 from services.click.consumers import (
+    ClickConsumer,
     HotUrlDetector,
     LogHotUrlAction,
     StatsClickConsumer,
 )
 from workers.dlq import ClaimDeadLetterGuard
+from workers.telemetry import StaleConsumerJanitor, StreamMetricsReporter
 
 log = get_logger(__name__)
 
@@ -67,27 +70,27 @@ log = get_logger(__name__)
 _WORKER_MONGO_MAX_POOL = 16
 
 
-class ClickConsumer(Protocol):
-    """Contract every group's consumer class satisfies."""
-
-    async def consume(self, payload: Any) -> None: ...
-
-
 @dataclass
 class _WorkerRuntime:
-    """Connections and consumers built at startup, closed at shutdown."""
+    """Connections, consumers, and telemetry built at startup."""
 
     mongo_client: AsyncMongoClient
     cache_redis: Any | None
     counter_redis: Any | None
+    telemetry_redis: Any | None = None
+    telemetry_tasks: list[asyncio.Task] = field(default_factory=list)
     consumers: dict[str, ClickConsumer] = field(default_factory=dict)
 
     async def aclose(self) -> None:
+        for task in self.telemetry_tasks:
+            task.cancel()
         await self.mongo_client.close()
         if self.cache_redis is not None:
             await self.cache_redis.aclose()
         if self.counter_redis is not None:
             await self.counter_redis.aclose()
+        if self.telemetry_redis is not None:
+            await self.telemetry_redis.aclose()
 
 
 def enabled_groups(ce: ClickEventsSettings) -> list[str]:
@@ -154,6 +157,25 @@ async def _build_runtime(settings: AppSettings, groups: list[str]) -> _WorkerRun
             window_seconds=ce.hot_window_seconds,
             actions=[LogHotUrlAction()],
         )
+
+    # Telemetry: periodic backlog/lag stats (the Axiom alert signal) and
+    # cleanup of restart-leftover consumer names. Best-effort — a missing
+    # telemetry connection never blocks consumption.
+    telemetry_redis = await create_redis_client(
+        ce.queue_redis_uri, label="worker-telemetry"
+    )
+    if telemetry_redis is not None:
+        runtime.telemetry_redis = telemetry_redis
+        runtime.telemetry_tasks = [
+            asyncio.create_task(
+                StreamMetricsReporter(
+                    telemetry_redis, ce.stream, ce.stats_interval_seconds
+                ).run_forever()
+            ),
+            asyncio.create_task(
+                StaleConsumerJanitor(telemetry_redis, ce.stream).run_forever()
+            ),
+        ]
 
     return runtime
 

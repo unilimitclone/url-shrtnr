@@ -18,6 +18,7 @@ import json
 from typing import Any
 
 from infrastructure.logging import get_logger
+from services.click.events import STREAM_FIELD_DATA
 
 log = get_logger(__name__)
 
@@ -63,7 +64,7 @@ class ClaimDeadLetterGuard:
             await redis.xadd(
                 self._dlq_stream,
                 {
-                    "__data__": json.dumps(payload, default=str),
+                    STREAM_FIELD_DATA: json.dumps(payload, default=str),
                     DLQ_FIELD_SOURCE_ID: message_id,
                     DLQ_FIELD_GROUP: self._group,
                     DLQ_FIELD_REASON: _REASON_MAX_DELIVERIES,

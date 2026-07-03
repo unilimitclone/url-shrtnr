@@ -26,7 +26,7 @@ from infrastructure.templates import templates
 from middleware.rate_limiter import Limits, limiter
 from schemas.enums.domain_status import DomainStatus
 from schemas.models.url import SchemaVersion
-from services.click.bot_detection import is_bot_request
+from services.click.bot_detection import should_block_bot
 from services.click.events import ClickEvent
 from shared.ip_utils import get_client_ip
 from shared.url_utils import extract_hostname
@@ -144,18 +144,11 @@ async def redirect_url(
                 status_code=401,
             )
 
-    # 3. Pre-emit bot block — v1/emoji only. The block DECISION must run
-    #    before the redirect is served (click processing may happen
-    #    out-of-band); bot metadata RECORDING stays in the click pipeline.
-    #    v2 URLs never block redirects on bots (analytics-skip only).
+    # 3. Pre-emit bot block — the DECISION must run before the redirect is
+    #    served (click processing may happen out-of-band); bot metadata
+    #    RECORDING stays in the click pipeline.
     user_agent = request.headers.get("User-Agent", "")
-    if (
-        request.method not in ("HEAD", "OPTIONS")
-        and user_agent
-        and url_data.block_bots
-        and schema != SchemaVersion.V2
-        and is_bot_request(user_agent)
-    ):
+    if should_block_bot(request.method, user_agent, url_data, schema):
         log.info("click_tracking_bot_blocked", short_code=short_code, schema=schema)
         return _error_page(request, "403", "ACCESS DENIED", 403)
 
@@ -170,9 +163,9 @@ async def redirect_url(
             short_code=short_code,
             schema_key=schema,
             is_emoji=is_emoji,
-            # password_hash stripped: v1 stores plaintext passwords and they
-            # must never land on the stream / DLQ. No consumer needs it.
-            url=url_data.model_copy(update={"password_hash": None}),
+            # ClickEvent strips url.password_hash on construction (v1 hashes
+            # are plaintext) — no producer-side sanitization needed.
+            url=url_data,
             client_ip=user_ip,
             user_agent=user_agent,
             referrer=referrer,

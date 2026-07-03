@@ -22,12 +22,12 @@ from dependencies.wiring import wire_services
 from infrastructure.bootstrap.system_default_domain import (
     ensure_system_default_domain,
 )
-from infrastructure.cache.redis_client import create_redis_client
 from infrastructure.email.zeptomail import ZeptoMailProvider
 from infrastructure.geoip import GeoIPService
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from infrastructure.oauth_clients import init_oauth
+from infrastructure.queue_redis import connect_queue_redis
 from infrastructure.templates import configure_template_globals, templates
 from middleware.error_handler import register_error_handlers
 from middleware.logging import RequestLoggingMiddleware
@@ -117,39 +117,9 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
         # Queue Redis (click event stream) — optional, SEPARATE instance from
         # the cache Redis (cache runs allkeys-lru which would evict stream
-        # entries). Only connected when stream mode is requested; wiring
-        # degrades the sink to inline when this ends up None.
-        queue_redis = None
-        ce_settings = settings.click_events
-        if ce_settings.sink == "stream" and ce_settings.queue_redis_uri:
-            queue_redis = await create_redis_client(
-                ce_settings.queue_redis_uri, label="click-events-queue"
-            )
-            # Stream mode requires Redis >= 8.2: the sink publishes with
-            # XADD ... ACKED (consumer-group-aware self-trimming). Older
-            # servers would reject every emit, so gate here with a clear
-            # message instead of failing per-request.
-            if queue_redis is not None:
-                version = "unknown"
-                try:
-                    info = await queue_redis.info("server")
-                    version = info.get("redis_version", "unknown")
-                    major, minor, *_ = (int(p) for p in version.split(".")[:2])
-                    supported = (major, minor) >= (8, 2)
-                except Exception:
-                    supported = False
-                if not supported:
-                    log.error(
-                        "queue_redis_version_unsupported",
-                        version=version,
-                        detail=(
-                            "Click event streaming requires Redis >= 8.2 "
-                            "(XADD ACKED trimming). Falling back to inline "
-                            "click tracking."
-                        ),
-                    )
-                    await queue_redis.aclose()
-                    queue_redis = None
+        # entries). None (unconfigured / unreachable / pre-8.2) degrades the
+        # sink to inline in wiring.
+        queue_redis = await connect_queue_redis(settings.click_events)
         app.state.queue_redis = queue_redis
 
         # OAuth clients — stored on app.state for route-layer access

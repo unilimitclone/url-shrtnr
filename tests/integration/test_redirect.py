@@ -23,28 +23,16 @@ from errors import (
     NotFoundError,
     ValidationError,
 )
-from infrastructure.cache.url_cache import UrlCacheData
 from routes.redirect_routes import router as redirect_router
 from tests.conftest import build_test_app
+from tests.factories import make_url_cache
 
 
-def _make_cache_data(**kwargs) -> UrlCacheData:
-    """Build a UrlCacheData with sensible defaults; override via kwargs."""
-    defaults = dict(
-        id=str(ObjectId()),
-        alias="abc123",
-        long_url="https://example.com/destination",
-        block_bots=False,
-        password_hash=None,
-        expiration_time=None,
-        max_clicks=None,
-        url_status="ACTIVE",
-        schema_version="v2",
-        owner_id=str(ObjectId()),
-        total_clicks=0,
-    )
-    defaults.update(kwargs)
-    return UrlCacheData(**defaults)
+def _make_cache_data(**overrides):
+    overrides.setdefault("alias", "abc123")
+    overrides.setdefault("long_url", "https://example.com/destination")
+    overrides.setdefault("owner_id", str(ObjectId()))
+    return make_url_cache(domain="", **overrides)
 
 
 # ── Tests ────────────────────────────────────────────────────────────────────

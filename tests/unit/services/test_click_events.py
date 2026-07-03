@@ -5,52 +5,23 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from infrastructure.cache.url_cache import UrlCacheData
+from infrastructure.cache.url_cache import (
+    UrlCacheData,
+)
 from services.click.events import (
     EVENT_TYPE_CLICK,
     STREAM_FIELD_DATA,
     STREAM_FIELD_TYPE,
     STREAM_FIELD_VERSION,
-    ClickEvent,
     click_event_from_payload,
     from_stream_fields,
     to_stream_fields,
 )
+from tests.factories import make_click_event, make_url_cache
 
-
-def make_url_data(**overrides) -> UrlCacheData:
-    base = dict(
-        _id="65f000000000000000000001",
-        alias="abc",
-        long_url="https://example.com",
-        block_bots=False,
-        password_hash=None,
-        expiration_time=None,
-        max_clicks=None,
-        url_status="ACTIVE",
-        schema_version="v2",
-        owner_id=None,
-        total_clicks=0,
-        domain="spoo.me",
-    )
-    base.update(overrides)
-    return UrlCacheData(**base)
-
-
-def make_event(**overrides) -> ClickEvent:
-    base = dict(
-        short_code="abc",
-        schema_key="v2",
-        is_emoji=False,
-        url=make_url_data(),
-        client_ip="1.2.3.4",
-        user_agent="Mozilla/5.0",
-        referrer="https://t.co/x",
-        cf_city="Berlin",
-        redirect_ms=7,
-    )
-    base.update(overrides)
-    return ClickEvent(**base)
+# Local aliases — shape lives in tests/factories.py
+make_url_data = make_url_cache
+make_event = make_click_event
 
 
 class TestClickEvent:
@@ -122,3 +93,15 @@ class TestPayloadDecode:
         restored = click_event_from_payload(payload)
         assert restored is not None
         assert restored.short_code == "abc"
+
+
+class TestPasswordHashSanitization:
+    """The privacy invariant is structural: no producer can leak a hash."""
+
+    def test_password_hash_stripped_on_construction(self):
+        event = make_event(url=make_url_data(password_hash="plaintext-v1-password"))
+        assert event.url.password_hash is None
+
+    def test_hashless_url_passes_through_unchanged(self):
+        url = make_url_data(password_hash=None)
+        assert make_event(url=url).url is url

@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic import ValidationError as PydanticValidationError
 
 from infrastructure.cache.url_cache import UrlCacheData
@@ -56,6 +56,17 @@ class ClickEvent(BaseModel):
     cf_city: str | None
     redirect_ms: int
     enqueued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("url")
+    @classmethod
+    def _strip_password_hash(cls, url: UrlCacheData) -> UrlCacheData:
+        """v1 "hashes" are PLAINTEXT passwords — they must never ride the
+        stream (queue Redis, DLQ, logs). Enforced structurally here so every
+        producer (the redirect route today, the edge beacon tomorrow)
+        inherits the guarantee instead of having to remember it."""
+        if url.password_hash is not None:
+            return url.model_copy(update={"password_hash": None})
+        return url
 
 
 def to_stream_fields(event: ClickEvent) -> dict[str, str]:
