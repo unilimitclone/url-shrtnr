@@ -11,6 +11,7 @@ FLASK_SECRET_KEY is also accepted as an alias for backward compatibility
 from __future__ import annotations
 
 from functools import cached_property
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
@@ -185,6 +186,77 @@ class CustomDomainSettings(BaseSettings):
         return self
 
 
+# Consumer groups the click worker knows how to run. Adding a new consumer =
+# implement it in workers/click_worker.py and register its name here.
+CLICK_WORKER_GROUPS = ("stats", "hotness")
+
+
+class ClickEventsSettings(BaseSettings):
+    """Click event pipeline config (lean redirect path + fanout consumers).
+
+    Defaults keep the feature fully off: ``sink="inline"`` preserves the
+    classic synchronous tracking byte-for-byte — no stream, no queue Redis,
+    no worker required. Stream mode additionally requires
+    ``queue_redis_uri`` pointing at a SEPARATE Redis instance from the URL
+    cache: the cache runs ``allkeys-lru`` and would silently evict stream
+    entries (= click loss); the queue Redis must run ``noeviction`` + AOF.
+
+    All env vars are prefixed ``CLICK_EVENTS_`` so generic names set
+    elsewhere in the deploy environment don't accidentally configure this
+    feature (same convention as ``CUSTOM_DOMAINS_``).
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="CLICK_EVENTS_",
+    )
+
+    # Master switch: "inline" = classic synchronous tracking (default),
+    # "stream" = emit to the Redis Stream and let the worker consume.
+    sink: Literal["inline", "stream"] = "inline"
+    queue_redis_uri: str = ""
+
+    stream: str = "events:clicks"
+    dlq_stream: str = "events:clicks:dlq"
+    # Approximate cap (XADD MAXLEN ~). Sized to hours of peak traffic; the
+    # real backpressure limit is the queue Redis noeviction memory cap.
+    maxlen: int = Field(default=1_000_000, ge=1000)
+
+    # Consumer tunables.
+    batch_size: int = Field(default=100, ge=1)
+    block_ms: int = Field(default=2000, ge=100)
+    # Pending messages idle longer than claim_idle_ms are reclaimed by the
+    # claimer subscriber (XAUTOCLAIM); after max_deliveries failed attempts
+    # a message is dead-lettered to dlq_stream.
+    claim_idle_ms: int = Field(default=60_000, ge=1000)
+    max_deliveries: int = Field(default=5, ge=1)
+    stats_interval_seconds: float = Field(default=30.0, gt=0)
+
+    # Which consumer groups this worker process runs. Lets a future
+    # deployment split groups across containers without code changes.
+    worker_groups: list[str] = Field(default=list(CLICK_WORKER_GROUPS))
+
+    # Hot-URL detection (fixed window counters; threshold mirrors the
+    # cf-edge plan's 50 hits / 60s promotion rule).
+    hotness_enabled: bool = False
+    hot_threshold: int = Field(default=50, ge=2)
+    hot_window_seconds: int = Field(default=60, ge=10)
+
+    @field_validator("worker_groups")
+    @classmethod
+    def _known_groups_only(cls, v: list[str]) -> list[str]:
+        unknown = set(v) - set(CLICK_WORKER_GROUPS)
+        if unknown:
+            raise ValueError(
+                f"Unknown click worker group(s): {sorted(unknown)}. "
+                f"Known groups: {list(CLICK_WORKER_GROUPS)}"
+            )
+        if not v:
+            raise ValueError("worker_groups must not be empty")
+        return v
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -290,6 +362,7 @@ class AppSettings(BaseSettings):
     logging: LoggingSettings | None = None
     sentry: SentrySettings | None = None
     custom_domains: CustomDomainSettings | None = None
+    click_events: ClickEventsSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -321,6 +394,8 @@ class AppSettings(BaseSettings):
             self.sentry = SentrySettings()
         if self.custom_domains is None:
             self.custom_domains = CustomDomainSettings()
+        if self.click_events is None:
+            self.click_events = ClickEventsSettings()
 
         return self
 

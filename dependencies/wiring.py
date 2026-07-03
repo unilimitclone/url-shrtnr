@@ -39,7 +39,7 @@ from services.auth.password import PasswordService
 from services.auth.verification import EmailVerificationService
 from services.cf_saas_backend import CfSaasBackend
 from services.click import ClickService, LegacyClickHandler, V2ClickHandler
-from services.click.sinks import InlineSink
+from services.click.sinks import InlineSink, RedisStreamSink
 from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
 from services.export.formatters import default_formatters
@@ -160,7 +160,35 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     v2_handler = V2ClickHandler(click_repo, url_repo, app.state.geoip, url_cache)
     v1_handler = LegacyClickHandler(legacy_repo, emoji_repo, app.state.geoip)
     app.state.click_service = ClickService({"v2": v2_handler, "v1": v1_handler})
-    app.state.click_sink = InlineSink(app.state.click_service)
+
+    # ── Click event sink ─────────────────────────────────────────────
+    # inline (default): classic synchronous tracking, unchanged.
+    # stream: XADD to the click stream; the click worker consumes it.
+    # Misconfigured stream mode (missing/unreachable queue Redis) degrades
+    # to inline with a startup warning — same graceful pattern as custom
+    # domains and the optional cache Redis.
+    inline_sink = InlineSink(app.state.click_service)
+    ce_settings = settings.click_events
+    queue_redis = getattr(app.state, "queue_redis", None)
+    if ce_settings.sink == "stream" and queue_redis is not None:
+        app.state.click_sink = RedisStreamSink(
+            queue_redis,
+            stream=ce_settings.stream,
+            maxlen=ce_settings.maxlen,
+            fallback=inline_sink,
+        )
+        log.info("click_sink_stream_enabled", stream=ce_settings.stream)
+    else:
+        if ce_settings.sink == "stream":
+            log.warning(
+                "click_events_stream_unconfigured",
+                detail=(
+                    "CLICK_EVENTS_SINK=stream but the queue Redis is missing "
+                    "or unreachable — falling back to inline click tracking. "
+                    "Set CLICK_EVENTS_QUEUE_REDIS_URI to a dedicated Redis."
+                ),
+            )
+        app.state.click_sink = inline_sink
 
     app.state.app_grant_repo = app_grant_repo
 

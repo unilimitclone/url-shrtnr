@@ -22,6 +22,7 @@ from dependencies.wiring import wire_services
 from infrastructure.bootstrap.system_default_domain import (
     ensure_system_default_domain,
 )
+from infrastructure.cache.redis_client import create_redis_client
 from infrastructure.email.zeptomail import ZeptoMailProvider
 from infrastructure.geoip import GeoIPService
 from infrastructure.http_client import HttpClient
@@ -114,6 +115,18 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             )
         app.state.redis = redis_client
 
+        # Queue Redis (click event stream) — optional, SEPARATE instance from
+        # the cache Redis (cache runs allkeys-lru which would evict stream
+        # entries). Only connected when stream mode is requested; wiring
+        # degrades the sink to inline when this ends up None.
+        queue_redis = None
+        ce_settings = settings.click_events
+        if ce_settings.sink == "stream" and ce_settings.queue_redis_uri:
+            queue_redis = await create_redis_client(
+                ce_settings.queue_redis_uri, label="click-events-queue"
+            )
+        app.state.queue_redis = queue_redis
+
         # OAuth clients — stored on app.state for route-layer access
         _, oauth_providers = init_oauth(settings.oauth)
         app.state.oauth_providers = oauth_providers
@@ -187,6 +200,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         await mongo_client.close()
         if redis_client is not None:
             await redis_client.aclose()
+        if queue_redis is not None:
+            await queue_redis.aclose()
         await http_client.aclose()
 
     app = FastAPI(
