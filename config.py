@@ -243,6 +243,13 @@ class ClickEventsSettings(BaseSettings):
     hot_threshold: int = Field(default=50, ge=2)
     hot_window_seconds: int = Field(default=60, ge=10)
 
+    # History sweeper: consumed events are garbage (nothing replays them);
+    # trimming them keeps the noeviction memory budget free to act as an
+    # OUTAGE BUFFER instead of a museum. Never trims pending/undelivered
+    # entries — see workers/trimmer.py.
+    trim_enabled: bool = True
+    trim_interval_seconds: float = Field(default=300.0, gt=0)
+
     @field_validator("worker_groups")
     @classmethod
     def _known_groups_only(cls, v: list[str]) -> list[str]:
