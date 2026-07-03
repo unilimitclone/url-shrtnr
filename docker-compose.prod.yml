@@ -209,10 +209,88 @@ services:
         max-size: "5m"
         max-file: "2"
 
+  # ── Click event pipeline ───────────────────────────────────────────────
+  # Consumed by the app when CLICK_EVENTS_SINK=stream is set in
+  # .env.production (with CLICK_EVENTS_QUEUE_REDIS_URI pointing here).
+  # Removing that env var reverts the app to inline tracking; these two
+  # services can then be stopped independently.
+  redis-queue:
+    image: redis:7-alpine
+    container_name: spoo_redis_queue
+    restart: always
+    # Queue semantics ≠ cache semantics (spoo_redis): noeviction rejects
+    # writes when full instead of silently dropping events — the app's
+    # sink then falls back to inline tracking (alertable via the
+    # click_sink_fallback log event). AOF everysec bounds hard-crash loss
+    # to ~1s of in-flight events; the stream is the source of truth for
+    # clicks between XADD and consumer XACK, unlike the rebuildable URL
+    # cache which stays persistence-free.
+    command: >
+      redis-server
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+      --tcp-keepalive 60
+      --timeout 300
+      --requirepass ${REDIS_QUEUE_PASSWORD}
+    volumes:
+      - redis-queue-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    mem_limit: 192m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.45
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  click-worker:
+    image: ghcr.io/spoo-me/spoo:${IMAGE_TAG:-latest}
+    container_name: spoo_click_worker
+    restart: always
+    command: >
+      uv run uvicorn --factory workers.click_worker:create_app
+      --host 0.0.0.0 --port 8001
+      --no-access-log
+      --timeout-graceful-shutdown 30
+    env_file:
+      - .env.production
+    depends_on:
+      redis-queue:
+        condition: service_healthy
+    healthcheck:
+      # /health pings the queue Redis through the FastStream broker —
+      # catches a wedged consumer loop, which restart: always cannot see.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    mem_limit: 512m
+    mem_reservation: 128m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.70
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}"
+
 volumes:
   redis-data:
   caddy-data:
   caddy-config:
+  redis-queue-data:
 
 networks:
   spoonet:

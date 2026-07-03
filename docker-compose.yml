@@ -51,6 +51,66 @@ services:
       - MONGODB_URI=mongodb://mongouser:mongouser@db:27017
       - REDIS_URI=redis://redis:6379/0
 
+  # ── Click event pipeline (opt-in) ──────────────────────────────────────
+  # Start with: docker compose --profile click-events up
+  # And set on the app: CLICK_EVENTS_SINK=stream
+  #                     CLICK_EVENTS_QUEUE_REDIS_URI=redis://redis-queue:6379/0
+  redis-queue:
+    image: "redis:7-alpine"
+    container_name: spoo_redis_queue
+    profiles: ["click-events"]
+    restart: always
+    # Queue semantics ≠ cache semantics: noeviction rejects writes instead
+    # of silently dropping events (the app's sink then falls back to inline
+    # tracking); AOF bounds crash loss to ~1s of events.
+    command: >
+      redis-server
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-queue-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  click-worker:
+    build: .
+    container_name: spoo_click_worker
+    profiles: ["click-events"]
+    command: >
+      uv run uvicorn --factory workers.click_worker:create_app
+      --host 0.0.0.0 --port 8001 --no-access-log
+    volumes:
+      - .:/app
+      - /app/.venv
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - MONGODB_URI=mongodb://mongouser:mongouser@db:27017
+      - REDIS_URI=redis://redis:6379/0
+      - CLICK_EVENTS_SINK=stream
+      - CLICK_EVENTS_QUEUE_REDIS_URI=redis://redis-queue:6379/0
+      - CLICK_EVENTS_HOTNESS_ENABLED=true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
 volumes:
   mongo-data:
   mongo-config:
+  redis-queue-data:
