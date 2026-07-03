@@ -55,6 +55,28 @@ from services.url_service import UrlService
 log = get_logger(__name__)
 
 
+def build_click_service(
+    click_repo: ClickRepository,
+    url_repo: UrlRepository,
+    legacy_repo: LegacyUrlRepository,
+    emoji_repo: EmojiUrlRepository,
+    geoip,
+    url_cache: UrlCache,
+) -> ClickService:
+    """Compose the click pipeline (schema handler registry).
+
+    Single source of truth for the schema→handler mapping, shared by the
+    web app (inline sink) and the click worker (stats consumer) so both
+    processes always run identical tracking logic.
+    """
+    return ClickService(
+        {
+            "v2": V2ClickHandler(click_repo, url_repo, geoip, url_cache),
+            "v1": LegacyClickHandler(legacy_repo, emoji_repo, geoip),
+        }
+    )
+
+
 def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     """Build all repositories and services, store on ``app.state``.
 
@@ -157,9 +179,9 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         captcha,
     )
 
-    v2_handler = V2ClickHandler(click_repo, url_repo, app.state.geoip, url_cache)
-    v1_handler = LegacyClickHandler(legacy_repo, emoji_repo, app.state.geoip)
-    app.state.click_service = ClickService({"v2": v2_handler, "v1": v1_handler})
+    app.state.click_service = build_click_service(
+        click_repo, url_repo, legacy_repo, emoji_repo, app.state.geoip, url_cache
+    )
 
     # ── Click event sink ─────────────────────────────────────────────
     # inline (default): classic synchronous tracking, unchanged.
