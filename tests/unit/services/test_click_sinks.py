@@ -71,6 +71,9 @@ class TestRedisStreamSink:
         assert STREAM_FIELD_DATA in fields
         assert kwargs["maxlen"] == 1000
         assert kwargs["approximate"] is True
+        # Redis 8.2 consumer-group-aware trimming: consumed history
+        # self-cleans on write; unacked backlog is never trimmed.
+        assert kwargs["ref_policy"] == "ACKED"
         fallback.emit.assert_not_awaited()
 
     async def test_falls_back_inline_on_xadd_failure(self):

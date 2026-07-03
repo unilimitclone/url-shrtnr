@@ -219,9 +219,12 @@ class ClickEventsSettings(BaseSettings):
 
     stream: str = "events:clicks"
     dlq_stream: str = "events:clicks:dlq"
-    # Approximate cap (XADD MAXLEN ~). Sized to hours of peak traffic; the
-    # real backpressure limit is the queue Redis noeviction memory cap.
-    maxlen: int = Field(default=1_000_000, ge=1000)
+    # Acked-history tail kept in the stream (XADD ACKED MAXLEN ~, Redis 8.2+):
+    # every publish sweeps entries beyond this that ALL groups have acked, so
+    # consumed history self-cleans server-side (~7MB at the default). Unacked
+    # backlog is never trimmed regardless of size — its only bound is the
+    # queue Redis noeviction memory cap (backpressure → inline fallback).
+    maxlen: int = Field(default=10_000, ge=1000)
 
     # Consumer tunables.
     batch_size: int = Field(default=100, ge=1)
@@ -242,13 +245,6 @@ class ClickEventsSettings(BaseSettings):
     hotness_enabled: bool = False
     hot_threshold: int = Field(default=50, ge=2)
     hot_window_seconds: int = Field(default=60, ge=10)
-
-    # History sweeper: consumed events are garbage (nothing replays them);
-    # trimming them keeps the noeviction memory budget free to act as an
-    # OUTAGE BUFFER instead of a museum. Never trims pending/undelivered
-    # entries — see workers/trimmer.py.
-    trim_enabled: bool = True
-    trim_interval_seconds: float = Field(default=300.0, gt=0)
 
     @field_validator("worker_groups")
     @classmethod

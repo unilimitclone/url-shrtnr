@@ -15,7 +15,7 @@ class TestClickEventsSettings:
         assert s.queue_redis_uri == ""
         assert s.stream == "events:clicks"
         assert s.dlq_stream == "events:clicks:dlq"
-        assert s.maxlen == 1_000_000
+        assert s.maxlen == 10_000
         assert s.max_deliveries == 5
         assert s.claim_idle_ms == 60_000
         assert s.hotness_enabled is False

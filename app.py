@@ -125,6 +125,31 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             queue_redis = await create_redis_client(
                 ce_settings.queue_redis_uri, label="click-events-queue"
             )
+            # Stream mode requires Redis >= 8.2: the sink publishes with
+            # XADD ... ACKED (consumer-group-aware self-trimming). Older
+            # servers would reject every emit, so gate here with a clear
+            # message instead of failing per-request.
+            if queue_redis is not None:
+                version = "unknown"
+                try:
+                    info = await queue_redis.info("server")
+                    version = info.get("redis_version", "unknown")
+                    major, minor, *_ = (int(p) for p in version.split(".")[:2])
+                    supported = (major, minor) >= (8, 2)
+                except Exception:
+                    supported = False
+                if not supported:
+                    log.error(
+                        "queue_redis_version_unsupported",
+                        version=version,
+                        detail=(
+                            "Click event streaming requires Redis >= 8.2 "
+                            "(XADD ACKED trimming). Falling back to inline "
+                            "click tracking."
+                        ),
+                    )
+                    await queue_redis.aclose()
+                    queue_redis = None
         app.state.queue_redis = queue_redis
 
         # OAuth clients — stored on app.state for route-layer access

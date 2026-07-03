@@ -215,7 +215,7 @@ services:
   # Removing that env var reverts the app to inline tracking; these two
   # services can then be stopped independently.
   redis-queue:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: spoo_redis_queue
     restart: always
     # Queue semantics ≠ cache semantics (spoo_redis): noeviction rejects

@@ -35,11 +35,16 @@ class RedisStreamSink:
 
     async def emit(self, event: ClickEvent) -> None:
         try:
+            # ref_policy="ACKED" (Redis >= 8.2): each XADD also sweeps entries
+            # beyond `maxlen` that EVERY consumer group has acknowledged —
+            # consumed history self-cleans on write, while unacked backlog is
+            # untrimmable regardless of size (never lose a click).
             await self._redis.xadd(
                 self._stream,
                 to_stream_fields(event),
                 maxlen=self._maxlen,
                 approximate=True,
+                ref_policy="ACKED",
             )
         except Exception as exc:
             log.warning(

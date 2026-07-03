@@ -33,7 +33,6 @@ healthcheck.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import socket
 from dataclasses import dataclass, field
@@ -61,7 +60,6 @@ from services.click.consumers import (
     StatsClickConsumer,
 )
 from workers.dlq import ClaimDeadLetterGuard
-from workers.trimmer import StreamTrimmer
 
 log = get_logger(__name__)
 
@@ -82,20 +80,14 @@ class _WorkerRuntime:
     mongo_client: AsyncMongoClient
     cache_redis: Any | None
     counter_redis: Any | None
-    trim_redis: Any | None = None
-    trim_task: asyncio.Task | None = None
     consumers: dict[str, ClickConsumer] = field(default_factory=dict)
 
     async def aclose(self) -> None:
-        if self.trim_task is not None:
-            self.trim_task.cancel()
         await self.mongo_client.close()
         if self.cache_redis is not None:
             await self.cache_redis.aclose()
         if self.counter_redis is not None:
             await self.counter_redis.aclose()
-        if self.trim_redis is not None:
-            await self.trim_redis.aclose()
 
 
 def enabled_groups(ce: ClickEventsSettings) -> list[str]:
@@ -162,18 +154,6 @@ async def _build_runtime(settings: AppSettings, groups: list[str]) -> _WorkerRun
             window_seconds=ce.hot_window_seconds,
             actions=[LogHotUrlAction()],
         )
-
-    if ce.trim_enabled:
-        trim_redis = await create_redis_client(
-            ce.queue_redis_uri, label="stream-trimmer"
-        )
-        if trim_redis is not None:
-            runtime.trim_redis = trim_redis
-            runtime.trim_task = asyncio.create_task(
-                StreamTrimmer(
-                    trim_redis, ce.stream, ce.trim_interval_seconds
-                ).run_forever()
-            )
 
     return runtime
 
