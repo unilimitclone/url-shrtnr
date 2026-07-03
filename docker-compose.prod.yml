@@ -271,6 +271,12 @@ services:
       --timeout-graceful-shutdown 30
     env_file:
       - .env.production
+    environment:
+      # Pinned here (not .env.production) so the worker can run in stream
+      # mode while the app is still on inline — the staged-rollout split.
+      # ${REDIS_QUEUE_PASSWORD} interpolates from /opt/spoo/.env.
+      CLICK_EVENTS_SINK: stream
+      CLICK_EVENTS_QUEUE_REDIS_URI: redis://:${REDIS_QUEUE_PASSWORD}@172.30.0.45:6379/0
     depends_on:
       redis-queue:
         condition: service_healthy
