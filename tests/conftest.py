@@ -92,6 +92,7 @@ def build_test_app(
         app.state.profile_picture_service = AsyncMock()
         app.state.contact_service = AsyncMock()
         app.state.click_service = AsyncMock()
+        app.state.click_sink = AsyncMock()
         app.state.app_grant_repo = AsyncMock()
         app.state.custom_domain_service = AsyncMock()
         app.state.feature_flag_service = AsyncMock()

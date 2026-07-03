@@ -23,6 +23,7 @@ from services.auth.device import DeviceAuthService
 from services.auth.password import PasswordService
 from services.auth.verification import EmailVerificationService
 from services.click import ClickService
+from services.click.sinks import ClickEventSink
 from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
 from services.export.service import ExportService
@@ -97,6 +98,10 @@ def get_click_service(request: Request) -> ClickService:
     return request.app.state.click_service
 
 
+def get_click_sink(request: Request) -> ClickEventSink:
+    return request.app.state.click_sink
+
+
 def get_app_grant_repo(request: Request) -> AppGrantRepository:
     return request.app.state.app_grant_repo
 
@@ -126,6 +131,7 @@ ProfilePictureSvc = Annotated[
 ]
 ContactSvc = Annotated[ContactService, Depends(get_contact_service)]
 ClickSvc = Annotated[ClickService, Depends(get_click_service)]
+ClickSink = Annotated[ClickEventSink, Depends(get_click_sink)]
 AppGrantRepo = Annotated[AppGrantRepository, Depends(get_app_grant_repo)]
 FeatureFlagSvc = Annotated[FeatureFlagService, Depends(get_feature_flag_service)]
 CustomDomainSvc = Annotated[CustomDomainService, Depends(get_custom_domain_service)]

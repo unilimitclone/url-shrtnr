@@ -13,7 +13,7 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
 
-from dependencies import ClickSvc, UrlSvc
+from dependencies import ClickSink, UrlSvc
 from errors import (
     BlockedUrlError,
     ForbiddenError,
@@ -26,6 +26,8 @@ from infrastructure.templates import templates
 from middleware.rate_limiter import Limits, limiter
 from schemas.enums.domain_status import DomainStatus
 from schemas.models.url import SchemaVersion
+from services.click.bot_detection import is_bot_request
+from services.click.events import ClickEvent
 from shared.ip_utils import get_client_ip
 from shared.url_utils import extract_hostname
 
@@ -102,7 +104,7 @@ async def redirect_url(
     short_code: str,
     request: Request,
     url_service: UrlSvc,
-    click_service: ClickSvc,
+    click_sink: ClickSink,
 ) -> Response:
     """Resolve a short code and redirect to the destination URL.
 
@@ -142,33 +144,51 @@ async def redirect_url(
                 status_code=401,
             )
 
-    # 3. Track click — skip for HEAD / OPTIONS
+    # 3. Pre-emit bot block — v1/emoji only. The block DECISION must run
+    #    before the redirect is served (click processing may happen
+    #    out-of-band); bot metadata RECORDING stays in the click pipeline.
+    #    v2 URLs never block redirects on bots (analytics-skip only).
+    user_agent = request.headers.get("User-Agent", "")
+    if (
+        request.method not in ("HEAD", "OPTIONS")
+        and user_agent
+        and url_data.block_bots
+        and schema != SchemaVersion.V2
+        and is_bot_request(user_agent)
+    ):
+        log.info("click_tracking_bot_blocked", short_code=short_code, schema=schema)
+        return _error_page(request, "403", "ACCESS DENIED", 403)
+
+    # 4. Emit click event — skip for HEAD / OPTIONS
     tracking_ms = 0
     if request.method not in ("HEAD", "OPTIONS"):
-        user_agent = request.headers.get("User-Agent", "")
         referrer = request.headers.get("Referer")
         cf_city = request.headers.get("CF-IPCity")
         is_emoji = schema == SchemaVersion.EMOJI
         tracking_start = time.perf_counter()
+        event = ClickEvent(
+            short_code=short_code,
+            schema_key=schema,
+            is_emoji=is_emoji,
+            # password_hash stripped: v1 stores plaintext passwords and they
+            # must never land on the stream / DLQ. No consumer needs it.
+            url=url_data.model_copy(update={"password_hash": None}),
+            client_ip=user_ip,
+            user_agent=user_agent,
+            referrer=referrer,
+            cf_city=cf_city,
+            redirect_ms=int((time.perf_counter() - start_time) * 1000),
+        )
         try:
-            await click_service.track_click(
-                url_data=url_data,
-                short_code=short_code,
-                schema=schema,
-                is_emoji=is_emoji,
-                client_ip=user_ip,
-                redirect_ms=int((time.perf_counter() - start_time) * 1000),
-                user_agent=user_agent,
-                referrer=referrer,
-                cf_city=cf_city,
-            )
+            await click_sink.emit(event)
         except ValidationError:
             # Bad / missing User-Agent — skip analytics, still redirect
             log.info(
                 "click_tracking_validation_error", short_code=short_code, schema=schema
             )
         except ForbiddenError as exc:
-            # Bot blocked (v1 / emoji) — block the redirect
+            # Inline sink, defense in depth: the legacy handler blocked a
+            # bot the pre-emit check missed — block the redirect as before
             log.info(
                 "click_tracking_bot_blocked", short_code=short_code, reason=str(exc)
             )
@@ -177,7 +197,7 @@ async def redirect_url(
             log.exception("click_tracking_failed", short_code=short_code, schema=schema)
         tracking_ms = int((time.perf_counter() - tracking_start) * 1000)
 
-    # 4. Redirect
+    # 5. Redirect
     total_ms = int((time.perf_counter() - start_time) * 1000)
     if should_sample("url_redirect"):
         log.info(

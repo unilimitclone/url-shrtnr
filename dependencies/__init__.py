@@ -46,6 +46,7 @@ from dependencies.infra import (
 from dependencies.services import (
     ApiKeySvc,
     AppGrantRepo,
+    ClickSink,
     ClickSvc,
     ContactSvc,
     CredentialSvc,
@@ -64,6 +65,7 @@ from dependencies.services import (
     get_api_key_service,
     get_app_grant_repo,
     get_click_service,
+    get_click_sink,
     get_contact_service,
     get_credential_service,
     get_custom_domain_service,
@@ -93,6 +95,7 @@ __all__ = [
     "AppRegistryDep",
     # auth
     "AuthUser",
+    "ClickSink",
     "ClickSvc",
     "ContactSvc",
     "CredentialSvc",
@@ -122,6 +125,7 @@ __all__ = [
     "get_app_grant_repo",
     "get_app_registry",
     "get_click_service",
+    "get_click_sink",
     "get_contact_service",
     "get_credential_service",
     "get_current_user",

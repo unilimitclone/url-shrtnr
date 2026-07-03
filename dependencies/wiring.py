@@ -39,6 +39,7 @@ from services.auth.password import PasswordService
 from services.auth.verification import EmailVerificationService
 from services.cf_saas_backend import CfSaasBackend
 from services.click import ClickService, LegacyClickHandler, V2ClickHandler
+from services.click.sinks import InlineSink
 from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
 from services.export.formatters import default_formatters
@@ -159,6 +160,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     v2_handler = V2ClickHandler(click_repo, url_repo, app.state.geoip, url_cache)
     v1_handler = LegacyClickHandler(legacy_repo, emoji_repo, app.state.geoip)
     app.state.click_service = ClickService({"v2": v2_handler, "v1": v1_handler})
+    app.state.click_sink = InlineSink(app.state.click_service)
 
     app.state.app_grant_repo = app_grant_repo
 
