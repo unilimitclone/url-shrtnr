@@ -35,7 +35,7 @@ USER_OID = ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")
 URL_OID = ObjectId("bbbbbbbbbbbbbbbbbbbbbbbb")
 ALIAS = "abc1234"
 CLIENT_IP = "1.2.3.4"
-START_TIME = 0.0
+REDIRECT_MS = 42
 NORMAL_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0"
 )
@@ -145,7 +145,7 @@ def make_context(
     url_data: UrlCacheData,
     short_code: str = ALIAS,
     client_ip: str = CLIENT_IP,
-    start_time: float = START_TIME,
+    redirect_ms: int = REDIRECT_MS,
     user_agent: str = NORMAL_UA,
     referrer: str | None = None,
     is_emoji: bool = False,
@@ -155,7 +155,7 @@ def make_context(
         url_data=url_data,
         short_code=short_code,
         client_ip=client_ip,
-        start_time=start_time,
+        redirect_ms=redirect_ms,
         user_agent=user_agent,
         referrer=referrer,
         is_emoji=is_emoji,
@@ -503,7 +503,7 @@ class TestTrackClickDispatch:
             schema="v2",
             is_emoji=False,
             client_ip=CLIENT_IP,
-            start_time=START_TIME,
+            redirect_ms=REDIRECT_MS,
             user_agent=NORMAL_UA,
             referrer=None,
         )
@@ -524,7 +524,7 @@ class TestTrackClickDispatch:
             schema="v1",
             is_emoji=False,
             client_ip=CLIENT_IP,
-            start_time=START_TIME,
+            redirect_ms=REDIRECT_MS,
             user_agent=NORMAL_UA,
             referrer=None,
         )
@@ -546,7 +546,7 @@ class TestTrackClickDispatch:
             schema="emoji",
             is_emoji=True,
             client_ip=CLIENT_IP,
-            start_time=START_TIME,
+            redirect_ms=REDIRECT_MS,
             user_agent=NORMAL_UA,
             referrer=None,
         )

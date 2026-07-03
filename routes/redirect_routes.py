@@ -157,7 +157,7 @@ async def redirect_url(
                 schema=schema,
                 is_emoji=is_emoji,
                 client_ip=user_ip,
-                start_time=start_time,
+                redirect_ms=int((time.perf_counter() - start_time) * 1000),
                 user_agent=user_agent,
                 referrer=referrer,
                 cf_city=cf_city,

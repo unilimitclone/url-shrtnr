@@ -8,7 +8,6 @@ via constructor injection, and reads all click metadata from the ClickContext.
 from __future__ import annotations
 
 import re
-import time as time_module
 from datetime import datetime, timezone
 
 import tldextract
@@ -61,7 +60,6 @@ class V2ClickHandler:
         url_data = context.url_data
         short_code = context.short_code
         client_ip = context.client_ip
-        start_time = context.start_time
         user_agent = context.user_agent
         referrer = context.referrer
         cf_city = context.cf_city
@@ -101,7 +99,7 @@ class V2ClickHandler:
         country = await self._geoip.get_country(client_ip)
         city = await self._geoip.get_city(client_ip) or cf_city
 
-        redirect_ms = int((time_module.perf_counter() - start_time) * 1000)
+        redirect_ms = context.redirect_ms
 
         # Bot detection
         is_bot = is_bot_request(user_agent)
@@ -206,7 +204,6 @@ class LegacyClickHandler:
         short_code = context.short_code
         is_emoji = context.is_emoji
         client_ip = context.client_ip
-        start_time = context.start_time
         user_agent = context.user_agent
         referrer = context.referrer
 
@@ -287,8 +284,7 @@ class LegacyClickHandler:
 
         # Average redirection time (exponential moving average, alpha=0.1)
         # curr_avg defaults to 0 since UrlCacheData doesn't carry this field
-        end_time = time_module.perf_counter()
-        redirection_time = (end_time - start_time) * 1000
+        redirection_time = float(context.redirect_ms)
         curr_avg = 0.0
         alpha = 0.1
         updates["$set"]["average_redirection_time"] = round(
