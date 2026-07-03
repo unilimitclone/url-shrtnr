@@ -279,6 +279,9 @@ services:
       # ${REDIS_QUEUE_PASSWORD} interpolates from /opt/spoo/.env.
       CLICK_EVENTS_SINK: stream
       CLICK_EVENTS_QUEUE_REDIS_URI: redis://:${REDIS_QUEUE_PASSWORD}@172.30.0.45:6379/0
+      # log-only hot-URL detection (50 clicks/60s per URL); feeds the
+      # future CF-KV promotion + scam-analysis consumers
+      CLICK_EVENTS_HOTNESS_ENABLED: "true"
     depends_on:
       redis-queue:
         condition: service_healthy
