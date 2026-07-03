@@ -16,7 +16,7 @@ class ClickContext:
     url_data: UrlCacheData
     short_code: str
     client_ip: str
-    start_time: float
+    redirect_ms: int
     user_agent: str
     referrer: str | None
     is_emoji: bool = False

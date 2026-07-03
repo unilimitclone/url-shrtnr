@@ -27,6 +27,7 @@ from infrastructure.geoip import GeoIPService
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from infrastructure.oauth_clients import init_oauth
+from infrastructure.queue_redis import connect_queue_redis
 from infrastructure.templates import configure_template_globals, templates
 from middleware.error_handler import register_error_handlers
 from middleware.logging import RequestLoggingMiddleware
@@ -114,6 +115,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             )
         app.state.redis = redis_client
 
+        # Queue Redis (click event stream) — optional, SEPARATE instance from
+        # the cache Redis (cache runs allkeys-lru which would evict stream
+        # entries). None (unconfigured / unreachable / pre-8.2) degrades the
+        # sink to inline in wiring.
+        queue_redis = await connect_queue_redis(settings.click_events)
+        app.state.queue_redis = queue_redis
+
         # OAuth clients — stored on app.state for route-layer access
         _, oauth_providers = init_oauth(settings.oauth)
         app.state.oauth_providers = oauth_providers
@@ -187,6 +195,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         await mongo_client.close()
         if redis_client is not None:
             await redis_client.aclose()
+        if queue_redis is not None:
+            await queue_redis.aclose()
         await http_client.aclose()
 
     app = FastAPI(
