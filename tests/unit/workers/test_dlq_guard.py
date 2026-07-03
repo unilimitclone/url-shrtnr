@@ -8,6 +8,7 @@ from workers.dlq import (
     DLQ_FIELD_GROUP,
     DLQ_FIELD_REASON,
     DLQ_FIELD_SOURCE_ID,
+    DLQ_MAXLEN,
     ClaimDeadLetterGuard,
 )
 
@@ -55,6 +56,10 @@ class TestClaimDeadLetterGuard:
         assert fields[DLQ_FIELD_GROUP] == "stats"
         assert fields[DLQ_FIELD_REASON] == "max_deliveries_exceeded"
         assert "abc" in fields["__data__"]
+        # DLQ must stay bounded — queue Redis is noeviction
+        kwargs = redis.xadd.await_args.kwargs
+        assert kwargs["maxlen"] == DLQ_MAXLEN
+        assert kwargs["approximate"] is True
 
     async def test_bytes_delivery_metadata_is_handled(self):
         """The broker's internal client speaks bytes."""

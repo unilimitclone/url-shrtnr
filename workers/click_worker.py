@@ -84,6 +84,10 @@ class _WorkerRuntime:
     async def aclose(self) -> None:
         for task in self.telemetry_tasks:
             task.cancel()
+        # cancel() is only a request — drain the tasks before closing the
+        # connections they may still hold mid-call.
+        if self.telemetry_tasks:
+            await asyncio.gather(*self.telemetry_tasks, return_exceptions=True)
         await self.mongo_client.close()
         if self.cache_redis is not None:
             await self.cache_redis.aclose()

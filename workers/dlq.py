@@ -27,11 +27,10 @@ DLQ_FIELD_GROUP = "dlq_group"
 DLQ_FIELD_REASON = "dlq_reason"
 _REASON_MAX_DELIVERIES = "max_deliveries_exceeded"
 
-
-def _as_str(value: Any) -> str:
-    if isinstance(value, bytes):
-        return value.decode()
-    return str(value)
+# Queue Redis runs noeviction: an unbounded DLQ could fill memory and start
+# rejecting ALL writes, including the main click stream. Any real backlog is
+# orders of magnitude smaller than this bound.
+DLQ_MAXLEN = 10_000
 
 
 class ClaimDeadLetterGuard:
@@ -69,6 +68,8 @@ class ClaimDeadLetterGuard:
                     DLQ_FIELD_GROUP: self._group,
                     DLQ_FIELD_REASON: _REASON_MAX_DELIVERIES,
                 },
+                maxlen=DLQ_MAXLEN,
+                approximate=True,
             )
         except Exception as exc:
             log.error(

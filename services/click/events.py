@@ -78,6 +78,14 @@ def to_stream_fields(event: ClickEvent) -> dict[str, str]:
     }
 
 
+def _error_summary(exc: PydanticValidationError) -> list[dict[str, Any]]:
+    """Field locations + error types, with input values stripped (PII)."""
+    return [
+        {"loc": e["loc"], "type": e["type"]}
+        for e in exc.errors(include_url=False, include_input=False)
+    ]
+
+
 def from_stream_fields(fields: dict[str, str]) -> ClickEvent | None:
     """Decode raw stream entry fields back into a ClickEvent.
 
@@ -91,8 +99,10 @@ def from_stream_fields(fields: dict[str, str]) -> ClickEvent | None:
         return None
     try:
         return ClickEvent.model_validate_json(raw)
-    except PydanticValidationError:
-        log.warning("click_event_malformed", raw=raw[:300])
+    except PydanticValidationError as exc:
+        # Structural diagnostics only — the raw payload carries PII
+        # (client_ip, user_agent, long_url) that must not reach logs.
+        log.warning("click_event_malformed", errors=_error_summary(exc))
         return None
 
 
@@ -108,6 +118,6 @@ def click_event_from_payload(payload: Any) -> ClickEvent | None:
         return None
     try:
         return ClickEvent.model_validate(payload)
-    except PydanticValidationError:
-        log.warning("click_event_malformed", raw=str(payload)[:300])
+    except PydanticValidationError as exc:
+        log.warning("click_event_malformed", errors=_error_summary(exc))
         return None

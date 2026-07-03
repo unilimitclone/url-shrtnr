@@ -4,6 +4,8 @@ Returns an async redis.Redis client, or None if Redis is not configured
 or the connection fails. All callers must handle the None case gracefully.
 """
 
+import contextlib
+
 import redis.asyncio as aioredis
 from redis.exceptions import RedisError
 
@@ -20,13 +22,19 @@ async def create_redis_client(
     ``label`` distinguishes multiple instances (cache vs click-event queue)
     in logs.
     """
+    client: aioredis.Redis | None = None
     try:
-        client: aioredis.Redis = aioredis.from_url(
+        client = aioredis.from_url(
             redis_uri,
             encoding="utf-8",
             decode_responses=True,
             socket_keepalive=True,
             health_check_interval=30,
+            # Bounded timeouts: a wedged-but-open connection must raise (so
+            # callers like the click sink can fall back inline) instead of
+            # hanging until the kernel TCP timeout.
+            socket_connect_timeout=5,
+            socket_timeout=5,
         )
         await client.ping()
         # mask credentials
@@ -39,7 +47,6 @@ async def create_redis_client(
             error=str(e),
             error_type=type(e).__name__,
         )
-        return None
     except Exception as e:
         log.warning(
             "redis_unexpected_error",
@@ -47,4 +54,9 @@ async def create_redis_client(
             error=str(e),
             error_type=type(e).__name__,
         )
-        return None
+    # Reaching here means construction or ping failed — release the pool
+    # instead of leaking it (from_url doesn't connect, but it builds one).
+    if client is not None:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+    return None

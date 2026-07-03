@@ -82,10 +82,15 @@ services:
       --tcp-keepalive 60
       --timeout 300
       --requirepass ${REDIS_PASSWORD}
+    environment:
+      # redis-cli reads REDISCLI_AUTH automatically — healthcheck can
+      # authenticate without the password appearing on a process cmdline.
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # grep is load-bearing: redis-cli exits 0 even on NOAUTH/error replies
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -234,10 +239,13 @@ services:
       --tcp-keepalive 60
       --timeout 300
       --requirepass ${REDIS_QUEUE_PASSWORD}
+    environment:
+      REDISCLI_AUTH: ${REDIS_QUEUE_PASSWORD}
     volumes:
       - redis-queue-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # grep is load-bearing: redis-cli exits 0 even on NOAUTH/error replies
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 5
