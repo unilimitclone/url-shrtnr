@@ -39,30 +39,27 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from dotenv import load_dotenv
+from faststream.asgi import AsgiFastStream, make_ping_asgi
+from faststream.redis import RedisBroker, StreamSub
+from faststream.redis.annotations import Redis, RedisMessage
+from pymongo.asynchronous.mongo_client import AsyncMongoClient
 
-load_dotenv()  # Must run before any module reads os.environ
-
-from faststream.asgi import AsgiFastStream, make_ping_asgi  # noqa: E402
-from faststream.redis import RedisBroker, StreamSub  # noqa: E402
-from faststream.redis.annotations import Redis, RedisMessage  # noqa: E402
-from pymongo.asynchronous.mongo_client import AsyncMongoClient  # noqa: E402
-
-from config import AppSettings, ClickEventsSettings  # noqa: E402
-from dependencies.wiring import build_click_service  # noqa: E402
-from infrastructure.cache.redis_client import create_redis_client  # noqa: E402
-from infrastructure.cache.url_cache import UrlCache  # noqa: E402
-from infrastructure.geoip import GeoIPService  # noqa: E402
-from infrastructure.logging import get_logger, setup_logging  # noqa: E402
-from repositories.click_repository import ClickRepository  # noqa: E402
-from repositories.legacy.emoji_url_repository import EmojiUrlRepository  # noqa: E402
-from repositories.legacy.legacy_url_repository import LegacyUrlRepository  # noqa: E402
-from repositories.url_repository import UrlRepository  # noqa: E402
-from services.click.consumers import (  # noqa: E402
+from config import AppSettings, ClickEventsSettings
+from dependencies.wiring import build_click_service
+from infrastructure.cache.redis_client import create_redis_client
+from infrastructure.cache.url_cache import UrlCache
+from infrastructure.geoip import GeoIPService
+from infrastructure.logging import get_logger, setup_logging
+from repositories.click_repository import ClickRepository
+from repositories.legacy.emoji_url_repository import EmojiUrlRepository
+from repositories.legacy.legacy_url_repository import LegacyUrlRepository
+from repositories.url_repository import UrlRepository
+from services.click.consumers import (
     HotUrlDetector,
     LogHotUrlAction,
     StatsClickConsumer,
 )
-from workers.dlq import ClaimDeadLetterGuard  # noqa: E402
+from workers.dlq import ClaimDeadLetterGuard
 
 log = get_logger(__name__)
 
@@ -103,9 +100,7 @@ def enabled_groups(ce: ClickEventsSettings) -> list[str]:
     return groups
 
 
-async def _build_runtime(
-    settings: AppSettings, groups: list[str]
-) -> _WorkerRuntime:
+async def _build_runtime(settings: AppSettings, groups: list[str]) -> _WorkerRuntime:
     ce = settings.click_events
     mongo_client: AsyncMongoClient = AsyncMongoClient(
         settings.db.mongodb_uri,
@@ -119,9 +114,7 @@ async def _build_runtime(
     # skips cache invalidation; resolve-side caching is the app's concern).
     cache_redis = None
     if settings.redis.redis_uri:
-        cache_redis = await create_redis_client(
-            settings.redis.redis_uri, label="cache"
-        )
+        cache_redis = await create_redis_client(settings.redis.redis_uri, label="cache")
 
     runtime = _WorkerRuntime(
         mongo_client=mongo_client,
@@ -131,9 +124,7 @@ async def _build_runtime(
 
     if "stats" in groups:
         geoip = GeoIPService(settings.geoip_country_db, settings.geoip_city_db)
-        url_cache = UrlCache(
-            cache_redis, ttl_seconds=settings.redis.redis_ttl_seconds
-        )
+        url_cache = UrlCache(cache_redis, ttl_seconds=settings.redis.redis_ttl_seconds)
         runtime.consumers["stats"] = StatsClickConsumer(
             build_click_service(
                 ClickRepository(db["clicks"]),
@@ -280,6 +271,13 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
 
 
 def create_app() -> AsgiFastStream:
-    """uvicorn --factory entrypoint."""
+    """uvicorn --factory entrypoint.
+
+    ``load_dotenv`` runs here (not at import time) so importing this module
+    never mutates ``os.environ`` — pydantic-settings reads the .env file on
+    its own; this call only covers non-settings ``os.environ`` readers, the
+    same contract as ``main.py``.
+    """
+    load_dotenv()
     setup_logging()
     return create_worker_app()

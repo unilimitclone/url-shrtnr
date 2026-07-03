@@ -55,9 +55,7 @@ class ClickEvent(BaseModel):
     referrer: str | None
     cf_city: str | None
     redirect_ms: int
-    enqueued_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    enqueued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 def to_stream_fields(event: ClickEvent) -> dict[str, str]:

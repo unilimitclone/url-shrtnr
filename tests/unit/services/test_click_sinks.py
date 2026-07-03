@@ -16,7 +16,9 @@ from services.click.sinks import InlineSink, RedisStreamSink
 from tests.unit.services.test_click_events import make_event
 
 
-def assert_track_click_matches_event(click_service: AsyncMock, event: ClickEvent) -> None:
+def assert_track_click_matches_event(
+    click_service: AsyncMock, event: ClickEvent
+) -> None:
     click_service.track_click.assert_awaited_once_with(
         url_data=event.url,
         short_code=event.short_code,

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 from bson import ObjectId
 from fastapi.testclient import TestClient
 
-from dependencies import get_click_service, get_url_service
+from dependencies import get_click_sink, get_url_service
 from errors import (
     BlockedUrlError,
     ForbiddenError,
@@ -55,14 +55,13 @@ def test_redirect_v2_active_url():
     url_data = _make_cache_data(schema_version="v2")
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
-    mock_click_svc = AsyncMock()
-    mock_click_svc.track_click = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -77,14 +76,13 @@ def test_redirect_v1_active_url():
     url_data = _make_cache_data(schema_version="v1", alias="xYz789")
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v1"))
-    mock_click_svc = AsyncMock()
-    mock_click_svc.track_click = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -99,14 +97,13 @@ def test_redirect_emoji_url():
     url_data = _make_cache_data(schema_version="emoji", alias="\U0001f600\U0001f680")
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "emoji"))
-    mock_click_svc = AsyncMock()
-    mock_click_svc.track_click = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -121,13 +118,13 @@ def test_redirect_password_protected_no_password():
     url_data = _make_cache_data(password_hash="$2b$12$somebcrypthash")
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
-    mock_click_svc = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -142,14 +139,13 @@ def test_redirect_v2_correct_password_bcrypt():
     url_data = _make_cache_data(password_hash="$2b$12$somebcrypthash")
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
-    mock_click_svc = AsyncMock()
-    mock_click_svc.track_click = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -168,14 +164,13 @@ def test_redirect_v1_correct_plaintext_password():
     url_data = _make_cache_data(password_hash="secret", schema_version="v1")
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v1"))
-    mock_click_svc = AsyncMock()
-    mock_click_svc.track_click = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -190,13 +185,13 @@ def test_redirect_wrong_password():
     url_data = _make_cache_data(password_hash="$2b$12$somebcrypthash")
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
-    mock_click_svc = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -214,13 +209,13 @@ def test_redirect_blocked_url():
     """resolve raises BlockedUrlError -> 451 HTML."""
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(side_effect=BlockedUrlError("Blocked"))
-    mock_click_svc = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -234,13 +229,13 @@ def test_redirect_expired_url():
     """resolve raises GoneError -> 410 HTML."""
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(side_effect=GoneError("Expired"))
-    mock_click_svc = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -254,13 +249,13 @@ def test_redirect_inactive_url():
     """resolve raises GoneError for inactive URL -> 410 HTML."""
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(side_effect=GoneError("Inactive"))
-    mock_click_svc = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -274,13 +269,13 @@ def test_redirect_not_found():
     """resolve raises NotFoundError -> 404 HTML."""
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(side_effect=NotFoundError("Not found"))
-    mock_click_svc = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -294,13 +289,13 @@ def test_redirect_max_clicks_reached():
     """After max clicks, resolve raises GoneError -> 410."""
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(side_effect=GoneError("Max clicks reached"))
-    mock_click_svc = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -310,12 +305,12 @@ def test_redirect_max_clicks_reached():
 
 
 def test_redirect_bot_blocked_v1():
-    """click_service raises ForbiddenError for bot on v1 -> 403 JSON."""
+    """the click sink raises ForbiddenError for bot on v1 -> 403 JSON."""
     url_data = _make_cache_data(schema_version="v1", block_bots=True)
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v1"))
-    mock_click_svc = AsyncMock()
-    mock_click_svc.track_click = AsyncMock(
+    mock_click_sink = AsyncMock()
+    mock_click_sink.emit = AsyncMock(
         side_effect=ForbiddenError("Bot access denied")
     )
 
@@ -323,7 +318,7 @@ def test_redirect_bot_blocked_v1():
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -334,12 +329,12 @@ def test_redirect_bot_blocked_v1():
 
 
 def test_redirect_bot_blocked_v2():
-    """v2 with block_bots, click_service raises ForbiddenError -> 403 HTML."""
+    """v2 with block_bots, the click sink raises ForbiddenError -> 403 HTML."""
     url_data = _make_cache_data(schema_version="v2", block_bots=True)
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
-    mock_click_svc = AsyncMock()
-    mock_click_svc.track_click = AsyncMock(
+    mock_click_sink = AsyncMock()
+    mock_click_sink.emit = AsyncMock(
         side_effect=ForbiddenError("Bot access denied")
     )
 
@@ -347,7 +342,7 @@ def test_redirect_bot_blocked_v2():
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -358,12 +353,12 @@ def test_redirect_bot_blocked_v2():
 
 
 def test_redirect_bad_user_agent_still_redirects():
-    """click_service raises ValidationError -> skip analytics, still 302."""
+    """the click sink raises ValidationError -> skip analytics, still 302."""
     url_data = _make_cache_data()
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
-    mock_click_svc = AsyncMock()
-    mock_click_svc.track_click = AsyncMock(
+    mock_click_sink = AsyncMock()
+    mock_click_sink.emit = AsyncMock(
         side_effect=ValidationError("Bad User-Agent")
     )
 
@@ -371,7 +366,7 @@ def test_redirect_bad_user_agent_still_redirects():
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -386,21 +381,20 @@ def test_redirect_head_request_skips_tracking():
     url_data = _make_cache_data()
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
-    mock_click_svc = AsyncMock()
-    mock_click_svc.track_click = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.head("/abc123", follow_redirects=False)
 
     assert resp.status_code == 302
-    mock_click_svc.track_click.assert_not_called()
+    mock_click_sink.emit.assert_not_called()
 
 
 def test_redirect_sets_x_robots_tag():
@@ -408,14 +402,13 @@ def test_redirect_sets_x_robots_tag():
     url_data = _make_cache_data()
     mock_url_svc = AsyncMock()
     mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
-    mock_click_svc = AsyncMock()
-    mock_click_svc.track_click = AsyncMock()
+    mock_click_sink = AsyncMock()
 
     app = build_test_app(
         redirect_router,
         overrides={
             get_url_service: lambda: mock_url_svc,
-            get_click_service: lambda: mock_click_svc,
+            get_click_sink: lambda: mock_click_sink,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
