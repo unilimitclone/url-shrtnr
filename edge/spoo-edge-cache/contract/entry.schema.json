@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://spoo.me/schemas/edge-cache-entry.json",
   "title": "EdgeCacheEntry",
-  "description": "KV value written by PromoteToEdgeCacheAction (services/click/consumers/edge_promotion.py) and served by the edge Worker. Key format: cache:{domain}:{short_code}, domain lowercased with no www prefix. Both sides are tested against fixtures.json — change entry shape, key format, fixtures, Python model, and Worker parsing only in lockstep.",
+  "description": "KV value written by PromoteToEdgeCacheAction (services/edge_cache.py) and served by the edge Worker. Key format: cache:{domain}:{short_code}, domain lowercased with no www prefix. Both sides are tested against fixtures.json — change entry shape, key format, fixtures, Python model, and Worker parsing only in lockstep.",
   "type": "object",
   "required": ["type", "url", "status"],
   "additionalProperties": false,

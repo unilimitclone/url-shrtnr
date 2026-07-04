@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from services.click.consumers.edge_promotion import (
+from services.edge_cache import (
     EdgeCacheEntry,
-    edge_cache_key,
+    cache_key,
 )
 
 _FIXTURES = (
@@ -45,7 +45,7 @@ def test_fixture_file_exists_where_the_worker_expects_it():
 )
 def test_python_emits_exactly_the_fixture_shapes(fixture):
     domain, _, code = fixture["key"].removeprefix("cache:").partition(":")
-    assert edge_cache_key(domain, code) == fixture["key"]
+    assert cache_key(domain, code) == fixture["key"]
 
     entry = EdgeCacheEntry(
         url=fixture["value"]["url"], status=fixture["value"]["status"]

@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from config import EdgeCacheSettings
-from services.click.consumers.edge_promotion import (
+from services.click.consumers.hotness import HotUrl
+from services.edge_cache import (
     EdgeCacheEntry,
     PromoteToEdgeCacheAction,
-    edge_cache_key,
-    edge_cache_skip_reason,
+    cache_key,
+    promotion_skip_reason,
 )
-from services.click.consumers.hotness import HotUrl
 from tests.factories import make_url_cache
 
 SYSTEM = "spoo.me"
@@ -48,7 +48,7 @@ def _action(url_cache=None, kv=None, **overrides) -> PromoteToEdgeCacheAction:
 class TestEligibility:
     def test_plain_active_url_is_eligible(self):
         url = make_url_cache()
-        assert edge_cache_skip_reason(url, SYSTEM, SYSTEM) is None
+        assert promotion_skip_reason(url, SYSTEM, SYSTEM) is None
 
     @pytest.mark.parametrize(
         ("overrides", "expected"),
@@ -64,17 +64,17 @@ class TestEligibility:
     )
     def test_restricted_urls_are_skipped(self, overrides, expected):
         url = make_url_cache(**overrides)
-        assert edge_cache_skip_reason(url, SYSTEM, SYSTEM) == expected
+        assert promotion_skip_reason(url, SYSTEM, SYSTEM) == expected
 
     def test_tenant_domain_is_skipped(self):
         url = make_url_cache(domain="links.acme.com")
-        reason = edge_cache_skip_reason(url, "links.acme.com", SYSTEM)
+        reason = promotion_skip_reason(url, "links.acme.com", SYSTEM)
         assert reason == "non_system_domain"
 
     def test_v1_urls_are_eligible(self):
         """Legacy URLs cache with domain=system default → same rules apply."""
         url = make_url_cache(schema_version="v1", owner_id=None)
-        assert edge_cache_skip_reason(url, SYSTEM, SYSTEM) is None
+        assert promotion_skip_reason(url, SYSTEM, SYSTEM) is None
 
 
 class TestPromoteAction:
@@ -90,7 +90,7 @@ class TestPromoteAction:
 
         kv.put.assert_awaited_once()
         args = kv.put.await_args
-        assert args.args[0] == edge_cache_key(SYSTEM, "abc1234")
+        assert args.args[0] == cache_key(SYSTEM, "abc1234")
         entry = json.loads(args.args[1])
         assert entry == {
             "type": "redirect",

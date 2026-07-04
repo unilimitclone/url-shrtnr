@@ -2,7 +2,7 @@
  * spoo-edge-cache — pure-reader edge cache for hot short URLs.
  *
  * The Worker makes NO decisions: origin promotes eligible hot URLs into
- * KV (services/click/consumers/edge_promotion.py) and this Worker serves
+ * KV (services/edge_cache.py) and this Worker serves
  * whatever it finds there. Miss, excluded path, unknown entry type, or
  * any internal error → passthrough to origin, which is exactly today's
  * request path. Entries self-expire via KV TTL (invalidation v1).

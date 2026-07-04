@@ -35,7 +35,7 @@ from services.click.consumers.hotness import HotUrl
 log = get_logger(__name__)
 
 
-def edge_cache_key(domain: str, short_code: str) -> str:
+def cache_key(domain: str, short_code: str) -> str:
     """``cache:{domain}:{code}`` — the Worker derives the same key from
     the request Host (lowercased, ``www.`` stripped) and path."""
     return f"cache:{domain}:{short_code}"
@@ -52,7 +52,7 @@ class EdgeCacheEntry(BaseModel):
     status: int = 302
 
 
-def edge_cache_skip_reason(
+def promotion_skip_reason(
     url: UrlCacheData, hot_domain: str, system_domain: str
 ) -> str | None:
     """Why this URL must NOT be edge-cached — None means eligible.
@@ -105,7 +105,7 @@ class PromoteToEdgeCacheAction:
             self._log_skip(hot, "url_not_in_cache")
             return
 
-        reason = edge_cache_skip_reason(url, hot.domain, self._system_domain)
+        reason = promotion_skip_reason(url, hot.domain, self._system_domain)
         if reason is not None:
             self._log_skip(hot, reason)
             return
@@ -113,7 +113,7 @@ class PromoteToEdgeCacheAction:
         entry = EdgeCacheEntry(url=url.long_url)
         ttl = self._jittered_ttl()
         ok = await self._kv.put(
-            edge_cache_key(hot.domain, hot.short_code),
+            cache_key(hot.domain, hot.short_code),
             entry.model_dump_json(),
             expiration_ttl=ttl,
         )

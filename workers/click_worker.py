@@ -63,8 +63,8 @@ from services.click.consumers import (
     LogHotUrlAction,
     StatsClickConsumer,
 )
-from services.click.consumers.edge_promotion import PromoteToEdgeCacheAction
 from services.click.consumers.hotness import HotUrlAction
+from services.edge_cache import PromoteToEdgeCacheAction
 from workers.dlq import ClaimDeadLetterGuard
 from workers.telemetry import StaleConsumerJanitor, StreamMetricsReporter
 
