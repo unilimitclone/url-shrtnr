@@ -2,7 +2,7 @@
 
 A :class:`HotUrlAction` (registered in the click worker when
 ``EDGE_CACHE_*`` is configured): when the hotness detector fires, look
-the URL up FRESH, gate it through the eligibility rules, and write a
+the URL up fresh, gate it through the eligibility rules, and write a
 redirect entry into KV. From then until the entry's TTL, the edge
 Worker serves that URL's redirects without touching origin.
 
@@ -13,43 +13,20 @@ present by construction, and exactly as fresh as the cache-invalidation
 discipline that the rest of the system already relies on. A miss (worker
 restarted mid-burst, cache evicted) is skipped, not repaired: the next
 hot window re-fires.
-
-Key format and entry JSON are the origin↔worker CONTRACT, mirrored in
-``edge/contract/`` and consumed by the Worker — change them only in
-lockstep with the schema + fixtures there.
 """
 
 from __future__ import annotations
 
 import random
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict
 
 from infrastructure.cache.url_cache import UrlCache, UrlCacheData
 from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.logging import get_logger
 from schemas.models.url import UrlStatus
 from services.click.consumers.hotness import HotUrl
+from services.edge_cache.contract import EdgeCacheEntry, cache_key
 
 log = get_logger(__name__)
-
-
-def cache_key(domain: str, short_code: str) -> str:
-    """``cache:{domain}:{code}`` — the Worker derives the same key from
-    the request Host (lowercased, ``www.`` stripped) and path."""
-    return f"cache:{domain}:{short_code}"
-
-
-class EdgeCacheEntry(BaseModel):
-    """The KV value the Worker serves from. Schema pinned by
-    ``edge/contract/entry.schema.json``."""
-
-    model_config = ConfigDict(frozen=True)
-
-    type: Literal["redirect"] = "redirect"
-    url: str
-    status: int = 302
 
 
 def promotion_skip_reason(
