@@ -172,3 +172,13 @@ class TestEdgeCacheSettings:
             kv_namespace_id="ns",
         )
         assert settings.enabled is True
+
+    def test_api_base_substitutes_for_account_id(self):
+        """Local dev: Explorer API base + dummy token, no CF account."""
+        settings = EdgeCacheSettings(
+            _env_file=None,
+            cf_api_token="local-dev",
+            kv_namespace_id="edge-cache-local",
+            api_base="http://host.docker.internal:8787/cdn-cgi/explorer/api",
+        )
+        assert settings.enabled is True

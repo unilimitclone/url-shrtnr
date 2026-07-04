@@ -284,6 +284,11 @@ class EdgeCacheSettings(BaseSettings):
     cf_account_id: str | None = None
     cf_api_token: str | None = None  # Workers KV write scope only
     kv_namespace_id: str | None = None
+    # Local-dev emulator override: point at wrangler dev's Explorer API
+    # (http://host.docker.internal:8787/cdn-cgi/explorer/api), which
+    # mirrors the same /storage/kv/... paths. Unset in real deployments —
+    # the production URL derives from cf_account_id.
+    api_base: str | None = None
 
     # Entry lifetime at the edge. Deliberately short: with TTL-only
     # invalidation this IS the worst-case staleness bound after a URL
@@ -295,7 +300,11 @@ class EdgeCacheSettings(BaseSettings):
 
     @property
     def enabled(self) -> bool:
-        return bool(self.cf_account_id and self.cf_api_token and self.kv_namespace_id)
+        return bool(
+            self.cf_api_token
+            and self.kv_namespace_id
+            and (self.cf_account_id or self.api_base)
+        )
 
 
 class AppSettings(BaseSettings):

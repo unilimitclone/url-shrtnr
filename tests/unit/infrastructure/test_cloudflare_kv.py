@@ -14,6 +14,7 @@ def _http_with_response(status_code: int = 200) -> tuple[MagicMock, AsyncMock]:
     response.status_code = status_code
     response.is_success = 200 <= status_code < 300
     response.text = "body"
+    response.headers = {}
     http = MagicMock()
     http.request = AsyncMock(return_value=response)
     return http, http.request
@@ -62,9 +63,15 @@ class TestPut:
         assert kwargs["headers"]["Authorization"] == "Bearer tok"
 
     async def test_put_retries_on_5xx_then_succeeds(self):
-        ok_resp = MagicMock(spec=httpx.Response, status_code=200, is_success=True)
+        ok_resp = MagicMock(
+            spec=httpx.Response, status_code=200, is_success=True, headers={}
+        )
         bad_resp = MagicMock(
-            spec=httpx.Response, status_code=500, is_success=False, text="oops"
+            spec=httpx.Response,
+            status_code=500,
+            is_success=False,
+            text="oops",
+            headers={},
         )
         http = MagicMock()
         http.request = AsyncMock(side_effect=[bad_resp, ok_resp])
@@ -98,3 +105,30 @@ class TestDelete:
         """Idempotent: the entry being already gone is the desired state."""
         http, _ = _http_with_response(404)
         assert await _client(http).delete("k") is True
+
+
+class TestApiBaseOverride:
+    async def test_local_emulator_base_replaces_account_scoped_url(self):
+        """api_base points the client at wrangler dev's Explorer API,
+        which mirrors /storage/kv/... without the /accounts prefix."""
+        http, request = _http_with_response(200)
+        client = _client(
+            http,
+            account_id=None,
+            api_base="http://localhost:8787/cdn-cgi/explorer/api",
+        )
+        assert client.is_configured is True
+        assert await client.put("k", "v", expiration_ttl=60) is True
+        url = request.await_args.args[1]
+        assert url == (
+            "http://localhost:8787/cdn-cgi/explorer/api"
+            "/storage/kv/namespaces/ns/values/k"
+        )
+        assert "/accounts/" not in url
+
+    async def test_unconfigured_without_account_or_base(self):
+        http, request = _http_with_response(200)
+        client = _client(http, account_id=None, api_base=None)
+        assert client.is_configured is False
+        assert await client.put("k", "v", expiration_ttl=60) is False
+        request.assert_not_awaited()

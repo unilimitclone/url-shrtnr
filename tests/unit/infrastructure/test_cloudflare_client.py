@@ -140,7 +140,7 @@ class TestCloudflareClient:
         http.request = AsyncMock(return_value=response)
         # Skip the real sleep so the test stays fast.
         mocker.patch(
-            "infrastructure.cloudflare_client.asyncio.sleep",
+            "infrastructure.cloudflare_session.asyncio.sleep",
             new_callable=AsyncMock,
         )
         client = CloudflareClient(
@@ -158,7 +158,7 @@ class TestCloudflareClient:
         http = MagicMock()
         http.request = AsyncMock(side_effect=httpx.ConnectError("boom"))
         mocker.patch(
-            "infrastructure.cloudflare_client.asyncio.sleep",
+            "infrastructure.cloudflare_session.asyncio.sleep",
             new_callable=AsyncMock,
         )
         client = CloudflareClient(
@@ -199,7 +199,7 @@ class TestCloudflareClient:
         http = MagicMock()
         http.request = AsyncMock(return_value=response)
         sleep = mocker.patch(
-            "infrastructure.cloudflare_client.asyncio.sleep",
+            "infrastructure.cloudflare_session.asyncio.sleep",
             new_callable=AsyncMock,
         )
         client = CloudflareClient(
@@ -273,7 +273,7 @@ class TestCloudflareClient:
         http = MagicMock()
         http.request = AsyncMock(return_value=response)
         sleep = mocker.patch(
-            "infrastructure.cloudflare_client.asyncio.sleep",
+            "infrastructure.cloudflare_session.asyncio.sleep",
             new_callable=AsyncMock,
         )
         client = CloudflareClient(
@@ -296,7 +296,7 @@ class TestCloudflareClient:
         http = MagicMock()
         http.request = AsyncMock(return_value=response)
         sleep = mocker.patch(
-            "infrastructure.cloudflare_client.asyncio.sleep",
+            "infrastructure.cloudflare_session.asyncio.sleep",
             new_callable=AsyncMock,
         )
         client = CloudflareClient(
