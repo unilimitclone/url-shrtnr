@@ -53,6 +53,16 @@ npx wrangler kv key put --binding EDGE_CACHE --local \
 curl -sI 'http://localhost:8787/abc1234' | grep -iE 'location|x-spoo-edge'
 ```
 
+While `wrangler dev` runs, local resources are also inspectable over
+HTTP via the Explorer API — a local mirror of the same CF REST surface
+`CloudflareKVClient` uses in production:
+
+```bash
+BASE=http://localhost:8787/cdn-cgi/explorer/api
+curl "$BASE/storage/kv/namespaces/edge-cache-local/keys?prefix=cache:"
+curl "$BASE/storage/kv/namespaces/edge-cache-local/values/cache:localhost:abc1234"
+```
+
 ## Provisioning (one-time per environment)
 
 KV `id` is omitted in `wrangler.jsonc` env blocks: the first
