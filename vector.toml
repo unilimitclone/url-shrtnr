@@ -13,7 +13,7 @@ address = "127.0.0.1:8686"
 
 [sources.docker]
 type = "docker_logs"
-include_containers = ["spoo_app", "spoo_qr"]
+include_containers = ["spoo_app", "spoo_qr", "spoo_click_worker"]
 exclude_containers = ["spoo_vector", "spoo_redis_exporter"]
 
 [transforms.parse_and_clean]
@@ -24,7 +24,7 @@ inputs = ["docker"]
 source = '''
 .service = .container_name
 
-if .container_name == "spoo_app" || .container_name == "spoo_qr" {
+if .container_name == "spoo_app" || .container_name == "spoo_qr" || .container_name == "spoo_click_worker" {
     parsed = parse_json(.message) ?? null
     if parsed != null && is_object(parsed) {
         . = merge(., object!(parsed))
