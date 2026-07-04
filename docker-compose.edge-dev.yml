@@ -1,0 +1,16 @@
+# Local full-loop for the edge cache: the click worker's promotion action
+# writes through wrangler dev's Explorer API into the LOCAL KV simulation,
+# so hot URLs promote automatically during local load tests — no real
+# Cloudflare account involved.
+#
+# Usage (see edge/spoo-edge-cache/README.md "Local dev loop"):
+#   1. echo "127.0.0.1 spoo.local" | sudo tee -a /etc/hosts   # once
+#   2. npx wrangler dev            # in edge/spoo-edge-cache
+#   3. docker compose --profile click-events \
+#        -f docker-compose.yml -f docker-compose.edge-dev.yml up -d click-worker
+services:
+  click-worker:
+    environment:
+      - EDGE_CACHE_CF_API_TOKEN=local-dev
+      - EDGE_CACHE_KV_NAMESPACE_ID=edge-cache-local
+      - EDGE_CACHE_API_BASE=http://host.docker.internal:8787/cdn-cgi/explorer/api

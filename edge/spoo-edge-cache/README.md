@@ -35,7 +35,17 @@ npm run deploy:beta    # → beta.spoo.me/*
 npm run deploy:production
 ```
 
-## Local dev loop (zero cloud)
+## Local FULL loop — automatic promotion (zero cloud)
+
+The real promotion action can write into wrangler dev's local KV via the
+Explorer API (`EDGE_CACHE_API_BASE` override). Hot URLs then promote
+automatically during local load tests — see `docker-compose.edge-dev.yml`
+at the repo root for the three-step setup. Requires
+`127.0.0.1 spoo.local` in `/etc/hosts` (the local system domain) so the
+Worker computes the same `cache:spoo.local:{code}` keys the promotion
+action writes.
+
+## Local dev loop (manual seeding, zero cloud)
 
 ```bash
 # 1. run the app locally
