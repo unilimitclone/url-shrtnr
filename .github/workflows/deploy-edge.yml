@@ -14,6 +14,9 @@ on:
       - main
     paths:
       - "edge/spoo-edge-cache/**"
+  pull_request:
+    paths:
+      - "edge/spoo-edge-cache/**"
   workflow_dispatch:
     inputs:
       environment:
@@ -36,6 +39,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Node
         uses: actions/setup-node@v5
@@ -61,11 +66,15 @@ jobs:
 
   deploy:
     needs: check
+    # PRs only run checks; deploys happen on main pushes and dispatches.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     concurrency: deploy-edge
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3

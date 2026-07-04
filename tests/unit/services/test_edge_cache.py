@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 from unittest.mock import AsyncMock, MagicMock
@@ -86,7 +87,7 @@ class TestPromoteAction:
         kv = MagicMock()
         kv.put = AsyncMock(return_value=True)
 
-        await _action(url_cache, kv).on_hot(_hot())
+        await _action(url_cache, kv).promote(_hot())
 
         kv.put.assert_awaited_once()
         args = kv.put.await_args
@@ -106,7 +107,7 @@ class TestPromoteAction:
         kv = MagicMock()
         kv.put = AsyncMock()
 
-        await _action(url_cache, kv).on_hot(_hot())
+        await _action(url_cache, kv).promote(_hot())
 
         kv.put.assert_not_awaited()
 
@@ -116,7 +117,7 @@ class TestPromoteAction:
         kv = MagicMock()
         kv.put = AsyncMock()
 
-        await _action(url_cache, kv).on_hot(_hot())
+        await _action(url_cache, kv).promote(_hot())
 
         kv.put.assert_not_awaited()
 
@@ -126,7 +127,7 @@ class TestPromoteAction:
         kv = MagicMock()
         kv.put = AsyncMock(return_value=False)
 
-        await _action(url_cache, kv).on_hot(_hot())  # must not raise
+        await _action(url_cache, kv).promote(_hot())  # must not raise
 
     async def test_jitter_never_goes_below_kv_minimum(self):
         """CF KV rejects expiration_ttl < 60 — the floor must hold even
@@ -136,11 +137,36 @@ class TestPromoteAction:
         kv = MagicMock()
         kv.put = AsyncMock(return_value=True)
 
-        await _action(url_cache, kv, ttl_seconds=60, ttl_jitter_ratio=0.5).on_hot(
+        await _action(url_cache, kv, ttl_seconds=60, ttl_jitter_ratio=0.5).promote(
             _hot()
         )
 
         assert kv.put.await_args.kwargs["expiration_ttl"] >= 60
+
+
+class TestOnHotDetachment:
+    async def test_on_hot_returns_before_slow_kv_completes(self):
+        """A degraded CF API must not block the hotness consumer."""
+        url_cache = MagicMock()
+        url_cache.get = AsyncMock(return_value=make_url_cache())
+        gate = asyncio.Event()
+
+        async def slow_put(*args, **kwargs):
+            await gate.wait()
+            return True
+
+        kv = MagicMock()
+        kv.put = slow_put
+        action = _action(url_cache, kv)
+
+        await action.on_hot(_hot())  # must return immediately
+        assert len(action._inflight) == 1
+        kv_not_done = not gate.is_set()
+
+        gate.set()
+        await asyncio.gather(*action._inflight)
+        assert kv_not_done
+        assert len(action._inflight) == 0
 
 
 class TestEdgeCacheEntryContract:

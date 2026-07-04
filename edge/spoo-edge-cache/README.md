@@ -84,7 +84,7 @@ EDGE_CACHE-<env>`, paste the id, same outcome.
 
 Origin env (all three or the feature stays off):
 
-```
+```bash
 EDGE_CACHE_CF_ACCOUNT_ID=...
 EDGE_CACHE_CF_API_TOKEN=...      # Workers KV write scope only
 EDGE_CACHE_KV_NAMESPACE_ID=...   # from wrangler.jsonc after first deploy

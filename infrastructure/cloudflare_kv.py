@@ -16,6 +16,8 @@ by the KV entry's TTL. Both are logged, never fatal.
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import httpx
 
 from infrastructure.cloudflare_client import CF_API_BASE
@@ -96,7 +98,13 @@ class CloudflareKVClient:
             log.warning("cf_kv_not_configured", method=method)
             return False
 
-        path = f"/storage/kv/namespaces/{self._namespace_id}/values/{key}"
+        # Keys ride in the URL path and can contain emoji (emoji short
+        # codes) and reserved characters — CF requires them URL-encoded.
+        # Encoding is transport-only: CF decodes before storing, so the
+        # Worker's binding lookups see the raw key.
+        path = (
+            f"/storage/kv/namespaces/{self._namespace_id}/values/{quote(key, safe='')}"
+        )
         try:
             response = await self._session.request(
                 method, path, content=content, params=params

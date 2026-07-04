@@ -55,12 +55,22 @@ class TestPut:
         assert ok is True
         method, url = request.await_args.args
         assert method == "PUT"
-        assert url.endswith("/storage/kv/namespaces/ns/values/cache:spoo.me:abc")
+        # keys are URL-encoded into the path (CF requirement; emoji keys)
+        assert url.endswith("/storage/kv/namespaces/ns/values/cache%3Aspoo.me%3Aabc")
         assert "/accounts/acc/" in url
         kwargs = request.await_args.kwargs
         assert kwargs["content"] == '{"type":"redirect"}'
         assert kwargs["params"] == {"expiration_ttl": 300}
         assert kwargs["headers"]["Authorization"] == "Bearer tok"
+
+    async def test_emoji_key_is_url_encoded(self):
+        """Emoji short codes must survive the REST path — raw emoji in a
+        URL is undefined behavior; CF expects percent-encoding."""
+        http, request = _http_with_response(200)
+        assert await _client(http).put("cache:spoo.me:🚀", "v", expiration_ttl=60)
+        url = request.await_args.args[1]
+        assert url.endswith("/values/cache%3Aspoo.me%3A%F0%9F%9A%80")
+        assert "🚀" not in url
 
     async def test_put_retries_on_5xx_then_succeeds(self):
         ok_resp = MagicMock(

@@ -17,6 +17,7 @@ hot window re-fires.
 
 from __future__ import annotations
 
+import asyncio
 import random
 
 from infrastructure.cache.url_cache import UrlCache, UrlCacheData
@@ -75,8 +76,19 @@ class PromoteToEdgeCacheAction:
         self._ttl_seconds = ttl_seconds
         self._ttl_jitter_ratio = ttl_jitter_ratio
         self._rng = rng if rng is not None else random.Random()
+        self._inflight: set[asyncio.Task] = set()
 
     async def on_hot(self, hot: HotUrl) -> None:
+        """Fire the promotion detached: a degraded CF API (retries +
+        timeouts can stack to ~18s) must not stall hotness consumption.
+        Concurrency stays naturally bounded — the detector fires once per
+        URL per window. Promotions in flight at worker shutdown are
+        dropped, which the best-effort contract already permits."""
+        task = asyncio.create_task(self.promote(hot))
+        self._inflight.add(task)
+        task.add_done_callback(self._inflight.discard)
+
+    async def promote(self, hot: HotUrl) -> None:
         url = await self._url_cache.get(hot.short_code, hot.domain)
         if url is None:
             self._log_skip(hot, "url_not_in_cache")
