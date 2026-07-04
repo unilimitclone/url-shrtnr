@@ -75,6 +75,17 @@ spoo.me, www.spoo.me {
 	}
 }
 
+# Beta slice (edge-cache rollout rung 3+). Runs as its own compose
+# project (docker-compose.beta.yml) on the shared network — resolved by
+# container name, not compose service name.
+beta.spoo.me {
+	import common_tls
+	reverse_proxy spoo_app_beta:8000 {
+		header_up X-Real-IP {client_ip}
+		header_up X-Forwarded-For {client_ip}
+	}
+}
+
 qr.spoo.me {
 	import common_tls
 	reverse_proxy qr:8080 {

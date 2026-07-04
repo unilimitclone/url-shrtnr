@@ -260,6 +260,57 @@ class ClickEventsSettings(BaseSettings):
         return v
 
 
+class EdgeCacheSettings(BaseSettings):
+    """CF edge cache for hot URLs — a deployment optimization, never a
+    product requirement (design: thoughts/cf-edge-cache-v2.md).
+
+    Fully off unless ALL THREE Cloudflare fields are set. Promotion rides
+    the hotness consumer, so stream mode + hotness are prerequisites.
+    Invalidation in v1 is TTL-only: entries self-expire, and
+    ``wrangler kv key delete`` is the manual purge / abuse-takedown lever.
+
+    Env vars prefixed ``EDGE_CACHE_`` (same convention as
+    ``CUSTOM_DOMAINS_`` / ``CLICK_EVENTS_``).
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="EDGE_CACHE_",
+    )
+
+    # The Workers KV REST API is account-scoped:
+    # /accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/{key}
+    cf_account_id: str | None = None
+    cf_api_token: str | None = None  # Workers KV write scope only
+    kv_namespace_id: str | None = None
+    # Local-dev emulator override: point at wrangler dev's Explorer API
+    # (http://host.docker.internal:8787/cdn-cgi/explorer/api), which
+    # mirrors the same /storage/kv/... paths. Unset in real deployments —
+    # the production URL derives from cf_account_id.
+    api_base: str | None = None
+    # Dev-only companion to api_base: wrangler dev validates the Host
+    # header (localhost forms only), so containers reaching it through
+    # host.docker.internal must present "localhost:8787".
+    api_host_header: str | None = None
+
+    # Entry lifetime at the edge. Deliberately short: with TTL-only
+    # invalidation this IS the worst-case staleness bound after a URL
+    # changes. Raising it trades origin load for staleness.
+    ttl_seconds: int = Field(default=300, ge=60)
+    # ±jitter so simultaneously-promoted URLs don't expire in lockstep
+    # and stampede origin together.
+    ttl_jitter_ratio: float = Field(default=0.2, ge=0.0, le=0.5)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(
+            self.cf_api_token
+            and self.kv_namespace_id
+            and (self.cf_account_id or self.api_base)
+        )
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -367,6 +418,7 @@ class AppSettings(BaseSettings):
     sentry: SentrySettings | None = None
     custom_domains: CustomDomainSettings | None = None
     click_events: ClickEventsSettings | None = None
+    edge_cache: EdgeCacheSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -400,6 +452,8 @@ class AppSettings(BaseSettings):
             self.custom_domains = CustomDomainSettings()
         if self.click_events is None:
             self.click_events = ClickEventsSettings()
+        if self.edge_cache is None:
+            self.edge_cache = EdgeCacheSettings()
 
         return self
 

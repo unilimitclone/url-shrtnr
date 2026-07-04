@@ -1,0 +1,35 @@
+{
+  "description": "Canonical contract fixtures. pytest asserts the Python side EMITS exactly these shapes; vitest asserts the Worker SERVES each one correctly. Adding a fixture here forces both suites to cover it.",
+  "entries": [
+    {
+      "name": "plain redirect",
+      "key": "cache:spoo.me:abc1234",
+      "value": { "type": "redirect", "url": "https://example.com/dest", "status": 302 },
+      "expect": { "status": 302, "location": "https://example.com/dest" }
+    },
+    {
+      "name": "emoji short code",
+      "key": "cache:spoo.me:🚀🚀",
+      "value": { "type": "redirect", "url": "https://example.com/rocket", "status": 302 },
+      "expect": { "status": 302, "location": "https://example.com/rocket" }
+    },
+    {
+      "name": "query-string destination survives verbatim",
+      "key": "cache:spoo.me:qs1",
+      "value": { "type": "redirect", "url": "https://example.com/p?a=1&b=%20x", "status": 302 },
+      "expect": { "status": 302, "location": "https://example.com/p?a=1&b=%20x" }
+    }
+  ],
+  "malformed": [
+    {
+      "name": "unknown type must passthrough, not error",
+      "key": "cache:spoo.me:future1",
+      "raw": "{\"type\": \"password_form\", \"body\": \"<html></html>\", \"status\": 401}"
+    },
+    {
+      "name": "invalid json must passthrough, not error",
+      "key": "cache:spoo.me:broken1",
+      "raw": "{not json"
+    }
+  ]
+}

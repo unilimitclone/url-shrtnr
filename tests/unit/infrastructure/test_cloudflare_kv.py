@@ -1,0 +1,144 @@
+"""Unit tests for CloudflareKVClient."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import httpx
+
+from infrastructure.cloudflare_kv import CloudflareKVClient
+
+
+def _http_with_response(status_code: int = 200) -> tuple[MagicMock, AsyncMock]:
+    response = MagicMock(spec=httpx.Response)
+    response.status_code = status_code
+    response.is_success = 200 <= status_code < 300
+    response.text = "body"
+    response.headers = {}
+    http = MagicMock()
+    http.request = AsyncMock(return_value=response)
+    return http, http.request
+
+
+def _client(http, **overrides) -> CloudflareKVClient:
+    kwargs = {
+        "http_client": http,
+        "api_token": "tok",
+        "account_id": "acc",
+        "namespace_id": "ns",
+        "max_retries": 2,
+        "initial_backoff_seconds": 0.001,
+    }
+    kwargs.update(overrides)
+    return CloudflareKVClient(**kwargs)
+
+
+class TestConfigurationGate:
+    def test_configured_when_all_three_set(self):
+        http, _ = _http_with_response()
+        assert _client(http).is_configured is True
+
+    async def test_unconfigured_returns_false_without_http_call(self):
+        http, request = _http_with_response()
+        client = _client(http, api_token=None)
+        assert client.is_configured is False
+        assert await client.put("k", "v", expiration_ttl=300) is False
+        request.assert_not_awaited()
+
+
+class TestPut:
+    async def test_put_success(self):
+        http, request = _http_with_response(200)
+        ok = await _client(http).put(
+            "cache:spoo.me:abc", '{"type":"redirect"}', expiration_ttl=300
+        )
+        assert ok is True
+        method, url = request.await_args.args
+        assert method == "PUT"
+        # keys are URL-encoded into the path (CF requirement; emoji keys)
+        assert url.endswith("/storage/kv/namespaces/ns/values/cache%3Aspoo.me%3Aabc")
+        assert "/accounts/acc/" in url
+        kwargs = request.await_args.kwargs
+        assert kwargs["content"] == '{"type":"redirect"}'
+        assert kwargs["params"] == {"expiration_ttl": 300}
+        assert kwargs["headers"]["Authorization"] == "Bearer tok"
+
+    async def test_emoji_key_is_url_encoded(self):
+        """Emoji short codes must survive the REST path — raw emoji in a
+        URL is undefined behavior; CF expects percent-encoding."""
+        http, request = _http_with_response(200)
+        assert await _client(http).put("cache:spoo.me:🚀", "v", expiration_ttl=60)
+        url = request.await_args.args[1]
+        assert url.endswith("/values/cache%3Aspoo.me%3A%F0%9F%9A%80")
+        assert "🚀" not in url
+
+    async def test_put_retries_on_5xx_then_succeeds(self):
+        ok_resp = MagicMock(
+            spec=httpx.Response, status_code=200, is_success=True, headers={}
+        )
+        bad_resp = MagicMock(
+            spec=httpx.Response,
+            status_code=500,
+            is_success=False,
+            text="oops",
+            headers={},
+        )
+        http = MagicMock()
+        http.request = AsyncMock(side_effect=[bad_resp, ok_resp])
+        assert await _client(http).put("k", "v", expiration_ttl=60) is True
+        assert http.request.await_count == 2
+
+    async def test_put_gives_up_after_retries(self):
+        http, request = _http_with_response(503)
+        assert await _client(http).put("k", "v", expiration_ttl=60) is False
+        assert request.await_count == 2  # max_retries
+
+    async def test_put_4xx_fails_without_retry(self):
+        """Auth/config 4xx can't be retried away — one attempt only."""
+        http, request = _http_with_response(403)
+        assert await _client(http).put("k", "v", expiration_ttl=60) is False
+        request.assert_awaited_once()
+
+    async def test_transport_error_never_raises(self):
+        http = MagicMock()
+        http.request = AsyncMock(side_effect=httpx.ConnectError("down"))
+        assert await _client(http).put("k", "v", expiration_ttl=60) is False
+
+
+class TestDelete:
+    async def test_delete_success(self):
+        http, request = _http_with_response(200)
+        assert await _client(http).delete("cache:spoo.me:abc") is True
+        assert request.await_args.args[0] == "DELETE"
+
+    async def test_delete_404_is_success(self):
+        """Idempotent: the entry being already gone is the desired state."""
+        http, _ = _http_with_response(404)
+        assert await _client(http).delete("k") is True
+
+
+class TestApiBaseOverride:
+    async def test_local_emulator_base_replaces_account_scoped_url(self):
+        """api_base points the client at wrangler dev's Explorer API,
+        which mirrors /storage/kv/... without the /accounts prefix."""
+        http, request = _http_with_response(200)
+        client = _client(
+            http,
+            account_id=None,
+            api_base="http://localhost:8787/cdn-cgi/explorer/api",
+        )
+        assert client.is_configured is True
+        assert await client.put("k", "v", expiration_ttl=60) is True
+        url = request.await_args.args[1]
+        assert url == (
+            "http://localhost:8787/cdn-cgi/explorer/api"
+            "/storage/kv/namespaces/ns/values/k"
+        )
+        assert "/accounts/" not in url
+
+    async def test_unconfigured_without_account_or_base(self):
+        http, request = _http_with_response(200)
+        client = _client(http, account_id=None, api_base=None)
+        assert client.is_configured is False
+        assert await client.put("k", "v", expiration_ttl=60) is False
+        request.assert_not_awaited()
