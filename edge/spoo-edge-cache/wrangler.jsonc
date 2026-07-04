@@ -46,7 +46,12 @@
 			],
 			"kv_namespaces": [
 				{
-					"binding": "EDGE_CACHE"
+					"binding": "EDGE_CACHE",
+					// provisioned by the first `deploy --env production`
+					// (2026-07-05). Unlike beta, wrangler did NOT write the
+					// id back — pinned manually so the next deploy binds
+					// this namespace instead of provisioning a duplicate.
+					"id": "0cbb363671fc49afb8c87d5f2efb43f6"
 				}
 			],
 			// ~0.5-1M redirects/day through the route — sample edge logs.
