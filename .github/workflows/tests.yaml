@@ -6,12 +6,16 @@ on:
     paths:
       - "**.py"
       - "pyproject.toml"
+      - "uv.lock"
+      - "requirements.txt"
       - ".github/workflows/tests.yaml"
   pull_request:
     branches: [main]
     paths:
       - "**.py"
       - "pyproject.toml"
+      - "uv.lock"
+      - "requirements.txt"
       - ".github/workflows/tests.yaml"
   workflow_dispatch:
 
@@ -23,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout
@@ -54,7 +58,7 @@ jobs:
             -q
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.13' && github.event_name != 'pull_request'
+        if: matrix.python-version == '3.14' && github.event_name != 'pull_request'
         uses: codecov/codecov-action@v7
         with:
           files: coverage.xml

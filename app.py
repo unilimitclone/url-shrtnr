@@ -77,6 +77,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             send_default_pii=settings.sentry.sentry_send_pii,
             traces_sample_rate=settings.sentry.sentry_traces_sample_rate,
             profiles_sample_rate=settings.sentry.sentry_profile_sample_rate,
+            release=settings.app_version if settings.app_version != "dev" else None,
+            environment=settings.env,
         )
 
     @asynccontextmanager
