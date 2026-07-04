@@ -9,14 +9,11 @@ on:
       - "uv.lock"
       - "requirements.txt"
       - ".github/workflows/tests.yaml"
+  # No paths filter on PRs: the test checks are required by branch
+  # protection, and a filtered-out workflow never reports — leaving
+  # non-code PRs stuck at "Expected" forever.
   pull_request:
     branches: [main]
-    paths:
-      - "**.py"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "requirements.txt"
-      - ".github/workflows/tests.yaml"
   workflow_dispatch:
 
 permissions:
