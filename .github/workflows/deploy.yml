@@ -114,6 +114,7 @@ jobs:
             wait_healthy() {
               # Caddy keeps a connection pool to app:8000 with retries, so
               # users see a brief latency bump (not 502) during the swap.
+              [ -n "$1" ] || { echo "::error::wait_healthy: missing container name"; return 1; }
               status=""
               for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
                 status=$(docker inspect "$1" --format '{{.State.Health.Status}}' 2>/dev/null || echo "missing")
@@ -156,7 +157,7 @@ jobs:
               if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$IMAGE_TAG" ]; then
                 echo "rolling back app + worker to ${PREV_TAG}"
                 set_tag "${PREV_TAG}"
-                docker compose --env-file .env -f docker-compose.prod.yml pull app || true
+                docker compose --env-file .env -f docker-compose.prod.yml pull app click-worker || true
                 docker compose --env-file .env -f docker-compose.prod.yml up -d --no-deps app click-worker
                 if wait_healthy spoo_app && wait_healthy spoo_click_worker; then
                   echo "::warning::rolled back — prod is healthy on previous image ${PREV_TAG}"
