@@ -1,0 +1,76 @@
+name: Deploy Edge Worker
+
+# Push to main touching edge/** deploys to production. Beta deploys are
+# manual (workflow_dispatch → environment=beta).
+#
+# NOTE: the FIRST deploy to a new environment must be run locally, not
+# here — wrangler auto-provisions the KV namespace and writes its id
+# back into wrangler.jsonc, and a CI runner's write is lost. See
+# edge/spoo-edge-cache/README.md "Provisioning".
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "edge/spoo-edge-cache/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        options:
+          - beta
+          - production
+        default: beta
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: edge/spoo-edge-cache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: edge/spoo-edge-cache/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Generated types are current
+        run: npx wrangler types --check
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Worker tests (workerd)
+        run: npx vitest run
+
+      - name: Build validates
+        run: npx wrangler deploy --dry-run --env production
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    concurrency: deploy-edge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: edge/spoo-edge-cache
+          command: deploy --env ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
