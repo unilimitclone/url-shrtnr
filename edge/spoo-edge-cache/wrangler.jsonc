@@ -16,7 +16,7 @@
 	"kv_namespaces": [
 		{
 			"binding": "EDGE_CACHE",
-			"id": "36f668b11c5247eca28d181f25080bb1"
+			"id": "edge-cache-local"
 		}
 	],
 	// Local-dev only: .dev.vars sets this to e.g. http://localhost:8000 so
@@ -62,7 +62,12 @@
 			],
 			"kv_namespaces": [
 				{
-					"binding": "EDGE_CACHE"
+					"binding": "EDGE_CACHE",
+					// provisioned by the first `deploy --env beta` (2026-07-04).
+					// NOTE wrangler quirk: the write-back put this id at the TOP
+					// level instead of here — moved manually. Expect the same on
+					// the first production deploy.
+					"id": "36f668b11c5247eca28d181f25080bb1"
 				}
 			],
 			"observability": {

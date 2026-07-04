@@ -7,6 +7,10 @@ export default defineWorkersConfig({
     poolOptions: {
       workers: {
         wrangler: { configPath: "./wrangler.jsonc" },
+        // A developer's .dev.vars (ORIGIN_OVERRIDE for `wrangler dev`)
+        // must not leak into tests — passthrough behavior is under test
+        // and expects the plain fetch(request) path.
+        miniflare: { bindings: { ORIGIN_OVERRIDE: "" } },
       },
     },
   },
