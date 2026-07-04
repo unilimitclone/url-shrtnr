@@ -26,7 +26,9 @@ concurrency:
 
 jobs:
   build:
-    if: inputs.image-tag == ''
+    # releases always build; manual dispatch skips the build when an existing
+    # image tag is supplied (rollback path)
+    if: github.event_name == 'release' || inputs.image-tag == ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,6 +39,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -125,10 +129,12 @@ jobs:
 
             if ! wait_healthy; then
               echo "::error::app failed to reach healthy on ${IMAGE_TAG} (last status: $status)"
-              docker compose --env-file .env -f docker-compose.prod.yml logs --tail=100 app
+              # diagnostics must never abort the rollback below (set -e)
+              docker compose --env-file .env -f docker-compose.prod.yml logs --tail=100 app || true
               if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$IMAGE_TAG" ]; then
                 echo "rolling back to ${PREV_TAG}"
                 set_tag "${PREV_TAG}"
+                docker compose --env-file .env -f docker-compose.prod.yml pull app || true
                 docker compose --env-file .env -f docker-compose.prod.yml up -d --no-deps app
                 if wait_healthy; then
                   echo "::warning::rolled back — prod is healthy on previous image ${PREV_TAG}"
