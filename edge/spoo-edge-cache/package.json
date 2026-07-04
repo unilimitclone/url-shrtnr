@@ -4,12 +4,12 @@
   "private": true,
   "description": "Pure-reader CF Worker serving promoted hot short URLs from KV",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --var ORIGIN_OVERRIDE:http://localhost:8000",
     "deploy:beta": "wrangler deploy --env beta",
     "deploy:production": "wrangler deploy --env production",
     "test": "vitest run",
-    "types": "wrangler types",
-    "check": "wrangler types --check && tsc --noEmit && vitest run"
+    "types": "wrangler types --strict-vars=false",
+    "check": "wrangler types --check --strict-vars=false && tsc --noEmit && vitest run"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.9.12",

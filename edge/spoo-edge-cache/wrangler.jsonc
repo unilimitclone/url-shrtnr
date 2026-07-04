@@ -19,9 +19,11 @@
 			"id": "edge-cache-local"
 		}
 	],
-	// Local-dev only: .dev.vars sets this to e.g. http://localhost:8000 so
-	// `wrangler dev` passthroughs hit a local compose app. Deployed envs
-	// don't restate vars (non-inheritable) → undefined → normal fetch().
+	// Local-dev only: `npm run dev` passes --var ORIGIN_OVERRIDE:... so
+	// passthroughs hit a local compose app. Do NOT use .dev.vars for this —
+	// its presence changes `wrangler types` output and breaks the CI types
+	// check. Deployed envs don't restate vars (non-inheritable) →
+	// undefined → normal fetch().
 	"vars": {
 		"ORIGIN_OVERRIDE": ""
 	},

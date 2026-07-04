@@ -51,10 +51,9 @@ action writes.
 # 1. run the app locally
 docker compose up -d
 
-# 2. point passthrough at it (git-ignored file)
-echo 'ORIGIN_OVERRIDE=http://localhost:8000' > .dev.vars
-
-# 3. run the worker + seed an entry
+# 2. run the worker (the dev script passes ORIGIN_OVERRIDE=http://localhost:8000
+#    as a CLI --var; avoid .dev.vars — it changes `wrangler types` output
+#    and breaks the CI types check)
 npm run dev
 npx wrangler kv key put --binding EDGE_CACHE --local \
   "cache:spoo.me:abc1234" \
