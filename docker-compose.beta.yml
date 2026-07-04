@@ -1,0 +1,151 @@
+# beta.spoo.me — thin staging slice on the prod box (rung 3 of the edge
+# cache rollout; design: thoughts/cf-edge-cache-v2.md).
+#
+# Runs as its OWN compose project so the prod deploy workflow never
+# touches it, joining the existing prod network so Caddy can reach it:
+#
+#   docker compose -p spoo-beta -f docker-compose.beta.yml --env-file .env up -d
+#
+# Traffic path: CF edge (beta Worker route) → :443 → Caddy vhost
+# beta.spoo.me → spoo_app_beta. Uses the same image tag as prod, a
+# separate `url-shortener-beta` database on the same Atlas cluster, and
+# its own cache/queue Redis pair — zero shared state with prod except
+# the box and the Caddy process.
+#
+# Requires /opt/spoo/.env.beta with at minimum:
+#   MONGODB_URI=...            # same cluster as prod
+#   DB_NAME=url-shortener-beta
+#   APP_URL=https://beta.spoo.me
+#   REDIS_URI=redis://spoo_redis_beta:6379/0
+#   CLICK_EVENTS_SINK=stream
+#   CLICK_EVENTS_QUEUE_REDIS_URI=redis://spoo_redis_queue_beta:6379/0
+#   CLICK_EVENTS_HOTNESS_ENABLED=true
+#   EDGE_CACHE_CF_ACCOUNT_ID=...
+#   EDGE_CACHE_CF_API_TOKEN=...      # KV-write scope
+#   EDGE_CACHE_KV_NAMESPACE_ID=...   # beta namespace id from wrangler.jsonc
+#   SECRET_KEY=... JWT_* etc.        # copy non-secret-critical bits from prod as needed
+
+services:
+  app-beta:
+    image: ghcr.io/spoo-me/spoo:${IMAGE_TAG:-latest}
+    container_name: spoo_app_beta
+    restart: always
+    command: >
+      uv run uvicorn main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 1
+      --no-access-log
+      --timeout-keep-alive 5
+      --timeout-graceful-shutdown 30
+    env_file:
+      - .env.beta
+    depends_on:
+      redis-beta:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 768m
+    mem_reservation: 128m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.200
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+        tag: "{{.Name}}"
+
+  redis-beta:
+    image: redis:7-alpine
+    container_name: spoo_redis_beta
+    restart: always
+    command: >
+      redis-server
+      --maxmemory 64mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --appendonly no
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    mem_limit: 96m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.201
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+        tag: "{{.Name}}"
+
+  redis-queue-beta:
+    image: redis:8-alpine
+    container_name: spoo_redis_queue_beta
+    restart: always
+    command: >
+      redis-server
+      --maxmemory 64mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    mem_limit: 96m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.202
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+        tag: "{{.Name}}"
+
+  click-worker-beta:
+    image: ghcr.io/spoo-me/spoo:${IMAGE_TAG:-latest}
+    container_name: spoo_click_worker_beta
+    restart: always
+    command: >
+      uv run uvicorn --factory workers.click_worker:create_app
+      --host 0.0.0.0 --port 8001
+      --no-access-log
+      --timeout-graceful-shutdown 30
+    env_file:
+      - .env.beta
+    depends_on:
+      redis-queue-beta:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    mem_limit: 384m
+    mem_reservation: 96m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.203
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+        tag: "{{.Name}}"
+
+networks:
+  spoonet:
+    external: true
+    name: spoo_spoonet
