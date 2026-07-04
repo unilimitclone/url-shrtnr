@@ -1,0 +1,81 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "spoo-edge-cache",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-01",
+	// Structured Workers Logs; head_sampling_rate is the volume dial and
+	// is overridden per environment below.
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	// Top-level binding exists for `wrangler dev` and the vitest pool
+	// (both simulate KV locally — the id is just the local storage key and
+	// never touches Cloudflare). Deploys ALWAYS use --env, so this never
+	// provisions a remote namespace.
+	"kv_namespaces": [
+		{
+			"binding": "EDGE_CACHE",
+			"id": "edge-cache-local"
+		}
+	],
+	// Local-dev only: `npm run dev` passes --var ORIGIN_OVERRIDE:... so
+	// passthroughs hit a local compose app. Do NOT use .dev.vars for this —
+	// its presence changes `wrangler types` output and breaks the CI types
+	// check. Deployed envs don't restate vars (non-inheritable) →
+	// undefined → normal fetch().
+	"vars": {
+		"ORIGIN_OVERRIDE": ""
+	},
+	// Bindings are non-inheritable: each env restates its own binding.
+	// KV `id` deliberately omitted on first deploy — wrangler
+	// auto-provisions the namespace and writes the id back into this
+	// file; commit that diff (lockfile semantics) and copy the id into
+	// the origin's EDGE_CACHE_KV_NAMESPACE_ID.
+	"env": {
+		"production": {
+			"routes": [
+				{
+					"pattern": "spoo.me/*",
+					"zone_name": "spoo.me"
+				},
+				{
+					"pattern": "www.spoo.me/*",
+					"zone_name": "spoo.me"
+				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "EDGE_CACHE"
+				}
+			],
+			// ~0.5-1M redirects/day through the route — sample edge logs.
+			"observability": {
+				"enabled": true,
+				"head_sampling_rate": 0.05
+			}
+		},
+		"beta": {
+			"routes": [
+				{
+					"pattern": "beta.spoo.me/*",
+					"zone_name": "spoo.me"
+				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "EDGE_CACHE",
+					// provisioned by the first `deploy --env beta` (2026-07-04).
+					// NOTE wrangler quirk: the write-back put this id at the TOP
+					// level instead of here — moved manually. Expect the same on
+					// the first production deploy.
+					"id": "36f668b11c5247eca28d181f25080bb1"
+				}
+			],
+			"observability": {
+				"enabled": true,
+				"head_sampling_rate": 1
+			}
+		}
+	}
+}
