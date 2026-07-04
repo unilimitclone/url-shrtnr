@@ -317,6 +317,7 @@ class AppSettings(BaseSettings):
     # Core
     secret_key: str = ""
     flask_secret_key: str = ""  # backward-compat alias
+    app_version: str = "dev"  # injected by CI via the APP_VERSION build arg
     env: str = "development"
     app_url: str = "https://spoo.me"
     app_name: str = "spoo.me"

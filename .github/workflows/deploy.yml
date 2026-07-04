@@ -1,14 +1,17 @@
 name: Deploy to Production
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - '**/*.md'
-      - '**/*.rst'
-      - 'docs/**'
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      image-tag:
+        description: >-
+          Existing GHCR image tag to deploy (e.g. 2.0.3 or a short sha) —
+          skips the build entirely, so this is the rollback path.
+          Leave empty to build and deploy the current ref.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -17,8 +20,15 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
 jobs:
   build:
+    # releases always build; manual dispatch skips the build when an existing
+    # image tag is supplied (rollback path)
+    if: github.event_name == 'release' || inputs.image-tag == ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -29,6 +39,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -40,14 +52,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT }}
 
+      # On release: 2.1.0 + short sha + latest (so self-hosters on :latest
+      # track releases, not whatever main happens to be). On manual dispatch
+      # without a tag input: short sha only.
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
+            type=semver,pattern={{version}}
             type=sha,prefix=,format=short
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
 
       - name: Build and push
         uses: docker/build-push-action@v7
@@ -56,17 +72,21 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
 
   deploy:
     needs: build
+    # run when build succeeded OR was skipped (rollback path)
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     env:
-      IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+      IMAGE_TAG: ${{ inputs.image-tag != '' && inputs.image-tag || needs.build.outputs.image-tag }}
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.5
@@ -80,27 +100,51 @@ jobs:
             set -e
             cd /opt/spoo
             echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            # write IMAGE_TAG to .env so compose substitution picks it up
-            grep -v '^IMAGE_TAG=' .env > .env.tmp 2>/dev/null || true
-            echo "IMAGE_TAG=${IMAGE_TAG}" >> .env.tmp
-            mv .env.tmp .env
-            chmod 600 .env
+
+            PREV_TAG=$(grep '^IMAGE_TAG=' .env | cut -d= -f2- || true)
+            echo "deploying ${IMAGE_TAG} (previous: ${PREV_TAG:-<none>})"
+
+            set_tag() {
+              grep -v '^IMAGE_TAG=' .env > .env.tmp 2>/dev/null || true
+              echo "IMAGE_TAG=$1" >> .env.tmp
+              mv .env.tmp .env
+              chmod 600 .env
+            }
+
+            wait_healthy() {
+              # Caddy keeps a connection pool to app:8000 with retries, so
+              # users see a brief latency bump (not 502) during the swap.
+              status=""
+              for i in 1 2 3 4 5 6 7 8; do
+                status=$(docker inspect spoo_app --format '{{.State.Health.Status}}' 2>/dev/null || echo "missing")
+                [ "$status" = "healthy" ] && return 0
+                echo "app $status, retry $i"; sleep 3
+              done
+              return 1
+            }
+
+            set_tag "${IMAGE_TAG}"
             docker compose --env-file .env -f docker-compose.prod.yml pull app
             docker compose --env-file .env -f docker-compose.prod.yml up -d --no-deps app
-            # Wait for app healthy before declaring success — Caddy keeps a
-            # connection pool to app:8000 with retries, so users see a brief
-            # latency bump (not 502) during the swap.
-            status=""
-            for i in 1 2 3 4 5 6 7 8; do
-              status=$(docker inspect spoo_app --format '{{.State.Health.Status}}')
-              [ "$status" = "healthy" ] && break
-              echo "app $status, retry $i"; sleep 3
-            done
-            if [ "$status" != "healthy" ]; then
-              echo "::error::app failed to reach healthy after 8 retries (last status: $status)"
-              docker compose --env-file .env -f docker-compose.prod.yml logs --tail=100 app
+
+            if ! wait_healthy; then
+              echo "::error::app failed to reach healthy on ${IMAGE_TAG} (last status: $status)"
+              # diagnostics must never abort the rollback below (set -e)
+              docker compose --env-file .env -f docker-compose.prod.yml logs --tail=100 app || true
+              if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$IMAGE_TAG" ]; then
+                echo "rolling back to ${PREV_TAG}"
+                set_tag "${PREV_TAG}"
+                docker compose --env-file .env -f docker-compose.prod.yml pull app || true
+                docker compose --env-file .env -f docker-compose.prod.yml up -d --no-deps app
+                if wait_healthy; then
+                  echo "::warning::rolled back — prod is healthy on previous image ${PREV_TAG}"
+                else
+                  echo "::error::rollback to ${PREV_TAG} also unhealthy — manual intervention needed"
+                fi
+              fi
               exit 1
             fi
+
             docker image prune -f
             docker compose --env-file .env -f docker-compose.prod.yml ps
 
@@ -114,8 +158,8 @@ jobs:
           script: |
             sleep 10
             for i in 1 2 3 4 5; do
-              if docker exec spoo_app curl -fsS http://localhost:8000/health > /dev/null; then
-                echo "Healthy after $i attempts"
+              if body=$(docker exec spoo_app curl -fsS http://localhost:8000/health); then
+                echo "Healthy after $i attempts: $body"
                 exit 0
               fi
               echo "Attempt $i failed, retrying..."

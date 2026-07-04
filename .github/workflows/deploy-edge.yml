@@ -1,7 +1,13 @@
 name: Deploy Edge Worker
 
-# Push to main touching edge/** deploys to production. Beta deploys are
-# manual (workflow_dispatch → environment=beta).
+# Production deploys ride release publish — the same cadence as the app
+# image (deploy.yml). The two share a wire contract
+# (services/edge_cache/contract.py ⇄ edge/spoo-edge-cache/contract/),
+# so deploying the worker on merge while the app waits for a release
+# would open a contract-skew window. Releases without edge changes
+# redeploy the same worker code — idempotent and cheap.
+# PRs touching edge/** run checks only; beta deploys are manual
+# (workflow_dispatch → environment=beta).
 #
 # NOTE: the FIRST deploy to a new environment must be run locally, not
 # here — wrangler auto-provisions the KV namespace and writes its id
@@ -9,11 +15,8 @@ name: Deploy Edge Worker
 # edge/spoo-edge-cache/README.md "Provisioning".
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "edge/spoo-edge-cache/**"
+  release:
+    types: [published]
   pull_request:
     paths:
       - "edge/spoo-edge-cache/**"

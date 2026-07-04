@@ -61,8 +61,14 @@ async def health_check(request: Request) -> JSONResponse:
             if overall == "healthy":
                 overall = "degraded"
 
+    settings = getattr(request.app.state, "settings", None)
+
     status_code = 503 if overall == "unhealthy" else 200
     return JSONResponse(
         status_code=status_code,
-        content={"status": overall, "checks": checks},
+        content={
+            "status": overall,
+            "version": settings.app_version if settings else "dev",
+            "checks": checks,
+        },
     )
