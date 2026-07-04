@@ -76,6 +76,20 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: edge/spoo-edge-cache/package-lock.json
+
+      # wrangler-action runs the wrangler from node_modules — without
+      # this install the runner falls back to a stray global wrangler
+      # in the wrong directory.
+      - name: Install
+        run: npm ci
+        working-directory: edge/spoo-edge-cache
+
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
         with:
