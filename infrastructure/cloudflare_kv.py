@@ -44,6 +44,7 @@ class CloudflareKVClient:
         account_id: str | None,
         namespace_id: str | None,
         api_base: str | None = None,
+        api_host_header: str | None = None,
         max_retries: int = 3,
         initial_backoff_seconds: float = 1.0,
     ) -> None:
@@ -58,6 +59,7 @@ class CloudflareKVClient:
             http_client=http_client,
             api_token=api_token,
             base_url=base_url,
+            host_header=api_host_header,
             max_retries=max_retries,
             initial_backoff_seconds=initial_backoff_seconds,
         )

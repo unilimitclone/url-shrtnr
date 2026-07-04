@@ -14,3 +14,6 @@ services:
       - EDGE_CACHE_CF_API_TOKEN=local-dev
       - EDGE_CACHE_KV_NAMESPACE_ID=edge-cache-local
       - EDGE_CACHE_API_BASE=http://host.docker.internal:8787/cdn-cgi/explorer/api
+      # wrangler dev validates Host (localhost forms only) — a container
+      # arriving via host.docker.internal must present localhost:8787
+      - EDGE_CACHE_API_HOST_HEADER=localhost:8787

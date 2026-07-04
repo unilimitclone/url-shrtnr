@@ -28,12 +28,18 @@ class CloudflareSession:
         http_client: HttpClient,
         api_token: str | None,
         base_url: str,
+        host_header: str | None = None,
         max_retries: int = 3,
         initial_backoff_seconds: float = 1.0,
     ) -> None:
         self._http = http_client
         self._token = api_token
         self._base_url = base_url
+        # Dev-only: wrangler dev's Explorer API validates the Host header
+        # (allows localhost forms only), so a container reaching it via
+        # host.docker.internal must present "localhost:8787". Never set
+        # against the real Cloudflare API.
+        self._host_header = host_header
         self._max_retries = max_retries
         self._initial_backoff = initial_backoff_seconds
 
@@ -54,6 +60,8 @@ class CloudflareSession:
         failed at the transport layer.
         """
         headers = {"Authorization": f"Bearer {self._token}"}
+        if self._host_header:
+            headers["Host"] = self._host_header
         url = f"{self._base_url}{path}"
 
         last_exc: httpx.HTTPError | None = None

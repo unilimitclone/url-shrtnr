@@ -190,6 +190,7 @@ async def _build_runtime(settings: AppSettings, groups: list[str]) -> _WorkerRun
                             account_id=edge.cf_account_id,
                             namespace_id=edge.kv_namespace_id,
                             api_base=edge.api_base,
+                            api_host_header=edge.api_host_header,
                         ),
                         system_domain=settings.system_default_domain,
                         ttl_seconds=edge.ttl_seconds,

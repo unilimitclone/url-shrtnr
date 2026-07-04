@@ -46,6 +46,21 @@ class TestRequest:
         assert args.kwargs["headers"]["Authorization"] == "Bearer tok"
         assert args.kwargs["params"] == {"a": 1}
 
+    async def test_host_header_override_for_local_emulator(self):
+        """wrangler dev validates Host — containers must present localhost."""
+        http = MagicMock()
+        http.request = AsyncMock(return_value=_response(200))
+        session = _session(http, host_header="localhost:8787")
+        await session.request("PUT", "/x")
+        headers = http.request.await_args.kwargs["headers"]
+        assert headers["Host"] == "localhost:8787"
+
+    async def test_no_host_header_by_default(self):
+        http = MagicMock()
+        http.request = AsyncMock(return_value=_response(200))
+        await _session(http).request("GET", "/x")
+        assert "Host" not in http.request.await_args.kwargs["headers"]
+
     async def test_4xx_returns_without_retry(self):
         """Client errors are the CALLER's business — no retry, no raise."""
         http = MagicMock()

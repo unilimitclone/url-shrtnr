@@ -289,6 +289,10 @@ class EdgeCacheSettings(BaseSettings):
     # mirrors the same /storage/kv/... paths. Unset in real deployments —
     # the production URL derives from cf_account_id.
     api_base: str | None = None
+    # Dev-only companion to api_base: wrangler dev validates the Host
+    # header (localhost forms only), so containers reaching it through
+    # host.docker.internal must present "localhost:8787".
+    api_host_header: str | None = None
 
     # Entry lifetime at the edge. Deliberately short: with TTL-only
     # invalidation this IS the worst-case staleness bound after a URL
