@@ -49,7 +49,9 @@ from config import AppSettings, ClickEventsSettings
 from dependencies.wiring import build_click_service
 from infrastructure.cache.redis_client import create_redis_client
 from infrastructure.cache.url_cache import UrlCache
+from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.geoip import GeoIPService
+from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger, setup_logging
 from repositories.click_repository import ClickRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
@@ -61,6 +63,8 @@ from services.click.consumers import (
     LogHotUrlAction,
     StatsClickConsumer,
 )
+from services.click.consumers.edge_promotion import PromoteToEdgeCacheAction
+from services.click.consumers.hotness import HotUrlAction
 from workers.dlq import ClaimDeadLetterGuard
 from workers.telemetry import StaleConsumerJanitor, StreamMetricsReporter
 
@@ -78,6 +82,7 @@ class _WorkerRuntime:
     cache_redis: Any | None
     counter_redis: Any | None
     telemetry_redis: Any | None = None
+    http_client: HttpClient | None = None
     telemetry_tasks: list[asyncio.Task] = field(default_factory=list)
     consumers: dict[str, ClickConsumer] = field(default_factory=dict)
 
@@ -95,6 +100,8 @@ class _WorkerRuntime:
             await self.counter_redis.aclose()
         if self.telemetry_redis is not None:
             await self.telemetry_redis.aclose()
+        if self.http_client is not None:
+            await self.http_client.aclose()
 
 
 def enabled_groups(ce: ClickEventsSettings) -> list[str]:
@@ -155,11 +162,50 @@ async def _build_runtime(settings: AppSettings, groups: list[str]) -> _WorkerRun
                 "hotness group enabled but the queue Redis is unreachable"
             )
         runtime.counter_redis = counter_redis
+
+        actions: list[HotUrlAction] = [LogHotUrlAction()]
+        edge = settings.edge_cache
+        if edge.enabled:
+            if cache_redis is None:
+                # Promotion reads fresh URL state from the URL cache; with
+                # no cache Redis every lookup would miss and every hot URL
+                # would be skipped — surface the config error instead.
+                log.warning(
+                    "edge_cache_disabled",
+                    detail="EDGE_CACHE_* is set but REDIS_URI is not — "
+                    "promotion needs the URL cache. Skipping registration.",
+                )
+            else:
+                http_client = HttpClient(timeout=settings.http_client_timeout)
+                runtime.http_client = http_client
+                actions.append(
+                    PromoteToEdgeCacheAction(
+                        UrlCache(
+                            cache_redis,
+                            ttl_seconds=settings.redis.redis_ttl_seconds,
+                        ),
+                        CloudflareKVClient(
+                            http_client=http_client,
+                            api_token=edge.cf_api_token,
+                            account_id=edge.cf_account_id,
+                            namespace_id=edge.kv_namespace_id,
+                        ),
+                        system_domain=settings.system_default_domain,
+                        ttl_seconds=edge.ttl_seconds,
+                        ttl_jitter_ratio=edge.ttl_jitter_ratio,
+                    )
+                )
+                log.info(
+                    "edge_promotion_registered",
+                    kv_namespace_id=edge.kv_namespace_id,
+                    ttl_seconds=edge.ttl_seconds,
+                )
+
         runtime.consumers["hotness"] = HotUrlDetector(
             counter_redis,
             threshold=ce.hot_threshold,
             window_seconds=ce.hot_window_seconds,
-            actions=[LogHotUrlAction()],
+            actions=actions,
         )
 
     # Telemetry: periodic backlog/lag stats (the Axiom alert signal) and

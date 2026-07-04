@@ -1,0 +1,148 @@
+"""Hot-URL promotion into the Cloudflare KV edge cache.
+
+A :class:`HotUrlAction` (registered in the click worker when
+``EDGE_CACHE_*`` is configured): when the hotness detector fires, look
+the URL up FRESH, gate it through the eligibility rules, and write a
+redirect entry into KV. From then until the entry's TTL, the edge
+Worker serves that URL's redirects without touching origin.
+
+The lookup is deliberately just ``UrlCache.get``: a URL hot enough to
+fire the detector was resolved by the redirect route seconds ago, and
+``resolve()`` populates the cache on every miss — so the entry is
+present by construction, and exactly as fresh as the cache-invalidation
+discipline that the rest of the system already relies on. A miss (worker
+restarted mid-burst, cache evicted) is skipped, not repaired: the next
+hot window re-fires.
+
+Key format and entry JSON are the origin↔worker CONTRACT, mirrored in
+``edge/contract/`` and consumed by the Worker — change them only in
+lockstep with the schema + fixtures there.
+"""
+
+from __future__ import annotations
+
+import random
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
+
+from infrastructure.cache.url_cache import UrlCache, UrlCacheData
+from infrastructure.cloudflare_kv import CloudflareKVClient
+from infrastructure.logging import get_logger
+from schemas.models.url import UrlStatus
+from services.click.consumers.hotness import HotUrl
+
+log = get_logger(__name__)
+
+
+def edge_cache_key(domain: str, short_code: str) -> str:
+    """``cache:{domain}:{code}`` — the Worker derives the same key from
+    the request Host (lowercased, ``www.`` stripped) and path."""
+    return f"cache:{domain}:{short_code}"
+
+
+class EdgeCacheEntry(BaseModel):
+    """The KV value the Worker serves from. Schema pinned by
+    ``edge/contract/entry.schema.json``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["redirect"] = "redirect"
+    url: str
+    status: int = 302
+
+
+def edge_cache_skip_reason(
+    url: UrlCacheData, hot_domain: str, system_domain: str
+) -> str | None:
+    """Why this URL must NOT be edge-cached — None means eligible.
+
+    Every rule exists because the edge cannot evaluate it: passwords
+    need verification, max-clicks needs precise counting, block_bots
+    needs UA parsing, expiry/status need fresh state, tenants need
+    routing. The edge serves only decisions origin already made.
+    """
+    if hot_domain != system_domain:
+        return "non_system_domain"  # tenant edge-caching is deferred
+    if url.url_status != UrlStatus.ACTIVE:
+        return "not_active"
+    if url.password_hash:
+        return "password_protected"
+    if url.max_clicks:
+        return "max_clicks"
+    if url.block_bots:
+        return "block_bots"
+    if url.expiration_time:
+        return "has_expiration"  # could expire mid-TTL; rare, so skip all
+    return None
+
+
+class PromoteToEdgeCacheAction:
+    """Best-effort by contract (HotUrlAction): every failure is a log
+    line, never an exception — a broken promotion must not affect click
+    consumption, and the URL simply isn't edge-served this window."""
+
+    def __init__(
+        self,
+        url_cache: UrlCache,
+        kv: CloudflareKVClient,
+        *,
+        system_domain: str,
+        ttl_seconds: int,
+        ttl_jitter_ratio: float,
+        rng: random.Random | None = None,
+    ) -> None:
+        self._url_cache = url_cache
+        self._kv = kv
+        self._system_domain = system_domain
+        self._ttl_seconds = ttl_seconds
+        self._ttl_jitter_ratio = ttl_jitter_ratio
+        self._rng = rng if rng is not None else random.Random()
+
+    async def on_hot(self, hot: HotUrl) -> None:
+        url = await self._url_cache.get(hot.short_code, hot.domain)
+        if url is None:
+            self._log_skip(hot, "url_not_in_cache")
+            return
+
+        reason = edge_cache_skip_reason(url, hot.domain, self._system_domain)
+        if reason is not None:
+            self._log_skip(hot, reason)
+            return
+
+        entry = EdgeCacheEntry(url=url.long_url)
+        ttl = self._jittered_ttl()
+        ok = await self._kv.put(
+            edge_cache_key(hot.domain, hot.short_code),
+            entry.model_dump_json(),
+            expiration_ttl=ttl,
+        )
+        if ok:
+            log.info(
+                "edge_promotion_succeeded",
+                domain=hot.domain,
+                short_code=hot.short_code,
+                ttl_seconds=ttl,
+                hot_count=hot.count,
+            )
+        else:
+            # kv client already logged the specifics; this line carries
+            # the business context (which URL missed its window).
+            log.warning(
+                "edge_promotion_failed",
+                domain=hot.domain,
+                short_code=hot.short_code,
+            )
+
+    def _jittered_ttl(self) -> int:
+        spread = self._ttl_jitter_ratio
+        factor = 1.0 + self._rng.uniform(-spread, spread)
+        return max(60, int(self._ttl_seconds * factor))
+
+    def _log_skip(self, hot: HotUrl, reason: str) -> None:
+        log.info(
+            "edge_promotion_skipped",
+            domain=hot.domain,
+            short_code=hot.short_code,
+            reason=reason,
+        )
