@@ -41,7 +41,7 @@ jobs:
         working-directory: edge/spoo-edge-cache
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -75,7 +75,7 @@ jobs:
     concurrency: deploy-edge
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
