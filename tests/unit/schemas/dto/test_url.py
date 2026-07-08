@@ -430,3 +430,59 @@ class TestListUrlsQueryDomainFilter:
 
         q = ListUrlsQuery()
         assert q.domain is None
+
+
+# ── geo_rules ──────────────────────────────────────────────────────────────────
+
+
+class TestGeoRulesField:
+    def test_keys_normalised_to_uppercase(self):
+        req = CreateUrlRequest.model_validate(
+            {
+                "long_url": "https://example.com",
+                "geo_rules": {" in ": "https://example.in/"},
+            }
+        )
+        assert req.geo_rules == {"IN": "https://example.in/"}
+
+    def test_case_colliding_keys_rejected(self):
+        with pytest.raises(ValidationError, match="duplicate country code"):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "geo_rules": {
+                        "in": "https://a.example/",
+                        "IN": "https://b.example/",
+                    },
+                }
+            )
+
+    def test_empty_url_value_rejected(self):
+        with pytest.raises(ValidationError, match="non-empty URL"):
+            CreateUrlRequest.model_validate(
+                {"long_url": "https://example.com", "geo_rules": {"IN": "  "}}
+            )
+
+    def test_oversized_url_value_rejected(self):
+        with pytest.raises(ValidationError, match="exceeds"):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "geo_rules": {"IN": "https://example.in/" + "a" * 8192},
+                }
+            )
+
+    def test_update_null_registers_in_fields_set(self):
+        req = UpdateUrlRequest.model_validate({"geo_rules": None})
+        assert "geo_rules" in req.model_fields_set
+        assert req.geo_rules is None
+
+    def test_update_omitted_not_in_fields_set(self):
+        req = UpdateUrlRequest.model_validate({})
+        assert "geo_rules" not in req.model_fields_set
+
+    def test_url_values_stripped(self):
+        req = UpdateUrlRequest.model_validate(
+            {"geo_rules": {"US": "  https://example.com/us  "}}
+        )
+        assert req.geo_rules == {"US": "https://example.com/us"}

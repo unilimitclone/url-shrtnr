@@ -61,6 +61,7 @@ class TestEligibility:
             ({"url_status": "BLOCKED"}, "not_active"),
             ({"url_status": "EXPIRED"}, "not_active"),
             ({"url_status": "INACTIVE"}, "not_active"),
+            ({"geo_rules": {"IN": "https://example.in/"}}, "geo_targeted"),
         ],
     )
     def test_restricted_urls_are_skipped(self, overrides, expected):

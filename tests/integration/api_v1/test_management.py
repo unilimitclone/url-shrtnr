@@ -250,3 +250,91 @@ class TestUpdateUrlWithDomain:
         # Crucially: the service must not have been called. The route guard
         # must reject *before* the move attempt.
         url_svc.update.assert_not_called()
+
+
+class TestUpdateUrlGeoRules:
+    """Setting geo_rules is flag-gated (403 when off); clearing never is."""
+
+    @staticmethod
+    def _flag_svc(enabled: bool) -> AsyncMock:
+        svc = AsyncMock()
+        svc.is_enabled = AsyncMock(return_value=enabled)
+        return svc
+
+    def _app(self, user, mock_svc, flag_svc):
+        from dependencies import get_feature_flag_service
+
+        return _build_test_app(
+            {
+                require_auth: lambda: user,
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: flag_svc,
+            }
+        )
+
+    def test_set_geo_rules_flag_on_returns_200(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.geo_rules = {"IN": "https://example.in/"}
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        mock_svc = AsyncMock()
+        mock_svc.update = AsyncMock(return_value=url_doc)
+
+        application = self._app(user, mock_svc, self._flag_svc(True))
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}",
+                json={"geo_rules": {"IN": "https://example.in/"}},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["geo_rules"] == {"IN": "https://example.in/"}
+
+    def test_set_geo_rules_flag_off_returns_403(self):
+        user = _make_user()
+        mock_svc = AsyncMock()
+
+        application = self._app(user, mock_svc, self._flag_svc(False))
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}",
+                json={"geo_rules": {"IN": "https://example.in/"}},
+            )
+
+        assert resp.status_code == 403
+        mock_svc.update.assert_not_called()
+
+    def test_clear_geo_rules_bypasses_flag(self):
+        """Rollback posture: a de-allowlisted owner must be able to remove
+        their rules, so null-clear never consults the flag."""
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        mock_svc = AsyncMock()
+        mock_svc.update = AsyncMock(return_value=url_doc)
+        flag_svc = self._flag_svc(False)
+
+        application = self._app(user, mock_svc, flag_svc)
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(f"/api/v1/urls/{ObjectId()}", json={"geo_rules": None})
+
+        assert resp.status_code == 200
+        flag_svc.is_enabled.assert_not_awaited()
+        mock_svc.update.assert_called_once()
+
+    def test_status_endpoint_unaffected_by_flag(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        mock_svc = AsyncMock()
+        mock_svc.update = AsyncMock(return_value=url_doc)
+        flag_svc = self._flag_svc(False)
+
+        application = self._app(user, mock_svc, flag_svc)
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}/status", json={"status": "INACTIVE"}
+            )
+
+        assert resp.status_code == 200
+        flag_svc.is_enabled.assert_not_awaited()

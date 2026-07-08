@@ -328,3 +328,130 @@ def test_password_form_url_not_password_protected_returns_400_html():
         resp = client.post("/abc1234/password", data={"password": "pw"})
     assert resp.status_code == 400
     assert "text/html" in resp.headers["content-type"]
+
+
+# ── Geo-targeting tests ───────────────────────────────────────────────────────
+
+GEO_RULES = {"IN": "https://example.in/", "US": "https://example.com/us"}
+
+
+def _mock_geoip(country_code=None):
+    geoip = MagicMock()
+    geoip.get_country_code = AsyncMock(return_value=country_code)
+    return geoip
+
+
+def _build_geo_app(url_svc, click_sink=None, geoip=None):
+    from dependencies import get_geoip_service
+
+    return build_test_app(
+        redirect_router,
+        overrides={
+            get_url_service: lambda: url_svc,
+            get_click_sink: lambda: click_sink or _mock_click_sink(),
+            get_geoip_service: lambda: geoip or _mock_geoip(),
+        },
+    )
+
+
+class TestGeoTargetedRedirect:
+    def test_matching_country_header_redirects_to_rule_url(self):
+        url_data = _make_url_cache(
+            long_url="https://example.com/default", geo_rules=GEO_RULES
+        )
+        sink = _mock_click_sink()
+        app = _build_geo_app(_mock_url_service(url_data), sink)
+        with TestClient(app, follow_redirects=False) as client:
+            resp = client.get(
+                "/abc1234",
+                headers={"User-Agent": BROWSER_UA, "CF-IPCountry": "IN"},
+            )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "https://example.in/"
+        assert resp.headers["cache-control"] == "no-store"
+        event = sink.emit.await_args.args[0]
+        assert event.resolved_country == "IN"
+        assert event.geo_matched is True
+
+    def test_unmatched_country_falls_back_to_default(self):
+        url_data = _make_url_cache(
+            long_url="https://example.com/default", geo_rules=GEO_RULES
+        )
+        sink = _mock_click_sink()
+        app = _build_geo_app(_mock_url_service(url_data), sink)
+        with TestClient(app, follow_redirects=False) as client:
+            resp = client.get(
+                "/abc1234",
+                headers={"User-Agent": BROWSER_UA, "CF-IPCountry": "DE"},
+            )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "https://example.com/default"
+        # Still varies by country → still uncacheable
+        assert resp.headers["cache-control"] == "no-store"
+        event = sink.emit.await_args.args[0]
+        assert event.resolved_country == "DE"
+        assert event.geo_matched is False
+
+    def test_lowercase_header_is_normalised(self):
+        url_data = _make_url_cache(geo_rules=GEO_RULES)
+        app = _build_geo_app(_mock_url_service(url_data))
+        with TestClient(app, follow_redirects=False) as client:
+            resp = client.get(
+                "/abc1234",
+                headers={"User-Agent": BROWSER_UA, "CF-IPCountry": "in"},
+            )
+        assert resp.headers["location"] == "https://example.in/"
+
+    def test_unknown_country_xx_falls_back_to_default(self):
+        url_data = _make_url_cache(
+            long_url="https://example.com/default", geo_rules=GEO_RULES
+        )
+        app = _build_geo_app(_mock_url_service(url_data))
+        with TestClient(app, follow_redirects=False) as client:
+            resp = client.get(
+                "/abc1234",
+                headers={"User-Agent": BROWSER_UA, "CF-IPCountry": "XX"},
+            )
+        assert resp.headers["location"] == "https://example.com/default"
+
+    def test_missing_header_falls_back_to_mmdb_lookup(self):
+        url_data = _make_url_cache(geo_rules=GEO_RULES)
+        geoip = _mock_geoip(country_code="US")
+        app = _build_geo_app(_mock_url_service(url_data), geoip=geoip)
+        with TestClient(app, follow_redirects=False) as client:
+            resp = client.get("/abc1234", headers={"User-Agent": BROWSER_UA})
+        assert resp.headers["location"] == "https://example.com/us"
+        geoip.get_country_code.assert_awaited_once()
+
+    def test_unresolvable_country_falls_back_to_default(self):
+        url_data = _make_url_cache(
+            long_url="https://example.com/default", geo_rules=GEO_RULES
+        )
+        geoip = _mock_geoip(country_code=None)
+        app = _build_geo_app(_mock_url_service(url_data), geoip=geoip)
+        with TestClient(app, follow_redirects=False) as client:
+            resp = client.get("/abc1234", headers={"User-Agent": BROWSER_UA})
+        assert resp.headers["location"] == "https://example.com/default"
+
+    def test_head_request_gets_geo_correct_location_without_event(self):
+        url_data = _make_url_cache(geo_rules=GEO_RULES)
+        sink = _mock_click_sink()
+        app = _build_geo_app(_mock_url_service(url_data), sink)
+        with TestClient(app, follow_redirects=False) as client:
+            resp = client.head(
+                "/abc1234",
+                headers={"User-Agent": BROWSER_UA, "CF-IPCountry": "IN"},
+            )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "https://example.in/"
+        sink.emit.assert_not_awaited()
+
+    def test_non_geo_link_skips_geoip_and_cache_header(self):
+        url_data = _make_url_cache(long_url="https://example.com/target")
+        geoip = _mock_geoip()
+        app = _build_geo_app(_mock_url_service(url_data), geoip=geoip)
+        with TestClient(app, follow_redirects=False) as client:
+            resp = client.get("/abc1234", headers={"User-Agent": BROWSER_UA})
+        assert resp.headers["location"] == "https://example.com/target"
+        assert "cache-control" not in resp.headers
+        geoip.get_country_code.assert_not_awaited()
