@@ -18,6 +18,7 @@ from dependencies import (
     URL_MANAGEMENT_SCOPES,
     CurrentUser,
     CustomDomainSvc,
+    FeatureFlagSvc,
     Settings,
     UrlSvc,
     require_scopes,
@@ -25,6 +26,7 @@ from dependencies import (
 from errors import ValidationError
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
+from routes.api_v1.shorten import require_geo_targeting_enabled
 from schemas.dto.requests.url import UpdateUrlRequest, UpdateUrlStatusRequest
 from schemas.dto.responses.url import DeleteUrlResponse, UpdateUrlResponse
 
@@ -61,6 +63,7 @@ async def update_url_v1(
     url_service: UrlSvc,
     custom_domain_service: CustomDomainSvc,
     settings: Settings,
+    flag_svc: FeatureFlagSvc,
     user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
 ) -> UpdateUrlResponse:
     """Update an existing URL's properties.
@@ -76,7 +79,8 @@ async def update_url_v1(
     **Rate Limits**: 120/min, 2,000/day
 
     **Updatable Fields**: `long_url`, `alias`, `password`, `block_bots`,
-    `max_clicks`, `expire_after`, `private_stats`, `status`, `domain`
+    `max_clicks`, `expire_after`, `private_stats`, `status`, `domain`,
+    `geo_rules`
 
     **Notes**:
 
@@ -85,9 +89,15 @@ async def update_url_v1(
     - Setting `domain` moves the URL to a different tenant; caller must own
       the target as an ACTIVE custom domain, or pass `null` to move back to
       the system default. Alias collision is verified on the target.
+    - `geo_rules` replaces the whole map; pass `null` or `{}` to remove all
+      rules
     - The `url_id` is the MongoDB ObjectId, not the alias
     """
     oid = _parse_url_id(url_id)
+    # Setting geo rules is flag-gated; clearing (null/{}) is always allowed so
+    # de-allowlisted owners can remove their rules during rollback.
+    if "geo_rules" in body.model_fields_set and body.geo_rules:
+        await require_geo_targeting_enabled(flag_svc, user)
     # Verify domain ownership at the edge so the service can stay opaque about
     # tenancy. `domain` field-set with null means "move to system default" —
     # no ownership check needed for the default namespace.

@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Literal
 
+import pycountry
 from bson import ObjectId
 
 from errors import (
@@ -43,6 +44,7 @@ from repositories.url_repository import UrlRepository
 from schemas.dto.requests.url import CreateUrlRequest, ListUrlsQuery, UpdateUrlRequest
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
+    GEO_MAX_COUNTRIES,
     EmojiUrlDoc,
     LegacyUrlDoc,
     SchemaVersion,
@@ -63,6 +65,43 @@ from shared.validators import (
 log = get_logger(__name__)
 
 AliasCheckResult = Literal["available", "length", "format", "taken"]
+
+
+def _validate_geo_rules(
+    rules: dict[str, str],
+    *,
+    blocked_self_domains: tuple[str, ...],
+    patterns: list,
+    timeout: float,
+) -> None:
+    """Validate a geo_rules map: real ISO codes + destination-URL safety.
+
+    Keys are already uppercase-normalised (and deduplicated) by the DTO
+    validator. Every destination URL gets the same two-stage validation as
+    long_url: format/self-link check plus the DB blocklist. Callers fetch
+    the blocklist patterns once and pass them in.
+
+    Raises:
+        ValidationError: with field paths like ``geo_rules.IN``.
+    """
+    if len(rules) > GEO_MAX_COUNTRIES:
+        raise ValidationError(
+            f"geo_rules cannot exceed {GEO_MAX_COUNTRIES} country entries",
+            field="geo_rules",
+        )
+    for code, url in rules.items():
+        if pycountry.countries.get(alpha_2=code) is None:
+            raise ValidationError(
+                f"'{code}' is not a valid ISO 3166-1 alpha-2 country code",
+                field=f"geo_rules.{code}",
+            )
+        if not validate_url(url, blocked_self_domains=blocked_self_domains):
+            raise ValidationError(
+                "URL is not allowed or invalid", field=f"geo_rules.{code}"
+            )
+        if not validate_blocked_url(url, patterns, timeout=timeout):
+            raise ValidationError("URL is blocked", field=f"geo_rules.{code}")
+
 
 # ── Field update handlers ────────────────────────────────────────────────────
 #
@@ -85,6 +124,13 @@ async def _handle_long_url(
             request.long_url, blocked_self_domains=service._blocked_self_domains
         ):
             raise ValidationError("URL is not allowed or invalid", field="long_url")
+        # Same blocklist check as create — an edit must not be a side door
+        # for destinations that would be rejected at creation.
+        patterns = await service._blocked_url_repo.get_patterns()
+        if not validate_blocked_url(
+            request.long_url, patterns, timeout=service._blocked_url_regex_timeout
+        ):
+            raise ValidationError("URL is blocked", field="long_url")
         ops["long_url"] = request.long_url
 
 
@@ -189,6 +235,27 @@ async def _handle_status(
         ops["status"] = request.status
 
 
+async def _handle_geo_rules(
+    request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
+) -> None:
+    if "geo_rules" not in request.model_fields_set:
+        return
+    if not request.geo_rules:
+        # null or {} removes all rules
+        if existing.geo_rules:
+            ops["geo_rules"] = None
+        return
+    patterns = await service._blocked_url_repo.get_patterns()
+    _validate_geo_rules(
+        request.geo_rules,
+        blocked_self_domains=service._blocked_self_domains,
+        patterns=patterns,
+        timeout=service._blocked_url_regex_timeout,
+    )
+    if request.geo_rules != existing.geo_rules:
+        ops["geo_rules"] = request.geo_rules
+
+
 def _simple_field_handler(field_name: str) -> Callable:
     """Factory for nullable fields that just need a changed-check."""
 
@@ -220,6 +287,7 @@ FIELD_HANDLERS: dict[str, Callable[..., Awaitable[None]]] = {
     "block_bots": _simple_field_handler("block_bots"),
     "private_stats": _simple_field_handler("private_stats"),
     "status": _handle_status,
+    "geo_rules": _handle_geo_rules,
 }
 
 
@@ -424,6 +492,16 @@ class UrlService:
             )
             raise ValidationError("URL is blocked", field="long_url")
 
+        # 2b. Geo rules — every destination gets the same two-stage validation
+        # as long_url (patterns already fetched above)
+        if request.geo_rules:
+            _validate_geo_rules(
+                request.geo_rules,
+                blocked_self_domains=self._blocked_self_domains,
+                patterns=blocked_patterns,
+                timeout=self._blocked_url_regex_timeout,
+            )
+
         # 3. Password hash (cheap — do before alias generation loop)
         password_hash: str | None = None
         if request.password:
@@ -471,6 +549,7 @@ class UrlService:
             block_bots=request.block_bots,
             max_clicks=request.max_clicks,
             expire_after=expire_ts,
+            geo_rules=request.geo_rules or None,
             status=UrlStatus.ACTIVE,
             private_stats=private_stats,
             total_clicks=0,
@@ -499,6 +578,7 @@ class UrlService:
             private_stats=private_stats,
             alias_custom=bool(getattr(request, "alias", None)),
             domain=target_domain,
+            geo_rules=len(request.geo_rules or {}),
         )
 
         return url_doc
@@ -906,6 +986,7 @@ def _v2_doc_to_cache(doc: UrlV2Doc) -> UrlCacheData:
         schema_version=SchemaVersion.V2,
         owner_id=str(doc.owner_id) if doc.owner_id else None,
         domain=doc.domain,
+        geo_rules=doc.geo_rules,
     )
 
 

@@ -79,6 +79,25 @@ class GeoIPService:
         ):
             return "Unknown"
 
+    async def get_country_code(self, ip_address: str) -> str | None:
+        """ISO 3166-1 alpha-2 code for an IP, or None when unresolvable.
+
+        Nullable like get_city (no "Unknown" sentinel) — callers treat None
+        as "no geo decision possible".
+        """
+        reader = await self._get_country_reader()
+        if reader is None:
+            return None
+        try:
+            result = await asyncio.to_thread(reader.country, ip_address)
+            return result.country.iso_code
+        except (
+            geoip2.errors.AddressNotFoundError,
+            ValueError,
+            maxminddb.InvalidDatabaseError,
+        ):
+            return None
+
     async def get_city(self, ip_address: str) -> str | None:
         reader = await self._get_city_reader()
         if reader is None:

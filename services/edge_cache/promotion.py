@@ -52,6 +52,8 @@ def promotion_skip_reason(
         return "block_bots"
     if url.expiration_time:
         return "has_expiration"  # could expire mid-TTL; rare, so skip all
+    if url.geo_rules:
+        return "geo_targeted"  # edge KV entry has no country dimension
     return None
 
 

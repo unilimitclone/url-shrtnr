@@ -13,7 +13,7 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
 
-from dependencies import ClickSink, UrlSvc
+from dependencies import ClickSink, GeoIP, UrlSvc
 from errors import (
     BlockedUrlError,
     ForbiddenError,
@@ -105,6 +105,7 @@ async def redirect_url(
     request: Request,
     url_service: UrlSvc,
     click_sink: ClickSink,
+    geoip: GeoIP,
 ) -> Response:
     """Resolve a short code and redirect to the destination URL.
 
@@ -144,6 +145,23 @@ async def redirect_url(
                 status_code=401,
             )
 
+    # 2b. Geo-targeting decision — must run before the click event is built
+    #     so the routing decision rides the event. CF-IPCountry is free
+    #     (CF-injected, trustworthy behind the tunnel/proxy); the mmdb lookup
+    #     only fires for geo links when the header is absent (self-host).
+    destination = url_data.long_url
+    resolved_country: str | None = None
+    geo_matched = False
+    if url_data.geo_rules:
+        resolved_country = (
+            request.headers.get("CF-IPCountry") or ""
+        ).strip().upper() or None
+        if resolved_country is None:
+            resolved_country = await geoip.get_country_code(user_ip)
+        if resolved_country and resolved_country in url_data.geo_rules:
+            destination = url_data.geo_rules[resolved_country]
+            geo_matched = True
+
     # 3. Pre-emit bot block — the DECISION must run before the redirect is
     #    served (click processing may happen out-of-band); bot metadata
     #    RECORDING stays in the click pipeline.
@@ -170,6 +188,8 @@ async def redirect_url(
             user_agent=user_agent,
             referrer=referrer,
             cf_city=cf_city,
+            resolved_country=resolved_country,
+            geo_matched=geo_matched,
             redirect_ms=int((time.perf_counter() - start_time) * 1000),
         )
         try:
@@ -205,10 +225,16 @@ async def redirect_url(
             had_max_clicks=bool(getattr(url_data, "max_clicks", None)),
             max_clicks=getattr(url_data, "max_clicks", None),
             owner_id=str(getattr(url_data, "owner_id", "")) or None,
+            geo_targeted=bool(url_data.geo_rules),
+            resolved_country=resolved_country,
+            geo_matched=geo_matched,
             slow=total_ms > 100,
         )
-    resp = RedirectResponse(url_data.long_url, status_code=302)
+    resp = RedirectResponse(destination, status_code=302)
     resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    if url_data.geo_rules:
+        # Response varies by visitor country — no intermediary may cache it
+        resp.headers["Cache-Control"] = "no-store"
     return resp
 
 

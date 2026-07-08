@@ -25,6 +25,32 @@ from shared.url_utils import normalise_fqdn
 
 ALLOWED_SORT_FIELDS = frozenset({"created_at", "last_click", "total_clicks"})
 
+_GEO_URL_MAX_LENGTH = 8192  # same bound as long_url
+
+
+def _normalise_geo_rules(v: dict | None) -> dict | None:
+    """Normalise geo_rules keys to uppercase ISO codes.
+
+    JSON parsing guarantees key uniqueness, but normalisation could merge
+    keys like `"in"` and `"IN"` — reject that instead of silently picking one.
+    Semantic validation (real ISO codes, URL safety) lives in the service layer.
+    """
+    if v is None:
+        return None
+    normalised: dict[str, str] = {}
+    for key, url in v.items():
+        code = str(key).strip().upper()
+        if code in normalised:
+            raise ValueError(f"duplicate country code after normalisation: '{code}'")
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError(f"geo_rules['{code}'] must be a non-empty URL string")
+        if len(url) > _GEO_URL_MAX_LENGTH:
+            raise ValueError(
+                f"geo_rules['{code}'] URL exceeds {_GEO_URL_MAX_LENGTH} characters"
+            )
+        normalised[code] = url.strip()
+    return normalised
+
 
 class UrlFilter(RequestBase):
     """Parsed structure for the ``filter`` query parameter in ListUrlsQuery."""
@@ -101,6 +127,16 @@ class CreateUrlRequest(RequestBase):
         ),
         examples=["links.acme.com"],
     )
+    geo_rules: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Per-country destination overrides: ISO 3166-1 alpha-2 country "
+            "code → destination URL (max 50 entries). Visitors from a listed "
+            "country are redirected to that URL; everyone else gets the "
+            "default destination (`url`). Requires authentication."
+        ),
+        examples=[{"IN": "https://example.in/", "US": "https://example.com/us"}],
+    )
 
     @field_validator("expire_after", mode="before")
     @classmethod
@@ -118,6 +154,11 @@ class CreateUrlRequest(RequestBase):
         if v is None or v == "":
             return None
         return normalise_fqdn(v)
+
+    @field_validator("geo_rules", mode="before")
+    @classmethod
+    def _norm_geo_rules(cls, v: dict | None) -> dict | None:
+        return _normalise_geo_rules(v)
 
 
 class UpdateUrlRequest(RequestBase):
@@ -186,6 +227,16 @@ class UpdateUrlRequest(RequestBase):
         ),
         examples=["links.acme.com"],
     )
+    geo_rules: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Per-country destination overrides: ISO 3166-1 alpha-2 country "
+            "code → destination URL (max 50 entries). The map replaces any "
+            "existing rules in full. Pass `null` or `{}` to remove all rules; "
+            "omit to keep existing rules unchanged."
+        ),
+        examples=[{"IN": "https://example.in/", "US": "https://example.com/us"}],
+    )
 
     @field_validator("expire_after", mode="before")
     @classmethod
@@ -203,6 +254,11 @@ class UpdateUrlRequest(RequestBase):
         if v is None or v == "":
             return None
         return normalise_fqdn(v)
+
+    @field_validator("geo_rules", mode="before")
+    @classmethod
+    def _norm_geo_rules(cls, v: dict | None) -> dict | None:
+        return _normalise_geo_rules(v)
 
 
 class UpdateUrlStatusRequest(BaseModel):

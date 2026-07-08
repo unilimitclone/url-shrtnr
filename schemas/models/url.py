@@ -19,6 +19,10 @@ from pydantic import ConfigDict, Field, field_validator
 
 from schemas.models.base import ANONYMOUS_OWNER_ID, MongoBaseModel, PyObjectId
 
+# Max country entries in a geo_rules map. Bounds doc size, cache entry size
+# and per-request validation work.
+GEO_MAX_COUNTRIES = 50
+
 
 class UrlStatus(str, Enum):
     """Status values for v2 URLs."""
@@ -80,6 +84,9 @@ class UrlV2Doc(MongoBaseModel):
     block_bots: bool | None = None
     max_clicks: int | None = Field(default=None, ge=0)
     expire_after: datetime | None = None
+    # ISO 3166-1 alpha-2 country code (uppercase) → destination URL override.
+    # long_url stays the fallback for unmatched countries. None = no targeting.
+    geo_rules: dict[str, str] | None = None
     status: UrlStatus = UrlStatus.ACTIVE
     private_stats: bool | None = True  # None for anonymous/unowned URLs
     total_clicks: int = Field(default=0, ge=0)

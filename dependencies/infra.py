@@ -66,6 +66,7 @@ def get_tenant_resolver(request: Request) -> TenantResolver:
 
 Settings = Annotated[AppSettings, Depends(get_settings)]
 JwtConfig = Annotated[JWTSettings, Depends(get_jwt_config)]
+GeoIP = Annotated[GeoIPService, Depends(get_geoip_service)]
 OAuthProviders = Annotated[dict[str, Any], Depends(get_oauth_providers)]
 AppRegistryDep = Annotated[dict[str, AppEntry], Depends(get_app_registry)]
 TenantResolverDep = Annotated[TenantResolver, Depends(get_tenant_resolver)]

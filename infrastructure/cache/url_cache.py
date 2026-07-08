@@ -31,6 +31,10 @@ class UrlCacheData(BaseModel):
     owner_id: str | None  # ObjectId as string; None for v1 URLs
     total_clicks: int = 0  # Live click count for v1 max-clicks check
     domain: str = ""
+    # ISO alpha-2 country code → destination URL. None for v1/legacy and
+    # non-geo links; entries cached before this field existed deserialize
+    # to None (default), so no cache version bump is needed.
+    geo_rules: dict[str, str] | None = None
 
     def verify_password(self, password: str | None) -> bool:
         """Check a password against this URL's stored hash.

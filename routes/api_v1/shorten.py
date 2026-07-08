@@ -19,11 +19,12 @@ from dependencies import (
     SHORTEN_SCOPES,
     CurrentUser,
     CustomDomainSvc,
+    FeatureFlagSvc,
     Settings,
     UrlSvc,
     optional_scopes_verified,
 )
-from errors import AuthenticationError
+from errors import AuthenticationError, ForbiddenError
 from middleware.openapi import AUTH_RESPONSES, OPTIONAL_AUTH_SECURITY
 from middleware.rate_limiter import Limits, dynamic_limit, limiter
 from schemas.dto.requests.url import AliasCheckQuery, CreateUrlRequest
@@ -34,6 +35,17 @@ router = APIRouter(tags=["URL Shortening"])
 
 _shorten_limit, _shorten_key = dynamic_limit(Limits.API_AUTHED, Limits.API_ANON)
 _check_limit, _check_key = dynamic_limit(Limits.API_CHECK_AUTHED, Limits.API_CHECK_ANON)
+
+GEO_TARGETING_FLAG = "geo_targeting"
+
+
+async def require_geo_targeting_enabled(
+    flag_svc: FeatureFlagSvc, user: CurrentUser
+) -> None:
+    """Flag gate for writing geo_rules. 403 (not 404) — geo_rules is a field
+    inside shared endpoints, so hiding the endpoint isn't an option."""
+    if not await flag_svc.is_enabled(GEO_TARGETING_FLAG, user):
+        raise ForbiddenError("Geo targeting is not enabled for this account")
 
 
 @router.post(
@@ -51,6 +63,7 @@ async def shorten_v1(
     url_service: UrlSvc,
     custom_domain_service: CustomDomainSvc,
     settings: Settings,
+    flag_svc: FeatureFlagSvc,
     user: CurrentUser | None = Depends(optional_scopes_verified(SHORTEN_SCOPES)),  # noqa: B008
 ) -> UrlResponse:
     """Create a new shortened URL.
@@ -76,9 +89,15 @@ async def shorten_v1(
     - Cannot use private stats
     - URLs not linked to any account
     - Cannot use custom domains
+    - Cannot use geo targeting
     """
     owner_id = user.user_id if user is not None else None
     client_ip = get_client_ip(request)
+
+    if body.geo_rules:
+        if user is None:
+            raise AuthenticationError("Authentication required to set geo_rules")
+        await require_geo_targeting_enabled(flag_svc, user)
 
     if body.domain and body.domain != settings.system_default_domain:
         if user is None:
