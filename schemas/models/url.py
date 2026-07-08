@@ -11,13 +11,17 @@ Three separate schemas map to three MongoDB collections:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from schemas.models.base import ANONYMOUS_OWNER_ID, MongoBaseModel, PyObjectId
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class UrlStatus(str, Enum):
@@ -35,6 +39,40 @@ class SchemaVersion(str, Enum):
     V2 = "v2"
     V1 = "v1"
     EMOJI = "emoji"
+
+
+class LinkMetaTags(BaseModel):
+    """Custom social-preview tags. Presence on a URL = feature enabled.
+
+    title is mandatory (a card without one renders broken everywhere).
+    image is an https URL (R2-hosted or external); SVG rejected — no
+    preview crawler renders it. color = Discord embed border (theme-color).
+    """
+
+    title: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=240)
+    image: str | None = Field(default=None, max_length=2048)
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    updated_at: datetime | None = None
+    updated_ip: str | None = None  # audit trail, mirrors creation_ip
+
+    @field_validator("title", "description", mode="before")
+    @classmethod
+    def _strip_control(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = _CONTROL_CHARS_RE.sub("", v).strip()
+        return v
+
+    @field_validator("image")
+    @classmethod
+    def _image_https_no_svg(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not v.startswith("https://"):
+            raise ValueError("image must be an https:// URL")
+        if urlparse(v).path.lower().endswith(".svg"):
+            raise ValueError("SVG images are not supported by preview crawlers")
+        return v
 
 
 class UrlV2Doc(MongoBaseModel):
@@ -82,6 +120,7 @@ class UrlV2Doc(MongoBaseModel):
     expire_after: datetime | None = None
     status: UrlStatus = UrlStatus.ACTIVE
     private_stats: bool | None = True  # None for anonymous/unowned URLs
+    meta_tags: LinkMetaTags | None = None
     total_clicks: int = Field(default=0, ge=0)
     last_click: datetime | None = None
     updated_at: datetime | None = None
