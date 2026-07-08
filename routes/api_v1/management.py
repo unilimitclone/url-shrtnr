@@ -29,6 +29,7 @@ from middleware.rate_limiter import Limits, limiter
 from routes.api_v1._meta_gate import require_meta_tags_enabled
 from schemas.dto.requests.url import UpdateUrlRequest, UpdateUrlStatusRequest
 from schemas.dto.responses.url import DeleteUrlResponse, UpdateUrlResponse
+from shared.ip_utils import get_client_ip
 
 router = APIRouter(tags=["Link Management"])
 
@@ -100,7 +101,9 @@ async def update_url_v1(
     # no ownership check needed for the default namespace.
     if body.domain and body.domain != settings.system_default_domain:
         await custom_domain_service.assert_owned_and_active(user, body.domain)
-    doc = await url_service.update(oid, body, user.user_id)
+    doc = await url_service.update(
+        oid, body, user.user_id, client_ip=get_client_ip(request)
+    )
     return UpdateUrlResponse.from_doc(doc)
 
 

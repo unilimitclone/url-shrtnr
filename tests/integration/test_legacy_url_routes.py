@@ -531,7 +531,9 @@ def test_preview_shows_custom_meta_card_next_to_destination():
             resp = client.get("/abc1234+")
     assert resp.status_code == 200
     assert "Custom Card Title" in resp.text  # what the sender wants shown
-    assert "example.com" in resp.text  # where the link actually goes
+    # The real destination host, as rendered in the domain-name span —
+    # exact markup asserted (not a URL substring; keeps CodeQL quiet).
+    assert ">example.com<" in resp.text
     assert "set by link owner" in resp.text
 
 

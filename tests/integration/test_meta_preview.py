@@ -111,11 +111,11 @@ def test_bot_param_shows_page_without_autoredirect():
 
 
 def test_autoredirect_script_present_for_bots():
-    # Misclassified humans self-heal via the JS fallback.
+    # Misclassified humans self-heal via the JS fallback. Exact rendered
+    # script asserted (not a URL substring — keeps CodeQL quiet too).
     with _client(_og_link()) as c:
         resp = c.get("/abc1234", headers={"User-Agent": FB_UA})
-    assert "location.replace" in resp.text
-    assert "https://example.com" in resp.text
+    assert 'location.replace("https://example.com")' in resp.text
 
 
 # ── Everyone else keeps the 302 ──────────────────────────────────────────────
@@ -176,8 +176,15 @@ def test_password_og_link_still_gates_humans():
 
 
 def test_block_bots_og_link_omits_destination():
-    with _client(_og_link(block_bots=True)) as c:
+    # Neither the URL nor even the HOSTNAME of a bot-blocked destination
+    # may appear anywhere in the served page.
+    link = _og_link(
+        block_bots=True,
+        long_url="https://secret-destination.example/hidden",
+        meta_image=None,  # keep the page free of unrelated hostnames
+    )
+    with _client(link) as c:
         resp = c.get("/abc1234", headers={"User-Agent": FB_UA})
     assert resp.status_code == 200
-    assert "https://example.com" not in resp.text
+    assert "secret-destination" not in resp.text
     assert "Preview only." in resp.text

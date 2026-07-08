@@ -157,8 +157,12 @@ async def fetch_public(
                     raise FetchHardError(f"content-type {ctype!r}")
                 if any(marker in ctype for marker in reject_content):
                     raise FetchHardError(f"content-type {ctype!r}")
-                declared = resp.headers.get("content-length")
-                if declared and int(declared) > max_bytes and not truncate_over_cap:
+                declared = resp.headers.get("content-length", "")
+                if (
+                    declared.isdigit()  # garbage header ≠ worker crash
+                    and int(declared) > max_bytes
+                    and not truncate_over_cap
+                ):
                     raise FetchHardError("content-length over cap")
 
                 buf = bytearray()

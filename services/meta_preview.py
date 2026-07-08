@@ -33,6 +33,8 @@ def build_preview_context(url: UrlCacheData, *, auto_redirect: bool = True) -> d
         "short_url": f"https://{url.domain}/{url.alias}",
         "site_name": url.domain,
         "long_url": url.long_url if reveal else None,
-        "dest_host": extract_hostname(url.long_url),
+        # Withheld alongside long_url: even the hostname of a bot-blocked
+        # destination must not enter the template context.
+        "dest_host": extract_hostname(url.long_url) if reveal else None,
         "auto_redirect": auto_redirect,
     }

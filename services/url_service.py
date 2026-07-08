@@ -643,6 +643,7 @@ class UrlService:
         url_id: ObjectId,
         request: UpdateUrlRequest,
         owner_id: ObjectId,
+        client_ip: str | None = None,
     ) -> UrlV2Doc:
         """
         Update an existing URL.
@@ -650,6 +651,9 @@ class UrlService:
         EXPIRED URLs are auto-reactivated when expiry conditions change
         (max_clicks raised/cleared, expire_after extended/cleared), unless
         the caller also provides an explicit status override.
+
+        ``client_ip`` is stamped onto ``meta_tags.updated_ip`` when the
+        request writes meta_tags — abuse forensics for preview edits.
 
         Raises:
             NotFoundError:  URL doesn't exist.
@@ -676,6 +680,11 @@ class UrlService:
         update_ops: dict = {}
         for handler in FIELD_HANDLERS.values():
             await handler(request, existing, update_ops, self)
+
+        # Handlers don't see the request context; stamp the writer's IP
+        # onto a fresh meta_tags value here (None stays None on clears).
+        if update_ops.get("meta_tags"):
+            update_ops["meta_tags"]["updated_ip"] = client_ip
 
         # Auto-reactivate EXPIRED URLs when expiry conditions improve
         self._auto_reactivate(existing, update_ops, now)

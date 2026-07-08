@@ -639,6 +639,27 @@ class TestUrlServiceUpdate:
         url_cache.invalidate.assert_called_once_with(ALIAS, SYSTEM_DEFAULT_DOMAIN)
 
     @pytest.mark.asyncio
+    async def test_update_meta_tags_stamps_client_ip(self):
+        """A meta_tags write records the writer's IP for abuse forensics."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        blocked_url_repo.get_patterns.return_value = []
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc(owner_id=USER_OID)
+        url_repo.find_by_id.return_value = existing
+
+        from schemas.dto.requests.url import MetaTagsRequest, UpdateUrlRequest
+
+        req = UpdateUrlRequest(meta_tags=MetaTagsRequest(title="New Card"))
+        await svc.update(URL_OID, req, USER_OID, client_ip="9.9.9.9")
+
+        written = url_repo.update.call_args[0][1]["$set"]["meta_tags"]
+        assert written["title"] == "New Card"
+        assert written["updated_ip"] == "9.9.9.9"
+
+    @pytest.mark.asyncio
     async def test_update_no_changes_returns_existing(self):
         url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
         svc = make_service(
