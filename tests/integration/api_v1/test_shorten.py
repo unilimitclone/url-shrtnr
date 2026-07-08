@@ -9,7 +9,7 @@ from bson import ObjectId
 from fastapi.testclient import TestClient
 
 from dependencies import get_current_user, get_url_service
-from errors import ConflictError, ValidationError
+from errors import ConflictError, ForbiddenError, ValidationError
 
 from .conftest import _build_test_app, _make_api_key_doc, _make_url_doc, _make_user
 
@@ -324,6 +324,12 @@ class TestShortenGeoRules:
     def _flag_svc(enabled: bool) -> AsyncMock:
         svc = AsyncMock()
         svc.is_enabled = AsyncMock(return_value=enabled)
+        # Mirror the real require(): no-op when enabled, 403 when not.
+        svc.require = AsyncMock(
+            side_effect=None
+            if enabled
+            else ForbiddenError("Geo targeting is not enabled for this account")
+        )
         return svc
 
     def test_anonymous_with_geo_rules_returns_401(self):
@@ -344,7 +350,7 @@ class TestShortenGeoRules:
         assert resp.status_code == 401
         mock_svc.create.assert_not_called()
         # Anonymity is decided before the flag is even consulted
-        flag_svc.is_enabled.assert_not_awaited()
+        flag_svc.require.assert_not_awaited()
 
     def test_flag_off_returns_403(self):
         from dependencies import get_feature_flag_service
@@ -408,4 +414,4 @@ class TestShortenGeoRules:
             )
 
         assert resp.status_code == 201
-        flag_svc.is_enabled.assert_not_awaited()
+        flag_svc.require.assert_not_awaited()

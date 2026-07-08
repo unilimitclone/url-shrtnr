@@ -259,6 +259,12 @@ class TestUpdateUrlGeoRules:
     def _flag_svc(enabled: bool) -> AsyncMock:
         svc = AsyncMock()
         svc.is_enabled = AsyncMock(return_value=enabled)
+        # Mirror the real require(): no-op when enabled, 403 when not.
+        svc.require = AsyncMock(
+            side_effect=None
+            if enabled
+            else ForbiddenError("Geo targeting is not enabled for this account")
+        )
         return svc
 
     def _app(self, user, mock_svc, flag_svc):
@@ -319,7 +325,7 @@ class TestUpdateUrlGeoRules:
             resp = client.patch(f"/api/v1/urls/{ObjectId()}", json={"geo_rules": None})
 
         assert resp.status_code == 200
-        flag_svc.is_enabled.assert_not_awaited()
+        flag_svc.require.assert_not_awaited()
         mock_svc.update.assert_called_once()
 
     def test_status_endpoint_unaffected_by_flag(self):
@@ -337,4 +343,4 @@ class TestUpdateUrlGeoRules:
             )
 
         assert resp.status_code == 200
-        flag_svc.is_enabled.assert_not_awaited()
+        flag_svc.require.assert_not_awaited()

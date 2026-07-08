@@ -26,9 +26,9 @@ from dependencies import (
 from errors import ValidationError
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
-from routes.api_v1.feature_gates import require_geo_targeting_enabled
 from schemas.dto.requests.url import UpdateUrlRequest, UpdateUrlStatusRequest
 from schemas.dto.responses.url import DeleteUrlResponse, UpdateUrlResponse
+from services.feature_flag_service import GEO_TARGETING_FLAG
 
 router = APIRouter(tags=["Link Management"])
 
@@ -97,7 +97,7 @@ async def update_url_v1(
     # Setting geo rules is flag-gated; clearing (null/{}) is always allowed so
     # de-allowlisted owners can remove their rules during rollback.
     if "geo_rules" in body.model_fields_set and body.geo_rules:
-        await require_geo_targeting_enabled(flag_svc, user)
+        await flag_svc.require(GEO_TARGETING_FLAG, user)
     # Verify domain ownership at the edge so the service can stay opaque about
     # tenancy. `domain` field-set with null means "move to system default" —
     # no ownership check needed for the default namespace.
