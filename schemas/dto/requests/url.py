@@ -37,6 +37,10 @@ def _normalise_geo_rules(v: dict | None) -> dict | None:
     """
     if v is None:
         return None
+    if not isinstance(v, dict):
+        # mode="before" runs ahead of type coercion — pass non-dicts through
+        # so Pydantic rejects them with a normal 422 instead of us crashing.
+        return v
     normalised: dict[str, str] = {}
     for key, url in v.items():
         code = str(key).strip().upper()

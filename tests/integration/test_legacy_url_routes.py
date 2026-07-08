@@ -624,8 +624,8 @@ def test_preview_geo_link_lists_every_destination():
     assert "example.com" in html  # default
     assert "example.in" in html
     assert "us.example.com" in html
-    # Countries sharing a destination are grouped into one row
-    assert "IN, BD" in html
+    # Countries sharing a destination are grouped into one row, sorted
+    assert "BD, IN" in html
     assert "US:" in html
 
 

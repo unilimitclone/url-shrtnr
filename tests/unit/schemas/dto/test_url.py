@@ -486,3 +486,12 @@ class TestGeoRulesField:
             {"geo_rules": {"US": "  https://example.com/us  "}}
         )
         assert req.geo_rules == {"US": "https://example.com/us"}
+
+    def test_non_dict_geo_rules_returns_clean_validation_error(self):
+        """A list/string payload must surface as a normal Pydantic 422,
+        not an AttributeError from the mode="before" normaliser."""
+        for bad in (["IN"], "IN", 42):
+            with pytest.raises(ValidationError):
+                CreateUrlRequest.model_validate(
+                    {"long_url": "https://example.com", "geo_rules": bad}
+                )

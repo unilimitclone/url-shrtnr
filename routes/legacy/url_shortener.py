@@ -544,7 +544,7 @@ async def preview_url(
         for code, dest in url_data["geo_rules"].items():
             grouped.setdefault(dest, []).append(code)
         geo_destinations = [
-            {"countries": codes, **_split_destination(dest)}
+            {"countries": sorted(codes), **_split_destination(dest)}
             for dest, codes in grouped.items()
         ]
 

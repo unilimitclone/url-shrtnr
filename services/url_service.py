@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -71,7 +71,7 @@ def _validate_geo_rules(
     rules: dict[str, str],
     *,
     blocked_self_domains: tuple[str, ...],
-    patterns: list,
+    patterns: Sequence[str],
     timeout: float,
 ) -> None:
     """Validate a geo_rules map: real ISO codes + destination-URL safety.
