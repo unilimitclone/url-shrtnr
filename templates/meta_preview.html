@@ -1,0 +1,63 @@
+<!doctype html>
+{#-
+  Custom meta-tags preview page, served ONLY to link-preview crawlers.
+
+  Constraints (see thoughts/custom-meta-tags-design.md):
+  - Self-contained: no /static/ references — custom-domain tenants 404 them.
+  - All meta tags in the first bytes: WhatsApp reads only the first 300KB,
+    Facebook range-requests the first 512KB.
+  - Renderable WITHOUT a request (plain variables, no url_for) — the edge
+    KV write-through renders it offline in the click worker.
+  - og:url is the SHORT url: FB treats og:url as canonical and re-scrapes
+    it; pointing at the destination would defeat the custom tags.
+  - twitter:* mirrors og values: X's og fallback is per-tag-family and some
+    old parsers read only twitter:*; identical values carry zero risk.
+  - No rel=canonical (conflicts with noindex). No meta-refresh (several
+    crawlers follow it and would re-scrape the destination).
+-#}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<meta name="robots" content="noindex">
+{% if description %}<meta name="description" content="{{ description }}">
+{% endif %}<meta property="og:type" content="website">
+<meta property="og:site_name" content="{{ site_name }}">
+<meta property="og:url" content="{{ short_url }}">
+<meta property="og:title" content="{{ title }}">
+{% if description %}<meta property="og:description" content="{{ description }}">
+{% endif %}{% if image %}<meta property="og:image" content="{{ image }}">
+<meta property="og:image:alt" content="{{ title }}">
+{% if image_width and image_height %}<meta property="og:image:width" content="{{ image_width }}">
+<meta property="og:image:height" content="{{ image_height }}">
+{% endif %}<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="{{ image }}">
+{% else %}<meta name="twitter:card" content="summary">
+{% endif %}<meta name="twitter:title" content="{{ title }}">
+{% if description %}<meta name="twitter:description" content="{{ description }}">
+{% endif %}{% if color %}<meta name="theme-color" content="{{ color }}">
+{% endif %}<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#000;color:#e5e5e5;font:16px/1.5 system-ui,sans-serif}
+  main{max-width:28rem;padding:2rem;text-align:center}
+  img{max-width:100%;border-radius:8px}
+  h1{font-size:1.25rem;margin:.75rem 0 .25rem}
+  p{color:#9a9a9a;margin:.25rem 0 1rem}
+  a{color:#fff}
+  small{color:#6a6a6a}
+</style>
+</head>
+<body>
+<main>
+  {% if image %}<img src="{{ image }}" alt="">{% endif %}
+  <h1>{{ title }}</h1>
+  {% if description %}<p>{{ description }}</p>{% endif %}
+  {% if long_url %}
+  <a href="{{ long_url }}" rel="noreferrer">Continue to {{ dest_host }} &rarr;</a>
+  {% if auto_redirect %}<script>location.replace({{ long_url | tojson }})</script>{% endif %}
+  {% else %}
+  <small>Preview only.</small>
+  {% endif %}
+</main>
+</body>
+</html>

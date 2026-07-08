@@ -136,6 +136,7 @@ def _make_v2_doc_mock(
     doc.updated_at = None
     doc.private_stats = True
     doc.domain = "spoo.me"
+    doc.meta_tags = None
     return doc
 
 
