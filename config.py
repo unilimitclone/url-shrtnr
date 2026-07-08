@@ -353,6 +353,39 @@ class R2StorageSettings(BaseSettings):
         )
 
 
+class MetaTagsSettings(BaseSettings):
+    """Async og:image validation for custom meta-tags.
+
+    Rides the SAME queue Redis as click events (CLICK_EVENTS_QUEUE_REDIS_URI)
+    — one durable Redis per deploy. Effective only when that queue is
+    configured; otherwise validation silently skips (the synchronous checks
+    at write time already ran). Env vars prefixed ``META_TAGS_``.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="META_TAGS_",
+    )
+
+    async_image_validation: bool = True
+    stream: str = "events:meta-image"
+    dlq_stream: str = "events:meta-image:dlq"
+    maxlen: int = Field(default=1_000, ge=100)
+    batch_size: int = Field(default=10, ge=1)
+    block_ms: int = Field(default=2000, ge=100)
+    # Click defaults (60s) are tuned for millisecond handlers; a batch of
+    # 10 fetches × 5s timeout can legitimately run ~50s, and a claimer
+    # stealing from a live reader means duplicate fetches. The CAS repo
+    # filter makes duplicates harmless anyway — this just avoids the waste.
+    claim_idle_ms: int = Field(default=120_000, ge=1000)
+    max_deliveries: int = Field(default=3, ge=1)
+
+    fetch_timeout_seconds: float = Field(default=5.0, gt=0)
+    fetch_max_bytes: int = Field(default=1_048_576, ge=1024)
+    fetch_max_redirects: int = Field(default=3, ge=0)
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -462,6 +495,7 @@ class AppSettings(BaseSettings):
     click_events: ClickEventsSettings | None = None
     edge_cache: EdgeCacheSettings | None = None
     r2: R2StorageSettings | None = None
+    meta_tags: MetaTagsSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -499,6 +533,8 @@ class AppSettings(BaseSettings):
             self.edge_cache = EdgeCacheSettings()
         if self.r2 is None:
             self.r2 = R2StorageSettings()
+        if self.meta_tags is None:
+            self.meta_tags = MetaTagsSettings()
 
         return self
 

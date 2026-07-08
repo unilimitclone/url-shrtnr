@@ -59,23 +59,44 @@ class TestCreateWorkerApp:
         app = create_worker_app(settings)
 
         subscribers = app.brokers[0].subscribers
-        # 2 groups x (reader + claimer)
-        assert len(subscribers) == 4
+        # (2 click groups + meta-image) x (reader + claimer)
+        assert len(subscribers) == 6
         specs = [s.stream_sub for s in subscribers]
         by_consumer = {s.consumer: s for s in specs}
         readers = [s for s in specs if s.min_idle_time is None]
         claimers = [s for s in specs if s.min_idle_time is not None]
-        assert len(readers) == 2
-        assert len(claimers) == 2
-        assert {s.group for s in specs} == {"stats", "hotness"}
-        assert all(s.name == "events:clicks" for s in specs)
+        assert len(readers) == 3
+        assert len(claimers) == 3
+        assert {s.group for s in specs} == {"stats", "hotness", "meta-image"}
+        click_specs = [s for s in specs if s.group != "meta-image"]
+        assert all(s.name == "events:clicks" for s in click_specs)
+        meta_specs = [s for s in specs if s.group == "meta-image"]
+        assert all(s.name == "events:meta-image" for s in meta_specs)
         assert all(c.endswith("-claim") for c in by_consumer if "-claim" in c)
 
-    def test_stats_only_by_default(self):
+    def test_stats_and_meta_by_default(self):
         app = create_worker_app(_settings())
+        subscribers = app.brokers[0].subscribers
+        assert len(subscribers) == 4
+        assert {s.stream_sub.group for s in subscribers} == {"stats", "meta-image"}
+
+    def test_meta_validation_can_be_disabled(self):
+        settings = _settings()
+        settings.meta_tags.async_image_validation = False
+        app = create_worker_app(settings)
         subscribers = app.brokers[0].subscribers
         assert len(subscribers) == 2
         assert {s.stream_sub.group for s in subscribers} == {"stats"}
+
+    def test_meta_only_mode_with_inline_clicks(self):
+        """Inline-click deployments can still run async image validation."""
+        settings = AppSettings()
+        settings.click_events = ClickEventsSettings(
+            sink="inline", queue_redis_uri="redis://localhost:6399/0"
+        )
+        app = create_worker_app(settings)
+        subscribers = app.brokers[0].subscribers
+        assert {s.stream_sub.group for s in subscribers} == {"meta-image"}
 
     def test_health_route_registered(self):
         app = create_worker_app(_settings())
@@ -84,12 +105,27 @@ class TestCreateWorkerApp:
     def test_claimer_tunables_come_from_settings(self):
         settings = _settings(claim_idle_ms=120_000, batch_size=7, block_ms=500)
         app = create_worker_app(settings)
-        specs = [s.stream_sub for s in app.brokers[0].subscribers]
+        specs = [
+            s.stream_sub
+            for s in app.brokers[0].subscribers
+            if s.stream_sub.group != "meta-image"
+        ]
         claimer = next(s for s in specs if s.min_idle_time is not None)
         reader = next(s for s in specs if s.min_idle_time is None)
         assert claimer.min_idle_time == 120_000
         assert reader.max_records == 7
         assert reader.polling_interval == 500
+
+    def test_meta_claimer_uses_meta_tunables(self):
+        app = create_worker_app(_settings())
+        meta_specs = [
+            s.stream_sub
+            for s in app.brokers[0].subscribers
+            if s.stream_sub.group == "meta-image"
+        ]
+        claimer = next(s for s in meta_specs if s.min_idle_time is not None)
+        # Slow fetches need a bigger idle threshold than click handlers.
+        assert claimer.min_idle_time == 120_000
 
 
 class TestFirstMessageId:

@@ -47,10 +47,12 @@ from schemas.dto.requests.url import (
     UpdateUrlRequest,
 )
 from services.edge_cache.og_writethrough import OgEdgeWritethrough
+from services.meta_tags.events import MetaImageValidateEvent
 from services.meta_tags.images import ingest_meta_image
 
 if TYPE_CHECKING:
     from infrastructure.storage.r2 import R2StorageClient
+    from services.meta_tags.sinks import MetaImageValidationSink
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
     EmojiUrlDoc,
@@ -280,6 +282,7 @@ class UrlService:
         og_writethrough: OgEdgeWritethrough | None = None,
         r2_storage: R2StorageClient | None = None,
         meta_image_max_bytes: int = 512_000,
+        meta_image_sink: MetaImageValidationSink | None = None,
     ) -> None:
         self._url_repo = url_repo
         self._legacy_repo = legacy_repo
@@ -299,6 +302,9 @@ class UrlService:
         # https image URLs unaffected (self-host degradation).
         self._r2_storage = r2_storage
         self._meta_image_max_bytes = meta_image_max_bytes
+        # Async validation for EXTERNAL https images (uploads are validated
+        # synchronously). None ⇒ validation skipped (no queue Redis).
+        self._meta_image_sink = meta_image_sink
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -628,6 +634,10 @@ class UrlService:
         if url_doc.meta_tags and self._og_writethrough:
             await self._og_writethrough.sync(_v2_doc_to_cache(url_doc))
 
+        # External https images get validated out-of-band (uploads carried
+        # image_meta already). Best-effort emit — sink swallows failures.
+        await self._maybe_emit_image_validation(url_doc)
+
         return url_doc
 
     async def update(
@@ -729,7 +739,29 @@ class UrlService:
                     )
                 await self._og_writethrough.sync(_v2_doc_to_cache(merged_doc))
 
+        if "meta_tags" in update_ops:
+            await self._maybe_emit_image_validation(merged_doc)
+
         return merged_doc
+
+    async def _maybe_emit_image_validation(self, doc: UrlV2Doc) -> None:
+        """Queue async validation for an external https og:image."""
+        meta = doc.meta_tags
+        if (
+            self._meta_image_sink is None
+            or meta is None
+            or not meta.image
+            or meta.image_meta is not None  # upload — validated synchronously
+        ):
+            return
+        await self._meta_image_sink.emit(
+            MetaImageValidateEvent(
+                url_id=str(doc.id),
+                alias=doc.alias,
+                domain=doc.domain,
+                image_url=meta.image,
+            )
+        )
 
     def _auto_reactivate(
         self, existing: UrlV2Doc, update_ops: dict, now: datetime

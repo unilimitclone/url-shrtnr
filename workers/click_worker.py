@@ -65,6 +65,8 @@ from services.click.consumers import (
 )
 from services.click.consumers.hotness import HotUrlAction
 from services.edge_cache import PromoteToEdgeCacheAction
+from services.edge_cache.og_writethrough import OgEdgeWritethrough
+from services.meta_tags.validator import MetaImageValidator
 from workers.dlq import ClaimDeadLetterGuard
 from workers.telemetry import StaleConsumerJanitor, StreamMetricsReporter
 
@@ -85,6 +87,7 @@ class _WorkerRuntime:
     http_client: HttpClient | None = None
     telemetry_tasks: list[asyncio.Task] = field(default_factory=list)
     consumers: dict[str, ClickConsumer] = field(default_factory=dict)
+    meta_validator: MetaImageValidator | None = None
 
     async def aclose(self) -> None:
         for task in self.telemetry_tasks:
@@ -114,7 +117,9 @@ def enabled_groups(ce: ClickEventsSettings) -> list[str]:
     return groups
 
 
-async def _build_runtime(settings: AppSettings, groups: list[str]) -> _WorkerRuntime:
+async def _build_runtime(
+    settings: AppSettings, groups: list[str], *, run_meta: bool = False
+) -> _WorkerRuntime:
     ce = settings.click_events
     mongo_client: AsyncMongoClient = AsyncMongoClient(
         settings.db.mongodb_uri,
@@ -210,6 +215,37 @@ async def _build_runtime(settings: AppSettings, groups: list[str]) -> _WorkerRun
             actions=actions,
         )
 
+    if run_meta:
+        # Async og:image validation for custom meta-tags — own stream/group.
+        mt = settings.meta_tags
+        edge = settings.edge_cache
+        og_writethrough = None
+        if edge.enabled:
+            if runtime.http_client is None:
+                runtime.http_client = HttpClient(
+                    timeout=settings.http_client_timeout
+                )
+            og_writethrough = OgEdgeWritethrough(
+                CloudflareKVClient(
+                    http_client=runtime.http_client,
+                    api_token=edge.cf_api_token,
+                    account_id=edge.cf_account_id,
+                    namespace_id=edge.kv_namespace_id,
+                    api_base=edge.api_base,
+                    api_host_header=edge.api_host_header,
+                ),
+                system_domain=settings.system_default_domain,
+            )
+        runtime.meta_validator = MetaImageValidator(
+            UrlRepository(db["urlsV2"]),
+            UrlCache(cache_redis, ttl_seconds=settings.redis.redis_ttl_seconds),
+            og_writethrough=og_writethrough,
+            timeout=mt.fetch_timeout_seconds,
+            max_bytes=mt.fetch_max_bytes,
+            max_redirects=mt.fetch_max_redirects,
+        )
+        log.info("meta_image_validator_registered", stream=mt.stream)
+
     # Telemetry: periodic backlog/lag stats (the Axiom alert signal) and
     # cleanup of restart-leftover consumer names. Best-effort — a missing
     # telemetry connection never blocks consumption.
@@ -279,6 +315,52 @@ def _register_group(
     )(claimer)
 
 
+def _register_meta_image(
+    broker: RedisBroker,
+    mt: Any,
+    consumer_suffix: str,
+    validator_for: Any,
+) -> None:
+    """Reader + claimer pair for the meta-image validation stream."""
+    guard = ClaimDeadLetterGuard(
+        stream=mt.stream,
+        group="meta-image",
+        dlq_stream=mt.dlq_stream,
+        max_deliveries=mt.max_deliveries,
+    )
+
+    async def reader(body: Any) -> None:
+        await validator_for().consume(body)
+
+    reader.__name__ = "meta_image_reader"
+    broker.subscriber(
+        stream=StreamSub(
+            mt.stream,
+            group="meta-image",
+            consumer=f"meta-image-{consumer_suffix}",
+            max_records=mt.batch_size,
+            polling_interval=mt.block_ms,
+        )
+    )(reader)
+
+    async def claimer(body: Any, msg: RedisMessage, redis: Redis) -> None:
+        message_id = _first_message_id(msg)
+        if message_id and await guard.intercept(redis, message_id, body):
+            return
+        await validator_for().consume(body)
+
+    claimer.__name__ = "meta_image_claimer"
+    broker.subscriber(
+        stream=StreamSub(
+            mt.stream,
+            group="meta-image",
+            consumer=f"meta-image-{consumer_suffix}-claim",
+            min_idle_time=mt.claim_idle_ms,
+            polling_interval=mt.block_ms,
+        )
+    )(claimer)
+
+
 def _first_message_id(msg: Any) -> str | None:
     ids = (getattr(msg, "raw_message", None) or {}).get("message_ids") or []
     if not ids:
@@ -293,15 +375,19 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
         settings = AppSettings()
     ce = settings.click_events
 
-    if ce.sink != "stream" or not ce.queue_redis_uri:
+    mt = settings.meta_tags
+    run_clicks = ce.sink == "stream" and bool(ce.queue_redis_uri)
+    run_meta = mt.async_image_validation and bool(ce.queue_redis_uri)
+    if not run_clicks and not run_meta:
         raise RuntimeError(
-            "The click worker requires CLICK_EVENTS_SINK=stream and "
-            "CLICK_EVENTS_QUEUE_REDIS_URI. Refusing to start so a "
-            "misconfigured deployment fails loudly instead of idling."
+            "The worker requires CLICK_EVENTS_QUEUE_REDIS_URI plus either "
+            "CLICK_EVENTS_SINK=stream or META_TAGS_ASYNC_IMAGE_VALIDATION. "
+            "Refusing to start so a misconfigured deployment fails loudly "
+            "instead of idling."
         )
 
-    groups = enabled_groups(ce)
-    if not groups:
+    groups = enabled_groups(ce) if run_clicks else []
+    if run_clicks and not groups:
         raise RuntimeError(
             "No consumer groups enabled for this worker — check "
             "CLICK_EVENTS_WORKER_GROUPS and CLICK_EVENTS_HOTNESS_ENABLED."
@@ -316,12 +402,22 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
             raise RuntimeError("worker runtime not initialised")
         return runtime.consumers[group]
 
+    def validator_for() -> MetaImageValidator:
+        runtime = runtime_holder.get("runtime")
+        if runtime is None or runtime.meta_validator is None:  # pragma: no cover
+            raise RuntimeError("worker runtime not initialised")
+        return runtime.meta_validator
+
     consumer_suffix = f"{socket.gethostname()}-{os.getpid()}"
     for group in groups:
         _register_group(broker, ce, group, consumer_suffix, consumer_for)
+    if run_meta:
+        _register_meta_image(broker, mt, consumer_suffix, validator_for)
 
     async def _startup() -> None:
-        runtime_holder["runtime"] = await _build_runtime(settings, groups)
+        runtime_holder["runtime"] = await _build_runtime(
+            settings, groups, run_meta=run_meta
+        )
         log.info(
             "click_worker_started",
             stream=ce.stream,

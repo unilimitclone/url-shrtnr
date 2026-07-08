@@ -45,6 +45,7 @@ from services.click.sinks import InlineSink, RedisStreamSink
 from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
 from services.edge_cache.og_writethrough import OgEdgeWritethrough
+from services.meta_tags.sinks import NullMetaImageSink, RedisStreamMetaImageSink
 from services.export.formatters import default_formatters
 from services.export.service import ExportService
 from services.feature_flag_service import FeatureFlagService
@@ -156,6 +157,18 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
             detail="some R2_* vars are set but not all five — uploads disabled",
         )
 
+    # Async og:image validation producer — rides the click queue Redis;
+    # Null sink (silently skipped) when the queue isn't configured.
+    mt = settings.meta_tags
+    queue_redis_for_meta = getattr(app.state, "queue_redis", None)
+    if mt.async_image_validation and queue_redis_for_meta is not None:
+        meta_image_sink = RedisStreamMetaImageSink(
+            queue_redis_for_meta, stream=mt.stream, maxlen=mt.maxlen
+        )
+        log.info("meta_image_validation_enabled", stream=mt.stream)
+    else:
+        meta_image_sink = NullMetaImageSink()
+
     # ── Services ─────────────────────────────────────────────────────────
     app.state.url_service = UrlService(
         url_repo,
@@ -170,6 +183,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         og_writethrough=og_writethrough,
         r2_storage=r2_storage,
         meta_image_max_bytes=r2.upload_max_bytes,
+        meta_image_sink=meta_image_sink,
     )
     app.state.stats_service = StatsService(
         click_repo,
