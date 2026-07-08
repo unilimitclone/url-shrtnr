@@ -20,6 +20,45 @@
       "expect": { "status": 302, "location": "https://example.com/p?a=1&b=%20x" }
     }
   ],
+  "geo_entries": [
+    {
+      "name": "geo redirect with country overrides",
+      "key": "cache:spoo.me:geo1",
+      "value": {
+        "type": "geo_redirect",
+        "url": "https://example.com/default",
+        "status": 302,
+        "rules": { "IN": "https://example.in/", "US": "https://example.com/us" }
+      },
+      "cases": [
+        { "country": "IN", "location": "https://example.in/" },
+        { "country": "US", "location": "https://example.com/us" },
+        { "country": "DE", "location": "https://example.com/default" },
+        { "country": "XX", "location": "https://example.com/default" },
+        { "country": "T1", "location": "https://example.com/default" },
+        { "country": null, "location": "https://example.com/default" }
+      ]
+    },
+    {
+      "name": "geo redirect grouped countries share a destination",
+      "key": "cache:spoo.me:geo2",
+      "value": {
+        "type": "geo_redirect",
+        "url": "https://example.com/global",
+        "status": 302,
+        "rules": {
+          "DE": "https://eu.example/x",
+          "FR": "https://eu.example/x",
+          "JP": "https://apac.example/x"
+        }
+      },
+      "cases": [
+        { "country": "FR", "location": "https://eu.example/x" },
+        { "country": "JP", "location": "https://apac.example/x" },
+        { "country": "BR", "location": "https://example.com/global" }
+      ]
+    }
+  ],
   "malformed": [
     {
       "name": "unknown type must passthrough, not error",
@@ -30,6 +69,11 @@
       "name": "invalid json must passthrough, not error",
       "key": "cache:spoo.me:broken1",
       "raw": "{not json"
+    },
+    {
+      "name": "geo_redirect without rules must passthrough, not error",
+      "key": "cache:spoo.me:georaw1",
+      "raw": "{\"type\": \"geo_redirect\", \"url\": \"https://example.com/safe\", \"status\": 302}"
     }
   ]
 }

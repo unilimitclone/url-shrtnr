@@ -2,25 +2,53 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://spoo.me/schemas/edge-cache-entry.json",
   "title": "EdgeCacheEntry",
-  "description": "KV value written by PromoteToEdgeCacheAction (services/edge_cache.py) and served by the edge Worker. Key format: cache:{domain}:{short_code}, domain lowercased with no www prefix. Both sides are tested against fixtures.json — change entry shape, key format, fixtures, Python model, and Worker parsing only in lockstep.",
-  "type": "object",
-  "required": ["type", "url", "status"],
-  "additionalProperties": false,
-  "properties": {
-    "type": {
-      "description": "Entry discriminator. v1 only emits 'redirect'; consumers MUST passthrough unknown types (forward compatibility for e.g. password_form).",
-      "type": "string",
-      "enum": ["redirect"]
+  "description": "KV value written by PromoteToEdgeCacheAction (services/edge_cache/) and served by the edge Worker. Key format: cache:{domain}:{short_code}, domain lowercased with no www prefix. Both sides are tested against fixtures.json — change entry shape, key format, fixtures, Python models, and Worker parsing only in lockstep. Consumers MUST passthrough unknown types (forward compatibility for e.g. password_form).",
+  "oneOf": [
+    {
+      "title": "redirect",
+      "description": "Single-destination redirect — one Location for everyone.",
+      "type": "object",
+      "required": ["type", "url", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["redirect"] },
+        "url": {
+          "description": "Absolute destination URL to redirect to.",
+          "type": "string",
+          "format": "uri"
+        },
+        "status": {
+          "description": "HTTP redirect status. Origin always writes 302.",
+          "type": "integer",
+          "enum": [301, 302]
+        }
+      }
     },
-    "url": {
-      "description": "Absolute destination URL to redirect to.",
-      "type": "string",
-      "format": "uri"
-    },
-    "status": {
-      "description": "HTTP redirect status. v1 always writes 302.",
-      "type": "integer",
-      "enum": [301, 302]
+    {
+      "title": "geo_redirect",
+      "description": "Geo-targeted redirect — url is the default destination; rules maps ISO 3166-1 alpha-2 country codes (uppercase) to overrides. Worker serves rules[request.cf.country] ?? url and adds Cache-Control: no-store (the response varies per visitor).",
+      "type": "object",
+      "required": ["type", "url", "status", "rules"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["geo_redirect"] },
+        "url": {
+          "description": "Default destination for unmatched / unknown countries.",
+          "type": "string",
+          "format": "uri"
+        },
+        "status": {
+          "description": "HTTP redirect status. Origin always writes 302.",
+          "type": "integer",
+          "enum": [301, 302]
+        },
+        "rules": {
+          "description": "ISO alpha-2 country code → destination URL override.",
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Z]{2}$" },
+          "additionalProperties": { "type": "string", "format": "uri" }
+        }
+      }
     }
-  }
+  ]
 }

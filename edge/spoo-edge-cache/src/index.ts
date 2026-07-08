@@ -15,6 +15,8 @@ interface EdgeCacheEntry {
   type: string;
   url: string;
   status: number;
+  /** geo_redirect only: ISO alpha-2 country code → destination override. */
+  rules?: Record<string, string>;
 }
 
 /** Path prefixes that are never short codes — skip KV entirely. */
@@ -59,26 +61,48 @@ export default {
       if (key === null) return passthrough(request, env);
 
       const entry = await env.EDGE_CACHE.get<EdgeCacheEntry>(key, "json");
-      if (
-        entry === null ||
-        entry.type !== "redirect" ||
-        typeof entry.url !== "string"
-      ) {
-        // Miss, or an entry type this Worker version doesn't know —
-        // origin always knows how to answer.
+      if (entry === null || typeof entry.url !== "string") {
         return passthrough(request, env);
       }
 
+      const isGeo = entry.type === "geo_redirect";
+      if (isGeo && (typeof entry.rules !== "object" || entry.rules === null)) {
+        // Schema-invalid geo entry — origin always knows how to answer.
+        return passthrough(request, env);
+      }
+      if (!isGeo && entry.type !== "redirect") {
+        // An entry type this Worker version doesn't know — passthrough
+        // (forward compatibility, pinned by the malformed fixtures).
+        return passthrough(request, env);
+      }
+
+      // Same CF geodata origin reads from CF-IPCountry, so an edge-served
+      // geo decision can never disagree with an origin-served one.
+      const country = isGeo
+        ? (request.cf?.country ?? "").toString().toUpperCase()
+        : null;
+      const override =
+        isGeo && country !== null ? entry.rules?.[country] : undefined;
+      const location = typeof override === "string" ? override : entry.url;
+
       console.log(
-        JSON.stringify({ event: "edge_hit", key, colo: request.cf?.colo }),
+        JSON.stringify({
+          event: "edge_hit",
+          key,
+          colo: request.cf?.colo,
+          ...(isGeo && { geo: true, country, matched: override !== undefined }),
+        }),
       );
+      const headers: Record<string, string> = {
+        Location: location,
+        "X-Robots-Tag": "noindex, nofollow, noarchive",
+        "X-Spoo-Edge": "hit",
+      };
+      // Response varies per visitor country — nothing may cache it.
+      if (isGeo) headers["Cache-Control"] = "no-store";
       return new Response(null, {
         status: entry.status === 301 ? 301 : 302,
-        headers: {
-          Location: entry.url,
-          "X-Robots-Tag": "noindex, nofollow, noarchive",
-          "X-Spoo-Edge": "hit",
-        },
+        headers,
       });
     } catch (err) {
       // Fail-open: worst case is exactly today's request path. Explicit

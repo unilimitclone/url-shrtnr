@@ -25,7 +25,11 @@ from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.logging import get_logger
 from schemas.models.url import UrlStatus
 from services.click.consumers.hotness import HotUrl
-from services.edge_cache.contract import EdgeCacheEntry, cache_key
+from services.edge_cache.contract import (
+    EdgeCacheEntry,
+    EdgeCacheGeoEntry,
+    cache_key,
+)
 
 log = get_logger(__name__)
 
@@ -52,8 +56,10 @@ def promotion_skip_reason(
         return "block_bots"
     if url.expiration_time:
         return "has_expiration"  # could expire mid-TTL; rare, so skip all
-    if url.geo_rules:
-        return "geo_targeted"  # edge KV entry has no country dimension
+    # geo_rules is NOT a skip: geo links promote as geo_redirect entries —
+    # the Worker resolves request.cf.country against the same rules map
+    # origin would, so per-country routing is a decision the edge CAN make.
+    # Rule edits ride the same TTL-staleness window as plain URL edits.
     return None
 
 
@@ -101,7 +107,11 @@ class PromoteToEdgeCacheAction:
             self._log_skip(hot, reason)
             return
 
-        entry = EdgeCacheEntry(url=url.long_url)
+        entry: EdgeCacheEntry | EdgeCacheGeoEntry
+        if url.geo_rules:
+            entry = EdgeCacheGeoEntry(url=url.long_url, rules=url.geo_rules)
+        else:
+            entry = EdgeCacheEntry(url=url.long_url)
         ttl = self._jittered_ttl()
         ok = await self._kv.put(
             cache_key(hot.domain, hot.short_code),
@@ -115,6 +125,7 @@ class PromoteToEdgeCacheAction:
                 short_code=hot.short_code,
                 ttl_seconds=ttl,
                 hot_count=hot.count,
+                entry_type=entry.type,
             )
         else:
             # kv client already logged the specifics; this line carries
