@@ -906,6 +906,10 @@ def _v2_doc_to_cache(doc: UrlV2Doc) -> UrlCacheData:
         schema_version=SchemaVersion.V2,
         owner_id=str(doc.owner_id) if doc.owner_id else None,
         domain=doc.domain,
+        meta_title=doc.meta_tags.title if doc.meta_tags else None,
+        meta_description=doc.meta_tags.description if doc.meta_tags else None,
+        meta_image=doc.meta_tags.image if doc.meta_tags else None,
+        meta_color=doc.meta_tags.color if doc.meta_tags else None,
     )
 
 

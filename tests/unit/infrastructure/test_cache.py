@@ -116,6 +116,38 @@ class TestUrlCache:
         ]
 
 
+class TestUrlCacheDataMetaFields:
+    def test_decodes_payload_without_meta_fields(self):
+        # Exact shape of a pre-meta-tags Redis entry: new fields must
+        # default to None so a deploy doesn't 5xx until the cache TTLs out.
+        from infrastructure.cache.url_cache import UrlCacheData
+
+        legacy = (
+            '{"_id":"507f1f77bcf86cd799439011","alias":"a","long_url":"https://x",'
+            '"block_bots":false,"password_hash":null,"expiration_time":null,'
+            '"max_clicks":null,"url_status":"ACTIVE","schema_version":"v2",'
+            '"owner_id":null,"total_clicks":0,"domain":"spoo.me"}'
+        )
+        data = UrlCacheData.model_validate_json(legacy)
+        assert data.meta_title is None
+        assert data.meta_description is None
+        assert data.meta_image is None
+        assert data.meta_color is None
+        assert data.meta_image_width is None
+        assert data.meta_image_height is None
+
+    def test_meta_fields_roundtrip_json(self):
+        from infrastructure.cache.url_cache import UrlCacheData
+
+        data = _url_data(
+            meta_title="T", meta_image="https://x/i.png", meta_color="#112233"
+        )
+        restored = UrlCacheData.model_validate_json(data.model_dump_json(by_alias=True))
+        assert restored.meta_title == "T"
+        assert restored.meta_image == "https://x/i.png"
+        assert restored.meta_color == "#112233"
+
+
 class TestUrlCacheDataVerifyPassword:
     """Unit tests for UrlCacheData.verify_password()."""
 

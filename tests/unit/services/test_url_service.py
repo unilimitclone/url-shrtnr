@@ -50,6 +50,7 @@ def make_url_v2_doc(
     password: str | None = None,
     expire_after: datetime | None = None,
     domain: str | None = None,
+    meta_tags: dict | None = None,
 ) -> UrlV2Doc:
     return UrlV2Doc.from_mongo(
         {
@@ -68,6 +69,7 @@ def make_url_v2_doc(
             "private_stats": True,
             "total_clicks": 0,
             "last_click": None,
+            "meta_tags": meta_tags,
         }
     )
 
@@ -1614,3 +1616,40 @@ class TestUrlServiceListByOwnerDomainFilter:
 
         call_query = url_repo.count_by_query.call_args[0][0]
         assert "domain" not in call_query
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _v2_doc_to_cache — meta_tags mapping
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestV2DocToCacheMetaTags:
+    def test_carries_meta_tags(self):
+        from services.url_service import _v2_doc_to_cache
+
+        doc = make_url_v2_doc(
+            meta_tags={
+                "title": "T",
+                "description": "D",
+                "image": "https://x.com/i.png",
+                "color": "#112233",
+            }
+        )
+        d = _v2_doc_to_cache(doc)
+        assert (d.meta_title, d.meta_description, d.meta_image, d.meta_color) == (
+            "T",
+            "D",
+            "https://x.com/i.png",
+            "#112233",
+        )
+        assert d.meta_image_width is None
+        assert d.meta_image_height is None
+
+    def test_no_meta_tags_maps_none(self):
+        from services.url_service import _v2_doc_to_cache
+
+        d = _v2_doc_to_cache(make_url_v2_doc())
+        assert d.meta_title is None
+        assert d.meta_description is None
+        assert d.meta_image is None
+        assert d.meta_color is None

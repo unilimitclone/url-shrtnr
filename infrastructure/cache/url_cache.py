@@ -31,6 +31,14 @@ class UrlCacheData(BaseModel):
     owner_id: str | None  # ObjectId as string; None for v1 URLs
     total_clicks: int = 0  # Live click count for v1 max-clicks check
     domain: str = ""
+    # Custom meta-tags (v2 only; None = feature disabled on this link).
+    # meta_title is the enabled-signal: LinkMetaTags.title is mandatory.
+    meta_title: str | None = None
+    meta_description: str | None = None
+    meta_image: str | None = None
+    meta_color: str | None = None
+    meta_image_width: int | None = None  # from async image validation
+    meta_image_height: int | None = None
 
     def verify_password(self, password: str | None) -> bool:
         """Check a password against this URL's stored hash.
