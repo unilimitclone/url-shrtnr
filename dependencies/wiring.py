@@ -18,6 +18,7 @@ from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.cloudflare_client import CloudflareClient
 from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.logging import get_logger
+from infrastructure.storage.r2 import R2StorageClient
 from infrastructure.webhook.discord import DiscordWebhookProvider
 from repositories.api_key_repository import ApiKeyRepository
 from repositories.app_grant_repository import AppGrantRepository
@@ -130,6 +131,31 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         )
         log.info("og_writethrough_enabled", kv_namespace_id=edge.kv_namespace_id)
 
+    # R2 bucket for uploaded og:images. None when unconfigured (self-host):
+    # data-URI uploads are rejected with a clear error, https URLs work.
+    r2_storage = None
+    r2 = settings.r2
+    if r2.enabled:
+        r2_storage = R2StorageClient(
+            http_client=http_client,
+            account_id=r2.account_id,
+            access_key_id=r2.access_key_id,
+            secret_access_key=r2.secret_access_key,
+            bucket=r2.bucket,
+            public_base_url=r2.public_base_url,
+            endpoint_url=r2.endpoint_url,
+            request_timeout_seconds=r2.request_timeout_seconds,
+        )
+        log.info("r2_storage_enabled", bucket=r2.bucket)
+    elif any(
+        (r2.account_id, r2.access_key_id, r2.secret_access_key, r2.bucket,
+         r2.public_base_url)
+    ):
+        log.warning(
+            "r2_storage_partial_config",
+            detail="some R2_* vars are set but not all five — uploads disabled",
+        )
+
     # ── Services ─────────────────────────────────────────────────────────
     app.state.url_service = UrlService(
         url_repo,
@@ -142,6 +168,8 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         blocked_url_regex_timeout=settings.blocked_url_regex_timeout,
         max_emoji_alias_length=settings.max_emoji_alias_length,
         og_writethrough=og_writethrough,
+        r2_storage=r2_storage,
+        meta_image_max_bytes=r2.upload_max_bytes,
     )
     app.state.stats_service = StatsService(
         click_repo,

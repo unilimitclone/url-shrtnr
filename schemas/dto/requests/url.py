@@ -61,11 +61,12 @@ class MetaTagsRequest(BaseModel):
     )
     image: str | None = Field(
         default=None,
-        max_length=2048,
+        max_length=700_000,  # data URIs: ~512KB decoded at 4/3 base64 inflation
         description=(
-            "og:image as an https URL. 1200×630 recommended; keep it under "
-            "300KB or WhatsApp silently drops it; SVG is rejected (no preview "
-            "crawler renders it)."
+            "og:image — an https URL, or a `data:image/png|jpeg|webp;base64,` "
+            "URI which is validated and stored on spoo's CDN. 1200×630 "
+            "recommended; keep it under 300KB or WhatsApp silently drops it; "
+            "SVG is rejected (no preview crawler renders it)."
         ),
         examples=["https://example.com/og.png"],
     )
@@ -75,6 +76,19 @@ class MetaTagsRequest(BaseModel):
         description="Accent color shown on Discord embeds (theme-color).",
         examples=["#FF5733"],
     )
+
+    @field_validator("image")
+    @classmethod
+    def _image_scheme(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if v.startswith("data:image/"):
+            return v  # decoded, sniffed, and size-capped by the ingest step
+        if not v.startswith("https://"):
+            raise ValueError("image must be an https:// URL or an image data URI")
+        if len(v) > 2048:
+            raise ValueError("image URL must be at most 2048 characters")
+        return v
 
 
 _META_TAGS_FIELD_DESC = (

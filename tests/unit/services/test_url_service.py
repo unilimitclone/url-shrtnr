@@ -1668,6 +1668,13 @@ def _meta_req(**meta):
     return UpdateUrlRequest(meta_tags=MetaTagsRequest(**meta))
 
 
+def _mock_meta_service() -> AsyncMock:
+    """Service mock for _handle_meta_tags: image resolution passes through."""
+    svc = AsyncMock()
+    svc.resolve_meta_image = AsyncMock(side_effect=lambda meta, owner: (meta, None))
+    return svc
+
+
 class TestHandleMetaTags:
     @pytest.mark.asyncio
     async def test_absent_field_is_noop(self):
@@ -1707,7 +1714,7 @@ class TestHandleMetaTags:
     async def test_object_replaces_whole_and_stamps_updated_at(self):
         from services.url_service import _handle_meta_tags
 
-        svc = AsyncMock()
+        svc = _mock_meta_service()
         ops: dict = {}
         await _handle_meta_tags(
             _meta_req(title="New", color="#112233"), make_url_v2_doc(), ops, svc
@@ -1723,7 +1730,7 @@ class TestHandleMetaTags:
     async def test_validates_against_new_destination_when_long_url_changes(self):
         from services.url_service import _handle_meta_tags
 
-        svc = AsyncMock()
+        svc = _mock_meta_service()
         ops: dict = {"long_url": "https://new-destination.com"}
         await _handle_meta_tags(_meta_req(title="T"), make_url_v2_doc(), ops, svc)
         assert (

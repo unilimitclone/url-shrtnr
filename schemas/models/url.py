@@ -41,18 +41,31 @@ class SchemaVersion(str, Enum):
     EMOJI = "emoji"
 
 
+class MetaImageMeta(BaseModel):
+    """Validation metadata for meta_tags.image — written by the upload
+    path (synchronously) or the async image validator, never by clients."""
+
+    width: int | None = None
+    height: int | None = None
+    bytes: int | None = None
+    content_type: str | None = None
+    checked_at: datetime
+
+
 class LinkMetaTags(BaseModel):
     """Custom social-preview tags. Presence on a URL = feature enabled.
 
     title is mandatory (a card without one renders broken everywhere).
-    image is an https URL (R2-hosted or external); SVG rejected — no
-    preview crawler renders it. color = Discord embed border (theme-color).
+    image is an https URL (R2-hosted or external; data URIs are converted
+    to R2 URLs before this model is built); SVG rejected — no preview
+    crawler renders it. color = Discord embed border (theme-color).
     """
 
     title: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=240)
     image: str | None = Field(default=None, max_length=2048)
     color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    image_meta: MetaImageMeta | None = None
     updated_at: datetime | None = None
     updated_ip: str | None = None  # audit trail, mirrors creation_ip
 

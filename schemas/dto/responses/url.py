@@ -32,16 +32,30 @@ class MetaTagsResponse(ResponseBase):
     color: str | None = Field(
         default=None, description="Discord embed accent color.", examples=["#FF5733"]
     )
+    warnings: list[str] | None = Field(
+        default=None,
+        description="Non-fatal quality notes, e.g. an image WhatsApp may drop.",
+    )
 
     @classmethod
     def from_model(cls, meta: LinkMetaTags | None) -> MetaTagsResponse | None:
         if meta is None:
             return None
+        warnings: list[str] = []
+        if (
+            meta.image_meta
+            and meta.image_meta.bytes
+            and meta.image_meta.bytes > 300_000
+        ):
+            warnings.append(
+                "image exceeds 300KB; WhatsApp may silently drop it"
+            )
         return cls(
             title=meta.title,
             description=meta.description,
             image=meta.image,
             color=meta.color,
+            warnings=warnings or None,
         )
 
 

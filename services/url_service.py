@@ -20,7 +20,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from bson import ObjectId
 
@@ -47,6 +47,10 @@ from schemas.dto.requests.url import (
     UpdateUrlRequest,
 )
 from services.edge_cache.og_writethrough import OgEdgeWritethrough
+from services.meta_tags.images import ingest_meta_image
+
+if TYPE_CHECKING:
+    from infrastructure.storage.r2 import R2StorageClient
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
     EmojiUrlDoc,
@@ -205,16 +209,21 @@ async def _handle_meta_tags(
         if existing.meta_tags:
             ops["meta_tags"] = None
         return
-    # Registered after long_url so a same-request destination change is
-    # validated against the NEW destination.
+    # Resolve data-URI uploads first, then validate. Registered after
+    # long_url so a same-request destination change is validated against
+    # the NEW destination.
+    meta_req, image_meta = await service.resolve_meta_image(
+        request.meta_tags, existing.owner_id
+    )
     await service.validate_meta_tags(
-        request.meta_tags, long_url=ops.get("long_url", existing.long_url)
+        meta_req, long_url=ops.get("long_url", existing.long_url)
     )
     ops["meta_tags"] = LinkMetaTags(
-        title=request.meta_tags.title,
-        description=request.meta_tags.description,
-        image=request.meta_tags.image,
-        color=request.meta_tags.color,
+        title=meta_req.title,
+        description=meta_req.description,
+        image=meta_req.image,
+        color=meta_req.color,
+        image_meta=image_meta,
         updated_at=datetime.now(timezone.utc),
     ).model_dump()
 
@@ -269,6 +278,8 @@ class UrlService:
         blocked_url_regex_timeout: float = 0.2,
         max_emoji_alias_length: int = 15,
         og_writethrough: OgEdgeWritethrough | None = None,
+        r2_storage: R2StorageClient | None = None,
+        meta_image_max_bytes: int = 512_000,
     ) -> None:
         self._url_repo = url_repo
         self._legacy_repo = legacy_repo
@@ -284,6 +295,10 @@ class UrlService:
         # Edge KV write-through for og-links; None when edge cache is
         # unconfigured (self-host) — origin then serves all previews.
         self._og_writethrough = og_writethrough
+        # R2 upload target for data-URI og:images; None ⇒ uploads rejected,
+        # https image URLs unaffected (self-host degradation).
+        self._r2_storage = r2_storage
+        self._meta_image_max_bytes = meta_image_max_bytes
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -417,6 +432,27 @@ class UrlService:
             return "taken"
         return "available"
 
+    async def resolve_meta_image(
+        self, meta: MetaTagsRequest, owner_id: ObjectId
+    ) -> tuple[MetaTagsRequest, dict | None]:
+        """Resolve a data-URI image to its R2-hosted URL.
+
+        Returns the (possibly rewritten) request plus synchronous
+        image_meta for uploads; https URLs pass through untouched (the
+        async validator checks them out-of-band).
+        """
+        if not meta.image:
+            return meta, None
+        ingested = await ingest_meta_image(
+            meta.image,
+            owner_id=owner_id,
+            storage=self._r2_storage,
+            max_bytes=self._meta_image_max_bytes,
+        )
+        if ingested.r2_hosted:
+            return meta.model_copy(update={"image": ingested.url}), ingested.image_meta
+        return meta, None
+
     async def validate_meta_tags(
         self, meta: MetaTagsRequest, *, long_url: str
     ) -> None:
@@ -486,11 +522,15 @@ class UrlService:
             )
             raise ValidationError("URL is blocked", field="long_url")
 
-        # 2b. Meta-tags abuse checks (route layer already gated the feature)
-        if request.meta_tags:
-            await self.validate_meta_tags(
-                request.meta_tags, long_url=request.long_url
+        # 2b. Meta-tags: resolve data-URI uploads to R2 URLs, then abuse
+        #     checks (route layer already gated the feature).
+        meta_req = request.meta_tags
+        meta_image_meta: dict | None = None
+        if meta_req:
+            meta_req, meta_image_meta = await self.resolve_meta_image(
+                meta_req, owner_id if owner_id is not None else ANONYMOUS_OWNER_ID
             )
+            await self.validate_meta_tags(meta_req, long_url=request.long_url)
 
         # 3. Password hash (cheap — do before alias generation loop)
         password_hash: str | None = None
@@ -545,14 +585,15 @@ class UrlService:
             last_click=None,
             meta_tags=(
                 LinkMetaTags(
-                    title=request.meta_tags.title,
-                    description=request.meta_tags.description,
-                    image=request.meta_tags.image,
-                    color=request.meta_tags.color,
+                    title=meta_req.title,
+                    description=meta_req.description,
+                    image=meta_req.image,
+                    color=meta_req.color,
+                    image_meta=meta_image_meta,
                     updated_at=now,
                     updated_ip=client_ip,
                 )
-                if request.meta_tags
+                if meta_req
                 else None
             ),
         )
@@ -1015,6 +1056,16 @@ def _v2_doc_to_cache(doc: UrlV2Doc) -> UrlCacheData:
         meta_description=doc.meta_tags.description if doc.meta_tags else None,
         meta_image=doc.meta_tags.image if doc.meta_tags else None,
         meta_color=doc.meta_tags.color if doc.meta_tags else None,
+        meta_image_width=(
+            doc.meta_tags.image_meta.width
+            if doc.meta_tags and doc.meta_tags.image_meta
+            else None
+        ),
+        meta_image_height=(
+            doc.meta_tags.image_meta.height
+            if doc.meta_tags and doc.meta_tags.image_meta
+            else None
+        ),
     )
 
 

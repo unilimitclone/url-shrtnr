@@ -336,6 +336,11 @@ class R2StorageSettings(BaseSettings):
     endpoint_url: str | None = None
     # Image PUTs need more headroom than the shared client's 5s default.
     request_timeout_seconds: float = Field(default=15.0, gt=0)
+    # Decoded data-URI cap. NOTE: base64 inflates 4/3 and the app-wide
+    # MAX_CONTENT_LENGTH is 1MB — raising this needs raising that too.
+    # 512KB decoded ≈ 683KB on the wire; WhatsApp reliability wants ≤300KB
+    # anyway (surfaced as an API warning above that).
+    upload_max_bytes: int = Field(default=512_000, ge=1024)
 
     @property
     def enabled(self) -> bool:
