@@ -19,7 +19,7 @@ from pydantic import (
 
 from schemas.dto.base import RequestBase
 from schemas.dto.requests._descriptions import LIST_URLS_FILTER_DESC
-from schemas.models.url import UrlStatus
+from schemas.models.url import GEO_MAX_COUNTRIES, UrlStatus
 from shared.datetime_utils import parse_datetime
 from shared.url_utils import normalise_fqdn
 
@@ -41,6 +41,10 @@ def _normalise_geo_rules(v: dict | None) -> dict | None:
         # mode="before" runs ahead of type coercion — pass non-dicts through
         # so Pydantic rejects them with a normal 422 instead of us crashing.
         return v
+    if len(v) > GEO_MAX_COUNTRIES:
+        # Bound at the DTO like alias/long_url so an oversized map is
+        # rejected before any per-entry work.
+        raise ValueError(f"geo_rules cannot exceed {GEO_MAX_COUNTRIES} entries")
     normalised: dict[str, str] = {}
     for key, url in v.items():
         code = str(key).strip().upper()

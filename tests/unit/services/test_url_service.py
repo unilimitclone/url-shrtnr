@@ -1688,26 +1688,24 @@ class TestUrlServiceGeoRules:
             await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
         assert exc.value.field == "geo_rules.XX"
 
-    @pytest.mark.asyncio
-    async def test_create_too_many_entries_rejected(self):
-        from schemas.models.url import GEO_MAX_COUNTRIES
-
-        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
-        svc = make_service(
-            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
-        )
-        blocked_url_repo.get_patterns.return_value = []
-
+    def test_too_many_entries_rejected_by_service_helper(self):
+        """The DTO caps entries first (422); the service helper re-checks as
+        defense-in-depth for non-HTTP callers."""
         import pycountry
+
+        from schemas.models.url import GEO_MAX_COUNTRIES
+        from services.url_service import _validate_geo_rules
 
         codes = [c.alpha_2 for c in pycountry.countries][: GEO_MAX_COUNTRIES + 1]
         rules = {code: "https://example.com/x" for code in codes}
 
-        from schemas.dto.requests.url import CreateUrlRequest
-
-        req = CreateUrlRequest(long_url="https://example.com", geo_rules=rules)
         with pytest.raises(ValidationError) as exc:
-            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+            _validate_geo_rules(
+                rules,
+                blocked_self_domains=(SYSTEM_DEFAULT_DOMAIN,),
+                patterns=[],
+                timeout=0.2,
+            )
         assert exc.value.field == "geo_rules"
 
     @pytest.mark.asyncio

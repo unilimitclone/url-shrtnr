@@ -495,3 +495,17 @@ class TestGeoRulesField:
                 CreateUrlRequest.model_validate(
                     {"long_url": "https://example.com", "geo_rules": bad}
                 )
+
+    def test_more_than_50_entries_rejected_at_dto(self):
+        import pycountry
+
+        from schemas.models.url import GEO_MAX_COUNTRIES
+
+        codes = [c.alpha_2 for c in pycountry.countries][: GEO_MAX_COUNTRIES + 1]
+        with pytest.raises(ValidationError, match="cannot exceed"):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "geo_rules": {c: "https://example.com/x" for c in codes},
+                }
+            )

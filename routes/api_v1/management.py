@@ -26,7 +26,7 @@ from dependencies import (
 from errors import ValidationError
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
-from routes.api_v1.shorten import require_geo_targeting_enabled
+from routes.api_v1.feature_gates import require_geo_targeting_enabled
 from schemas.dto.requests.url import UpdateUrlRequest, UpdateUrlStatusRequest
 from schemas.dto.responses.url import DeleteUrlResponse, UpdateUrlResponse
 

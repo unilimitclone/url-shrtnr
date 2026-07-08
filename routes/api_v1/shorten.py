@@ -24,9 +24,10 @@ from dependencies import (
     UrlSvc,
     optional_scopes_verified,
 )
-from errors import AuthenticationError, ForbiddenError
+from errors import AuthenticationError
 from middleware.openapi import AUTH_RESPONSES, OPTIONAL_AUTH_SECURITY
 from middleware.rate_limiter import Limits, dynamic_limit, limiter
+from routes.api_v1.feature_gates import require_geo_targeting_enabled
 from schemas.dto.requests.url import AliasCheckQuery, CreateUrlRequest
 from schemas.dto.responses.url import AliasCheckResponse, UrlResponse
 from shared.ip_utils import get_client_ip
@@ -35,17 +36,6 @@ router = APIRouter(tags=["URL Shortening"])
 
 _shorten_limit, _shorten_key = dynamic_limit(Limits.API_AUTHED, Limits.API_ANON)
 _check_limit, _check_key = dynamic_limit(Limits.API_CHECK_AUTHED, Limits.API_CHECK_ANON)
-
-GEO_TARGETING_FLAG = "geo_targeting"
-
-
-async def require_geo_targeting_enabled(
-    flag_svc: FeatureFlagSvc, user: CurrentUser
-) -> None:
-    """Flag gate for writing geo_rules. 403 (not 404) — geo_rules is a field
-    inside shared endpoints, so hiding the endpoint isn't an option."""
-    if not await flag_svc.is_enabled(GEO_TARGETING_FLAG, user):
-        raise ForbiddenError("Geo targeting is not enabled for this account")
 
 
 @router.post(
