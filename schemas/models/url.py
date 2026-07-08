@@ -19,10 +19,6 @@ from pydantic import ConfigDict, Field, field_validator
 
 from schemas.models.base import ANONYMOUS_OWNER_ID, MongoBaseModel, PyObjectId
 
-# Max country entries in a geo_rules map. Bounds doc size, cache entry size
-# and per-request validation work.
-GEO_MAX_COUNTRIES = 50
-
 
 class UrlStatus(str, Enum):
     """Status values for v2 URLs."""

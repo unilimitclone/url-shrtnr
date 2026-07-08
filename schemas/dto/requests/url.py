@@ -19,7 +19,7 @@ from pydantic import (
 
 from schemas.dto.base import RequestBase
 from schemas.dto.requests._descriptions import LIST_URLS_FILTER_DESC
-from schemas.models.url import GEO_MAX_COUNTRIES, UrlStatus
+from schemas.models.url import UrlStatus
 from shared.datetime_utils import parse_datetime
 from shared.url_utils import normalise_fqdn
 
@@ -41,10 +41,8 @@ def _normalise_geo_rules(v: dict | None) -> dict | None:
         # mode="before" runs ahead of type coercion — pass non-dicts through
         # so Pydantic rejects them with a normal 422 instead of us crashing.
         return v
-    if len(v) > GEO_MAX_COUNTRIES:
-        # Bound at the DTO like alias/long_url so an oversized map is
-        # rejected before any per-entry work.
-        raise ValueError(f"geo_rules cannot exceed {GEO_MAX_COUNTRIES} entries")
+    # The entry cap is enforced in the service layer from settings
+    # (geo_rules_max_countries) — same split as max_emoji_alias_length.
     normalised: dict[str, str] = {}
     for key, url in v.items():
         code = str(key).strip().upper()
@@ -139,7 +137,7 @@ class CreateUrlRequest(RequestBase):
         default=None,
         description=(
             "Per-country destination overrides: ISO 3166-1 alpha-2 country "
-            "code → destination URL (max 50 entries). Visitors from a listed "
+            "code → destination URL (at most 50 entries by default). Visitors from a listed "
             "country are redirected to that URL; everyone else gets the "
             "default destination (`url`). Requires authentication."
         ),
@@ -239,7 +237,7 @@ class UpdateUrlRequest(RequestBase):
         default=None,
         description=(
             "Per-country destination overrides: ISO 3166-1 alpha-2 country "
-            "code → destination URL (max 50 entries). The map replaces any "
+            "code → destination URL (at most 50 entries by default). The map replaces any "
             "existing rules in full. Pass `null` or `{}` to remove all rules; "
             "omit to keep existing rules unchanged."
         ),

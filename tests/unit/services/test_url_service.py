@@ -1688,15 +1688,15 @@ class TestUrlServiceGeoRules:
             await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
         assert exc.value.field == "geo_rules.XX"
 
-    def test_too_many_entries_rejected_by_service_helper(self):
-        """The DTO caps entries first (422); the service helper re-checks as
-        defense-in-depth for non-HTTP callers."""
+    def test_too_many_entries_rejected(self):
+        """Entry cap comes from settings (geo_rules_max_countries) and is
+        enforced in the service validator — same split as
+        max_emoji_alias_length."""
         import pycountry
 
-        from schemas.models.url import GEO_MAX_COUNTRIES
         from services.url_service import _validate_geo_rules
 
-        codes = [c.alpha_2 for c in pycountry.countries][: GEO_MAX_COUNTRIES + 1]
+        codes = [c.alpha_2 for c in pycountry.countries][:51]
         rules = {code: "https://example.com/x" for code in codes}
 
         with pytest.raises(ValidationError) as exc:
@@ -1705,6 +1705,7 @@ class TestUrlServiceGeoRules:
                 blocked_self_domains=(SYSTEM_DEFAULT_DOMAIN,),
                 patterns=[],
                 timeout=0.2,
+                max_countries=50,
             )
         assert exc.value.field == "geo_rules"
 

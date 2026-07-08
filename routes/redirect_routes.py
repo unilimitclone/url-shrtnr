@@ -145,10 +145,10 @@ async def redirect_url(
                 status_code=401,
             )
 
-    # 2b. Geo-targeting decision — must run before the click event is built
-    #     so the routing decision rides the event. CF-IPCountry is free
-    #     (CF-injected, trustworthy behind the tunnel/proxy); the mmdb lookup
-    #     only fires for geo links when the header is absent (self-host).
+    # 3. Geo-targeting decision — must run before the click event is built
+    #    so the routing decision rides the event. CF-IPCountry is free
+    #    (CF-injected, trustworthy behind the tunnel/proxy); the mmdb lookup
+    #    only fires for geo links when the header is absent (self-host).
     destination = url_data.long_url
     resolved_country: str | None = None
     geo_matched = False
@@ -162,7 +162,7 @@ async def redirect_url(
             destination = url_data.geo_rules[resolved_country]
             geo_matched = True
 
-    # 3. Pre-emit bot block — the DECISION must run before the redirect is
+    # 4. Pre-emit bot block — the DECISION must run before the redirect is
     #    served (click processing may happen out-of-band); bot metadata
     #    RECORDING stays in the click pipeline.
     user_agent = request.headers.get("User-Agent", "")
@@ -170,7 +170,7 @@ async def redirect_url(
         log.info("click_tracking_bot_blocked", short_code=short_code, schema=schema)
         return _error_page(request, "403", "ACCESS DENIED", 403)
 
-    # 4. Emit click event — skip for HEAD / OPTIONS
+    # 5. Emit click event — skip for HEAD / OPTIONS
     tracking_ms = 0
     if request.method not in ("HEAD", "OPTIONS"):
         referrer = request.headers.get("Referer")
@@ -210,7 +210,7 @@ async def redirect_url(
             log.exception("click_tracking_failed", short_code=short_code, schema=schema)
         tracking_ms = int((time.perf_counter() - tracking_start) * 1000)
 
-    # 5. Redirect
+    # 6. Redirect
     total_ms = int((time.perf_counter() - start_time) * 1000)
     if should_sample("url_redirect"):
         log.info(

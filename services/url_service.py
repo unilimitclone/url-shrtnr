@@ -44,7 +44,6 @@ from repositories.url_repository import UrlRepository
 from schemas.dto.requests.url import CreateUrlRequest, ListUrlsQuery, UpdateUrlRequest
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
-    GEO_MAX_COUNTRIES,
     EmojiUrlDoc,
     LegacyUrlDoc,
     SchemaVersion,
@@ -73,20 +72,22 @@ def _validate_geo_rules(
     blocked_self_domains: tuple[str, ...],
     patterns: Sequence[str],
     timeout: float,
+    max_countries: int,
 ) -> None:
-    """Validate a geo_rules map: real ISO codes + destination-URL safety.
+    """Validate a geo_rules map: entry cap, real ISO codes, URL safety.
 
     Keys are already uppercase-normalised (and deduplicated) by the DTO
     validator. Every destination URL gets the same two-stage validation as
     long_url: format/self-link check plus the DB blocklist. Callers fetch
-    the blocklist patterns once and pass them in.
+    the blocklist patterns once and pass them in; ``max_countries`` comes
+    from settings (``geo_rules_max_countries``, self-hoster overridable).
 
     Raises:
         ValidationError: with field paths like ``geo_rules.IN``.
     """
-    if len(rules) > GEO_MAX_COUNTRIES:
+    if len(rules) > max_countries:
         raise ValidationError(
-            f"geo_rules cannot exceed {GEO_MAX_COUNTRIES} country entries",
+            f"geo_rules cannot exceed {max_countries} country entries",
             field="geo_rules",
         )
     for code, url in rules.items():
@@ -251,6 +252,7 @@ async def _handle_geo_rules(
         blocked_self_domains=service._blocked_self_domains,
         patterns=patterns,
         timeout=service._blocked_url_regex_timeout,
+        max_countries=service._geo_rules_max_countries,
     )
     if request.geo_rules != existing.geo_rules:
         ops["geo_rules"] = request.geo_rules
@@ -303,6 +305,7 @@ class UrlService:
         system_default_domain: str,
         blocked_url_regex_timeout: float = 0.2,
         max_emoji_alias_length: int = 15,
+        geo_rules_max_countries: int = 50,
     ) -> None:
         self._url_repo = url_repo
         self._legacy_repo = legacy_repo
@@ -315,6 +318,7 @@ class UrlService:
         self._system_default_domain = system_default_domain
         self._blocked_url_regex_timeout = blocked_url_regex_timeout
         self._max_emoji_alias_length = max_emoji_alias_length
+        self._geo_rules_max_countries = geo_rules_max_countries
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -500,6 +504,7 @@ class UrlService:
                 blocked_self_domains=self._blocked_self_domains,
                 patterns=blocked_patterns,
                 timeout=self._blocked_url_regex_timeout,
+                max_countries=self._geo_rules_max_countries,
             )
 
         # 3. Password hash (cheap — do before alias generation loop)
