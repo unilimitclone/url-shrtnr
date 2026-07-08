@@ -11,6 +11,7 @@ import-time I/O (unlike the original ``utils/url_utils.py``).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from functools import lru_cache
@@ -25,6 +26,15 @@ if TYPE_CHECKING:
 
 _BOT_UA_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "bot_user_agents.txt"
+)
+
+# Repo-root data/ (same home as emojis.json, see shared/generators.py).
+# Canonical copy; edge/spoo-edge-cache/contract/preview_bots.json must stay
+# byte-identical — pinned by tests on both sides.
+_PREVIEW_BOTS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data",
+    "preview_bots.json",
 )
 
 _crawler_detect = CrawlerDetect()
@@ -42,6 +52,34 @@ def _load_bot_user_agents() -> list[str]:
             return [line.strip() for line in fh if line.strip()]
     except OSError:
         return []
+
+
+@lru_cache(maxsize=1)
+def _preview_bots_res() -> tuple[re.Pattern[str], re.Pattern[str]]:
+    """Compile the preview-crawler allowlist once per process."""
+    with open(_PREVIEW_BOTS_PATH) as fh:
+        data = json.load(fh)
+    ci = re.compile("|".join(re.escape(t) for t in data["tokens"]), re.IGNORECASE)
+    cs = re.compile("|".join(re.escape(t) for t in data["tokens_cs"]))
+    return ci, cs
+
+
+def wants_preview(method: str, user_agent: str, *, bot_param: bool = False) -> bool:
+    """Should this request get the custom OG page instead of the 302?
+
+    Positive allowlist of link-preview crawlers only — NOT generic bot
+    detection. Search/AI crawlers, scrapers and humans all fall through to
+    the 302 (search engines keep destination SEO/link equity; a missed
+    preview bot just follows the redirect and shows the destination's own
+    tags — today's behavior). HEAD ⇒ preview: no real user HEADs; email
+    scanners and link expanders do. Only ever called for og-enabled links.
+    """
+    if bot_param or method == "HEAD":
+        return True
+    if not user_agent:
+        return False
+    ci, cs = _preview_bots_res()
+    return bool(ci.search(user_agent) or cs.search(user_agent))
 
 
 def is_bot_request(user_agent: str) -> bool:
