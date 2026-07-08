@@ -91,6 +91,8 @@ async def get_metadata(
             accept_content=("text/html", "application/xhtml"),
             timeout=_FETCH_TIMEOUT,
             max_bytes=_FETCH_MAX_BYTES,
+            # Big pages are fine — tags live in <head>, parse the prefix.
+            truncate_over_cap=True,
         )
     except FetchTransientError as exc:
         raise UpstreamTimeoutError("destination did not respond in time") from exc

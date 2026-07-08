@@ -107,10 +107,16 @@ async def fetch_public(
     timeout: float = 5.0,
     max_bytes: int = 1_048_576,
     max_redirects: int = 3,
+    truncate_over_cap: bool = False,
 ) -> FetchedBody:
     """Fetch *url* with SSRF guards. ``accept_content`` are content-type
     prefixes (e.g. ``("image/",)``); ``reject_content`` are substrings that
-    fail even when a prefix matched (e.g. ``("svg",)``)."""
+    fail even when a prefix matched (e.g. ``("svg",)``).
+
+    ``truncate_over_cap=True`` returns the first ``max_bytes`` instead of
+    failing when the body exceeds the cap — right for HTML meta parsing
+    (tags live in <head>; github.com's homepage alone is >512KB), wrong
+    for images (a truncated image is not a valid image)."""
     for _hop in range(max_redirects + 1):
         parsed = httpx.URL(url)
         if parsed.scheme != "https":
@@ -154,13 +160,16 @@ async def fetch_public(
                 if any(marker in ctype for marker in reject_content):
                     raise FetchHardError(f"content-type {ctype!r}")
                 declared = resp.headers.get("content-length")
-                if declared and int(declared) > max_bytes:
+                if declared and int(declared) > max_bytes and not truncate_over_cap:
                     raise FetchHardError("content-length over cap")
 
                 buf = bytearray()
                 async for chunk in resp.aiter_bytes():
                     buf += chunk
                     if len(buf) > max_bytes:
+                        if truncate_over_cap:
+                            buf = buf[:max_bytes]
+                            break
                         raise FetchHardError("body over cap")
                 return FetchedBody(bytes(buf), ctype, str(parsed))
             finally:
