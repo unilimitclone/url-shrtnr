@@ -82,6 +82,7 @@ PREVIEW_UAS = [
     "Synapse (bot; +https://github.com/matrix-org/synapse)",
     "Iframely/1.3.1 (+https://iframely.com/docs/about) Atlassian",
     "Mastodon/4.2.1 (http.rb/5.1.1; +https://mastodon.social/) Bot",
+    "MetadataScraper",  # heymeta.com — discovered via live tunnel recon 2026-07-09
 ]
 
 NON_PREVIEW_UAS = [
