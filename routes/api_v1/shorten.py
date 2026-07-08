@@ -19,6 +19,7 @@ from dependencies import (
     SHORTEN_SCOPES,
     CurrentUser,
     CustomDomainSvc,
+    FeatureFlagSvc,
     Settings,
     UrlSvc,
     optional_scopes_verified,
@@ -26,6 +27,7 @@ from dependencies import (
 from errors import AuthenticationError
 from middleware.openapi import AUTH_RESPONSES, OPTIONAL_AUTH_SECURITY
 from middleware.rate_limiter import Limits, dynamic_limit, limiter
+from routes.api_v1._meta_gate import require_meta_tags_enabled
 from schemas.dto.requests.url import AliasCheckQuery, CreateUrlRequest
 from schemas.dto.responses.url import AliasCheckResponse, UrlResponse
 from shared.ip_utils import get_client_ip
@@ -50,6 +52,7 @@ async def shorten_v1(
     body: CreateUrlRequest,
     url_service: UrlSvc,
     custom_domain_service: CustomDomainSvc,
+    flag_service: FeatureFlagSvc,
     settings: Settings,
     user: CurrentUser | None = Depends(optional_scopes_verified(SHORTEN_SCOPES)),  # noqa: B008
 ) -> UrlResponse:
@@ -79,6 +82,9 @@ async def shorten_v1(
     """
     owner_id = user.user_id if user is not None else None
     client_ip = get_client_ip(request)
+
+    if body.meta_tags is not None:
+        await require_meta_tags_enabled(flag_service, user)
 
     if body.domain and body.domain != settings.system_default_domain:
         if user is None:

@@ -19,8 +19,30 @@ from pydantic import Field
 
 from schemas.dto.base import ResponseBase
 from schemas.models.base import ANONYMOUS_OWNER_ID
-from schemas.models.url import UrlStatus, UrlV2Doc
+from schemas.models.url import LinkMetaTags, UrlStatus, UrlV2Doc
 from shared.datetime_utils import to_unix_timestamp
+
+
+class MetaTagsResponse(ResponseBase):
+    """Custom social-preview settings on a URL (client-visible fields only)."""
+
+    title: str = Field(description="og:title.", examples=["We just launched 🎉"])
+    description: str | None = Field(default=None, description="og:description.")
+    image: str | None = Field(default=None, description="og:image URL.")
+    color: str | None = Field(
+        default=None, description="Discord embed accent color.", examples=["#FF5733"]
+    )
+
+    @classmethod
+    def from_model(cls, meta: LinkMetaTags | None) -> MetaTagsResponse | None:
+        if meta is None:
+            return None
+        return cls(
+            title=meta.title,
+            description=meta.description,
+            image=meta.image,
+            color=meta.color,
+        )
 
 
 class UrlResponse(ResponseBase):
@@ -52,6 +74,9 @@ class UrlResponse(ResponseBase):
         default=None,
         description="Whether statistics are private (owner-only).",
     )
+    meta_tags: MetaTagsResponse | None = Field(
+        default=None, description="Custom social preview, if configured."
+    )
 
     @classmethod
     def from_doc(cls, doc: UrlV2Doc, base_url: str) -> UrlResponse:
@@ -71,6 +96,7 @@ class UrlResponse(ResponseBase):
             created_at=to_unix_timestamp(doc.created_at, default=0),
             status=doc.status,
             private_stats=doc.private_stats,
+            meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
 
 
@@ -115,6 +141,9 @@ class UpdateUrlResponse(ResponseBase):
     updated_at: int = Field(
         description="Last update time as Unix timestamp.", examples=[1704067200]
     )
+    meta_tags: MetaTagsResponse | None = Field(
+        default=None, description="Custom social preview, if configured."
+    )
 
     @classmethod
     def from_doc(cls, doc: UrlV2Doc) -> UpdateUrlResponse:
@@ -131,6 +160,7 @@ class UpdateUrlResponse(ResponseBase):
             private_stats=doc.private_stats,
             domain=doc.domain,
             updated_at=to_unix_timestamp(doc.updated_at, default=0),
+            meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
 
 
@@ -155,6 +185,7 @@ class UrlListItem(ResponseBase):
     total_clicks: int | None = None
     last_click: datetime | None = None
     domain: str | None = None
+    meta_tags: MetaTagsResponse | None = None
 
     @classmethod
     def from_doc(cls, doc: UrlV2Doc) -> UrlListItem:
@@ -181,6 +212,7 @@ class UrlListItem(ResponseBase):
             total_clicks=doc.total_clicks,
             last_click=_ensure_utc(doc.last_click),
             domain=doc.domain,
+            meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
 
 

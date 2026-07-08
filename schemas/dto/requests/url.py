@@ -45,6 +45,48 @@ class UrlFilter(RequestBase):
     search: str | None = Field(default=None, max_length=500)
 
 
+class MetaTagsRequest(BaseModel):
+    """Custom social preview (og:title / og:description / og:image / theme-color)."""
+
+    title: str = Field(
+        min_length=1,
+        max_length=120,
+        description="Preview headline (og:title). Required when meta_tags is set.",
+        examples=["We just launched 🎉"],
+    )
+    description: str | None = Field(
+        default=None,
+        max_length=240,
+        description="og:description — roughly 200 chars render on most platforms.",
+    )
+    image: str | None = Field(
+        default=None,
+        max_length=2048,
+        description=(
+            "og:image as an https URL. 1200×630 recommended; keep it under "
+            "300KB or WhatsApp silently drops it; SVG is rejected (no preview "
+            "crawler renders it)."
+        ),
+        examples=["https://example.com/og.png"],
+    )
+    color: str | None = Field(
+        default=None,
+        pattern=r"^#[0-9a-fA-F]{6}$",
+        description="Accent color shown on Discord embeds (theme-color).",
+        examples=["#FF5733"],
+    )
+
+
+_META_TAGS_FIELD_DESC = (
+    "Custom social preview served to link-preview crawlers (WhatsApp, Discord, "
+    "Slack, iMessage, …). The object replaces the whole setting; on PATCH pass "
+    "null to remove. Requires a verified account with the feature enabled. "
+    "Note: platforms cache previews for ~7-30 days — edits propagate slowly "
+    "(the Facebook Sharing Debugger, LinkedIn Post Inspector, and Telegram's "
+    "@WebpageBot force a refresh)."
+)
+
+
 class CreateUrlRequest(RequestBase):
     """Request body for creating a new shortened URL.
 
@@ -100,6 +142,9 @@ class CreateUrlRequest(RequestBase):
             "ACTIVE custom domain. Omit for the default spoo.me namespace."
         ),
         examples=["links.acme.com"],
+    )
+    meta_tags: MetaTagsRequest | None = Field(
+        default=None, description=_META_TAGS_FIELD_DESC
     )
 
     @field_validator("expire_after", mode="before")
@@ -185,6 +230,9 @@ class UpdateUrlRequest(RequestBase):
             "available on the target domain."
         ),
         examples=["links.acme.com"],
+    )
+    meta_tags: MetaTagsRequest | None = Field(
+        default=None, description=_META_TAGS_FIELD_DESC
     )
 
     @field_validator("expire_after", mode="before")

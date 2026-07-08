@@ -40,11 +40,17 @@ from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
-from schemas.dto.requests.url import CreateUrlRequest, ListUrlsQuery, UpdateUrlRequest
+from schemas.dto.requests.url import (
+    CreateUrlRequest,
+    ListUrlsQuery,
+    MetaTagsRequest,
+    UpdateUrlRequest,
+)
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
     EmojiUrlDoc,
     LegacyUrlDoc,
+    LinkMetaTags,
     SchemaVersion,
     UrlStatus,
     UrlV2Doc,
@@ -189,6 +195,29 @@ async def _handle_status(
         ops["status"] = request.status
 
 
+async def _handle_meta_tags(
+    request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
+) -> None:
+    if "meta_tags" not in request.model_fields_set:
+        return
+    if request.meta_tags is None:
+        if existing.meta_tags:
+            ops["meta_tags"] = None
+        return
+    # Registered after long_url so a same-request destination change is
+    # validated against the NEW destination.
+    await service.validate_meta_tags(
+        request.meta_tags, long_url=ops.get("long_url", existing.long_url)
+    )
+    ops["meta_tags"] = LinkMetaTags(
+        title=request.meta_tags.title,
+        description=request.meta_tags.description,
+        image=request.meta_tags.image,
+        color=request.meta_tags.color,
+        updated_at=datetime.now(timezone.utc),
+    ).model_dump()
+
+
 def _simple_field_handler(field_name: str) -> Callable:
     """Factory for nullable fields that just need a changed-check."""
 
@@ -220,6 +249,9 @@ FIELD_HANDLERS: dict[str, Callable[..., Awaitable[None]]] = {
     "block_bots": _simple_field_handler("block_bots"),
     "private_stats": _simple_field_handler("private_stats"),
     "status": _handle_status,
+    # Must follow long_url — the handler validates against ops["long_url"]
+    # when the destination changes in the same request.
+    "meta_tags": _handle_meta_tags,
 }
 
 
@@ -380,6 +412,31 @@ class UrlService:
             return "taken"
         return "available"
 
+    async def validate_meta_tags(
+        self, meta: MetaTagsRequest, *, long_url: str
+    ) -> None:
+        """Abuse checks for a meta_tags write.
+
+        Blocklist regexes run over title/description/image (the same
+        patterns the long_url flows through at create), plus a destination
+        re-check — a link that was fine as a bare redirect deserves a second
+        look the moment someone dresses it up with a custom preview.
+        """
+        patterns = await self._blocked_url_repo.get_patterns()
+        for value in (meta.title, meta.description, meta.image):
+            if value and not validate_blocked_url(
+                value, patterns, timeout=self._blocked_url_regex_timeout
+            ):
+                log.info("meta_tags_rejected", reason="blocked_pattern")
+                raise ValidationError(
+                    "meta_tags content is not allowed", field="meta_tags"
+                )
+        if not validate_blocked_url(
+            long_url, patterns, timeout=self._blocked_url_regex_timeout
+        ):
+            log.info("meta_tags_rejected", reason="blocked_destination")
+            raise ValidationError("URL is blocked", field="long_url")
+
     async def create(
         self,
         request: CreateUrlRequest,
@@ -423,6 +480,12 @@ class UrlService:
                 reason="blocked_pattern",
             )
             raise ValidationError("URL is blocked", field="long_url")
+
+        # 2b. Meta-tags abuse checks (route layer already gated the feature)
+        if request.meta_tags:
+            await self.validate_meta_tags(
+                request.meta_tags, long_url=request.long_url
+            )
 
         # 3. Password hash (cheap — do before alias generation loop)
         password_hash: str | None = None
@@ -475,6 +538,18 @@ class UrlService:
             private_stats=private_stats,
             total_clicks=0,
             last_click=None,
+            meta_tags=(
+                LinkMetaTags(
+                    title=request.meta_tags.title,
+                    description=request.meta_tags.description,
+                    image=request.meta_tags.image,
+                    color=request.meta_tags.color,
+                    updated_at=now,
+                    updated_ip=client_ip,
+                )
+                if request.meta_tags
+                else None
+            ),
         )
         doc = url_doc.model_dump(by_alias=True, exclude={"id"})
 
@@ -499,6 +574,7 @@ class UrlService:
             private_stats=private_stats,
             alias_custom=bool(getattr(request, "alias", None)),
             domain=target_domain,
+            has_meta_tags=bool(request.meta_tags),
         )
 
         return url_doc

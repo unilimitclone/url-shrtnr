@@ -1653,3 +1653,132 @@ class TestV2DocToCacheMetaTags:
         assert d.meta_description is None
         assert d.meta_image is None
         assert d.meta_color is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# meta_tags — update handler + abuse validation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _meta_req(**meta):
+    from schemas.dto.requests.url import MetaTagsRequest, UpdateUrlRequest
+
+    if meta.get("meta_tags") is None and "meta_tags" in meta:
+        return UpdateUrlRequest(meta_tags=None)
+    return UpdateUrlRequest(meta_tags=MetaTagsRequest(**meta))
+
+
+class TestHandleMetaTags:
+    @pytest.mark.asyncio
+    async def test_absent_field_is_noop(self):
+        from schemas.dto.requests.url import UpdateUrlRequest
+        from services.url_service import _handle_meta_tags
+
+        svc = AsyncMock()
+        ops: dict = {}
+        await _handle_meta_tags(
+            UpdateUrlRequest(), make_url_v2_doc(meta_tags={"title": "T"}), ops, svc
+        )
+        assert ops == {}
+        svc.validate_meta_tags.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_null_clears_existing(self):
+        from services.url_service import _handle_meta_tags
+
+        svc = AsyncMock()
+        ops: dict = {}
+        await _handle_meta_tags(
+            _meta_req(meta_tags=None), make_url_v2_doc(meta_tags={"title": "T"}), ops, svc
+        )
+        assert ops == {"meta_tags": None}
+        svc.validate_meta_tags.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_null_on_link_without_meta_is_noop(self):
+        from services.url_service import _handle_meta_tags
+
+        svc = AsyncMock()
+        ops: dict = {}
+        await _handle_meta_tags(_meta_req(meta_tags=None), make_url_v2_doc(), ops, svc)
+        assert ops == {}
+
+    @pytest.mark.asyncio
+    async def test_object_replaces_whole_and_stamps_updated_at(self):
+        from services.url_service import _handle_meta_tags
+
+        svc = AsyncMock()
+        ops: dict = {}
+        await _handle_meta_tags(
+            _meta_req(title="New", color="#112233"), make_url_v2_doc(), ops, svc
+        )
+        written = ops["meta_tags"]
+        assert written["title"] == "New"
+        assert written["color"] == "#112233"
+        assert written["description"] is None
+        assert written["updated_at"] is not None
+        svc.validate_meta_tags.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_validates_against_new_destination_when_long_url_changes(self):
+        from services.url_service import _handle_meta_tags
+
+        svc = AsyncMock()
+        ops: dict = {"long_url": "https://new-destination.com"}
+        await _handle_meta_tags(_meta_req(title="T"), make_url_v2_doc(), ops, svc)
+        assert (
+            svc.validate_meta_tags.call_args.kwargs["long_url"]
+            == "https://new-destination.com"
+        )
+
+
+class TestValidateMetaTags:
+    def _svc_with_patterns(self, patterns):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        blocked_url_repo.get_patterns.return_value = patterns
+        return make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+    @pytest.mark.asyncio
+    async def test_clean_content_passes(self):
+        from schemas.dto.requests.url import MetaTagsRequest
+
+        svc = self._svc_with_patterns(["evil-token"])
+        await svc.validate_meta_tags(
+            MetaTagsRequest(title="Nice launch"), long_url="https://example.com"
+        )
+
+    @pytest.mark.asyncio
+    async def test_blocked_pattern_in_title_rejected(self):
+        from schemas.dto.requests.url import MetaTagsRequest
+
+        svc = self._svc_with_patterns(["evil-token"])
+        with pytest.raises(ValidationError) as exc:
+            await svc.validate_meta_tags(
+                MetaTagsRequest(title="totally evil-token deal"),
+                long_url="https://example.com",
+            )
+        assert exc.value.field == "meta_tags"
+
+    @pytest.mark.asyncio
+    async def test_blocked_pattern_in_image_rejected(self):
+        from schemas.dto.requests.url import MetaTagsRequest
+
+        svc = self._svc_with_patterns(["evil-token"])
+        with pytest.raises(ValidationError):
+            await svc.validate_meta_tags(
+                MetaTagsRequest(title="ok", image="https://evil-token.com/x.png"),
+                long_url="https://example.com",
+            )
+
+    @pytest.mark.asyncio
+    async def test_destination_recheck_rejects_blocked_long_url(self):
+        from schemas.dto.requests.url import MetaTagsRequest
+
+        svc = self._svc_with_patterns(["evil-token"])
+        with pytest.raises(ValidationError) as exc:
+            await svc.validate_meta_tags(
+                MetaTagsRequest(title="ok"), long_url="https://evil-token.com/login"
+            )
+        assert exc.value.field == "long_url"

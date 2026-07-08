@@ -18,6 +18,7 @@ from dependencies import (
     URL_MANAGEMENT_SCOPES,
     CurrentUser,
     CustomDomainSvc,
+    FeatureFlagSvc,
     Settings,
     UrlSvc,
     require_scopes,
@@ -25,6 +26,7 @@ from dependencies import (
 from errors import ValidationError
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
+from routes.api_v1._meta_gate import require_meta_tags_enabled
 from schemas.dto.requests.url import UpdateUrlRequest, UpdateUrlStatusRequest
 from schemas.dto.responses.url import DeleteUrlResponse, UpdateUrlResponse
 
@@ -60,6 +62,7 @@ async def update_url_v1(
     body: UpdateUrlRequest,
     url_service: UrlSvc,
     custom_domain_service: CustomDomainSvc,
+    flag_service: FeatureFlagSvc,
     settings: Settings,
     user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
 ) -> UpdateUrlResponse:
@@ -76,7 +79,8 @@ async def update_url_v1(
     **Rate Limits**: 120/min, 2,000/day
 
     **Updatable Fields**: `long_url`, `alias`, `password`, `block_bots`,
-    `max_clicks`, `expire_after`, `private_stats`, `status`, `domain`
+    `max_clicks`, `expire_after`, `private_stats`, `status`, `domain`,
+    `meta_tags`
 
     **Notes**:
 
@@ -88,6 +92,9 @@ async def update_url_v1(
     - The `url_id` is the MongoDB ObjectId, not the alias
     """
     oid = _parse_url_id(url_id)
+    # Setting/replacing meta_tags is flag-gated; clearing (null) never is.
+    if "meta_tags" in body.model_fields_set and body.meta_tags is not None:
+        await require_meta_tags_enabled(flag_service, user)
     # Verify domain ownership at the edge so the service can stay opaque about
     # tenancy. `domain` field-set with null means "move to system default" —
     # no ownership check needed for the default namespace.
