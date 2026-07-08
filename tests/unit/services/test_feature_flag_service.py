@@ -266,6 +266,23 @@ class TestRolloutTier:
         flag = _flag(rollout_type=RolloutType.TIER, tier=None)
         service, _, _ = make_service(flag=flag)
         assert await service.is_enabled("test_flag", _user()) is False
+
+    @pytest.mark.asyncio
+    async def test_current_user_tier_field_flows_through(self):
+        """CurrentUser.tier (UserDoc.plan value) satisfies TIER rollouts —
+        flipping a flag ALLOWLIST→TIER at paid launch is a data change."""
+        from bson import ObjectId
+
+        from dependencies.auth import CurrentUser
+
+        flag = _flag(rollout_type=RolloutType.TIER, tier="PRO")
+        service, _, _ = make_service(flag=flag)
+        pro = CurrentUser(user_id=ObjectId(), email_verified=True, tier="PRO")
+        free = CurrentUser(user_id=ObjectId(), email_verified=True, tier="FREE")
+        anon_tier = CurrentUser(user_id=ObjectId(), email_verified=True)
+        assert await service.is_enabled("test_flag", pro) is True
+        assert await service.is_enabled("test_flag", free) is False
+        assert await service.is_enabled("test_flag", anon_tier) is False
         assert await service.is_enabled("test_flag", _user(tier="pro")) is False
         assert await service.is_enabled("test_flag", _user(tier="free")) is False
 
