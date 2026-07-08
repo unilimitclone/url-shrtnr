@@ -1696,7 +1696,10 @@ class TestHandleMetaTags:
         svc = AsyncMock()
         ops: dict = {}
         await _handle_meta_tags(
-            _meta_req(meta_tags=None), make_url_v2_doc(meta_tags={"title": "T"}), ops, svc
+            _meta_req(meta_tags=None),
+            make_url_v2_doc(meta_tags={"title": "T"}),
+            ops,
+            svc,
         )
         assert ops == {"meta_tags": None}
         svc.validate_meta_tags.assert_not_called()

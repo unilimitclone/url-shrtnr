@@ -69,12 +69,14 @@ class TestResolvePublicIp:
                 answer.__iter__ = lambda self: iter([])
             return answer
 
-        with patch(
-            "infrastructure.safe_fetch.dns.asyncresolver.resolve",
-            new=AsyncMock(side_effect=_answer),
+        with (
+            patch(
+                "infrastructure.safe_fetch.dns.asyncresolver.resolve",
+                new=AsyncMock(side_effect=_answer),
+            ),
+            pytest.raises(FetchHardError, match="non-public"),
         ):
-            with pytest.raises(FetchHardError, match="non-public"):
-                await _resolve_public_ip("evil.example.com")
+            await _resolve_public_ip("evil.example.com")
 
 
 # ── fetch-level guards (no network: fail before connecting) ─────────────────

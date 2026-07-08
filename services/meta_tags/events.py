@@ -39,9 +39,7 @@ class MetaImageValidateEvent(BaseModel):
     alias: str
     domain: str
     image_url: str
-    requested_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    requested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 def to_stream_fields(event: MetaImageValidateEvent) -> dict[str, str]:

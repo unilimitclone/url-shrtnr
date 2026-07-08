@@ -459,9 +459,7 @@ class UrlService:
             return meta.model_copy(update={"image": ingested.url}), ingested.image_meta
         return meta, None
 
-    async def validate_meta_tags(
-        self, meta: MetaTagsRequest, *, long_url: str
-    ) -> None:
+    async def validate_meta_tags(self, meta: MetaTagsRequest, *, long_url: str) -> None:
         """Abuse checks for a meta_tags write.
 
         Blocklist regexes run over title/description/image (the same
@@ -734,9 +732,7 @@ class UrlService:
             relevant = {"meta_tags", "long_url", "status", "alias", "domain"}
             if relevant & update_ops.keys():
                 if (new_alias, new_domain) != (existing.alias, existing.domain):
-                    await self._og_writethrough.remove(
-                        existing.domain, existing.alias
-                    )
+                    await self._og_writethrough.remove(existing.domain, existing.alias)
                 await self._og_writethrough.sync(_v2_doc_to_cache(merged_doc))
 
         if "meta_tags" in update_ops:

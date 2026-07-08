@@ -51,9 +51,7 @@ class OgEdgeWritethrough:
         key = cache_key(url.domain, url.alias)
         try:
             if url.meta_title is not None and url.url_status == UrlStatus.ACTIVE:
-                entry = EdgeCacheEntry(
-                    type="og_only", og_html=render_meta_preview(url)
-                )
+                entry = EdgeCacheEntry(type="og_only", og_html=render_meta_preview(url))
                 ok = await self._kv.put(key, entry.to_kv_json())
                 log.info(
                     "og_writethrough_put",

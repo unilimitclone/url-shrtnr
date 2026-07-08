@@ -23,7 +23,11 @@ def _png(width=3, height=2) -> bytes:
 
 def _jpeg(width=4, height=3) -> bytes:
     # SOI + APP0 (JFIF) + SOF0 with dims
-    app0 = b"\xff\xe0" + struct.pack(">H", 16) + b"JFIF\x00\x01\x02\x00\x00\x01\x00\x01\x00\x00"
+    app0 = (
+        b"\xff\xe0"
+        + struct.pack(">H", 16)
+        + b"JFIF\x00\x01\x02\x00\x00\x01\x00\x01\x00\x00"
+    )
     sof0 = (
         b"\xff\xc0"
         + struct.pack(">H", 11)

@@ -34,13 +34,11 @@ def test_metadata_requires_auth():
 
 def test_metadata_parses_destination():
     body = FetchedBody(HTML, "text/html", "https://dest.example/final")
-    with patch(
-        "routes.api_v1.metadata.fetch_public", new=AsyncMock(return_value=body)
+    with (
+        patch("routes.api_v1.metadata.fetch_public", new=AsyncMock(return_value=body)),
+        TestClient(_app(), raise_server_exceptions=True) as client,
     ):
-        with TestClient(_app(), raise_server_exceptions=True) as client:
-            resp = client.get(
-                "/api/v1/metadata", params={"url": "https://dest.example/a"}
-            )
+        resp = client.get("/api/v1/metadata", params={"url": "https://dest.example/a"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["title"] == "Dest Title"
@@ -56,25 +54,29 @@ def test_metadata_rejects_http_url():
 
 
 def test_metadata_unfetchable_is_422():
-    with patch(
-        "routes.api_v1.metadata.fetch_public",
-        new=AsyncMock(side_effect=FetchHardError("resolves to a non-public address")),
+    with (
+        patch(
+            "routes.api_v1.metadata.fetch_public",
+            new=AsyncMock(
+                side_effect=FetchHardError("resolves to a non-public address")
+            ),
+        ),
+        TestClient(_app(), raise_server_exceptions=False) as client,
     ):
-        with TestClient(_app(), raise_server_exceptions=False) as client:
-            resp = client.get(
-                "/api/v1/metadata", params={"url": "https://internal.example"}
-            )
+        resp = client.get(
+            "/api/v1/metadata", params={"url": "https://internal.example"}
+        )
     assert resp.status_code == 422
     assert resp.json()["code"] == "unfetchable"
 
 
 def test_metadata_timeout_is_504():
-    with patch(
-        "routes.api_v1.metadata.fetch_public",
-        new=AsyncMock(side_effect=FetchTransientError("timeout")),
+    with (
+        patch(
+            "routes.api_v1.metadata.fetch_public",
+            new=AsyncMock(side_effect=FetchTransientError("timeout")),
+        ),
+        TestClient(_app(), raise_server_exceptions=False) as client,
     ):
-        with TestClient(_app(), raise_server_exceptions=False) as client:
-            resp = client.get(
-                "/api/v1/metadata", params={"url": "https://slow.example"}
-            )
+        resp = client.get("/api/v1/metadata", params={"url": "https://slow.example"})
     assert resp.status_code == 504

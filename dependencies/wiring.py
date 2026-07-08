@@ -46,10 +46,10 @@ from services.click.sinks import InlineSink, RedisStreamSink
 from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
 from services.edge_cache.og_writethrough import OgEdgeWritethrough
-from services.meta_tags.sinks import NullMetaImageSink, RedisStreamMetaImageSink
 from services.export.formatters import default_formatters
 from services.export.service import ExportService
 from services.feature_flag_service import FeatureFlagService
+from services.meta_tags.sinks import NullMetaImageSink, RedisStreamMetaImageSink
 from services.oauth_service import OAuthService
 from services.profile_picture_service import ProfilePictureService
 from services.stats_service import StatsService
@@ -151,8 +151,13 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         )
         log.info("r2_storage_enabled", bucket=r2.bucket)
     elif any(
-        (r2.account_id, r2.access_key_id, r2.secret_access_key, r2.bucket,
-         r2.public_base_url)
+        (
+            r2.account_id,
+            r2.access_key_id,
+            r2.secret_access_key,
+            r2.bucket,
+            r2.public_base_url,
+        )
     ):
         log.warning(
             "r2_storage_partial_config",

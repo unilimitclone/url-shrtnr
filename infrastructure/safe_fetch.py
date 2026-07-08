@@ -126,9 +126,7 @@ async def fetch_public(
         # Pin the connection to the validated IP; keep name-based TLS via
         # sni_hostname and the Host header.
         pinned = parsed.copy_with(host=_bracket(ip))
-        async with httpx.AsyncClient(
-            follow_redirects=False, timeout=timeout
-        ) as client:
+        async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
             request = client.build_request(
                 "GET",
                 pinned,

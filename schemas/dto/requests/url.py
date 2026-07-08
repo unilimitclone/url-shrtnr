@@ -64,7 +64,7 @@ class MetaTagsRequest(BaseModel):
         max_length=700_000,  # data URIs: ~512KB decoded at 4/3 base64 inflation
         description=(
             "og:image — an https URL, or a `data:image/png|jpeg|webp;base64,` "
-            "URI which is validated and stored on spoo's CDN. 1200×630 "
+            "URI which is validated and stored on spoo's CDN. 1200x630 "
             "recommended; keep it under 300KB or WhatsApp silently drops it; "
             "SVG is rejected (no preview crawler renders it)."
         ),

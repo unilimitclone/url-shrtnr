@@ -375,7 +375,7 @@ class MetaTagsSettings(BaseSettings):
     batch_size: int = Field(default=10, ge=1)
     block_ms: int = Field(default=2000, ge=100)
     # Click defaults (60s) are tuned for millisecond handlers; a batch of
-    # 10 fetches × 5s timeout can legitimately run ~50s, and a claimer
+    # 10 fetches x 5s timeout can legitimately run ~50s, and a claimer
     # stealing from a live reader means duplicate fetches. The CAS repo
     # filter makes duplicates harmless anyway — this just avoids the waste.
     claim_idle_ms: int = Field(default=120_000, ge=1000)

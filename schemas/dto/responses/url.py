@@ -47,9 +47,7 @@ class MetaTagsResponse(ResponseBase):
             and meta.image_meta.bytes
             and meta.image_meta.bytes > 300_000
         ):
-            warnings.append(
-                "image exceeds 300KB; WhatsApp may silently drop it"
-            )
+            warnings.append("image exceeds 300KB; WhatsApp may silently drop it")
         return cls(
             title=meta.title,
             description=meta.description,

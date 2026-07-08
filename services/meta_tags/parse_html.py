@@ -14,8 +14,9 @@ Quirk handling, learned from how sites actually write these tags:
 
 from __future__ import annotations
 
+import contextlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urljoin
 
@@ -78,10 +79,8 @@ class _MetaCollector(HTMLParser):
 def parse_meta_tags(html: str, base_url: str) -> ParsedMeta:
     """Parse *html* (already decoded) fetched from *base_url* (final URL)."""
     collector = _MetaCollector()
-    try:
+    with contextlib.suppress(_StopParsing):
         collector.feed(html)
-    except _StopParsing:
-        pass
 
     meta = collector.meta
     og = {k.removeprefix("og:"): v for k, v in meta.items() if k.startswith("og:")}

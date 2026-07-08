@@ -91,9 +91,7 @@ def test_plain_anonymous_shorten_unaffected():
     mock_svc.create = AsyncMock(return_value=doc)
     app = _app(None, mock_svc, flag_enabled=False)
     with TestClient(app, raise_server_exceptions=True) as client:
-        resp = client.post(
-            "/api/v1/shorten", json={"long_url": "https://example.com"}
-        )
+        resp = client.post("/api/v1/shorten", json={"long_url": "https://example.com"})
     assert resp.status_code == 201
     assert resp.json()["meta_tags"] is None
 
@@ -125,9 +123,7 @@ def test_patch_meta_tags_flag_on():
     mock_svc.update = AsyncMock(return_value=doc)
     app = _app(user, mock_svc, flag_enabled=True)
     with TestClient(app, raise_server_exceptions=True) as client:
-        resp = client.patch(
-            f"/api/v1/urls/{URL_ID}", json={"meta_tags": META_BODY}
-        )
+        resp = client.patch(f"/api/v1/urls/{URL_ID}", json={"meta_tags": META_BODY})
     assert resp.status_code == 200
     assert resp.json()["meta_tags"]["title"] == "My Title"
 
@@ -137,9 +133,7 @@ def test_patch_meta_tags_flag_off_rejected():
     mock_svc = AsyncMock()
     app = _app(user, mock_svc, flag_enabled=False)
     with TestClient(app, raise_server_exceptions=False) as client:
-        resp = client.patch(
-            f"/api/v1/urls/{URL_ID}", json={"meta_tags": META_BODY}
-        )
+        resp = client.patch(f"/api/v1/urls/{URL_ID}", json={"meta_tags": META_BODY})
     assert resp.status_code == 403
     mock_svc.update.assert_not_called()
 

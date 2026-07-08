@@ -79,17 +79,19 @@ class TestConsume:
     @pytest.mark.asyncio
     async def test_transient_failure_propagates_for_retry(self):
         validator, repo, _ = _validator()
-        with patch(
-            "services.meta_tags.validator.fetch_public_image",
-            new=AsyncMock(side_effect=FetchTransientError("timeout")),
+        with (
+            patch(
+                "services.meta_tags.validator.fetch_public_image",
+                new=AsyncMock(side_effect=FetchTransientError("timeout")),
+            ),
+            pytest.raises(FetchTransientError),
         ):
-            with pytest.raises(FetchTransientError):
-                await validator.consume(_payload())
+            await validator.consume(_payload())
         repo.clear_meta_image.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_malformed_payload_dropped_silently(self):
-        validator, repo, cache = _validator()
+        validator, repo, _cache = _validator()
         await validator.consume({"nonsense": True})
         await validator.consume("not-a-dict")
         repo.clear_meta_image.assert_not_called()

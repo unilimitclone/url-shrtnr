@@ -222,9 +222,7 @@ async def _build_runtime(
         og_writethrough = None
         if edge.enabled:
             if runtime.http_client is None:
-                runtime.http_client = HttpClient(
-                    timeout=settings.http_client_timeout
-                )
+                runtime.http_client = HttpClient(timeout=settings.http_client_timeout)
             og_writethrough = OgEdgeWritethrough(
                 CloudflareKVClient(
                     http_client=runtime.http_client,
