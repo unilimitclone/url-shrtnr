@@ -70,7 +70,18 @@ export default {
       }
 
       console.log(
-        JSON.stringify({ event: "edge_hit", key, colo: request.cf?.colo }),
+        JSON.stringify({
+          event: "edge_hit",
+          key,
+          colo: request.cf?.colo,
+          // Recon for meta-tags preview serving: learn the real runtime
+          // verifiedBotCategory strings on this zone before enforcing them
+          // (docs say "Page Preview"; one report says "Preview"; Slackbot
+          // is categorized "Webhooks"). Field is absent from workers-types.
+          botCategory: (request.cf as { verifiedBotCategory?: string } | undefined)
+            ?.verifiedBotCategory,
+          ua: request.headers.get("user-agent") ?? "",
+        }),
       );
       return new Response(null, {
         status: entry.status === 301 ? 301 : 302,
