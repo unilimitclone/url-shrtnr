@@ -101,6 +101,27 @@ class TestPromoteAction:
         # jitter keeps TTL within ±20% of 300s
         assert 240 <= args.kwargs["expiration_ttl"] <= 360
 
+    async def test_og_link_promotion_embeds_og_html(self):
+        """Hot og-links stay eligible; the entry carries the prerendered
+        page so the worker can serve bots AND humans at the edge."""
+        url_cache = MagicMock()
+        url_cache.get = AsyncMock(
+            return_value=make_url_cache(
+                long_url="https://example.com/dest",
+                meta_title="Hot Card",
+                meta_color="#112233",
+            )
+        )
+        kv = MagicMock()
+        kv.put = AsyncMock(return_value=True)
+
+        await _action(url_cache, kv).promote(_hot())
+
+        entry = json.loads(kv.put.await_args.args[1])
+        assert entry["type"] == "redirect"
+        assert entry["url"] == "https://example.com/dest"
+        assert 'content="Hot Card"' in entry["og_html"]
+
     async def test_cache_miss_skips_without_kv_write(self):
         url_cache = MagicMock()
         url_cache.get = AsyncMock(return_value=None)
@@ -171,12 +192,22 @@ class TestOnHotDetachment:
 
 class TestEdgeCacheEntryContract:
     def test_wire_shape_is_pinned(self):
-        """The JSON the Worker parses — field names are the contract."""
+        """The JSON the Worker parses — field names are the contract.
+        Absent optionals are OMITTED (to_kv_json), never null — old
+        workers must keep seeing exactly the pre-og_html shape."""
         entry = EdgeCacheEntry(url="https://example.com")
-        assert json.loads(entry.model_dump_json()) == {
+        assert json.loads(entry.to_kv_json()) == {
             "type": "redirect",
             "url": "https://example.com",
             "status": 302,
+        }
+
+    def test_og_only_wire_shape_is_pinned(self):
+        entry = EdgeCacheEntry(type="og_only", og_html="<html></html>")
+        assert json.loads(entry.to_kv_json()) == {
+            "type": "og_only",
+            "status": 302,
+            "og_html": "<html></html>",
         }
 
 

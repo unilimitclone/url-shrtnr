@@ -1,5 +1,5 @@
 {
-  "description": "Canonical contract fixtures. pytest asserts the Python side EMITS exactly these shapes; vitest asserts the Worker SERVES each one correctly. Adding a fixture here forces both suites to cover it.",
+  "description": "Canonical contract fixtures. pytest asserts the Python side EMITS exactly these shapes; vitest asserts the Worker SERVES each one correctly. Adding a fixture here forces both suites to cover it. og_entries carry per-audience expectations: expect_preview = response for a link-preview crawler UA, expect_human = response for a browser UA ('passthrough' = must reach origin).",
   "entries": [
     {
       "name": "plain redirect",
@@ -18,6 +18,31 @@
       "key": "cache:spoo.me:qs1",
       "value": { "type": "redirect", "url": "https://example.com/p?a=1&b=%20x", "status": 302 },
       "expect": { "status": 302, "location": "https://example.com/p?a=1&b=%20x" }
+    }
+  ],
+  "og_entries": [
+    {
+      "name": "og_only serves preview bots, humans passthrough",
+      "key": "cache:spoo.me:og1",
+      "value": {
+        "type": "og_only",
+        "status": 302,
+        "og_html": "<!doctype html><html><head><meta property=\"og:title\" content=\"Custom Card\"></head><body></body></html>"
+      },
+      "expect_preview": { "status": 200, "body_contains": "og:title" },
+      "expect_human": "passthrough"
+    },
+    {
+      "name": "hot og-link: redirect entry with embedded og_html",
+      "key": "cache:spoo.me:og2",
+      "value": {
+        "type": "redirect",
+        "url": "https://example.com/dest",
+        "status": 302,
+        "og_html": "<!doctype html><html><head><meta property=\"og:title\" content=\"Hot Card\"></head><body></body></html>"
+      },
+      "expect_preview": { "status": 200, "body_contains": "og:title" },
+      "expect_human": { "status": 302, "location": "https://example.com/dest" }
     }
   ],
   "malformed": [

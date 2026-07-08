@@ -2,25 +2,40 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://spoo.me/schemas/edge-cache-entry.json",
   "title": "EdgeCacheEntry",
-  "description": "KV value written by PromoteToEdgeCacheAction (services/edge_cache.py) and served by the edge Worker. Key format: cache:{domain}:{short_code}, domain lowercased with no www prefix. Both sides are tested against fixtures.json — change entry shape, key format, fixtures, Python model, and Worker parsing only in lockstep.",
+  "description": "KV value written by PromoteToEdgeCacheAction and OgEdgeWritethrough (services/edge_cache/) and served by the edge Worker. Key format: cache:{domain}:{short_code}, domain lowercased with no www prefix. Absent optionals are omitted, not null (EdgeCacheEntry.to_kv_json). Both sides are tested against fixtures.json — change entry shape, key format, fixtures, Python model, and Worker parsing only in lockstep.",
   "type": "object",
-  "required": ["type", "url", "status"],
+  "required": ["type", "status"],
   "additionalProperties": false,
   "properties": {
     "type": {
-      "description": "Entry discriminator. v1 only emits 'redirect'; consumers MUST passthrough unknown types (forward compatibility for e.g. password_form).",
+      "description": "Entry discriminator. 'redirect': serve Location to everyone (+ og_html to preview bots when present). 'og_only': serve og_html to preview bots, everyone else passes through to origin. Consumers MUST passthrough unknown types (forward compatibility).",
       "type": "string",
-      "enum": ["redirect"]
+      "enum": ["redirect", "og_only"]
     },
     "url": {
-      "description": "Absolute destination URL to redirect to.",
+      "description": "Absolute destination URL to redirect to. Required for type=redirect, absent for og_only.",
       "type": "string",
       "format": "uri"
     },
     "status": {
-      "description": "HTTP redirect status. v1 always writes 302.",
+      "description": "HTTP redirect status for the redirect branch. Always 302 today.",
       "type": "integer",
       "enum": [301, 302]
+    },
+    "og_html": {
+      "description": "Prerendered meta_preview.html served (200, text/html) to link-preview crawlers. Final HTML string, no template syntax.",
+      "type": "string",
+      "maxLength": 32768
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "redirect" } } },
+      "then": { "required": ["url"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "og_only" } } },
+      "then": { "required": ["og_html"] }
+    }
+  ]
 }

@@ -11,10 +11,13 @@
  * tested from both sides — change only in lockstep.
  */
 
+import { wantsPreview } from "./bots";
+
 interface EdgeCacheEntry {
   type: string;
-  url: string;
-  status: number;
+  url?: string;
+  status?: number;
+  og_html?: string;
 }
 
 /** Path prefixes that are never short codes — skip KV entirely. */
@@ -38,6 +41,9 @@ export function lookupKey(request: Request): string | null {
   const url = new URL(request.url);
   // Password attempts must always reach origin for verification.
   if (url.searchParams.has("password")) return null;
+  // ?bot=1 is the meta-tags debug view — origin renders it with the JS
+  // auto-redirect disabled so developers can inspect the crawler page.
+  if (url.searchParams.has("bot")) return null;
 
   const path = url.pathname;
   if (path === "/" || path.includes(".")) return null;
@@ -59,13 +65,30 @@ export default {
       if (key === null) return passthrough(request, env);
 
       const entry = await env.EDGE_CACHE.get<EdgeCacheEntry>(key, "json");
-      if (
-        entry === null ||
-        entry.type !== "redirect" ||
-        typeof entry.url !== "string"
-      ) {
-        // Miss, or an entry type this Worker version doesn't know —
-        // origin always knows how to answer.
+      if (entry === null) return passthrough(request, env);
+
+      // Custom meta-tags: preview crawlers get the prerendered OG page —
+      // from og_only entries (eager write-through) and from hot redirect
+      // entries carrying og_html. Everyone else falls through to the
+      // redirect branch (og_only for humans = passthrough, so origin
+      // keeps click tracking for non-hot og-links).
+      if (typeof entry.og_html === "string" && wantsPreview(request)) {
+        console.log(
+          JSON.stringify({ event: "edge_og_hit", key, colo: request.cf?.colo }),
+        );
+        return new Response(entry.og_html, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "X-Robots-Tag": "noindex, nofollow, noarchive",
+            "X-Spoo-Edge": "hit",
+          },
+        });
+      }
+
+      if (entry.type !== "redirect" || typeof entry.url !== "string") {
+        // og_only for humans, or an entry type this Worker version
+        // doesn't know — origin always knows how to answer.
         return passthrough(request, env);
       }
 

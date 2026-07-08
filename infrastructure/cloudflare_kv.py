@@ -72,14 +72,19 @@ class CloudflareKVClient:
             self._token and self._namespace_id and (self._account_id or self._api_base)
         )
 
-    async def put(self, key: str, value: str, *, expiration_ttl: int) -> bool:
-        """Write *value* under *key*, auto-expiring after *expiration_ttl* s."""
-        return await self._request(
-            "PUT",
-            key,
-            content=value,
-            params={"expiration_ttl": expiration_ttl},
+    async def put(
+        self, key: str, value: str, *, expiration_ttl: int | None = None
+    ) -> bool:
+        """Write *value* under *key*.
+
+        ``expiration_ttl`` auto-expires the entry after N seconds; ``None``
+        persists it until an explicit delete (used by the meta-tags
+        write-through, whose lifecycle is event-driven, not TTL-driven).
+        """
+        params = (
+            {"expiration_ttl": expiration_ttl} if expiration_ttl is not None else None
         )
+        return await self._request("PUT", key, content=value, params=params)
 
     async def delete(self, key: str) -> bool:
         """Idempotent delete — a 404 (already gone) counts as success."""

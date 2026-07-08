@@ -46,6 +46,7 @@ from schemas.dto.requests.url import (
     MetaTagsRequest,
     UpdateUrlRequest,
 )
+from services.edge_cache.og_writethrough import OgEdgeWritethrough
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
     EmojiUrlDoc,
@@ -267,6 +268,7 @@ class UrlService:
         system_default_domain: str,
         blocked_url_regex_timeout: float = 0.2,
         max_emoji_alias_length: int = 15,
+        og_writethrough: OgEdgeWritethrough | None = None,
     ) -> None:
         self._url_repo = url_repo
         self._legacy_repo = legacy_repo
@@ -279,6 +281,9 @@ class UrlService:
         self._system_default_domain = system_default_domain
         self._blocked_url_regex_timeout = blocked_url_regex_timeout
         self._max_emoji_alias_length = max_emoji_alias_length
+        # Edge KV write-through for og-links; None when edge cache is
+        # unconfigured (self-host) — origin then serves all previews.
+        self._og_writethrough = og_writethrough
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -577,6 +582,11 @@ class UrlService:
             has_meta_tags=bool(request.meta_tags),
         )
 
+        # Edge-first: push the prerendered OG page to KV so preview bots
+        # are answered at the edge. Best-effort — never fails the write.
+        if url_doc.meta_tags and self._og_writethrough:
+            await self._og_writethrough.sync(_v2_doc_to_cache(url_doc))
+
         return url_doc
 
     async def update(
@@ -661,7 +671,24 @@ class UrlService:
         merged = existing.model_dump(by_alias=True)
         merged.update(update_ops)
         merged["_id"] = url_id
-        return UrlV2Doc.from_mongo(merged)
+        merged_doc = UrlV2Doc.from_mongo(merged)
+
+        # Edge KV write-through — only for links that have meta_tags now or
+        # had them before this write (plain links' promoted redirect entries
+        # must never be touched). A key change (alias/domain move) drops the
+        # old entry; sync() re-puts or deletes under the new key.
+        if self._og_writethrough and (
+            existing.meta_tags is not None or merged_doc.meta_tags is not None
+        ):
+            relevant = {"meta_tags", "long_url", "status", "alias", "domain"}
+            if relevant & update_ops.keys():
+                if (new_alias, new_domain) != (existing.alias, existing.domain):
+                    await self._og_writethrough.remove(
+                        existing.domain, existing.alias
+                    )
+                await self._og_writethrough.sync(_v2_doc_to_cache(merged_doc))
+
+        return merged_doc
 
     def _auto_reactivate(
         self, existing: UrlV2Doc, update_ops: dict, now: datetime
@@ -715,6 +742,8 @@ class UrlService:
 
         await self._url_repo.delete(url_id)
         await self._url_cache.invalidate(existing.alias, existing.domain)
+        if existing.meta_tags is not None and self._og_writethrough:
+            await self._og_writethrough.remove(existing.domain, existing.alias)
 
         log.info(
             "url_deleted",

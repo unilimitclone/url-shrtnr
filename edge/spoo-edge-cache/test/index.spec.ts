@@ -52,6 +52,82 @@ describe("contract fixtures", () => {
     });
   }
 
+  const FB_UA = "facebookexternalhit/1.1";
+  const CHROME_UA =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0 Safari/537.36";
+
+  for (const fixture of fixtures.og_entries) {
+    it(`serves preview bots: ${fixture.name}`, async () => {
+      await env.EDGE_CACHE.put(fixture.key, JSON.stringify(fixture.value));
+      const code = fixture.key.split(":").slice(2).join(":");
+      const response = await dispatch(
+        new Request(`https://spoo.me/${encodeURIComponent(code)}`, {
+          headers: { "user-agent": FB_UA },
+        }),
+      );
+
+      expect(response.status).toBe(fixture.expect_preview.status);
+      expect(await response.text()).toContain(
+        fixture.expect_preview.body_contains,
+      );
+      expect(response.headers.get("Content-Type")).toContain("text/html");
+      expect(response.headers.get("X-Spoo-Edge")).toBe("hit");
+      expect(response.headers.get("X-Robots-Tag")).toContain("noindex");
+    });
+
+    it(`serves humans: ${fixture.name}`, async () => {
+      await env.EDGE_CACHE.put(fixture.key, JSON.stringify(fixture.value));
+      const code = fixture.key.split(":").slice(2).join(":");
+      if (fixture.expect_human === "passthrough") {
+        expectOriginFetch();
+      }
+      const response = await dispatch(
+        new Request(`https://spoo.me/${encodeURIComponent(code)}`, {
+          headers: { "user-agent": CHROME_UA },
+        }),
+      );
+
+      if (fixture.expect_human === "passthrough") {
+        expect(await response.text()).toBe("origin-served");
+      } else {
+        const expected = fixture.expect_human as {
+          status: number;
+          location: string;
+        };
+        expect(response.status).toBe(expected.status);
+        expect(response.headers.get("Location")).toBe(expected.location);
+      }
+    });
+  }
+
+  it("?bot=1 bypasses the cache even when an og entry exists", async () => {
+    await env.EDGE_CACHE.put(
+      "cache:spoo.me:ogdebug",
+      JSON.stringify({ type: "og_only", status: 302, og_html: "<html></html>" }),
+    );
+    expectOriginFetch();
+    const response = await dispatch(
+      new Request("https://spoo.me/ogdebug?bot=1", {
+        headers: { "user-agent": CHROME_UA },
+      }),
+    );
+    expect(await response.text()).toBe("origin-served");
+  });
+
+  it("HEAD on an og entry gets the preview (200)", async () => {
+    await env.EDGE_CACHE.put(
+      "cache:spoo.me:oghead",
+      JSON.stringify({ type: "og_only", status: 302, og_html: "<html></html>" }),
+    );
+    const response = await dispatch(
+      new Request("https://spoo.me/oghead", {
+        method: "HEAD",
+        headers: { "user-agent": CHROME_UA },
+      }),
+    );
+    expect(response.status).toBe(200);
+  });
+
   for (const fixture of fixtures.malformed) {
     it(`passes through: ${fixture.name}`, async () => {
       await env.EDGE_CACHE.put(fixture.key, fixture.raw);

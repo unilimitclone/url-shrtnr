@@ -50,4 +50,23 @@ def test_python_emits_exactly_the_fixture_shapes(fixture):
     entry = EdgeCacheEntry(
         url=fixture["value"]["url"], status=fixture["value"]["status"]
     )
-    assert json.loads(entry.model_dump_json()) == fixture["value"]
+    assert json.loads(entry.to_kv_json()) == fixture["value"]
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    _fixtures()["og_entries"],
+    ids=lambda f: f["name"],
+)
+def test_python_emits_exactly_the_og_fixture_shapes(fixture):
+    domain, _, code = fixture["key"].removeprefix("cache:").partition(":")
+    assert cache_key(domain, code) == fixture["key"]
+
+    value = fixture["value"]
+    entry = EdgeCacheEntry(
+        type=value["type"],
+        url=value.get("url"),
+        status=value["status"],
+        og_html=value["og_html"],
+    )
+    assert json.loads(entry.to_kv_json()) == value

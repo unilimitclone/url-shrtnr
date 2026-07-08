@@ -16,6 +16,7 @@ from infrastructure.cache.feature_flag_cache import FeatureFlagCache
 from infrastructure.cache.url_cache import UrlCache
 from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.cloudflare_client import CloudflareClient
+from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.logging import get_logger
 from infrastructure.webhook.discord import DiscordWebhookProvider
 from repositories.api_key_repository import ApiKeyRepository
@@ -42,6 +43,7 @@ from services.click import ClickService, LegacyClickHandler, V2ClickHandler
 from services.click.sinks import InlineSink, RedisStreamSink
 from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
+from services.edge_cache.og_writethrough import OgEdgeWritethrough
 from services.export.formatters import default_formatters
 from services.export.service import ExportService
 from services.feature_flag_service import FeatureFlagService
@@ -109,6 +111,25 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     contact_webhook = DiscordWebhookProvider(settings.contact_webhook, http_client)
     report_webhook = DiscordWebhookProvider(settings.url_report_webhook, http_client)
 
+    # Edge KV write-through for custom meta-tags: preview bots get answered
+    # at the edge from the moment a link's tags are written. None when the
+    # edge cache isn't configured (self-host) — origin serves all previews.
+    og_writethrough = None
+    edge = settings.edge_cache
+    if edge.enabled:
+        og_writethrough = OgEdgeWritethrough(
+            CloudflareKVClient(
+                http_client=http_client,
+                api_token=edge.cf_api_token,
+                account_id=edge.cf_account_id,
+                namespace_id=edge.kv_namespace_id,
+                api_base=edge.api_base,
+                api_host_header=edge.api_host_header,
+            ),
+            system_domain=settings.system_default_domain,
+        )
+        log.info("og_writethrough_enabled", kv_namespace_id=edge.kv_namespace_id)
+
     # ── Services ─────────────────────────────────────────────────────────
     app.state.url_service = UrlService(
         url_repo,
@@ -120,6 +141,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         system_default_domain=settings.system_default_domain,
         blocked_url_regex_timeout=settings.blocked_url_regex_timeout,
         max_emoji_alias_length=settings.max_emoji_alias_length,
+        og_writethrough=og_writethrough,
     )
     app.state.stats_service = StatsService(
         click_repo,
