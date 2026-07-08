@@ -90,6 +90,14 @@ class RateLimitError(AppError):
     error_code = "rate_limit_exceeded"
 
 
+class R2StorageError(AppError):
+    """R2 object PUT failed — the user write that needed it must fail
+    loudly rather than store a broken image URL."""
+
+    status_code = 502
+    error_code = "storage_error"
+
+
 # ── Custom-domain errors ─────────────────────────────────────────────────
 
 

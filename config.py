@@ -311,6 +311,43 @@ class EdgeCacheSettings(BaseSettings):
         )
 
 
+class R2StorageSettings(BaseSettings):
+    """Cloudflare R2 bucket for user-uploaded og:images (custom meta-tags).
+
+    Fully off unless all five fields are set — self-hosts without R2 keep
+    https image URLs working; only data-URI uploads are rejected. Env vars
+    prefixed ``R2_`` (same convention as ``EDGE_CACHE_``).
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="R2_",
+    )
+
+    account_id: str | None = None
+    access_key_id: str | None = None
+    secret_access_key: str | None = None
+    bucket: str | None = None
+    # The bucket's public/custom domain, e.g. https://og.spoo.me or the
+    # r2.dev URL — becomes the stored og:image URL prefix.
+    public_base_url: str | None = None
+    # Local-dev S3 emulator override (MinIO etc.); unset in deployments.
+    endpoint_url: str | None = None
+    # Image PUTs need more headroom than the shared client's 5s default.
+    request_timeout_seconds: float = Field(default=15.0, gt=0)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(
+            self.account_id
+            and self.access_key_id
+            and self.secret_access_key
+            and self.bucket
+            and self.public_base_url
+        )
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -419,6 +456,7 @@ class AppSettings(BaseSettings):
     custom_domains: CustomDomainSettings | None = None
     click_events: ClickEventsSettings | None = None
     edge_cache: EdgeCacheSettings | None = None
+    r2: R2StorageSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -454,6 +492,8 @@ class AppSettings(BaseSettings):
             self.click_events = ClickEventsSettings()
         if self.edge_cache is None:
             self.edge_cache = EdgeCacheSettings()
+        if self.r2 is None:
+            self.r2 = R2StorageSettings()
 
         return self
 
