@@ -71,6 +71,11 @@ class Limits:
     API_KEY_READ = "60 per minute"
     API_KEY_DELETE = "30 per minute"
 
+    # Per-user page layouts (client debounces writes)
+    LAYOUT_READ = "120 per minute"
+    LAYOUT_WRITE = "60 per minute"
+    LAYOUT_DELETE = "30 per minute"
+
     # URL management
     URL_MANAGE = "120 per minute; 2000 per day"
     URL_DELETE = "60 per minute; 1000 per day"

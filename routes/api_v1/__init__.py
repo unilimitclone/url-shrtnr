@@ -7,6 +7,7 @@ from routes.api_v1 import (
     exports,
     keys,
     management,
+    me,
     shorten,
     stats,
     urls,
@@ -20,3 +21,4 @@ router.include_router(stats.router)
 router.include_router(exports.router)
 router.include_router(keys.router)
 router.include_router(custom_domains.router)
+router.include_router(me.router)

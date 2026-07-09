@@ -19,6 +19,7 @@ from infrastructure.cloudflare_client import CloudflareClient
 from infrastructure.logging import get_logger
 from infrastructure.webhook.discord import DiscordWebhookProvider
 from repositories.api_key_repository import ApiKeyRepository
+from repositories.page_layout_repository import PageLayoutRepository
 from repositories.app_grant_repository import AppGrantRepository
 from repositories.blocked_domain_repository import BlockedDomainRepository
 from repositories.blocked_url_repository import BlockedUrlRepository
@@ -32,6 +33,7 @@ from repositories.url_repository import UrlRepository
 from repositories.user_repository import UserRepository
 from schemas.enums.domain_status import VerificationMethod
 from services.api_key_service import ApiKeyService
+from services.page_layout_service import PageLayoutService
 from services.auth.credentials import CredentialService
 from services.auth.device import DeviceAuthService
 from services.auth.otp import OtpService
@@ -94,6 +96,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     user_repo = UserRepository(db["users"])
     token_repo = TokenRepository(db["verification-tokens"])
     api_key_repo = ApiKeyRepository(db["api-keys"])
+    page_layout_repo = PageLayoutRepository(db["page-layouts"])
     blocked_url_repo = BlockedUrlRepository(db["blocked-urls"])
     app_grant_repo = AppGrantRepository(db["app-grants"])
     feature_flag_repo = FeatureFlagRepository(db["feature_flags"])
@@ -134,6 +137,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         api_key_repo,
         max_active_keys=settings.max_active_api_keys,
     )
+    app.state.page_layout_service = PageLayoutService(page_layout_repo)
     token_factory = TokenFactory(settings.jwt)
     otp_service = OtpService(token_repo)
 

@@ -28,6 +28,7 @@ from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
 from services.export.service import ExportService
 from services.feature_flag_service import FeatureFlagService
+from services.page_layout_service import PageLayoutService
 from services.oauth_service import OAuthService
 from services.profile_picture_service import ProfilePictureService
 from services.stats_service import StatsService
@@ -48,6 +49,10 @@ def get_export_service(request: Request) -> ExportService:
 
 def get_api_key_service(request: Request) -> ApiKeyService:
     return request.app.state.api_key_service
+
+
+def get_page_layout_service(request: Request) -> PageLayoutService:
+    return request.app.state.page_layout_service
 
 
 def get_credential_service(request: Request) -> CredentialService:
@@ -120,6 +125,7 @@ UrlSvc = Annotated[UrlService, Depends(get_url_service)]
 StatsSvc = Annotated[StatsService, Depends(get_stats_service)]
 ExportSvc = Annotated[ExportService, Depends(get_export_service)]
 ApiKeySvc = Annotated[ApiKeyService, Depends(get_api_key_service)]
+PageLayoutSvc = Annotated[PageLayoutService, Depends(get_page_layout_service)]
 CredentialSvc = Annotated[CredentialService, Depends(get_credential_service)]
 VerificationSvc = Annotated[EmailVerificationService, Depends(get_verification_service)]
 PasswordSvc = Annotated[PasswordService, Depends(get_password_service)]

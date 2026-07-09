@@ -76,6 +76,10 @@ OPENAPI_TAGS = [
         "description": "Create new shortened URLs",
     },
     {
+        "name": "Me",
+        "description": "Per-user preferences and dashboard layouts",
+    },
+    {
         "name": "Link Management",
         "description": "List, update, and delete your shortened URLs",
     },

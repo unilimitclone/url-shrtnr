@@ -45,6 +45,7 @@ from dependencies.infra import (
 )
 from dependencies.services import (
     ApiKeySvc,
+    PageLayoutSvc,
     AppGrantRepo,
     ClickSink,
     ClickSvc,
@@ -63,6 +64,7 @@ from dependencies.services import (
     VerificationSvc,
     fetch_user_profile,
     get_api_key_service,
+    get_page_layout_service,
     get_app_grant_repo,
     get_click_service,
     get_click_sink,
@@ -90,6 +92,7 @@ __all__ = [
     "URL_READ_SCOPES",
     # services (aliases)
     "ApiKeySvc",
+    "PageLayoutSvc",
     "AppGrantRepo",
     # infra
     "AppRegistryDep",
@@ -122,6 +125,7 @@ __all__ = [
     # services (getters)
     "fetch_user_profile",
     "get_api_key_service",
+    "get_page_layout_service",
     "get_app_grant_repo",
     "get_app_registry",
     "get_click_service",
