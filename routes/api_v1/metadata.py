@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from dependencies import URL_READ_SCOPES, CurrentUser, require_scopes
+from dependencies import URL_READ_SCOPES, CurrentUser, Settings, require_scopes
 from errors import AppError, ValidationError
 from infrastructure.safe_fetch import (
     FetchHardError,
@@ -61,6 +61,7 @@ async def get_metadata(
             examples=["https://example.com/article"],
         ),
     ],
+    settings: Settings,
     user: CurrentUser = Depends(require_scopes(URL_READ_SCOPES)),  # noqa: B008
 ) -> MetadataResponse:
     """Fetch a destination page and return its existing meta tags.
@@ -93,6 +94,7 @@ async def get_metadata(
             max_bytes=_FETCH_MAX_BYTES,
             # Big pages are fine — tags live in <head>, parse the prefix.
             truncate_over_cap=True,
+            user_agent=settings.meta_tags.fetch_user_agent,
         )
     except FetchTransientError as exc:
         raise UpstreamTimeoutError("destination did not respond in time") from exc

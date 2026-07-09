@@ -25,6 +25,7 @@ from bson import ObjectId
 
 from infrastructure.logging import get_logger
 from infrastructure.safe_fetch import (
+    DEFAULT_USER_AGENT,
     FetchDeniedError,
     FetchHardError,
     fetch_public_image,
@@ -50,6 +51,7 @@ class MetaImageValidator:
         timeout: float = 5.0,
         max_bytes: int = 1_048_576,
         max_redirects: int = 3,
+        user_agent: str = DEFAULT_USER_AGENT,
     ) -> None:
         self._url_repo = url_repo
         self._url_cache = url_cache
@@ -57,6 +59,7 @@ class MetaImageValidator:
         self._timeout = timeout
         self._max_bytes = max_bytes
         self._max_redirects = max_redirects
+        self._user_agent = user_agent
 
     async def consume(self, payload: Any) -> None:
         event = meta_image_event_from_payload(payload)
@@ -69,6 +72,7 @@ class MetaImageValidator:
                 timeout=self._timeout,
                 max_bytes=self._max_bytes,
                 max_redirects=self._max_redirects,
+                user_agent=self._user_agent,
             )
         except FetchDeniedError as exc:
             # 401/403 means the host blocked OUR validator UA (WAF, hotlink

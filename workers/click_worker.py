@@ -241,6 +241,7 @@ async def _build_runtime(
             timeout=mt.fetch_timeout_seconds,
             max_bytes=mt.fetch_max_bytes,
             max_redirects=mt.fetch_max_redirects,
+            user_agent=mt.fetch_user_agent,
         )
         log.info("meta_image_validator_registered", stream=mt.stream)
 

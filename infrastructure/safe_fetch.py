@@ -30,7 +30,8 @@ from infrastructure.logging import get_logger
 
 log = get_logger(__name__)
 
-_USER_AGENT = "spoo.me-og-validator/1.0 (+https://spoo.me)"
+# Default only — deployments configure META_TAGS_FETCH_USER_AGENT (config.py).
+DEFAULT_USER_AGENT = "spoo.me-og-validator/1.0 (+https://spoo.me)"
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
@@ -116,6 +117,7 @@ async def fetch_public(
     max_bytes: int = 1_048_576,
     max_redirects: int = 3,
     truncate_over_cap: bool = False,
+    user_agent: str = DEFAULT_USER_AGENT,
 ) -> FetchedBody:
     """Fetch *url* with SSRF guards. ``accept_content`` are content-type
     prefixes (e.g. ``("image/",)``); ``reject_content`` are substrings that
@@ -138,7 +140,7 @@ async def fetch_public(
             request = client.build_request(
                 "GET",
                 pinned,
-                headers={"Host": parsed.host, "User-Agent": _USER_AGENT},
+                headers={"Host": parsed.host, "User-Agent": user_agent},
                 extensions={"sni_hostname": parsed.host},
             )
             try:
@@ -195,6 +197,7 @@ async def fetch_public_image(
     timeout: float = 5.0,
     max_bytes: int = 1_048_576,
     max_redirects: int = 3,
+    user_agent: str = DEFAULT_USER_AGENT,
 ) -> FetchedBody:
     return await fetch_public(
         url,
@@ -203,4 +206,5 @@ async def fetch_public_image(
         timeout=timeout,
         max_bytes=max_bytes,
         max_redirects=max_redirects,
+        user_agent=user_agent,
     )

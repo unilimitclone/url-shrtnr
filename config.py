@@ -384,6 +384,10 @@ class MetaTagsSettings(BaseSettings):
     fetch_timeout_seconds: float = Field(default=5.0, gt=0)
     fetch_max_bytes: int = Field(default=1_048_576, ge=1024)
     fetch_max_redirects: int = Field(default=3, ge=0)
+    # Sent on og:image validation and /api/v1/metadata fetches. Transparent
+    # by design (self-hosters should brand their own); some WAFs 401/403
+    # unknown UAs — safe_fetch classifies that as denied, never data loss.
+    fetch_user_agent: str = "spoo.me-og-validator/1.0 (+https://spoo.me)"
 
 
 class AppSettings(BaseSettings):
