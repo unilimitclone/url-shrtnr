@@ -133,11 +133,11 @@ async def redirect_url(
         return _error_page(request, "410", "SHORT URL EXPIRED", 410)
     resolve_ms = int((time.perf_counter() - resolve_start) * 1000)
 
-    # 1b. Custom meta-tags: preview crawlers get the owner's OG card instead
-    #     of the redirect; everyone else falls through to the 302. Runs
-    #     BEFORE the password gate (bots get the card, not the 401 page —
-    #     it reveals only owner-written text). A preview serve is not a
-    #     click, so the emit step below is deliberately never reached.
+    # Custom meta-tags: preview crawlers get the owner's OG card instead of
+    # the redirect; everyone else falls through to the 302. This runs before
+    # the password gate (bots get the card, not the 401 page — it reveals
+    # only owner-written text) and returns before the click emit — a preview
+    # serve is never a click.
     user_agent = request.headers.get("User-Agent", "")
     if url_data.meta_title is not None and schema == SchemaVersion.V2:
         bot_param = "bot" in request.query_params

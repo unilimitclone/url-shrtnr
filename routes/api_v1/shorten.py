@@ -24,12 +24,12 @@ from dependencies import (
     UrlSvc,
     optional_scopes_verified,
 )
-from errors import AuthenticationError
+from errors import AuthenticationError, ForbiddenError
 from middleware.openapi import AUTH_RESPONSES, OPTIONAL_AUTH_SECURITY
 from middleware.rate_limiter import Limits, dynamic_limit, limiter
-from routes.api_v1._meta_gate import require_meta_tags_enabled
 from schemas.dto.requests.url import AliasCheckQuery, CreateUrlRequest
 from schemas.dto.responses.url import AliasCheckResponse, UrlResponse
+from services.feature_flag_service import META_TAGS_FLAG
 from shared.ip_utils import get_client_ip
 
 router = APIRouter(tags=["URL Shortening"])
@@ -83,8 +83,13 @@ async def shorten_v1(
     owner_id = user.user_id if user is not None else None
     client_ip = get_client_ip(request)
 
+    # Setting meta_tags is flag-gated and needs a verified account. 403 with
+    # a clear message — the field rides a shared endpoint, so there is no
+    # feature existence to hide (contrast the custom-domains 404 pattern).
     if body.meta_tags is not None:
-        await require_meta_tags_enabled(flag_service, user)
+        if user is None or not user.email_verified:
+            raise ForbiddenError("meta_tags requires a verified account")
+        await flag_service.require(META_TAGS_FLAG, user)
 
     if body.domain and body.domain != settings.system_default_domain:
         if user is None:

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 from fastapi.testclient import TestClient
 
 from dependencies import get_current_user, get_feature_flag_service, get_url_service
+from errors import ForbiddenError
 from schemas.models.url import LinkMetaTags
 
 from .conftest import _build_test_app, _make_url_doc, _make_user
@@ -22,6 +23,14 @@ META_BODY = {
 def _flag_svc(enabled: bool) -> AsyncMock:
     svc = AsyncMock()
     svc.is_enabled = AsyncMock(return_value=enabled)
+
+    async def _require(name: str, user, **_kw) -> None:
+        # Mirrors FeatureFlagService.require: raise 403 when disabled.
+        if not enabled:
+            feature = name.replace("_", " ").capitalize()
+            raise ForbiddenError(f"{feature} is not enabled for this account")
+
+    svc.require = AsyncMock(side_effect=_require)
     return svc
 
 
@@ -60,7 +69,7 @@ def test_shorten_with_meta_tags_requires_flag():
             json={"long_url": "https://example.com", "meta_tags": META_BODY},
         )
     assert resp.status_code == 403
-    assert "not available" in resp.json()["error"]
+    assert "not enabled" in resp.json()["error"]
     mock_svc.create.assert_not_called()
 
 

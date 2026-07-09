@@ -526,8 +526,8 @@ class UrlService:
             )
             raise ValidationError("URL is blocked", field="long_url")
 
-        # 2b. Meta-tags: resolve data-URI uploads to R2 URLs, then abuse
-        #     checks (route layer already gated the feature).
+        # Meta-tags: resolve data-URI uploads to R2 URLs, then run abuse
+        # checks (the route layer already gated the feature itself).
         meta_req = request.meta_tags
         meta_image_meta: dict | None = None
         if meta_req:

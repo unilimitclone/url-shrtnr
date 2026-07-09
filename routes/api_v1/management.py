@@ -23,12 +23,12 @@ from dependencies import (
     UrlSvc,
     require_scopes,
 )
-from errors import ValidationError
+from errors import ForbiddenError, ValidationError
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
-from routes.api_v1._meta_gate import require_meta_tags_enabled
 from schemas.dto.requests.url import UpdateUrlRequest, UpdateUrlStatusRequest
 from schemas.dto.responses.url import DeleteUrlResponse, UpdateUrlResponse
+from services.feature_flag_service import META_TAGS_FLAG
 from shared.ip_utils import get_client_ip
 
 router = APIRouter(tags=["Link Management"])
@@ -93,9 +93,13 @@ async def update_url_v1(
     - The `url_id` is the MongoDB ObjectId, not the alias
     """
     oid = _parse_url_id(url_id)
-    # Setting/replacing meta_tags is flag-gated; clearing (null) never is.
+    # Setting/replacing meta_tags is flag-gated and needs a verified account;
+    # clearing (null) never is — users must always be able to remove their
+    # own tags, including after a downgrade.
     if "meta_tags" in body.model_fields_set and body.meta_tags is not None:
-        await require_meta_tags_enabled(flag_service, user)
+        if not user.email_verified:
+            raise ForbiddenError("meta_tags requires a verified account")
+        await flag_service.require(META_TAGS_FLAG, user)
     # Verify domain ownership at the edge so the service can stay opaque about
     # tenancy. `domain` field-set with null means "move to system default" —
     # no ownership check needed for the default namespace.
