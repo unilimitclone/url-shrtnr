@@ -6,7 +6,7 @@ with the best-effort KV client: ``put_object`` RAISES on failure — it sits
 on the request path of a user write, and silently storing a broken image
 URL would be worse than a 502.
 
-Zero new dependencies: SigV4 is ~50 lines of stdlib (see sigv4.py);
+Zero new dependencies: SigV4 is ~50 lines of stdlib (see shared/sigv4.py);
 boto3/aioboto3 were rejected (dependency tree + lifecycle mismatch).
 """
 
@@ -18,7 +18,7 @@ from urllib.parse import quote, urlparse
 
 from errors import R2StorageError
 from infrastructure.logging import get_logger
-from infrastructure.storage.sigv4 import sigv4_headers
+from shared.sigv4 import sigv4_headers
 
 if TYPE_CHECKING:
     from infrastructure.http_client import HttpClient

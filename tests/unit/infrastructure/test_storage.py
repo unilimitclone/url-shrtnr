@@ -10,7 +10,7 @@ import pytest
 
 from errors import R2StorageError
 from infrastructure.storage.r2 import R2StorageClient
-from infrastructure.storage.sigv4 import sigv4_headers
+from shared.sigv4 import sigv4_headers
 
 # ── SigV4 ─────────────────────────────────────────────────────────────────────
 
