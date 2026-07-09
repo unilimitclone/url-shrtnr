@@ -4,6 +4,8 @@ its dimensions, or clear it on hard failure.
 
 Outcome semantics:
   - malformed payload → drop (never poison the group)
+  - FetchDeniedError (401/403 to OUR UA) → keep the image, skip dims —
+    preview crawlers fetch with their own allowlisted UAs
   - FetchHardError → CAS-clear the image + invalidate cache + KV re-sync
   - FetchTransientError → raise (no XACK → pending → claimer retries →
     ClaimDeadLetterGuard DLQs after max_deliveries)
@@ -23,6 +25,7 @@ from bson import ObjectId
 
 from infrastructure.logging import get_logger
 from infrastructure.safe_fetch import (
+    FetchDeniedError,
     FetchHardError,
     fetch_public_image,
 )
@@ -67,6 +70,17 @@ class MetaImageValidator:
                 max_bytes=self._max_bytes,
                 max_redirects=self._max_redirects,
             )
+        except FetchDeniedError as exc:
+            # 401/403 means the host blocked OUR validator UA (WAF, hotlink
+            # protection) — real preview crawlers fetch with their own,
+            # widely-allowlisted UAs and may render the image fine. Keep the
+            # user's image; we just can't record dimensions.
+            log.info(
+                "meta_image_validation_denied",
+                url_id=event.url_id,
+                reason=str(exc),
+            )
+            return
         except FetchHardError as exc:
             changed = await self._url_repo.clear_meta_image(
                 ObjectId(event.url_id), event.image_url

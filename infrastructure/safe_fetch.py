@@ -38,8 +38,16 @@ class FetchHardError(Exception):
     """Permanent: the URL can never validate (private IP, wrong type, 4xx…)."""
 
 
+class FetchDeniedError(FetchHardError):
+    """The origin refused OUR client (401/403) — typically a WAF or hotlink
+    protection blocking an unrecognized User-Agent. Says nothing about
+    whether the resource works for preview crawlers, whose UAs are widely
+    allowlisted; callers that act on fetch results (e.g. clearing a user's
+    og:image) should treat this as indeterminate, not broken."""
+
+
 class FetchTransientError(Exception):
-    """Retryable: timeouts, 5xx, DNS timeouts."""
+    """Retryable: timeouts, 5xx, 429, DNS timeouts."""
 
 
 @dataclass(frozen=True)
@@ -145,8 +153,10 @@ async def fetch_public(
                         raise FetchHardError("redirect without location")
                     url = str(parsed.join(location))
                     continue  # next hop re-validated from the top
-                if resp.status_code >= 500:
+                if resp.status_code >= 500 or resp.status_code == 429:
                     raise FetchTransientError(f"status {resp.status_code}")
+                if resp.status_code in (401, 403):
+                    raise FetchDeniedError(f"status {resp.status_code}")
                 if resp.status_code != 200:
                     raise FetchHardError(f"status {resp.status_code}")
 

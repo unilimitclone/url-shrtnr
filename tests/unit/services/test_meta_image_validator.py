@@ -10,6 +10,7 @@ import pytest
 from bson import ObjectId
 
 from infrastructure.safe_fetch import (
+    FetchDeniedError,
     FetchedBody,
     FetchHardError,
     FetchTransientError,
@@ -75,6 +76,20 @@ class TestConsume:
         repo.clear_meta_image.assert_awaited_once()
         repo.record_meta_image_validation.assert_not_called()
         cache.invalidate.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_denied_fetch_keeps_image(self):
+        # 401/403 to OUR UA (WAF/hotlink protection) is indeterminate —
+        # preview crawlers fetch with allowlisted UAs. Never clear on it.
+        validator, repo, cache = _validator()
+        with patch(
+            "services.meta_tags.validator.fetch_public_image",
+            new=AsyncMock(side_effect=FetchDeniedError("status 403")),
+        ):
+            await validator.consume(_payload())
+        repo.clear_meta_image.assert_not_called()
+        repo.record_meta_image_validation.assert_not_called()
+        cache.invalidate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_transient_failure_propagates_for_retry(self):
