@@ -495,3 +495,18 @@ class TestGeoRulesField:
                 CreateUrlRequest.model_validate(
                     {"long_url": "https://example.com", "geo_rules": bad}
                 )
+
+    def test_hard_entry_ceiling_bounds_the_pre_auth_loop(self):
+        """The normaliser runs before auth — a giant map must be rejected
+        before any per-entry work, independent of the configurable cap."""
+        from itertools import product
+        from string import ascii_uppercase
+
+        keys = ["".join(p) for p in product(ascii_uppercase, repeat=2)][:501]
+        with pytest.raises(ValidationError, match="cannot exceed 500"):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "geo_rules": {k: "https://example.com/x" for k in keys},
+                }
+            )

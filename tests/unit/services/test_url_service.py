@@ -1847,14 +1847,18 @@ class TestUrlServiceGeoRules:
         assert "geo_rules" not in update_doc["$set"]
 
     @pytest.mark.asyncio
-    async def test_update_identical_geo_rules_is_noop(self):
+    async def test_update_identical_geo_rules_is_noop_and_skips_validation(self):
+        """A read-modify-write PATCH echoing unchanged rules must not fail
+        even if a destination entered the blocklist since creation — the
+        changed-check runs BEFORE validation, like every other handler."""
         url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
         svc = make_service(
             url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
         )
         existing = make_url_v2_doc(geo_rules=self.GEO)
         url_repo.find_by_id.return_value = existing
-        blocked_url_repo.get_patterns.return_value = []
+        # Would reject every GEO destination if validation ran
+        blocked_url_repo.get_patterns.return_value = [r"https://example\."]
 
         from schemas.dto.requests.url import UpdateUrlRequest
 
@@ -1862,6 +1866,7 @@ class TestUrlServiceGeoRules:
         await svc.update(URL_OID, req, USER_OID)
 
         url_repo.update.assert_not_called()
+        blocked_url_repo.get_patterns.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_update_blocked_geo_destination_rejected(self):

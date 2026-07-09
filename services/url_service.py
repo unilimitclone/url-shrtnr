@@ -16,6 +16,7 @@ Dispatch heuristic (get_url_by_length_and_type) is preserved exactly:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -246,16 +247,21 @@ async def _handle_geo_rules(
         if existing.geo_rules:
             ops["geo_rules"] = None
         return
+    if request.geo_rules == existing.geo_rules:
+        # Changed-check BEFORE validation, like every other handler — a
+        # read-modify-write PATCH echoing unchanged rules must not 400
+        # because a destination entered the blocklist since creation.
+        return
     patterns = await service._blocked_url_repo.get_patterns()
-    _validate_geo_rules(
+    await asyncio.to_thread(
+        _validate_geo_rules,
         request.geo_rules,
         blocked_self_domains=service._blocked_self_domains,
         patterns=patterns,
         timeout=service._blocked_url_regex_timeout,
         max_countries=service._geo_rules_max_countries,
     )
-    if request.geo_rules != existing.geo_rules:
-        ops["geo_rules"] = request.geo_rules
+    ops["geo_rules"] = request.geo_rules
 
 
 def _simple_field_handler(field_name: str) -> Callable:
@@ -497,9 +503,12 @@ class UrlService:
             raise ValidationError("URL is blocked", field="long_url")
 
         # 2b. Geo rules — every destination gets the same two-stage validation
-        # as long_url (patterns already fetched above)
+        # as long_url (patterns already fetched above). Off the event loop:
+        # up to max_countries * len(patterns) synchronous regex scans, and
+        # the blocklist only grows.
         if request.geo_rules:
-            _validate_geo_rules(
+            await asyncio.to_thread(
+                _validate_geo_rules,
                 request.geo_rules,
                 blocked_self_domains=self._blocked_self_domains,
                 patterns=blocked_patterns,

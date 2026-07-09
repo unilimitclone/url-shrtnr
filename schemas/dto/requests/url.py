@@ -27,6 +27,11 @@ ALLOWED_SORT_FIELDS = frozenset({"created_at", "last_click", "total_clicks"})
 
 _GEO_URL_MAX_LENGTH = 8192  # same bound as long_url
 
+# Hard sanity ceiling, NOT the product cap (that's settings.geo_rules_max_
+# countries, service-enforced). This normaliser runs pre-auth on every
+# request body — the ceiling bounds the loop for anonymous callers.
+_GEO_RULES_HARD_CAP = 500
+
 
 def _normalise_geo_rules(v: dict | None) -> dict | None:
     """Normalise geo_rules keys to uppercase ISO codes.
@@ -41,7 +46,9 @@ def _normalise_geo_rules(v: dict | None) -> dict | None:
         # mode="before" runs ahead of type coercion — pass non-dicts through
         # so Pydantic rejects them with a normal 422 instead of us crashing.
         return v
-    # The entry cap is enforced in the service layer from settings
+    if len(v) > _GEO_RULES_HARD_CAP:
+        raise ValueError(f"geo_rules cannot exceed {_GEO_RULES_HARD_CAP} entries")
+    # The product cap is enforced in the service layer from settings
     # (geo_rules_max_countries) — same split as max_emoji_alias_length.
     normalised: dict[str, str] = {}
     for key, url in v.items():
