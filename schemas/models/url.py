@@ -41,6 +41,15 @@ class SchemaVersion(str, Enum):
     EMOJI = "emoji"
 
 
+# og:image rendering cliffs, documented per platform. Above/below these,
+# platforms silently degrade or drop the image — we warn, never reject
+# (the cliffs are platform-specific; the image may be fine elsewhere).
+WHATSAPP_RELIABLE_BYTES = 300_000  # WhatsApp silently drops above ~this
+MIN_IMAGE_SIDE_PX = 200  # below: Facebook/WhatsApp may drop entirely
+LARGE_CARD_MIN_WIDTH_PX = 600  # below: Facebook demotes to small thumbnail
+MAX_ASPECT_RATIO = 4  # above 4:1: WhatsApp drops
+
+
 class MetaImageMeta(BaseModel):
     """Validation metadata for meta_tags.image — written by the upload
     path (synchronously) or the async image validator, never by clients."""
@@ -86,6 +95,36 @@ class LinkMetaTags(BaseModel):
         if urlparse(v).path.lower().endswith(".svg"):
             raise ValueError("SVG images are not supported by preview crawlers")
         return v
+
+    def image_warnings(self) -> list[str]:
+        """Platform-cliff notes for the og:image, derived from image_meta.
+
+        Empty until image_meta exists — for external https images that's
+        after async validation records it; uploads sniff synchronously.
+        Unknown dimensions skip the dimension checks rather than guess.
+        """
+        im = self.image_meta
+        if im is None:
+            return []
+        warnings: list[str] = []
+        if im.bytes and im.bytes > WHATSAPP_RELIABLE_BYTES:
+            warnings.append("image exceeds 300KB; WhatsApp may silently drop it")
+        if im.width and im.height:
+            if im.width < MIN_IMAGE_SIDE_PX or im.height < MIN_IMAGE_SIDE_PX:
+                warnings.append(
+                    "image is smaller than 200x200; Facebook and WhatsApp may "
+                    "drop it entirely"
+                )
+            elif im.width < LARGE_CARD_MIN_WIDTH_PX:
+                warnings.append(
+                    "image is narrower than 600px; Facebook renders a small "
+                    "thumbnail instead of the large card (1200x630 recommended)"
+                )
+            if max(im.width, im.height) > MAX_ASPECT_RATIO * min(im.width, im.height):
+                warnings.append(
+                    "image aspect ratio exceeds 4:1; WhatsApp drops extreme ratios"
+                )
+        return warnings
 
 
 class UrlV2Doc(MongoBaseModel):

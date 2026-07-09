@@ -33,9 +33,6 @@ _DATA_URI_RE = re.compile(
     r"^data:image/(?P<fmt>png|jpeg|webp);base64,(?P<b64>[A-Za-z0-9+/=]+)$"
 )
 
-# WhatsApp silently drops og:images over ~300KB — surfaced as an API warning.
-WHATSAPP_RELIABLE_BYTES = 300_000
-
 
 @dataclass(frozen=True)
 class IngestedImage:

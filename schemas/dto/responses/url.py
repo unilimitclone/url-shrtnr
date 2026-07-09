@@ -23,39 +23,6 @@ from schemas.models.url import LinkMetaTags, UrlStatus, UrlV2Doc
 from shared.datetime_utils import to_unix_timestamp
 
 
-def _image_warnings(meta: LinkMetaTags) -> list[str]:
-    """Platform-cliff notes for the og:image — warn, never reject.
-
-    Byte size and dimensions come from image_meta, so for external https
-    images these appear only after async validation records it. Thresholds
-    are the documented rendering cliffs: WhatsApp drops >~300KB and >4:1
-    ratios; Facebook drops <200px sides and demotes <600px width to a
-    small square thumbnail instead of the large card.
-    """
-    im = meta.image_meta
-    if im is None:
-        return []
-    warnings: list[str] = []
-    if im.bytes and im.bytes > 300_000:
-        warnings.append("image exceeds 300KB; WhatsApp may silently drop it")
-    if im.width and im.height:
-        if im.width < 200 or im.height < 200:
-            warnings.append(
-                "image is smaller than 200x200; Facebook and WhatsApp may "
-                "drop it entirely"
-            )
-        elif im.width < 600:
-            warnings.append(
-                "image is narrower than 600px; Facebook renders a small "
-                "thumbnail instead of the large card (1200x630 recommended)"
-            )
-        if max(im.width, im.height) > 4 * min(im.width, im.height):
-            warnings.append(
-                "image aspect ratio exceeds 4:1; WhatsApp drops extreme ratios"
-            )
-    return warnings
-
-
 class MetaTagsResponse(ResponseBase):
     """Custom social-preview settings on a URL (client-visible fields only)."""
 
@@ -79,7 +46,7 @@ class MetaTagsResponse(ResponseBase):
             description=meta.description,
             image=meta.image,
             color=meta.color,
-            warnings=_image_warnings(meta) or None,
+            warnings=meta.image_warnings() or None,
         )
 
 
