@@ -114,7 +114,13 @@ class TestR2StorageClient:
         assert sent_headers["content-type"] == "image/png"
         # Content-addressed keys are immutable — CDN may cache forever.
         assert sent_headers["cache-control"] == "public, max-age=31536000, immutable"
-        assert "Authorization" in sent_headers
+        # Defence-in-depth for user-supplied bytes: never render as a doc.
+        assert sent_headers["content-disposition"] == "inline"
+        assert sent_headers["x-content-type-options"] == "nosniff"
+        # Both must be inside the SigV4 SignedHeaders, not just sent.
+        signed = sent_headers["Authorization"]
+        assert "content-disposition" in signed
+        assert "x-content-type-options" in signed
         assert http.request.call_args.kwargs["timeout"] == 15.0
 
     @pytest.mark.asyncio

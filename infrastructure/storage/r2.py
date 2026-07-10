@@ -29,6 +29,11 @@ log = get_logger(__name__)
 # immutable — let the CDN in front of the bucket and platform caches hold
 # them forever. Stored as object metadata, served on every GET.
 _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+# Defence-in-depth for user-supplied bytes: never render as a document.
+# nosniff also belongs in a CF Transform Rule on the custom domain (R2
+# doesn't guarantee echoing it) — this is the belt to that braces.
+_INLINE_DISPOSITION = "inline"
+_NOSNIFF = "nosniff"
 
 
 class R2StorageClient:
@@ -77,6 +82,8 @@ class R2StorageClient:
         object_headers = {
             "content-type": content_type,
             "cache-control": _IMMUTABLE_CACHE_CONTROL,
+            "content-disposition": _INLINE_DISPOSITION,
+            "x-content-type-options": _NOSNIFF,
         }
         signed = sigv4_headers(
             method="PUT",
