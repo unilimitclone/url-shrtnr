@@ -112,6 +112,8 @@ class TestR2StorageClient:
         assert target == "https://acc.r2.cloudflarestorage.com/og-images/og/u/abc.png"
         sent_headers = http.request.call_args.kwargs["headers"]
         assert sent_headers["content-type"] == "image/png"
+        # Content-addressed keys are immutable — CDN may cache forever.
+        assert sent_headers["cache-control"] == "public, max-age=31536000, immutable"
         assert "Authorization" in sent_headers
         assert http.request.call_args.kwargs["timeout"] == 15.0
 
