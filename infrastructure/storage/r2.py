@@ -25,6 +25,11 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+# Keys are content-addressed (og/{owner}/{sha256}.{ext}) so objects are
+# immutable — let the CDN in front of the bucket and platform caches hold
+# them forever. Stored as object metadata, served on every GET.
+_IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
 
 class R2StorageClient:
     def __init__(
@@ -69,6 +74,10 @@ class R2StorageClient:
     async def put_object(self, key: str, data: bytes, *, content_type: str) -> str:
         """Upload and return the public URL. Raises R2StorageError on failure."""
         path = f"/{self._bucket}/{quote(key, safe='/')}"
+        object_headers = {
+            "content-type": content_type,
+            "cache-control": _IMMUTABLE_CACHE_CONTROL,
+        }
         signed = sigv4_headers(
             method="PUT",
             host=self._host,
@@ -76,14 +85,14 @@ class R2StorageClient:
             payload_hash=hashlib.sha256(data).hexdigest(),
             access_key_id=self._access_key_id or "",
             secret_access_key=self._secret_access_key or "",
-            headers={"content-type": content_type},
+            headers=object_headers,
         )
         try:
             resp = await self._http.request(
                 "PUT",
                 f"{self._endpoint}{path}",
                 content=data,
-                headers={**signed, "content-type": content_type},
+                headers={**signed, **object_headers},
                 # The shared client's 5s default is too tight for image PUTs.
                 timeout=self._timeout,
             )
