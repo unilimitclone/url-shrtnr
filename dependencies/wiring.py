@@ -40,6 +40,7 @@ from services.auth.otp import OtpService
 from services.auth.password import PasswordService
 from services.auth.verification import EmailVerificationService
 from services.cf_saas_backend import CfSaasBackend
+from services.mock_dcv_backend import MockDcvBackend
 from services.click import ClickService, LegacyClickHandler, V2ClickHandler
 from services.click.sinks import InlineSink, RedisStreamSink
 from services.contact_service import ContactService
@@ -240,8 +241,10 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # Surface the "enabled but unconfigured" misconfig in startup logs so
     # operators don't have to wait for a request-time 500 to find out.
     # We still boot — the feature just no-ops until creds land.
-    if cd_settings.enabled and not (
-        cd_settings.cf_zone_id and cd_settings.cf_api_token
+    if (
+        cd_settings.enabled
+        and not cd_settings.mock_dcv
+        and not (cd_settings.cf_zone_id and cd_settings.cf_api_token)
     ):
         log.warning(
             "custom_domains_enabled_but_unconfigured",
@@ -251,28 +254,46 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
             ),
         )
 
-    # CloudflareClient takes Optional[str] and only raises
-    # CloudflareNotConfiguredError on first request, never at construction —
-    # so the operator-hasn't-set-CF-up case is fine to wire here.
-    cf_client = CloudflareClient(
-        http_client=http_client,
-        api_token=cd_settings.cf_api_token,
-        zone_id=cd_settings.cf_zone_id,
-        max_retries=cd_settings.cf_api_max_retries,
-        initial_backoff_seconds=cd_settings.cf_api_initial_backoff_seconds,
-    )
-    cf_backend = CfSaasBackend(
-        cf_client=cf_client,
-        custom_domain_repo=custom_domain_repo,
-        cname_target=cd_settings.cf_cname_target,
-        dcv_delegation_target=cd_settings.cf_dcv_delegation_target,
-    )
-    verifiers = {
-        VerificationMethod.CF_DELEGATED_DCV: cf_backend,
-        VerificationMethod.CF_HTTP_DCV: cf_backend,
-    }
-    edge_provisioner = cf_backend
-    registrar = cf_backend
+    if cd_settings.mock_dcv:
+        # Local-dev stand-in: same protocol slots, no CF. register() serves
+        # the prod-shaped CNAME + ownership TXT; verify() always succeeds.
+        log.warning(
+            "custom_domains_mock_dcv_active",
+            detail=(
+                "CUSTOM_DOMAINS_MOCK_DCV=true — domain verification is "
+                "mocked and always succeeds. Never enable in production."
+            ),
+        )
+        mock_backend = MockDcvBackend(cname_target=cd_settings.cf_cname_target)
+        verifiers = {
+            VerificationMethod.CF_DELEGATED_DCV: mock_backend,
+            VerificationMethod.CF_HTTP_DCV: mock_backend,
+        }
+        edge_provisioner = mock_backend
+        registrar = mock_backend
+    else:
+        # CloudflareClient takes Optional[str] and only raises
+        # CloudflareNotConfiguredError on first request, never at construction —
+        # so the operator-hasn't-set-CF-up case is fine to wire here.
+        cf_client = CloudflareClient(
+            http_client=http_client,
+            api_token=cd_settings.cf_api_token,
+            zone_id=cd_settings.cf_zone_id,
+            max_retries=cd_settings.cf_api_max_retries,
+            initial_backoff_seconds=cd_settings.cf_api_initial_backoff_seconds,
+        )
+        cf_backend = CfSaasBackend(
+            cf_client=cf_client,
+            custom_domain_repo=custom_domain_repo,
+            cname_target=cd_settings.cf_cname_target,
+            dcv_delegation_target=cd_settings.cf_dcv_delegation_target,
+        )
+        verifiers = {
+            VerificationMethod.CF_DELEGATED_DCV: cf_backend,
+            VerificationMethod.CF_HTTP_DCV: cf_backend,
+        }
+        edge_provisioner = cf_backend
+        registrar = cf_backend
 
     # Build the resolver before the service so the service can take it as a dep
     tenant_resolver = CachedMongoTenantResolver(
@@ -290,8 +311,10 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         tenant_resolver=tenant_resolver,
         blocked_domain_repo=blocked_domain_repo,
         redis_client=redis_client,
+        # Mock DCV must also skip the real-DNS preflight in verify(), or
+        # local domains would fail the CNAME lookup before the mock runs.
         preflight_cname_target=cd_settings.cf_cname_target
-        if cd_settings.cf_zone_id
+        if cd_settings.cf_zone_id and not cd_settings.mock_dcv
         else None,
         url_service=app.state.url_service,
     )

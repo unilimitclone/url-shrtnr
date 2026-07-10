@@ -142,6 +142,12 @@ class CustomDomainSettings(BaseSettings):
     # public method short-circuits with FeatureDisabledError.
     enabled: bool = False
 
+    # Local-dev escape hatch: wire MockDcvBackend instead of Cloudflare.
+    # register() returns the same two-record shape prod serves (routing
+    # CNAME + ownership TXT) and verify() always succeeds, so the full
+    # PENDING → ACTIVE dashboard flow works without CF creds. Never prod.
+    mock_dcv: bool = False
+
     # Quotas. Flat for all users in v1 (no tier branching).
     # All counts must be >= 1 — a zero quota silently bricks the feature
     # (every create raises QuotaExceeded with no log signal that the cause
