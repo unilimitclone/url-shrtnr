@@ -301,6 +301,10 @@ class EdgeCacheSettings(BaseSettings):
     # ±jitter so simultaneously-promoted URLs don't expire in lockstep
     # and stampede origin together.
     ttl_jitter_ratio: float = Field(default=0.2, ge=0.0, le=0.5)
+    # og_only write-through TTL — much longer (entries are event-managed,
+    # not hot-promoted), but bounded so a missed delete or out-of-band
+    # block can't keep serving a stale card forever.
+    og_ttl_seconds: int = Field(default=86_400, ge=60)
 
     @property
     def enabled(self) -> bool:
@@ -309,6 +313,85 @@ class EdgeCacheSettings(BaseSettings):
             and self.kv_namespace_id
             and (self.cf_account_id or self.api_base)
         )
+
+
+class R2StorageSettings(BaseSettings):
+    """Cloudflare R2 bucket for user-uploaded og:images (custom meta-tags).
+
+    Fully off unless all five fields are set — self-hosts without R2 keep
+    https image URLs working; only data-URI uploads are rejected. Env vars
+    prefixed ``R2_`` (same convention as ``EDGE_CACHE_``).
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="R2_",
+    )
+
+    account_id: str | None = None
+    access_key_id: str | None = None
+    secret_access_key: str | None = None
+    bucket: str | None = None
+    # The bucket's public/custom domain, e.g. https://og.spoo.me or the
+    # r2.dev URL — becomes the stored og:image URL prefix.
+    public_base_url: str | None = None
+    # Local-dev S3 emulator override (MinIO etc.); unset in deployments.
+    endpoint_url: str | None = None
+    # Image PUTs need more headroom than the shared client's 5s default.
+    request_timeout_seconds: float = Field(default=15.0, gt=0)
+    # Decoded data-URI cap. NOTE: base64 inflates 4/3 and the app-wide
+    # MAX_CONTENT_LENGTH is 1MB — raising this needs raising that too.
+    # 512KB decoded ≈ 683KB on the wire; WhatsApp reliability wants ≤300KB
+    # anyway (surfaced as an API warning above that).
+    upload_max_bytes: int = Field(default=512_000, ge=1024)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(
+            self.account_id
+            and self.access_key_id
+            and self.secret_access_key
+            and self.bucket
+            and self.public_base_url
+        )
+
+
+class MetaTagsSettings(BaseSettings):
+    """Async og:image validation for custom meta-tags.
+
+    Rides the SAME queue Redis as click events (CLICK_EVENTS_QUEUE_REDIS_URI)
+    — one durable Redis per deploy. Effective only when that queue is
+    configured; otherwise validation silently skips (the synchronous checks
+    at write time already ran). Env vars prefixed ``META_TAGS_``.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="META_TAGS_",
+    )
+
+    async_image_validation: bool = True
+    stream: str = "events:meta-image"
+    dlq_stream: str = "events:meta-image:dlq"
+    maxlen: int = Field(default=1_000, ge=100)
+    batch_size: int = Field(default=10, ge=1)
+    block_ms: int = Field(default=2000, ge=100)
+    # Click defaults (60s) are tuned for millisecond handlers; a batch of
+    # 10 fetches x 5s timeout can legitimately run ~50s, and a claimer
+    # stealing from a live reader means duplicate fetches. The CAS repo
+    # filter makes duplicates harmless anyway — this just avoids the waste.
+    claim_idle_ms: int = Field(default=120_000, ge=1000)
+    max_deliveries: int = Field(default=3, ge=1)
+
+    fetch_timeout_seconds: float = Field(default=5.0, gt=0)
+    fetch_max_bytes: int = Field(default=1_048_576, ge=1024)
+    fetch_max_redirects: int = Field(default=3, ge=0)
+    # Sent on og:image validation and /api/v1/metadata fetches. Transparent
+    # by design (self-hosters should brand their own); some WAFs 401/403
+    # unknown UAs — safe_fetch classifies that as denied, never data loss.
+    fetch_user_agent: str = "spoo.me-og-validator/1.0 (+https://spoo.me)"
 
 
 class AppSettings(BaseSettings):
@@ -423,6 +506,8 @@ class AppSettings(BaseSettings):
     custom_domains: CustomDomainSettings | None = None
     click_events: ClickEventsSettings | None = None
     edge_cache: EdgeCacheSettings | None = None
+    r2: R2StorageSettings | None = None
+    meta_tags: MetaTagsSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -458,6 +543,10 @@ class AppSettings(BaseSettings):
             self.click_events = ClickEventsSettings()
         if self.edge_cache is None:
             self.edge_cache = EdgeCacheSettings()
+        if self.r2 is None:
+            self.r2 = R2StorageSettings()
+        if self.meta_tags is None:
+            self.meta_tags = MetaTagsSettings()
 
         return self
 

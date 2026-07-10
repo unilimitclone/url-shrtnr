@@ -113,6 +113,25 @@
             </div>
             {% endfor %}
             {% endif %}
+            {% if meta_tags %}
+            <!-- Custom social preview set by the link owner. Shown next to the
+                 real destination above so recipients can compare what the
+                 sender wants them to see vs where they'll actually go. -->
+            <div class="url-display custom-preview"
+                {% if meta_tags.color %}style="border-left: 3px solid {{ meta_tags.color }}"{% endif %}>
+                <span class="url-label">Custom social preview (set by link owner):</span>
+                <div class="url-content">
+                    {% if meta_tags.image %}
+                    <img src="{{ meta_tags.image }}" alt="" onerror="this.style.display='none'"
+                        style="max-width:100%;border-radius:6px;margin:.5rem 0">
+                    {% endif %}
+                    <div style="font-weight:600">{{ meta_tags.title }}</div>
+                    {% if meta_tags.description %}
+                    <div style="opacity:.7;font-size:.9em">{{ meta_tags.description }}</div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
             <div class="button-group">
                 <a href="/{{ alias }}" class="btn-primary">
                     <i class="ti ti-external-link"></i>

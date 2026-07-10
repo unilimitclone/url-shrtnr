@@ -75,6 +75,9 @@ class Limits:
     URL_DELETE = "60 per minute; 1000 per day"
     URL_BULK_DELETE = "5 per minute; 50 per day"
 
+    # Destination metadata fetch — outbound fetches on our dime; tight.
+    METADATA_FETCH = "20 per minute; 500 per day"
+
     # Custom domains
     DOMAIN_CREATE = "5 per hour"
     DOMAIN_VERIFY = "10 per minute"

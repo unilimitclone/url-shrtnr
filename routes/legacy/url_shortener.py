@@ -476,6 +476,9 @@ async def preview_url(
                         "long_url": v2.long_url,
                         "password": v2.password,
                         "geo_rules": v2.geo_rules,
+                        "meta_tags": v2.meta_tags.model_dump()
+                        if v2.meta_tags
+                        else None,
                     }
                     schema_type = "v2"
         else:
@@ -489,6 +492,7 @@ async def preview_url(
                     "long_url": v2.long_url,
                     "password": v2.password,
                     "geo_rules": v2.geo_rules,
+                    "meta_tags": v2.meta_tags.model_dump() if v2.meta_tags else None,
                 }
                 schema_type = "v2"
             else:
@@ -561,6 +565,10 @@ async def preview_url(
             "geo_destinations": geo_destinations,
             "password_protected": False,
             "host_url": host_url,
+            # Anti-phishing transparency: show the custom card NEXT TO the
+            # real destination — what the sender wants you to see vs where
+            # you'll actually go. v2-only field; None for v1/emoji docs.
+            "meta_tags": url_data.get("meta_tags") if schema_type == "v2" else None,
         },
     )
 

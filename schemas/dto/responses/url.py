@@ -19,8 +19,35 @@ from pydantic import Field
 
 from schemas.dto.base import ResponseBase
 from schemas.models.base import ANONYMOUS_OWNER_ID
-from schemas.models.url import UrlStatus, UrlV2Doc
+from schemas.models.url import LinkMetaTags, UrlStatus, UrlV2Doc
 from shared.datetime_utils import to_unix_timestamp
+
+
+class MetaTagsResponse(ResponseBase):
+    """Custom social-preview settings on a URL (client-visible fields only)."""
+
+    title: str = Field(description="og:title.", examples=["We just launched 🎉"])
+    description: str | None = Field(default=None, description="og:description.")
+    image: str | None = Field(default=None, description="og:image URL.")
+    color: str | None = Field(
+        default=None, description="Discord embed accent color.", examples=["#FF5733"]
+    )
+    warnings: list[str] | None = Field(
+        default=None,
+        description="Non-fatal quality notes, e.g. an image WhatsApp may drop.",
+    )
+
+    @classmethod
+    def from_model(cls, meta: LinkMetaTags | None) -> MetaTagsResponse | None:
+        if meta is None:
+            return None
+        return cls(
+            title=meta.title,
+            description=meta.description,
+            image=meta.image,
+            color=meta.color,
+            warnings=meta.image_warnings() or None,
+        )
 
 
 class UrlResponse(ResponseBase):
@@ -57,6 +84,9 @@ class UrlResponse(ResponseBase):
         description="Per-country destination overrides (ISO alpha-2 code → URL), or null.",
         examples=[{"IN": "https://example.in/"}],
     )
+    meta_tags: MetaTagsResponse | None = Field(
+        default=None, description="Custom social preview, if configured."
+    )
 
     @classmethod
     def from_doc(cls, doc: UrlV2Doc, base_url: str) -> UrlResponse:
@@ -77,6 +107,7 @@ class UrlResponse(ResponseBase):
             status=doc.status,
             private_stats=doc.private_stats,
             geo_rules=doc.geo_rules,
+            meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
 
 
@@ -126,6 +157,9 @@ class UpdateUrlResponse(ResponseBase):
     updated_at: int = Field(
         description="Last update time as Unix timestamp.", examples=[1704067200]
     )
+    meta_tags: MetaTagsResponse | None = Field(
+        default=None, description="Custom social preview, if configured."
+    )
 
     @classmethod
     def from_doc(cls, doc: UrlV2Doc) -> UpdateUrlResponse:
@@ -143,6 +177,7 @@ class UpdateUrlResponse(ResponseBase):
             domain=doc.domain,
             geo_rules=doc.geo_rules,
             updated_at=to_unix_timestamp(doc.updated_at, default=0),
+            meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
 
 
@@ -168,6 +203,7 @@ class UrlListItem(ResponseBase):
     last_click: datetime | None = None
     domain: str | None = None
     geo_rules: dict[str, str] | None = None
+    meta_tags: MetaTagsResponse | None = None
 
     @classmethod
     def from_doc(cls, doc: UrlV2Doc) -> UrlListItem:
@@ -195,6 +231,7 @@ class UrlListItem(ResponseBase):
             last_click=_ensure_utc(doc.last_click),
             domain=doc.domain,
             geo_rules=doc.geo_rules,
+            meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
 
 

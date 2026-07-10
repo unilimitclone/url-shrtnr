@@ -1,9 +1,11 @@
-"""Unit tests for UrlV2Doc, LegacyUrlDoc, and EmojiUrlDoc."""
+"""Unit tests for UrlV2Doc, LegacyUrlDoc, EmojiUrlDoc, and LinkMetaTags."""
 
+import pytest
 from bson import ObjectId
+from pydantic import ValidationError as PydanticValidationError
 
 from schemas.models.base import ANONYMOUS_OWNER_ID
-from schemas.models.url import EmojiUrlDoc, LegacyUrlDoc, UrlV2Doc
+from schemas.models.url import EmojiUrlDoc, LegacyUrlDoc, LinkMetaTags, UrlV2Doc
 
 from .conftest import now, oid
 
@@ -216,3 +218,82 @@ class TestUrlV2DocGeoRules:
         doc = self._make(geo_rules=rules)
         assert doc.geo_rules == rules
         assert doc.to_mongo()["geo_rules"] == rules
+
+
+# ── LinkMetaTags ──────────────────────────────────────────────────────────────
+
+
+class TestLinkMetaTags:
+    def test_minimal(self):
+        m = LinkMetaTags(title="Launch day 🎉")
+        assert m.title == "Launch day 🎉"
+        assert m.description is None
+        assert m.image is None
+        assert m.color is None
+
+    def test_strips_control_chars(self):
+        assert LinkMetaTags(title="a\r\nb\x00c").title == "abc"
+        assert LinkMetaTags(title="t", description="d\x1fe").description == "de"
+
+    def test_title_required(self):
+        with pytest.raises(PydanticValidationError):
+            LinkMetaTags()
+        with pytest.raises(PydanticValidationError):
+            LinkMetaTags(title="")
+
+    def test_title_length_cap(self):
+        with pytest.raises(PydanticValidationError):
+            LinkMetaTags(title="x" * 121)
+
+    def test_description_length_cap(self):
+        with pytest.raises(PydanticValidationError):
+            LinkMetaTags(title="t", description="x" * 241)
+
+    def test_image_requires_https(self):
+        with pytest.raises(PydanticValidationError):
+            LinkMetaTags(title="t", image="http://x.com/a.png")
+
+    def test_image_rejects_svg(self):
+        with pytest.raises(PydanticValidationError):
+            LinkMetaTags(title="t", image="https://x.com/a.svg")
+        # case-insensitive, query string doesn't hide it
+        with pytest.raises(PydanticValidationError):
+            LinkMetaTags(title="t", image="https://x.com/A.SVG?v=1")
+
+    def test_image_valid(self):
+        m = LinkMetaTags(title="t", image="https://x.com/og.png")
+        assert m.image == "https://x.com/og.png"
+
+    def test_color_hex(self):
+        assert LinkMetaTags(title="t", color="#FF5733").color == "#FF5733"
+        for bad in ("red", "#FFF", "#GG5733", "FF5733"):
+            with pytest.raises(PydanticValidationError):
+                LinkMetaTags(title="t", color=bad)
+
+    def test_url_v2_doc_carries_meta_tags(self):
+        doc = UrlV2Doc.model_validate(
+            {
+                "_id": oid(),
+                "alias": "abc1234",
+                "domain": "spoo.me",
+                "created_at": now(),
+                "long_url": "https://example.com",
+                "meta_tags": {"title": "T", "description": "D"},
+            }
+        )
+        assert doc.meta_tags is not None
+        assert doc.meta_tags.title == "T"
+        restored = UrlV2Doc.from_mongo(doc.to_mongo())
+        assert restored.meta_tags.description == "D"
+
+    def test_url_v2_doc_meta_tags_default_none(self):
+        doc = UrlV2Doc.model_validate(
+            {
+                "_id": oid(),
+                "alias": "abc1234",
+                "domain": "spoo.me",
+                "created_at": now(),
+                "long_url": "https://example.com",
+            }
+        )
+        assert doc.meta_tags is None

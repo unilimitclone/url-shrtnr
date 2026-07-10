@@ -21,7 +21,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timezone
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import pycountry
 from bson import ObjectId
@@ -42,11 +42,24 @@ from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
-from schemas.dto.requests.url import CreateUrlRequest, ListUrlsQuery, UpdateUrlRequest
+from schemas.dto.requests.url import (
+    CreateUrlRequest,
+    ListUrlsQuery,
+    MetaTagsRequest,
+    UpdateUrlRequest,
+)
+from services.edge_cache.og_writethrough import OgEdgeWritethrough
+from services.meta_tags.events import MetaImageValidateEvent
+from services.meta_tags.images import ingest_meta_image
+
+if TYPE_CHECKING:
+    from infrastructure.storage.r2 import R2StorageClient
+    from services.meta_tags.sinks import MetaImageValidationSink
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
     EmojiUrlDoc,
     LegacyUrlDoc,
+    LinkMetaTags,
     SchemaVersion,
     UrlStatus,
     UrlV2Doc,
@@ -264,6 +277,34 @@ async def _handle_geo_rules(
     ops["geo_rules"] = request.geo_rules
 
 
+async def _handle_meta_tags(
+    request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
+) -> None:
+    if "meta_tags" not in request.model_fields_set:
+        return
+    if request.meta_tags is None:
+        if existing.meta_tags:
+            ops["meta_tags"] = None
+        return
+    # Resolve data-URI uploads first, then validate. Registered after
+    # long_url so a same-request destination change is validated against
+    # the NEW destination.
+    meta_req, image_meta = await service.resolve_meta_image(
+        request.meta_tags, existing.owner_id
+    )
+    await service.validate_meta_tags(
+        meta_req, long_url=ops.get("long_url", existing.long_url)
+    )
+    ops["meta_tags"] = LinkMetaTags(
+        title=meta_req.title,
+        description=meta_req.description,
+        image=meta_req.image,
+        color=meta_req.color,
+        image_meta=image_meta,
+        updated_at=datetime.now(timezone.utc),
+    ).model_dump()
+
+
 def _simple_field_handler(field_name: str) -> Callable:
     """Factory for nullable fields that just need a changed-check."""
 
@@ -296,6 +337,9 @@ FIELD_HANDLERS: dict[str, Callable[..., Awaitable[None]]] = {
     "private_stats": _simple_field_handler("private_stats"),
     "status": _handle_status,
     "geo_rules": _handle_geo_rules,
+    # Must follow long_url — the handler validates against ops["long_url"]
+    # when the destination changes in the same request.
+    "meta_tags": _handle_meta_tags,
 }
 
 
@@ -312,6 +356,11 @@ class UrlService:
         blocked_url_regex_timeout: float = 0.2,
         max_emoji_alias_length: int = 15,
         geo_rules_max_countries: int = 50,
+        og_writethrough: OgEdgeWritethrough | None = None,
+        r2_storage: R2StorageClient | None = None,
+        meta_image_max_bytes: int = 512_000,
+        meta_image_sink: MetaImageValidationSink | None = None,
+        meta_key_secret: str = "",
     ) -> None:
         self._url_repo = url_repo
         self._legacy_repo = legacy_repo
@@ -325,6 +374,19 @@ class UrlService:
         self._blocked_url_regex_timeout = blocked_url_regex_timeout
         self._max_emoji_alias_length = max_emoji_alias_length
         self._geo_rules_max_countries = geo_rules_max_countries
+        # Edge KV write-through for og-links; None when edge cache is
+        # unconfigured (self-host) — origin then serves all previews.
+        self._og_writethrough = og_writethrough
+        # R2 upload target for data-URI og:images; None ⇒ uploads rejected,
+        # https image URLs unaffected (self-host degradation).
+        self._r2_storage = r2_storage
+        self._meta_image_max_bytes = meta_image_max_bytes
+        # Async validation for EXTERNAL https images (uploads are validated
+        # synchronously). None ⇒ validation skipped (no queue Redis).
+        self._meta_image_sink = meta_image_sink
+        # HMAC pepper for storage-key owner prefixes (public URLs must not
+        # carry raw ObjectIds). Wired from settings.secret_key.
+        self._meta_key_secret = meta_key_secret
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -458,6 +520,61 @@ class UrlService:
             return "taken"
         return "available"
 
+    async def resolve_meta_image(
+        self, meta: MetaTagsRequest, owner_id: ObjectId
+    ) -> tuple[MetaTagsRequest, dict | None]:
+        """Resolve a data-URI image to its R2-hosted URL.
+
+        Returns the (possibly rewritten) request plus synchronous
+        image_meta for uploads; https URLs pass through untouched (the
+        async validator checks them out-of-band).
+        """
+        if not meta.image:
+            return meta, None
+        ingested = await ingest_meta_image(
+            meta.image,
+            owner_id=owner_id,
+            storage=self._r2_storage,
+            max_bytes=self._meta_image_max_bytes,
+            key_secret=self._meta_key_secret,
+        )
+        if ingested.r2_hosted:
+            return meta.model_copy(update={"image": ingested.url}), ingested.image_meta
+        return meta, None
+
+    async def validate_meta_tags(self, meta: MetaTagsRequest, *, long_url: str) -> None:
+        """Abuse checks for a meta_tags write.
+
+        Blocklist regexes run over title/description/image (the same
+        patterns the long_url flows through at create), plus a destination
+        re-check — a link that was fine as a bare redirect deserves a second
+        look the moment someone dresses it up with a custom preview.
+        """
+        patterns = await self._blocked_url_repo.get_patterns()
+        # Off the event loop, matching geo's blocklist validation (d4a18fa):
+        # a fixed set of fields now, but the blocklist grows as the abuse
+        # strategy matures, so keep the regex scans off the hot loop.
+        await asyncio.to_thread(
+            self._scan_meta_blocklist, meta, long_url=long_url, patterns=patterns
+        )
+
+    def _scan_meta_blocklist(
+        self, meta: MetaTagsRequest, *, long_url: str, patterns: Sequence[str]
+    ) -> None:
+        for value in (meta.title, meta.description, meta.image):
+            if value and not validate_blocked_url(
+                value, patterns, timeout=self._blocked_url_regex_timeout
+            ):
+                log.info("meta_tags_rejected", reason="blocked_pattern")
+                raise ValidationError(
+                    "meta_tags content is not allowed", field="meta_tags"
+                )
+        if not validate_blocked_url(
+            long_url, patterns, timeout=self._blocked_url_regex_timeout
+        ):
+            log.info("meta_tags_rejected", reason="blocked_destination")
+            raise ValidationError("URL is blocked", field="long_url")
+
     async def create(
         self,
         request: CreateUrlRequest,
@@ -515,6 +632,15 @@ class UrlService:
                 timeout=self._blocked_url_regex_timeout,
                 max_countries=self._geo_rules_max_countries,
             )
+        # Meta-tags: resolve data-URI uploads to R2 URLs, then run abuse
+        # checks (the route layer already gated the feature itself).
+        meta_req = request.meta_tags
+        meta_image_meta: dict | None = None
+        if meta_req:
+            meta_req, meta_image_meta = await self.resolve_meta_image(
+                meta_req, owner_id if owner_id is not None else ANONYMOUS_OWNER_ID
+            )
+            await self.validate_meta_tags(meta_req, long_url=request.long_url)
 
         # 3. Password hash (cheap — do before alias generation loop)
         password_hash: str | None = None
@@ -568,6 +694,19 @@ class UrlService:
             private_stats=private_stats,
             total_clicks=0,
             last_click=None,
+            meta_tags=(
+                LinkMetaTags(
+                    title=meta_req.title,
+                    description=meta_req.description,
+                    image=meta_req.image,
+                    color=meta_req.color,
+                    image_meta=meta_image_meta,
+                    updated_at=now,
+                    updated_ip=client_ip,
+                )
+                if meta_req
+                else None
+            ),
         )
         doc = url_doc.model_dump(by_alias=True, exclude={"id"})
 
@@ -593,7 +732,17 @@ class UrlService:
             alias_custom=bool(getattr(request, "alias", None)),
             domain=target_domain,
             geo_rules=len(request.geo_rules or {}),
+            has_meta_tags=bool(request.meta_tags),
         )
+
+        # Edge-first: push the prerendered OG page to KV so preview bots
+        # are answered at the edge. Best-effort — never fails the write.
+        if url_doc.meta_tags and self._og_writethrough:
+            await self._og_writethrough.sync(UrlCacheData.from_v2_doc(url_doc))
+
+        # External https images get validated out-of-band (uploads carried
+        # image_meta already). Best-effort emit — sink swallows failures.
+        await self._maybe_emit_image_validation(url_doc)
 
         return url_doc
 
@@ -602,6 +751,7 @@ class UrlService:
         url_id: ObjectId,
         request: UpdateUrlRequest,
         owner_id: ObjectId,
+        client_ip: str | None = None,
     ) -> UrlV2Doc:
         """
         Update an existing URL.
@@ -609,6 +759,9 @@ class UrlService:
         EXPIRED URLs are auto-reactivated when expiry conditions change
         (max_clicks raised/cleared, expire_after extended/cleared), unless
         the caller also provides an explicit status override.
+
+        ``client_ip`` is stamped onto ``meta_tags.updated_ip`` when the
+        request writes meta_tags — abuse forensics for preview edits.
 
         Raises:
             NotFoundError:  URL doesn't exist.
@@ -635,6 +788,11 @@ class UrlService:
         update_ops: dict = {}
         for handler in FIELD_HANDLERS.values():
             await handler(request, existing, update_ops, self)
+
+        # Handlers don't see the request context; stamp the writer's IP
+        # onto a fresh meta_tags value here (None stays None on clears).
+        if update_ops.get("meta_tags"):
+            update_ops["meta_tags"]["updated_ip"] = client_ip
 
         # Auto-reactivate EXPIRED URLs when expiry conditions improve
         self._auto_reactivate(existing, update_ops, now)
@@ -679,7 +837,44 @@ class UrlService:
         merged = existing.model_dump(by_alias=True)
         merged.update(update_ops)
         merged["_id"] = url_id
-        return UrlV2Doc.from_mongo(merged)
+        merged_doc = UrlV2Doc.from_mongo(merged)
+
+        # Edge KV write-through — only for links that have meta_tags now or
+        # had them before this write (plain links' promoted redirect entries
+        # must never be touched). A key change (alias/domain move) drops the
+        # old entry; sync() re-puts or deletes under the new key.
+        if self._og_writethrough and (
+            existing.meta_tags is not None or merged_doc.meta_tags is not None
+        ):
+            relevant = {"meta_tags", "long_url", "status", "alias", "domain"}
+            if relevant & update_ops.keys():
+                if (new_alias, new_domain) != (existing.alias, existing.domain):
+                    await self._og_writethrough.remove(existing.domain, existing.alias)
+                await self._og_writethrough.sync(UrlCacheData.from_v2_doc(merged_doc))
+
+        if "meta_tags" in update_ops:
+            await self._maybe_emit_image_validation(merged_doc)
+
+        return merged_doc
+
+    async def _maybe_emit_image_validation(self, doc: UrlV2Doc) -> None:
+        """Queue async validation for an external https og:image."""
+        meta = doc.meta_tags
+        if (
+            self._meta_image_sink is None
+            or meta is None
+            or not meta.image
+            or meta.image_meta is not None  # upload — validated synchronously
+        ):
+            return
+        await self._meta_image_sink.emit(
+            MetaImageValidateEvent(
+                url_id=str(doc.id),
+                alias=doc.alias,
+                domain=doc.domain,
+                image_url=meta.image,
+            )
+        )
 
     def _auto_reactivate(
         self, existing: UrlV2Doc, update_ops: dict, now: datetime
@@ -733,6 +928,8 @@ class UrlService:
 
         await self._url_repo.delete(url_id)
         await self._url_cache.invalidate(existing.alias, existing.domain)
+        if existing.meta_tags is not None and self._og_writethrough:
+            await self._og_writethrough.remove(existing.domain, existing.alias)
 
         log.info(
             "url_deleted",
@@ -913,7 +1110,7 @@ class UrlService:
         v2_doc = await self._url_repo.find_by_alias(short_code, domain)
         if v2_doc is None:
             return None, SchemaVersion.V2
-        return _v2_doc_to_cache(v2_doc), SchemaVersion.V2
+        return UrlCacheData.from_v2_doc(v2_doc), SchemaVersion.V2
 
     async def _try_v2_then_v1(
         self, short_code: str
@@ -922,7 +1119,7 @@ class UrlService:
             short_code, self._system_default_domain
         )
         if v2_doc is not None:
-            return _v2_doc_to_cache(v2_doc), SchemaVersion.V2
+            return UrlCacheData.from_v2_doc(v2_doc), SchemaVersion.V2
         v1_doc = await self._legacy_repo.find_by_id(short_code)
         if v1_doc is not None:
             return (
@@ -944,7 +1141,7 @@ class UrlService:
             short_code, self._system_default_domain
         )
         if v2_doc is not None:
-            return _v2_doc_to_cache(v2_doc), SchemaVersion.V2
+            return UrlCacheData.from_v2_doc(v2_doc), SchemaVersion.V2
         return None, SchemaVersion.V2
 
     async def _populate_cache(
@@ -983,25 +1180,6 @@ def _raise_for_status(status: UrlStatus) -> None:
     if status == UrlStatus.BLOCKED:
         raise BlockedUrlError("URL is blocked")
     raise GoneError("URL has expired or is no longer active")
-
-
-def _v2_doc_to_cache(doc: UrlV2Doc) -> UrlCacheData:
-    return UrlCacheData(
-        id=str(doc.id),
-        alias=doc.alias,
-        long_url=doc.long_url,
-        block_bots=bool(doc.block_bots),
-        password_hash=doc.password,
-        expiration_time=(
-            int(doc.expire_after.timestamp()) if doc.expire_after else None
-        ),
-        max_clicks=doc.max_clicks,
-        url_status=doc.status,
-        schema_version=SchemaVersion.V2,
-        owner_id=str(doc.owner_id) if doc.owner_id else None,
-        domain=doc.domain,
-        geo_rules=doc.geo_rules,
-    )
 
 
 def _legacy_doc_to_cache(

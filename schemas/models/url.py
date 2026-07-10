@@ -11,13 +11,17 @@ Three separate schemas map to three MongoDB collections:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from schemas.models.base import ANONYMOUS_OWNER_ID, MongoBaseModel, PyObjectId
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class UrlStatus(str, Enum):
@@ -35,6 +39,92 @@ class SchemaVersion(str, Enum):
     V2 = "v2"
     V1 = "v1"
     EMOJI = "emoji"
+
+
+# og:image rendering cliffs, documented per platform. Above/below these,
+# platforms silently degrade or drop the image — we warn, never reject
+# (the cliffs are platform-specific; the image may be fine elsewhere).
+WHATSAPP_RELIABLE_BYTES = 300_000  # WhatsApp silently drops above ~this
+MIN_IMAGE_SIDE_PX = 200  # below: Facebook/WhatsApp may drop entirely
+LARGE_CARD_MIN_WIDTH_PX = 600  # below: Facebook demotes to small thumbnail
+MAX_ASPECT_RATIO = 4  # above 4:1: WhatsApp drops
+
+
+class MetaImageMeta(BaseModel):
+    """Validation metadata for meta_tags.image — written by the upload
+    path (synchronously) or the async image validator, never by clients."""
+
+    width: int | None = None
+    height: int | None = None
+    bytes: int | None = None
+    content_type: str | None = None
+    checked_at: datetime
+
+
+class LinkMetaTags(BaseModel):
+    """Custom social-preview tags. Presence on a URL = feature enabled.
+
+    title is mandatory (a card without one renders broken everywhere).
+    image is an https URL (R2-hosted or external; data URIs are converted
+    to R2 URLs before this model is built); SVG rejected — no preview
+    crawler renders it. color = Discord embed border (theme-color).
+    """
+
+    title: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=240)
+    image: str | None = Field(default=None, max_length=2048)
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    image_meta: MetaImageMeta | None = None
+    updated_at: datetime | None = None
+    updated_ip: str | None = None  # audit trail, mirrors creation_ip
+
+    @field_validator("title", "description", mode="before")
+    @classmethod
+    def _strip_control(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = _CONTROL_CHARS_RE.sub("", v).strip()
+        return v
+
+    @field_validator("image")
+    @classmethod
+    def _image_https_no_svg(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not v.startswith("https://"):
+            raise ValueError("image must be an https:// URL")
+        if urlparse(v).path.lower().endswith(".svg"):
+            raise ValueError("SVG images are not supported by preview crawlers")
+        return v
+
+    def image_warnings(self) -> list[str]:
+        """Platform-cliff notes for the og:image, derived from image_meta.
+
+        Empty until image_meta exists — for external https images that's
+        after async validation records it; uploads sniff synchronously.
+        Unknown dimensions skip the dimension checks rather than guess.
+        """
+        im = self.image_meta
+        if im is None:
+            return []
+        warnings: list[str] = []
+        if im.bytes and im.bytes > WHATSAPP_RELIABLE_BYTES:
+            warnings.append("image exceeds 300KB; WhatsApp may silently drop it")
+        if im.width and im.height:
+            if im.width < MIN_IMAGE_SIDE_PX or im.height < MIN_IMAGE_SIDE_PX:
+                warnings.append(
+                    "image is smaller than 200x200; Facebook and WhatsApp may "
+                    "drop it entirely"
+                )
+            elif im.width < LARGE_CARD_MIN_WIDTH_PX:
+                warnings.append(
+                    "image is narrower than 600px; Facebook renders a small "
+                    "thumbnail instead of the large card (1200x630 recommended)"
+                )
+            if max(im.width, im.height) > MAX_ASPECT_RATIO * min(im.width, im.height):
+                warnings.append(
+                    "image aspect ratio exceeds 4:1; WhatsApp drops extreme ratios"
+                )
+        return warnings
 
 
 class UrlV2Doc(MongoBaseModel):
@@ -85,6 +175,7 @@ class UrlV2Doc(MongoBaseModel):
     geo_rules: dict[str, str] | None = None
     status: UrlStatus = UrlStatus.ACTIVE
     private_stats: bool | None = True  # None for anonymous/unowned URLs
+    meta_tags: LinkMetaTags | None = None
     total_clicks: int = Field(default=0, ge=0)
     last_click: datetime | None = None
     updated_at: datetime | None = None

@@ -84,6 +84,64 @@ class UrlFilter(RequestBase):
     search: str | None = Field(default=None, max_length=500)
 
 
+class MetaTagsRequest(BaseModel):
+    """Custom social preview (og:title / og:description / og:image / theme-color)."""
+
+    title: str = Field(
+        min_length=1,
+        max_length=120,
+        description="Preview headline (og:title). Required when meta_tags is set.",
+        examples=["We just launched 🎉"],
+    )
+    description: str | None = Field(
+        default=None,
+        max_length=240,
+        description="og:description — roughly 200 chars render on most platforms.",
+    )
+    image: str | None = Field(
+        default=None,
+        # Coarse body guard; the real decoded cap is R2_UPLOAD_MAX_BYTES in
+        # ingest_meta_image. ~512KB x 4/3 base64 — raise both to lift the cap.
+        max_length=700_000,
+        description=(
+            "og:image — an https URL, or a `data:image/png|jpeg|webp;base64,` "
+            "URI which is validated and stored on spoo's CDN. 1200x630 "
+            "recommended; keep it under 300KB or WhatsApp silently drops it; "
+            "SVG is rejected (no preview crawler renders it)."
+        ),
+        examples=["https://example.com/og.png"],
+    )
+    color: str | None = Field(
+        default=None,
+        pattern=r"^#[0-9a-fA-F]{6}$",
+        description="Accent color shown on Discord embeds (theme-color).",
+        examples=["#FF5733"],
+    )
+
+    @field_validator("image")
+    @classmethod
+    def _image_scheme(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if v.startswith("data:image/"):
+            return v  # decoded, sniffed, and size-capped by the ingest step
+        if not v.startswith("https://"):
+            raise ValueError("image must be an https:// URL or an image data URI")
+        if len(v) > 2048:
+            raise ValueError("image URL must be at most 2048 characters")
+        return v
+
+
+_META_TAGS_FIELD_DESC = (
+    "Custom social preview served to link-preview crawlers (WhatsApp, Discord, "
+    "Slack, iMessage, …). The object replaces the whole setting; on PATCH pass "
+    "null to remove. Requires a verified account with the feature enabled. "
+    "Note: platforms cache previews for ~7-30 days — edits propagate slowly "
+    "(the Facebook Sharing Debugger, LinkedIn Post Inspector, and Telegram's "
+    "@WebpageBot force a refresh)."
+)
+
+
 class CreateUrlRequest(RequestBase):
     """Request body for creating a new shortened URL.
 
@@ -149,6 +207,9 @@ class CreateUrlRequest(RequestBase):
             "default destination (`url`). Requires authentication."
         ),
         examples=[{"IN": "https://example.in/", "US": "https://example.com/us"}],
+    )
+    meta_tags: MetaTagsRequest | None = Field(
+        default=None, description=_META_TAGS_FIELD_DESC
     )
 
     @field_validator("expire_after", mode="before")
@@ -249,6 +310,9 @@ class UpdateUrlRequest(RequestBase):
             "omit to keep existing rules unchanged."
         ),
         examples=[{"IN": "https://example.in/", "US": "https://example.com/us"}],
+    )
+    meta_tags: MetaTagsRequest | None = Field(
+        default=None, description=_META_TAGS_FIELD_DESC
     )
 
     @field_validator("expire_after", mode="before")

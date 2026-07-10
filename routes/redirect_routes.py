@@ -26,8 +26,9 @@ from infrastructure.templates import templates
 from middleware.rate_limiter import Limits, limiter
 from schemas.enums.domain_status import DomainStatus
 from schemas.models.url import SchemaVersion
-from services.click.bot_detection import should_block_bot
+from services.click.bot_detection import should_block_bot, wants_preview
 from services.click.events import ClickEvent
+from services.meta_preview import build_preview_context
 from shared.ip_utils import get_client_ip
 from shared.url_utils import extract_hostname
 
@@ -133,6 +134,29 @@ async def redirect_url(
         return _error_page(request, "410", "SHORT URL EXPIRED", 410)
     resolve_ms = int((time.perf_counter() - resolve_start) * 1000)
 
+    # Custom meta-tags: preview crawlers get the owner's OG card instead of
+    # the redirect; everyone else falls through to the 302. This runs before
+    # the password gate (bots get the card, not the 401 page — it reveals
+    # only owner-written text) and returns before the click emit — a preview
+    # serve is never a click.
+    user_agent = request.headers.get("User-Agent", "")
+    if url_data.meta_title is not None and schema == SchemaVersion.V2:
+        bot_param = "bot" in request.query_params
+        if wants_preview(request.method, user_agent, bot_param=bot_param):
+            log.info(
+                "meta_preview_served",
+                short_code=short_code,
+                bot_param=bot_param,
+            )
+            resp = templates.TemplateResponse(
+                request,
+                "meta_preview.html",
+                build_preview_context(url_data, auto_redirect=not bot_param),
+                status_code=200,
+            )
+            resp.headers["X-Robots-Tag"] = _NOINDEX_HEADER
+            return resp
+
     # 2. Password check
     if url_data.password_hash:
         password = request.query_params.get("password")
@@ -165,7 +189,6 @@ async def redirect_url(
     # 4. Pre-emit bot block — the DECISION must run before the redirect is
     #    served (click processing may happen out-of-band); bot metadata
     #    RECORDING stays in the click pipeline.
-    user_agent = request.headers.get("User-Agent", "")
     if should_block_bot(request.method, user_agent, url_data, schema):
         log.info("click_tracking_bot_blocked", short_code=short_code, schema=schema)
         return _error_page(request, "403", "ACCESS DENIED", 403)

@@ -35,12 +35,15 @@ def parse_redis_version(version: str) -> tuple[int, int] | None:
 async def connect_queue_redis(
     settings: ClickEventsSettings,
 ) -> aioredis.Redis | None:
-    """Connect to the queue Redis for stream mode, or return None.
+    """Connect to the queue Redis when a URI is configured, or return None.
 
-    None (→ inline fallback in wiring) when: stream mode isn't requested,
-    the server is unreachable, or the server predates ACKED trimming.
+    None when: no URI, the server is unreachable, or the server predates
+    ACKED trimming. Each consumer of the connection decides for itself
+    (click-sink wiring checks ``sink == "stream"``; the meta-image sink
+    checks its own toggle) — inline-click deployments can still run async
+    meta-image validation.
     """
-    if settings.sink != "stream" or not settings.queue_redis_uri:
+    if not settings.queue_redis_uri:
         return None
 
     client = await create_redis_client(

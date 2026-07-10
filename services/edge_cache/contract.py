@@ -22,13 +22,27 @@ def cache_key(domain: str, short_code: str) -> str:
 
 class EdgeCacheEntry(BaseModel):
     """The KV value the Worker serves from. Schema pinned by
-    ``edge/spoo-edge-cache/contract/entry.schema.json``."""
+    ``edge/spoo-edge-cache/contract/entry.schema.json``.
+
+    ``redirect``: serve Location to everyone (+ ``og_html`` to preview
+    bots when present). ``og_only``: serve ``og_html`` to preview bots,
+    everyone else passes through to origin — this keeps click tracking
+    for non-hot og-links while bots are answered at the edge.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    type: Literal["redirect"] = "redirect"
-    url: str
+    type: Literal["redirect", "og_only"] = "redirect"
+    url: str | None = None  # required for redirect, absent for og_only
     status: int = 302
+    # Prerendered meta_preview.html (final HTML string, no template syntax).
+    # Workers that predate this field ignore it and serve the redirect.
+    og_html: str | None = None
+
+    def to_kv_json(self) -> str:
+        """Wire format: absent optionals are omitted, not null — pinned by
+        the contract fixtures (a plain redirect stays {type,url,status})."""
+        return self.model_dump_json(exclude_none=True)
 
 
 class EdgeCacheGeoEntry(BaseModel):
@@ -48,3 +62,10 @@ class EdgeCacheGeoEntry(BaseModel):
     url: str
     status: int = 302
     rules: dict[str, str]
+    # Same semantics as EdgeCacheEntry.og_html: preview bots get the card,
+    # everyone else the geo redirect. Keeps hot geo+meta links correct.
+    og_html: str | None = None
+
+    def to_kv_json(self) -> str:
+        """Wire format: absent optionals are omitted, not null."""
+        return self.model_dump_json(exclude_none=True)

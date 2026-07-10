@@ -53,6 +53,26 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         """Hard-delete a URL document. Returns True if a document was deleted."""
         return await self._delete({"_id": url_id})
 
+    async def record_meta_image_validation(
+        self, url_id: ObjectId, image_url: str, meta: dict
+    ) -> bool:
+        """CAS-write async image-validation results.
+
+        Filtering on the CURRENT image URL means a user edit that raced the
+        validator makes this a no-op instead of clobbering the new image.
+        """
+        return await self._update(
+            {"_id": url_id, "meta_tags.image": image_url},
+            {"$set": {"meta_tags.image_meta": meta}},
+        )
+
+    async def clear_meta_image(self, url_id: ObjectId, image_url: str) -> bool:
+        """CAS-clear an image that failed async validation."""
+        return await self._update(
+            {"_id": url_id, "meta_tags.image": image_url},
+            {"$set": {"meta_tags.image": None, "meta_tags.image_meta": None}},
+        )
+
     async def list_aliases_by_owner_and_domain(
         self, owner_id: ObjectId, domain: str
     ) -> list[str]:

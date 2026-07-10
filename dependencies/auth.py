@@ -41,6 +41,10 @@ class CurrentUser:
     email_verified: bool
     api_key_doc: ApiKeyDoc | None = field(default=None)
     amr: str = "pwd"
+    # UserDoc.plan value (e.g. "FREE") — consumed by FeatureFlagService's
+    # TIER rollout via getattr(user, "tier"). Populated from the DB on the
+    # API-key path and from the (future) "plan" claim on the JWT path.
+    tier: str | None = field(default=None)
 
 
 async def get_current_user(
@@ -101,6 +105,7 @@ async def get_current_user(
                 user_id=key.user_id,
                 email_verified=email_verified,
                 api_key_doc=key,
+                tier=user.plan.value if user and user.plan else None,
             )
 
     # ── JWT path ──────────────────────────────────────────────────────────────
@@ -127,7 +132,14 @@ async def get_current_user(
         email_verified = bool(claims.get("email_verified", False))
         amr = claims.get("amr", ["pwd"])[0]
         structlog.contextvars.bind_contextvars(user_id=str(user_id), auth_method="jwt")
-        return CurrentUser(user_id=user_id, email_verified=email_verified, amr=amr)
+        return CurrentUser(
+            user_id=user_id,
+            email_verified=email_verified,
+            amr=amr,
+            # Not issued yet — the paid-plans launch adds the claim; TIER
+            # flag rollouts become a pure data change at that point.
+            tier=claims.get("plan"),
+        )
     except Exception:
         return None
 

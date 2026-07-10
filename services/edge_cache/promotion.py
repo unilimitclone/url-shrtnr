@@ -30,6 +30,7 @@ from services.edge_cache.contract import (
     EdgeCacheGeoEntry,
     cache_key,
 )
+from services.edge_cache.render import render_meta_preview
 
 log = get_logger(__name__)
 
@@ -107,15 +108,21 @@ class PromoteToEdgeCacheAction:
             self._log_skip(hot, reason)
             return
 
+        # og-links stay eligible: the worker serves og_html to preview bots
+        # and the redirect (geo-aware or plain) to everyone else from the
+        # same entry.
+        og_html = render_meta_preview(url) if url.meta_title is not None else None
         entry: EdgeCacheEntry | EdgeCacheGeoEntry
         if url.geo_rules:
-            entry = EdgeCacheGeoEntry(url=url.long_url, rules=url.geo_rules)
+            entry = EdgeCacheGeoEntry(
+                url=url.long_url, rules=url.geo_rules, og_html=og_html
+            )
         else:
-            entry = EdgeCacheEntry(url=url.long_url)
+            entry = EdgeCacheEntry(url=url.long_url, og_html=og_html)
         ttl = self._jittered_ttl()
         ok = await self._kv.put(
             cache_key(hot.domain, hot.short_code),
-            entry.model_dump_json(),
+            entry.to_kv_json(),
             expiration_ttl=ttl,
         )
         if ok:

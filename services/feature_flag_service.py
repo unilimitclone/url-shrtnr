@@ -51,6 +51,7 @@ log = get_logger(__name__)
 # constants are the closest thing to a registry — code references flags
 # through them, never through bare string literals at call sites.
 GEO_TARGETING_FLAG = "geo_targeting"
+META_TAGS_FLAG = "custom_meta_tags"
 
 
 def _stable_hash(user_id: ObjectId, salt: str) -> int:

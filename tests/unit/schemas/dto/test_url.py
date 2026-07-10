@@ -510,3 +510,57 @@ class TestGeoRulesField:
                     "geo_rules": {k: "https://example.com/x" for k in keys},
                 }
             )
+
+
+class TestMetaTagsResponseWarnings:
+    """Platform-cliff warnings computed from image_meta — warn, never reject."""
+
+    @staticmethod
+    def _meta(width=None, height=None, bytes_=None):
+        from schemas.models.url import LinkMetaTags, MetaImageMeta
+
+        image_meta = None
+        if width or height or bytes_:
+            image_meta = MetaImageMeta(
+                width=width,
+                height=height,
+                bytes=bytes_,
+                checked_at=datetime.now(timezone.utc),
+            )
+        return LinkMetaTags(
+            title="T", image="https://cdn.example.com/og.png", image_meta=image_meta
+        )
+
+    @staticmethod
+    def _warnings(meta):
+        from schemas.dto.responses.url import MetaTagsResponse
+
+        return MetaTagsResponse.from_model(meta).warnings
+
+    def test_good_image_has_no_warnings(self):
+        assert self._warnings(self._meta(1200, 630, 120_000)) is None
+
+    def test_no_image_meta_has_no_warnings(self):
+        assert self._warnings(self._meta()) is None
+
+    def test_over_300kb_warns_whatsapp(self):
+        w = self._warnings(self._meta(1200, 630, 350_000))
+        assert any("300KB" in x for x in w)
+
+    def test_tiny_image_warns_may_be_dropped(self):
+        w = self._warnings(self._meta(150, 150, 5_000))
+        assert any("200x200" in x for x in w)
+
+    def test_narrow_image_warns_small_thumbnail(self):
+        w = self._warnings(self._meta(500, 500, 50_000))
+        assert any("600px" in x for x in w)
+
+    def test_extreme_aspect_ratio_warns(self):
+        w = self._warnings(self._meta(2000, 400, 50_000))
+        assert any("4:1" in x for x in w)
+
+    def test_dims_unknown_skips_dimension_warnings(self):
+        # Truncated sniff / not-yet-validated external image: bytes may be
+        # known while dims are not — only the byte warning applies.
+        w = self._warnings(self._meta(bytes_=400_000))
+        assert w == ["image exceeds 300KB; WhatsApp may silently drop it"]
