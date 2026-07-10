@@ -43,10 +43,11 @@ from schemas.dto.responses.custom_domain import (
     CustomDomainListResponse,
     CustomDomainResponse,
 )
+from services.feature_flag_service import CUSTOM_DOMAINS_FLAG
 
 router = APIRouter(tags=["Custom Domains"])
 
-_FEATURE_FLAG = "custom_domains"
+_FEATURE_FLAG = CUSTOM_DOMAINS_FLAG
 
 
 def _parse_domain_id(domain_id: str) -> ObjectId:

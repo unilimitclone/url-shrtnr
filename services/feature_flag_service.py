@@ -34,6 +34,7 @@ from infrastructure.cache.feature_flag_cache import (
 )
 from infrastructure.logging import get_logger
 from repositories.feature_flag_repository import FeatureFlagRepository
+from schemas.enums.feature_state import FeatureState
 from schemas.enums.rollout_type import RolloutType
 from schemas.models.feature_flag import FeatureFlagDoc
 
@@ -45,6 +46,28 @@ if TYPE_CHECKING:
     from dependencies.auth import CurrentUser
 
 log = get_logger(__name__)
+
+# Known flag names. Flag docs are edited directly in Mongo, so these
+# constants are the closest thing to a registry — code references flags
+# through them, never through bare string literals at call sites.
+# geo_targeting / custom_meta_tags / ab_testing gate features that land
+# with the main merge; registering them here first is harmless (unregistered
+# flags read as disabled) and keeps one registry either side of the merge.
+CUSTOM_DOMAINS_FLAG = "custom_domains"
+GEO_TARGETING_FLAG = "geo_targeting"
+META_TAGS_FLAG = "custom_meta_tags"
+AB_TESTING_FLAG = "ab_testing"
+
+# Flags whose per-user answer is exposed to clients via GET /api/v1/me/
+# features, so frontends can decide what to render. Enforcement stays on
+# the API endpoints — this list only mirrors those gates as data. A flag
+# absent here is invisible to clients even when it gates an endpoint.
+EXPOSED_FEATURES: tuple[str, ...] = (
+    CUSTOM_DOMAINS_FLAG,
+    GEO_TARGETING_FLAG,
+    META_TAGS_FLAG,
+    AB_TESTING_FLAG,
+)
 
 
 def _stable_hash(user_id: ObjectId, salt: str) -> int:
@@ -116,6 +139,27 @@ class FeatureFlagService:
         # RolloutType enum. Kept as default-deny if the field is ever widened.
         log.warning("feature_flag_unknown_rollout", name=name, rollout=str(rollout))
         return False
+
+    async def states_for(self, user: CurrentUser | None) -> dict[str, FeatureState]:
+        """Per-user state of every client-exposed feature.
+
+        Today the policy is binary: enabled → ENABLED, everything else →
+        HIDDEN (a gated feature simply doesn't exist for accounts without
+        it). LOCKED enters the policy when paid plans ship — non-entitled
+        accounts flip from HIDDEN to LOCKED server-side, and clients that
+        already render all three states need no deploy.
+
+        Inherits ``is_enabled``'s default-deny: unregistered flags, cache
+        and repo failures all read as HIDDEN.
+        """
+        return {
+            name: (
+                FeatureState.ENABLED
+                if await self.is_enabled(name, user)
+                else FeatureState.HIDDEN
+            )
+            for name in EXPOSED_FEATURES
+        }
 
     async def _lookup(self, name: str) -> FeatureFlagDoc | None:
         """Fetch a flag through cache → repo, returning None for unregistered."""

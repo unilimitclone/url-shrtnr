@@ -1,11 +1,13 @@
 """
+GET    /api/v1/me/features       — per-account feature availability
 GET    /api/v1/me/layouts/{page} — fetch the saved dashboard layout (null = default)
 PUT    /api/v1/me/layouts/{page} — save the layout document verbatim
 DELETE /api/v1/me/layouts/{page} — reset to default (idempotent)
 
 Per-user preferences namespace. Layout documents are client-owned JSON blobs:
 the frontend versions and validates them, the server stores them opaquely
-keyed by (user, page).
+keyed by (user, page). Features mirror the flag service's answers as data —
+the read side of gates the write endpoints already enforce.
 """
 
 from __future__ import annotations
@@ -14,13 +16,38 @@ from typing import Annotated
 
 from fastapi import APIRouter, Path, Request
 
-from dependencies import AuthUser, PageLayoutSvc
+from dependencies import AuthUser, FeatureFlagSvc, PageLayoutSvc
 from middleware.openapi import AUTH_RESPONSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.dto.requests.layouts import PutLayoutRequest
+from schemas.dto.responses.features import FeaturesResponse
 from schemas.dto.responses.layouts import LayoutResponse
 
 router = APIRouter(prefix="/me", tags=["Me"])
+
+
+@router.get(
+    "/features",
+    responses=AUTH_RESPONSES,
+    operation_id="getMyFeatures",
+    summary="Get Feature Availability",
+)
+@limiter.limit(Limits.DASHBOARD_READ)
+async def get_my_features(
+    request: Request,
+    user: AuthUser,
+    flag_service: FeatureFlagSvc,
+) -> FeaturesResponse:
+    """Return the availability state of every gated feature for this account.
+
+    States: `enabled` (render it), `hidden` (the feature doesn't exist for
+    this account), `locked` (reserved — render as upgrade-gated once plans
+    ship). Treat features missing from the map as `hidden`. Never used for
+    enforcement — the write endpoints enforce the same gates server-side.
+
+    **Authentication**: Required.
+    """
+    return FeaturesResponse(features=await flag_service.states_for(user))
 
 PagePath = Annotated[
     str,
