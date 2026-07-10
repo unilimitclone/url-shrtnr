@@ -29,3 +29,22 @@ class EdgeCacheEntry(BaseModel):
     type: Literal["redirect"] = "redirect"
     url: str
     status: int = 302
+
+
+class EdgeCacheGeoEntry(BaseModel):
+    """Geo-targeted variant: ``url`` is the default destination and
+    ``rules`` maps ISO 3166-1 alpha-2 codes to per-country overrides.
+    The Worker picks ``rules[request.cf.country] ?? url`` — the same
+    decision origin makes from CF-IPCountry, from the same CF geodata,
+    so edge-served and origin-served answers can never disagree.
+
+    Workers that predate this type see an unknown ``type`` and pass
+    through to origin (pinned by the malformed-fixtures suite), so the
+    entry can ship before or after the Worker deploy."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["geo_redirect"] = "geo_redirect"
+    url: str
+    status: int = 302
+    rules: dict[str, str]

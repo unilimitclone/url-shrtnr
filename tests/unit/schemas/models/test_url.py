@@ -190,3 +190,29 @@ class TestEmojiUrlDoc:
         )
         assert doc.id == "\U0001f680\U0001f389"
         assert doc.max_clicks == 5
+
+
+class TestUrlV2DocGeoRules:
+    def _make(self, **overrides):
+        base = {
+            "_id": oid(),
+            "alias": "abc1234",
+            "owner_id": oid(),
+            "domain": "spoo.me",
+            "created_at": now(),
+            "long_url": "https://example.com",
+        }
+        base.update(overrides)
+        return UrlV2Doc.model_validate(base)
+
+    def test_absent_geo_rules_defaults_to_none(self):
+        """Docs created before the field existed deserialize with None —
+        no backfill required."""
+        doc = self._make()
+        assert doc.geo_rules is None
+
+    def test_geo_rules_round_trip(self):
+        rules = {"IN": "https://example.in/", "US": "https://example.com/us"}
+        doc = self._make(geo_rules=rules)
+        assert doc.geo_rules == rules
+        assert doc.to_mongo()["geo_rules"] == rules

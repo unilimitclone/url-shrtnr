@@ -128,6 +128,7 @@ def _make_v2_doc_mock(
     doc.password = None
     doc.expire_after = None
     doc.max_clicks = None
+    doc.geo_rules = None
     doc.status = status
     doc.owner_id = ObjectId("000000000000000000000001")
     doc.total_clicks = 0

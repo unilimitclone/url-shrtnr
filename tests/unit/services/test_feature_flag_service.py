@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from bson import ObjectId
 
+from errors import ForbiddenError, NotFoundError
 from infrastructure.cache.feature_flag_cache import NEGATIVE_MISS
 from schemas.enums.rollout_type import RolloutType
 from schemas.models.feature_flag import FeatureFlagDoc
@@ -339,3 +340,23 @@ class TestStableHash:
         baseline = _digit_bucket(USER_A, "custom_domains")
         for _ in range(1000):
             assert _digit_bucket(USER_A, "custom_domains") == baseline
+
+
+class TestRequire:
+    """require() — the route-facing gate built on is_enabled()."""
+
+    async def test_enabled_flag_returns_silently(self):
+        service, _, _ = make_service(
+            flag=_flag(enabled=True, rollout_type=RolloutType.EVERYONE)
+        )
+        await service.require("geo_targeting", None)  # no raise
+
+    async def test_disabled_flag_raises_403_with_readable_feature_name(self):
+        service, _, _ = make_service(flag=None)
+        with pytest.raises(ForbiddenError, match="Geo targeting is not enabled"):
+            await service.require("geo_targeting", None)
+
+    async def test_hide_raises_404_without_leaking_existence(self):
+        service, _, _ = make_service(flag=None)
+        with pytest.raises(NotFoundError, match="not found"):
+            await service.require("custom_domains", None, hide=True)

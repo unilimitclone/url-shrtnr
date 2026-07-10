@@ -77,6 +77,12 @@ class TestEligibility:
         url = make_url_cache(schema_version="v1", owner_id=None)
         assert promotion_skip_reason(url, SYSTEM, SYSTEM) is None
 
+    def test_geo_targeted_urls_are_eligible(self):
+        """Geo links promote as geo_redirect entries — the Worker can make
+        the per-country decision from request.cf.country."""
+        url = make_url_cache(geo_rules={"IN": "https://example.in/"})
+        assert promotion_skip_reason(url, SYSTEM, SYSTEM) is None
+
 
 class TestPromoteAction:
     async def test_eligible_url_is_promoted(self):
@@ -100,6 +106,28 @@ class TestPromoteAction:
         }
         # jitter keeps TTL within ±20% of 300s
         assert 240 <= args.kwargs["expiration_ttl"] <= 360
+
+    async def test_geo_url_is_promoted_as_geo_redirect_entry(self):
+        rules = {"IN": "https://example.in/", "US": "https://example.com/us"}
+        url_cache = MagicMock()
+        url_cache.get = AsyncMock(
+            return_value=make_url_cache(
+                long_url="https://example.com/default", geo_rules=rules
+            )
+        )
+        kv = MagicMock()
+        kv.put = AsyncMock(return_value=True)
+
+        await _action(url_cache, kv).promote(_hot())
+
+        kv.put.assert_awaited_once()
+        entry = json.loads(kv.put.await_args.args[1])
+        assert entry == {
+            "type": "geo_redirect",
+            "url": "https://example.com/default",
+            "status": 302,
+            "rules": rules,
+        }
 
     async def test_cache_miss_skips_without_kv_write(self):
         url_cache = MagicMock()

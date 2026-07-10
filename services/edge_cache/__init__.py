@@ -1,4 +1,8 @@
-from services.edge_cache.contract import EdgeCacheEntry, cache_key
+from services.edge_cache.contract import (
+    EdgeCacheEntry,
+    EdgeCacheGeoEntry,
+    cache_key,
+)
 from services.edge_cache.promotion import (
     PromoteToEdgeCacheAction,
     promotion_skip_reason,
@@ -6,6 +10,7 @@ from services.edge_cache.promotion import (
 
 __all__ = [
     "EdgeCacheEntry",
+    "EdgeCacheGeoEntry",
     "PromoteToEdgeCacheAction",
     "cache_key",
     "promotion_skip_reason",

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from bson import ObjectId
 
+from errors import ForbiddenError, NotFoundError
 from infrastructure.cache.feature_flag_cache import (
     NEGATIVE_MISS,
     FeatureFlagCache,
@@ -45,6 +46,11 @@ if TYPE_CHECKING:
     from dependencies.auth import CurrentUser
 
 log = get_logger(__name__)
+
+# Known flag names. Flag docs are edited directly in Mongo, so these
+# constants are the closest thing to a registry — code references flags
+# through them, never through bare string literals at call sites.
+GEO_TARGETING_FLAG = "geo_targeting"
 
 
 def _stable_hash(user_id: ObjectId, salt: str) -> int:
@@ -116,6 +122,24 @@ class FeatureFlagService:
         # RolloutType enum. Kept as default-deny if the field is ever widened.
         log.warning("feature_flag_unknown_rollout", name=name, rollout=str(rollout))
         return False
+
+    async def require(
+        self, name: str, user: CurrentUser | None, *, hide: bool = False
+    ) -> None:
+        """Raise unless ``name`` is enabled for ``user``.
+
+        403 by default — the right signal for flag-gated FIELDS on shared
+        endpoints, which appear in public OpenAPI docs and can't be
+        concealed. Pass ``hide=True`` for whole-endpoint features whose
+        existence is itself gated (the custom-domains pattern): 404, so
+        non-allowlisted callers can't tell the feature exists.
+        """
+        if await self.is_enabled(name, user):
+            return
+        if hide:
+            raise NotFoundError("not found")
+        feature = name.replace("_", " ").capitalize()
+        raise ForbiddenError(f"{feature} is not enabled for this account")
 
     async def _lookup(self, name: str) -> FeatureFlagDoc | None:
         """Fetch a flag through cache → repo, returning None for unregistered."""
