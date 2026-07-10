@@ -105,6 +105,19 @@ def _bracket(ip: str) -> str:
     return f"[{ip}]" if ":" in ip else ip
 
 
+async def _read_body(
+    resp: httpx.Response, max_bytes: int, truncate_over_cap: bool
+) -> bytearray:
+    buf = bytearray()
+    async for chunk in resp.aiter_bytes():
+        buf += chunk
+        if len(buf) > max_bytes:
+            if truncate_over_cap:
+                return buf[:max_bytes]
+            raise FetchHardError("body over cap")
+    return buf
+
+
 async def fetch_public(
     url: str,
     *,
@@ -124,8 +137,8 @@ async def fetch_public(
     failing when the body exceeds the cap — right for HTML meta parsing
     (tags live in <head>; github.com's homepage alone is >512KB), wrong
     for images (a truncated image is not a valid image)."""
-    # httpx timeouts are per-operation and reset each chunk; this is the
-    # wall-clock ceiling a slow-drip server can't evade.
+    # httpx timeouts are per-operation and reset each chunk, so the body
+    # read below is bounded by an explicit wall-clock ceiling instead.
     hop_deadline = timeout * 3
     for _hop in range(max_redirects + 1):
         parsed = httpx.URL(url)
@@ -183,17 +196,14 @@ async def fetch_public(
                 ):
                     raise FetchHardError("content-length over cap")
 
-                buf = bytearray()
+                # wait_for (not asyncio.timeout — 3.10 support) is the
+                # wall-clock ceiling a slow-drip server can't evade.
                 try:
-                    async with asyncio.timeout(hop_deadline):
-                        async for chunk in resp.aiter_bytes():
-                            buf += chunk
-                            if len(buf) > max_bytes:
-                                if truncate_over_cap:
-                                    buf = buf[:max_bytes]
-                                    break
-                                raise FetchHardError("body over cap")
-                except TimeoutError as exc:
+                    buf = await asyncio.wait_for(
+                        _read_body(resp, max_bytes, truncate_over_cap),
+                        timeout=hop_deadline,
+                    )
+                except (asyncio.TimeoutError, TimeoutError) as exc:
                     raise FetchTransientError("read deadline exceeded") from exc
                 return FetchedBody(bytes(buf), ctype, str(parsed))
             finally:
