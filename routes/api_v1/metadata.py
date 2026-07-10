@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from dependencies import URL_READ_SCOPES, CurrentUser, Settings, require_scopes
 from errors import AppError, ValidationError
+from infrastructure.logging import get_logger
 from infrastructure.safe_fetch import (
     FetchHardError,
     FetchTransientError,
@@ -25,6 +26,8 @@ from middleware.openapi import AUTH_RESPONSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.dto.responses.metadata import MetadataResponse
 from services.meta_tags.parse_html import parse_meta_tags
+
+log = get_logger(__name__)
 
 router = APIRouter(tags=["Metadata"])
 
@@ -99,7 +102,10 @@ async def get_metadata(
     except FetchTransientError as exc:
         raise UpstreamTimeoutError("destination did not respond in time") from exc
     except FetchHardError as exc:
-        payload = {"error": f"destination is not a fetchable HTML page ({exc})"}
+        # Generic message only — the specific reason would let a caller probe
+        # whether hostnames resolve / point at private space. Detail to logs.
+        log.info("metadata_fetch_unfetchable", url=url, reason=str(exc))
+        payload = {"error": "destination is not a fetchable HTML page"}
         await cache.set(url, payload, negative=True)
         raise UpstreamUnfetchableError(payload["error"]) from exc
 

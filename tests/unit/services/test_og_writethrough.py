@@ -27,15 +27,15 @@ def _kv() -> AsyncMock:
     return kv
 
 
-def _wt(kv) -> OgEdgeWritethrough:
-    return OgEdgeWritethrough(kv, system_domain=SYSTEM)
+def _wt(kv, ttl_seconds: int = 86_400) -> OgEdgeWritethrough:
+    return OgEdgeWritethrough(kv, system_domain=SYSTEM, ttl_seconds=ttl_seconds)
 
 
 class TestSync:
     @pytest.mark.asyncio
-    async def test_active_og_link_puts_og_only_entry_without_ttl(self):
+    async def test_active_og_link_puts_og_only_entry_with_ttl(self):
         kv = _kv()
-        await _wt(kv).sync(make_url_cache(**META))
+        await _wt(kv, ttl_seconds=3600).sync(make_url_cache(**META))
         kv.put.assert_awaited_once()
         key, value = kv.put.call_args.args
         assert key == "cache:spoo.me:abc1234"
@@ -44,7 +44,8 @@ class TestSync:
         assert "og:title" in entry["og_html"]
         assert 'content="Custom Card"' in entry["og_html"]
         assert "url" not in entry  # og_only carries no destination
-        assert "expiration_ttl" not in kv.put.call_args.kwargs
+        # TTL is the backstop that heals a missed delete / out-of-band block.
+        assert kv.put.call_args.kwargs["expiration_ttl"] == 3600
 
     @pytest.mark.asyncio
     async def test_rendered_html_reflects_long_url_host(self):

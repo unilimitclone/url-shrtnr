@@ -43,14 +43,12 @@ class IngestedImage:
 
 
 def owner_key_prefix(owner_id: ObjectId, secret: str) -> str:
-    """Stable, non-reversible per-owner path segment for storage keys.
+    """Non-reversible per-owner path segment for storage keys.
 
-    Raw ObjectIds must not appear in public image URLs — they embed the
-    account's creation timestamp and let anyone correlate a user's links.
-    HMAC keeps the properties the prefix exists for (per-owner takedown
-    sweeps, cross-owner overwrite isolation, idempotent dedup) without
-    exposing the id. Rotating SECRET_KEY re-keys future uploads; sweeps
-    of pre-rotation objects need the old secret.
+    A raw ObjectId in a public URL leaks the account's creation time and
+    lets anyone correlate a user's links; the HMAC keeps per-owner sweeps
+    and dedup without exposing it. Rotating SECRET_KEY re-keys future
+    uploads (old sweeps need the old secret).
     """
     digest = hmac.new(secret.encode(), str(owner_id).encode(), hashlib.sha256)
     return digest.hexdigest()[:16]

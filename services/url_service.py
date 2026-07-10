@@ -551,6 +551,16 @@ class UrlService:
         look the moment someone dresses it up with a custom preview.
         """
         patterns = await self._blocked_url_repo.get_patterns()
+        # Off the event loop, matching geo's blocklist validation (d4a18fa):
+        # a fixed set of fields now, but the blocklist grows as the abuse
+        # strategy matures, so keep the regex scans off the hot loop.
+        await asyncio.to_thread(
+            self._scan_meta_blocklist, meta, long_url=long_url, patterns=patterns
+        )
+
+    def _scan_meta_blocklist(
+        self, meta: MetaTagsRequest, *, long_url: str, patterns: Sequence[str]
+    ) -> None:
         for value in (meta.title, meta.description, meta.image):
             if value and not validate_blocked_url(
                 value, patterns, timeout=self._blocked_url_regex_timeout
@@ -728,7 +738,7 @@ class UrlService:
         # Edge-first: push the prerendered OG page to KV so preview bots
         # are answered at the edge. Best-effort — never fails the write.
         if url_doc.meta_tags and self._og_writethrough:
-            await self._og_writethrough.sync(_v2_doc_to_cache(url_doc))
+            await self._og_writethrough.sync(UrlCacheData.from_v2_doc(url_doc))
 
         # External https images get validated out-of-band (uploads carried
         # image_meta already). Best-effort emit — sink swallows failures.
@@ -840,7 +850,7 @@ class UrlService:
             if relevant & update_ops.keys():
                 if (new_alias, new_domain) != (existing.alias, existing.domain):
                     await self._og_writethrough.remove(existing.domain, existing.alias)
-                await self._og_writethrough.sync(_v2_doc_to_cache(merged_doc))
+                await self._og_writethrough.sync(UrlCacheData.from_v2_doc(merged_doc))
 
         if "meta_tags" in update_ops:
             await self._maybe_emit_image_validation(merged_doc)
@@ -1100,7 +1110,7 @@ class UrlService:
         v2_doc = await self._url_repo.find_by_alias(short_code, domain)
         if v2_doc is None:
             return None, SchemaVersion.V2
-        return _v2_doc_to_cache(v2_doc), SchemaVersion.V2
+        return UrlCacheData.from_v2_doc(v2_doc), SchemaVersion.V2
 
     async def _try_v2_then_v1(
         self, short_code: str
@@ -1109,7 +1119,7 @@ class UrlService:
             short_code, self._system_default_domain
         )
         if v2_doc is not None:
-            return _v2_doc_to_cache(v2_doc), SchemaVersion.V2
+            return UrlCacheData.from_v2_doc(v2_doc), SchemaVersion.V2
         v1_doc = await self._legacy_repo.find_by_id(short_code)
         if v1_doc is not None:
             return (
@@ -1131,7 +1141,7 @@ class UrlService:
             short_code, self._system_default_domain
         )
         if v2_doc is not None:
-            return _v2_doc_to_cache(v2_doc), SchemaVersion.V2
+            return UrlCacheData.from_v2_doc(v2_doc), SchemaVersion.V2
         return None, SchemaVersion.V2
 
     async def _populate_cache(
@@ -1170,39 +1180,6 @@ def _raise_for_status(status: UrlStatus) -> None:
     if status == UrlStatus.BLOCKED:
         raise BlockedUrlError("URL is blocked")
     raise GoneError("URL has expired or is no longer active")
-
-
-def _v2_doc_to_cache(doc: UrlV2Doc) -> UrlCacheData:
-    return UrlCacheData(
-        id=str(doc.id),
-        alias=doc.alias,
-        long_url=doc.long_url,
-        block_bots=bool(doc.block_bots),
-        password_hash=doc.password,
-        expiration_time=(
-            int(doc.expire_after.timestamp()) if doc.expire_after else None
-        ),
-        max_clicks=doc.max_clicks,
-        url_status=doc.status,
-        schema_version=SchemaVersion.V2,
-        owner_id=str(doc.owner_id) if doc.owner_id else None,
-        domain=doc.domain,
-        geo_rules=doc.geo_rules,
-        meta_title=doc.meta_tags.title if doc.meta_tags else None,
-        meta_description=doc.meta_tags.description if doc.meta_tags else None,
-        meta_image=doc.meta_tags.image if doc.meta_tags else None,
-        meta_color=doc.meta_tags.color if doc.meta_tags else None,
-        meta_image_width=(
-            doc.meta_tags.image_meta.width
-            if doc.meta_tags and doc.meta_tags.image_meta
-            else None
-        ),
-        meta_image_height=(
-            doc.meta_tags.image_meta.height
-            if doc.meta_tags and doc.meta_tags.image_meta
-            else None
-        ),
-    )
 
 
 def _legacy_doc_to_cache(

@@ -131,6 +131,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
                 api_host_header=edge.api_host_header,
             ),
             system_domain=settings.system_default_domain,
+            ttl_seconds=edge.og_ttl_seconds,
         )
         log.info("og_writethrough_enabled", kv_namespace_id=edge.kv_namespace_id)
 

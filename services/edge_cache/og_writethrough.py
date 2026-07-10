@@ -5,13 +5,13 @@ On every meta-relevant write, origin renders the OG page once and puts an
 origin round-trips. Humans always pass through (the worker only serves
 ``og_only`` entries to preview crawlers), so click tracking is unaffected.
 
-Lifecycle (event-driven, no TTL):
-  - meta set / meta edited / long_url or status/alias/domain changed on an
-    og-link → re-render + put (or delete when no longer eligible)
-  - meta cleared / link deleted / status not ACTIVE → delete
+Lifecycle: put on set/edit, delete on clear/deactivate/delete. The put
+carries a TTL (refreshed on every edit) as a backstop — it bounds how
+long a stale entry can linger if a delete fails or a status change skips
+update() (e.g. an admin sets BLOCKED directly in Mongo).
 
-Best-effort by contract, like promotion: a KV outage must never fail a
-user's API write — worst case bots reach origin, which answers correctly.
+Best-effort like promotion: a KV outage must never fail a user's API
+write — worst case bots reach origin, which answers correctly.
 
 Scope: system-domain v2 links only. Custom-domain tenants never route
 through the worker (CF-for-SaaS), so KV entries for them would be dead
@@ -35,9 +35,12 @@ log = get_logger(__name__)
 
 
 class OgEdgeWritethrough:
-    def __init__(self, kv: CloudflareKVClient, *, system_domain: str) -> None:
+    def __init__(
+        self, kv: CloudflareKVClient, *, system_domain: str, ttl_seconds: int = 86_400
+    ) -> None:
         self._kv = kv
         self._system_domain = system_domain
+        self._ttl_seconds = ttl_seconds
 
     async def sync(self, url: UrlCacheData) -> None:
         """Reconcile the KV og entry with the link's current state.
@@ -52,7 +55,9 @@ class OgEdgeWritethrough:
         try:
             if url.meta_title is not None and url.url_status == UrlStatus.ACTIVE:
                 entry = EdgeCacheEntry(type="og_only", og_html=render_meta_preview(url))
-                ok = await self._kv.put(key, entry.to_kv_json())
+                ok = await self._kv.put(
+                    key, entry.to_kv_json(), expiration_ttl=self._ttl_seconds
+                )
                 log.info(
                     "og_writethrough_put",
                     short_code=url.alias,

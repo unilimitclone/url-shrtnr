@@ -301,6 +301,10 @@ class EdgeCacheSettings(BaseSettings):
     # ±jitter so simultaneously-promoted URLs don't expire in lockstep
     # and stampede origin together.
     ttl_jitter_ratio: float = Field(default=0.2, ge=0.0, le=0.5)
+    # og_only write-through TTL — much longer (entries are event-managed,
+    # not hot-promoted), but bounded so a missed delete or out-of-band
+    # block can't keep serving a stale card forever.
+    og_ttl_seconds: int = Field(default=86_400, ge=60)
 
     @property
     def enabled(self) -> bool:

@@ -19,6 +19,7 @@ destination parser (Phase D).
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 from dataclasses import dataclass
 
@@ -62,14 +63,10 @@ def _is_public(ip: str) -> bool:
     addr = ipaddress.ip_address(ip)
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
         addr = addr.ipv4_mapped
-    return not (
-        addr.is_private
-        or addr.is_loopback
-        or addr.is_link_local
-        or addr.is_reserved
-        or addr.is_multicast
-        or addr.is_unspecified
-    )
+    # is_global (not a flag union) catches CGNAT 100.64.0.0/10 and
+    # transitional ranges the union missed; exclude multicast, which is
+    # is_global=True but must never be a fetch target.
+    return addr.is_global and not addr.is_multicast
 
 
 async def _resolve_public_ip(host: str) -> str:
@@ -127,6 +124,9 @@ async def fetch_public(
     failing when the body exceeds the cap — right for HTML meta parsing
     (tags live in <head>; github.com's homepage alone is >512KB), wrong
     for images (a truncated image is not a valid image)."""
+    # httpx timeouts are per-operation and reset each chunk; this is the
+    # wall-clock ceiling a slow-drip server can't evade.
+    hop_deadline = timeout * 3
     for _hop in range(max_redirects + 1):
         parsed = httpx.URL(url)
         if parsed.scheme != "https":
@@ -140,7 +140,13 @@ async def fetch_public(
             request = client.build_request(
                 "GET",
                 pinned,
-                headers={"Host": parsed.host, "User-Agent": user_agent},
+                headers={
+                    "Host": parsed.host,
+                    "User-Agent": user_agent,
+                    # No gzip: the byte cap counts decompressed bytes, so a
+                    # small compressed bomb could blow past it in one read.
+                    "Accept-Encoding": "identity",
+                },
                 extensions={"sni_hostname": parsed.host},
             )
             try:
@@ -178,13 +184,17 @@ async def fetch_public(
                     raise FetchHardError("content-length over cap")
 
                 buf = bytearray()
-                async for chunk in resp.aiter_bytes():
-                    buf += chunk
-                    if len(buf) > max_bytes:
-                        if truncate_over_cap:
-                            buf = buf[:max_bytes]
-                            break
-                        raise FetchHardError("body over cap")
+                try:
+                    async with asyncio.timeout(hop_deadline):
+                        async for chunk in resp.aiter_bytes():
+                            buf += chunk
+                            if len(buf) > max_bytes:
+                                if truncate_over_cap:
+                                    buf = buf[:max_bytes]
+                                    break
+                                raise FetchHardError("body over cap")
+                except TimeoutError as exc:
+                    raise FetchTransientError("read deadline exceeded") from exc
                 return FetchedBody(bytes(buf), ctype, str(parsed))
             finally:
                 await resp.aclose()

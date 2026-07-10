@@ -31,6 +31,8 @@ class TestIsPublic:
             "fd00::1",  # ULA
             "::ffff:10.0.0.1",  # IPv4-mapped bypass attempt
             "224.0.0.1",  # multicast
+            "100.64.0.1",  # CGNAT — cloud pod IPs, is_global=False
+            "2002:c058:6301::1",  # 6to4
         ],
     )
     def test_private_and_special_rejected(self, ip):
@@ -97,3 +99,33 @@ class TestFetchGuards:
     async def test_metadata_endpoint_rejected(self):
         with pytest.raises(FetchHardError):
             await fetch_public_image("https://169.254.169.254/latest/meta-data")
+
+    @pytest.mark.asyncio
+    async def test_request_disables_gzip(self):
+        # A compressed bomb would inflate past max_bytes in one read, so the
+        # outgoing request must ask for identity encoding.
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "image/png", "content-length": "3"}  # noqa: RUF012
+
+            async def aiter_bytes(self):
+                yield b"abc"
+
+            async def aclose(self):
+                pass
+
+        async def _fake_send(self, request, **kwargs):
+            captured["accept_encoding"] = request.headers.get("accept-encoding")
+            return _Resp()
+
+        with (
+            patch(
+                "infrastructure.safe_fetch._resolve_public_ip",
+                new=AsyncMock(return_value="93.184.216.34"),
+            ),
+            patch("httpx.AsyncClient.send", new=_fake_send),
+        ):
+            await fetch_public_image("https://example.com/a.png")
+        assert captured["accept_encoding"] == "identity"

@@ -100,7 +100,9 @@ class MetaTagsRequest(BaseModel):
     )
     image: str | None = Field(
         default=None,
-        max_length=700_000,  # data URIs: ~512KB decoded at 4/3 base64 inflation
+        # Coarse body guard; the real decoded cap is R2_UPLOAD_MAX_BYTES in
+        # ingest_meta_image. ~512KB x 4/3 base64 — raise both to lift the cap.
+        max_length=700_000,
         description=(
             "og:image — an https URL, or a `data:image/png|jpeg|webp;base64,` "
             "URI which is validated and stored on spoo's CDN. 1200x630 "

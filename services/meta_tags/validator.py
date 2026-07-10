@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from bson import ObjectId
 
+from infrastructure.cache.url_cache import UrlCacheData
 from infrastructure.logging import get_logger
 from infrastructure.safe_fetch import (
     DEFAULT_USER_AGENT,
@@ -128,8 +129,6 @@ class MetaImageValidator:
             return
         # Re-render the edge entry from fresh DB state (the cache was just
         # invalidated, so a cache read would miss).
-        from services.url_service import _v2_doc_to_cache
-
         doc = await self._url_repo.find_by_alias(alias, domain)
         if doc is not None:
-            await self._og_writethrough.sync(_v2_doc_to_cache(doc))
+            await self._og_writethrough.sync(UrlCacheData.from_v2_doc(doc))

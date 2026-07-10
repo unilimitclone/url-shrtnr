@@ -1929,17 +1929,17 @@ class TestUrlServiceGeoRules:
         assert "blocked" in str(exc.value).lower()
 
     def test_v2_doc_to_cache_carries_geo_rules(self):
-        from services.url_service import _v2_doc_to_cache
+        from infrastructure.cache.url_cache import UrlCacheData
 
         doc = make_url_v2_doc(geo_rules=self.GEO)
-        cache_data = _v2_doc_to_cache(doc)
+        cache_data = UrlCacheData.from_v2_doc(doc)
         assert cache_data.geo_rules == self.GEO
 
     def test_v2_doc_to_cache_none_when_no_rules(self):
-        from services.url_service import _v2_doc_to_cache
+        from infrastructure.cache.url_cache import UrlCacheData
 
         doc = make_url_v2_doc()
-        cache_data = _v2_doc_to_cache(doc)
+        cache_data = UrlCacheData.from_v2_doc(doc)
         assert cache_data.geo_rules is None
 
     @pytest.mark.asyncio
@@ -1975,7 +1975,7 @@ class TestUrlServiceGeoRules:
 
 class TestV2DocToCacheMetaTags:
     def test_carries_meta_tags(self):
-        from services.url_service import _v2_doc_to_cache
+        from infrastructure.cache.url_cache import UrlCacheData
 
         doc = make_url_v2_doc(
             meta_tags={
@@ -1985,7 +1985,7 @@ class TestV2DocToCacheMetaTags:
                 "color": "#112233",
             }
         )
-        d = _v2_doc_to_cache(doc)
+        d = UrlCacheData.from_v2_doc(doc)
         assert (d.meta_title, d.meta_description, d.meta_image, d.meta_color) == (
             "T",
             "D",
@@ -1996,9 +1996,9 @@ class TestV2DocToCacheMetaTags:
         assert d.meta_image_height is None
 
     def test_no_meta_tags_maps_none(self):
-        from services.url_service import _v2_doc_to_cache
+        from infrastructure.cache.url_cache import UrlCacheData
 
-        d = _v2_doc_to_cache(make_url_v2_doc())
+        d = UrlCacheData.from_v2_doc(make_url_v2_doc())
         assert d.meta_title is None
         assert d.meta_description is None
         assert d.meta_image is None

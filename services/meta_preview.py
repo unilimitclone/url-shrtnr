@@ -18,11 +18,12 @@ if TYPE_CHECKING:
 def build_preview_context(url: UrlCacheData, *, auto_redirect: bool = True) -> dict:
     """Template context for meta_preview.html.
 
-    ``long_url`` is omitted for block_bots links — a bot-blocked destination
-    must never leak to bots. ``auto_redirect`` is disabled for ?bot=1 so
-    developers can inspect the page a crawler sees.
+    ``long_url`` and the destination host are withheld for block_bots AND
+    password links: the preview branch runs before the password gate, so
+    revealing the destination would bypass password protection for a
+    crawler UA. ``auto_redirect`` is off for ?bot=1 (dev inspection).
     """
-    reveal = not url.block_bots
+    reveal = not url.block_bots and not url.password_hash
     return {
         "title": url.meta_title,
         "description": url.meta_description,

@@ -162,10 +162,19 @@ def test_v1_link_with_meta_fields_never_serves_preview():
 
 def test_password_og_link_serves_page_to_bots():
     # Bots get the owner's card instead of the 401 password page; no click.
+    # The destination must NOT appear — the preview branch runs before the
+    # password gate, so revealing it would bypass password protection.
     sink = _mock_click_sink()
-    with _client(_og_link(password_hash="$argon2id$fake"), sink=sink) as c:
+    link = _og_link(
+        password_hash="$argon2id$fake",
+        long_url="https://secret-destination.example/hidden",
+        meta_image=None,
+    )
+    with _client(link, sink=sink) as c:
         resp = c.get("/abc1234", headers={"User-Agent": FB_UA})
     assert resp.status_code == 200
+    assert "secret-destination" not in resp.text
+    assert "location.replace" not in resp.text
     sink.emit.assert_not_called()
 
 
