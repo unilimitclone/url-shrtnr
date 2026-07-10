@@ -192,6 +192,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         r2_storage=r2_storage,
         meta_image_max_bytes=r2.upload_max_bytes,
         meta_image_sink=meta_image_sink,
+        meta_key_secret=settings.secret_key,
     )
     app.state.stats_service = StatsService(
         click_repo,

@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,12 +42,27 @@ class IngestedImage:
     image_meta: dict | None  # {width,height,bytes,content_type,checked_at} | None
 
 
+def owner_key_prefix(owner_id: ObjectId, secret: str) -> str:
+    """Stable, non-reversible per-owner path segment for storage keys.
+
+    Raw ObjectIds must not appear in public image URLs — they embed the
+    account's creation timestamp and let anyone correlate a user's links.
+    HMAC keeps the properties the prefix exists for (per-owner takedown
+    sweeps, cross-owner overwrite isolation, idempotent dedup) without
+    exposing the id. Rotating SECRET_KEY re-keys future uploads; sweeps
+    of pre-rotation objects need the old secret.
+    """
+    digest = hmac.new(secret.encode(), str(owner_id).encode(), hashlib.sha256)
+    return digest.hexdigest()[:16]
+
+
 async def ingest_meta_image(
     value: str,
     *,
     owner_id: ObjectId,
     storage: R2StorageClient | None,
     max_bytes: int,
+    key_secret: str = "",
 ) -> IngestedImage:
     """Resolve a client-supplied image value to a stored https URL."""
     if value.startswith("https://"):
@@ -92,9 +108,10 @@ async def ingest_meta_image(
         )
 
     # Content-addressed + owner-scoped: idempotent re-uploads dedupe, and
-    # abuse takedowns can prefix-sweep og/{owner_id}/. Old objects are not
+    # abuse takedowns can prefix-sweep og/{prefix}/. Old objects are not
     # deleted on replace (orphan GC is future work; orphans are pennies).
-    key = f"og/{owner_id}/{hashlib.sha256(data).hexdigest()}.{EXT[info.format]}"
+    prefix = owner_key_prefix(owner_id, key_secret)
+    key = f"og/{prefix}/{hashlib.sha256(data).hexdigest()}.{EXT[info.format]}"
     url = await storage.put_object(key, data, content_type=declared_mime)
     log.info(
         "meta_image_uploaded",

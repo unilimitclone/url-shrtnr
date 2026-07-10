@@ -61,7 +61,12 @@ class TestIngest:
         assert result.image_meta["height"] == 2
         assert result.image_meta["content_type"] == "image/png"
         key = storage.put_object.call_args.args[0]
-        assert key.startswith(f"og/{OWNER}/") and key.endswith(".png")
+        from services.meta_tags.images import owner_key_prefix
+
+        expected_prefix = owner_key_prefix(OWNER, "")
+        assert key.startswith(f"og/{expected_prefix}/") and key.endswith(".png")
+        # The raw ObjectId must never reach a public URL path.
+        assert str(OWNER) not in key
 
     @pytest.mark.asyncio
     async def test_magic_mismatch_rejected(self):

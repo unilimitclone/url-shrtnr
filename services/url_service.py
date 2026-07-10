@@ -360,6 +360,7 @@ class UrlService:
         r2_storage: R2StorageClient | None = None,
         meta_image_max_bytes: int = 512_000,
         meta_image_sink: MetaImageValidationSink | None = None,
+        meta_key_secret: str = "",
     ) -> None:
         self._url_repo = url_repo
         self._legacy_repo = legacy_repo
@@ -383,6 +384,9 @@ class UrlService:
         # Async validation for EXTERNAL https images (uploads are validated
         # synchronously). None ⇒ validation skipped (no queue Redis).
         self._meta_image_sink = meta_image_sink
+        # HMAC pepper for storage-key owner prefixes (public URLs must not
+        # carry raw ObjectIds). Wired from settings.secret_key.
+        self._meta_key_secret = meta_key_secret
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -532,6 +536,7 @@ class UrlService:
             owner_id=owner_id,
             storage=self._r2_storage,
             max_bytes=self._meta_image_max_bytes,
+            key_secret=self._meta_key_secret,
         )
         if ingested.r2_hosted:
             return meta.model_copy(update={"image": ingested.url}), ingested.image_meta
