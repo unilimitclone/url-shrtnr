@@ -7,6 +7,7 @@ Tests verify behavior, not implementation details.
 
 from __future__ import annotations
 
+import typing
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
@@ -50,6 +51,7 @@ def make_url_v2_doc(
     password: str | None = None,
     expire_after: datetime | None = None,
     domain: str | None = None,
+    geo_rules: dict | None = None,
     meta_tags: dict | None = None,
 ) -> UrlV2Doc:
     return UrlV2Doc.from_mongo(
@@ -65,6 +67,7 @@ def make_url_v2_doc(
             "block_bots": block_bots,
             "max_clicks": max_clicks,
             "expire_after": expire_after,
+            "geo_rules": geo_rules,
             "status": status,
             "private_stats": True,
             "total_clicks": 0,
@@ -1640,6 +1643,332 @@ class TestUrlServiceListByOwnerDomainFilter:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TestUrlServiceGeoRules
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestUrlServiceGeoRules:
+    """Geo-targeting: create/update validation, persistence, cache projection."""
+
+    GEO: typing.ClassVar[dict] = {
+        "IN": "https://example.in/",
+        "US": "https://example.com/us",
+    }
+
+    @pytest.mark.asyncio
+    async def test_create_persists_geo_rules(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com", geo_rules=self.GEO)
+        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        assert result.geo_rules == self.GEO
+        inserted = url_repo.insert.call_args[0][0]
+        assert inserted["geo_rules"] == self.GEO
+
+    @pytest.mark.asyncio
+    async def test_create_normalises_lowercase_country_codes(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            geo_rules={" in ": "https://example.in/"},
+        )
+        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert result.geo_rules == {"IN": "https://example.in/"}
+
+    @pytest.mark.asyncio
+    async def test_create_invalid_iso_code_rejected_with_field_path(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            geo_rules={"XX": "https://example.com/xx"},
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "geo_rules.XX"
+
+    def test_too_many_entries_rejected(self):
+        """Entry cap comes from settings (geo_rules_max_countries) and is
+        enforced in the service validator — same split as
+        max_emoji_alias_length."""
+        import pycountry
+
+        from services.url_service import _validate_geo_rules
+
+        codes = [c.alpha_2 for c in pycountry.countries][:51]
+        rules = {code: "https://example.com/x" for code in codes}
+
+        with pytest.raises(ValidationError) as exc:
+            _validate_geo_rules(
+                rules,
+                blocked_self_domains=(SYSTEM_DEFAULT_DOMAIN,),
+                patterns=[],
+                timeout=0.2,
+                max_countries=50,
+            )
+        assert exc.value.field == "geo_rules"
+
+    @pytest.mark.asyncio
+    async def test_create_blocked_geo_destination_rejected(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = [r"https://evil\.com"]
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            geo_rules={"IN": "https://evil.com/page"},
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "geo_rules.IN"
+        assert "blocked" in str(exc.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_create_self_link_geo_destination_rejected(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            geo_rules={"IN": "https://spoo.me/other"},
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "geo_rules.IN"
+
+    @pytest.mark.asyncio
+    async def test_create_fetches_blocklist_patterns_once(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            geo_rules={
+                "IN": "https://example.in/",
+                "US": "https://example.com/us",
+                "DE": "https://example.de/",
+            },
+        )
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        blocked_url_repo.get_patterns.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_update_sets_geo_rules(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+        blocked_url_repo.get_patterns.return_value = []
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(geo_rules=self.GEO)
+        await svc.update(URL_OID, req, USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["geo_rules"] == self.GEO
+        url_cache.invalidate.assert_called_once_with(ALIAS, SYSTEM_DEFAULT_DOMAIN)
+
+    @pytest.mark.asyncio
+    async def test_update_null_clears_geo_rules(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc(geo_rules=self.GEO)
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        # Explicit null must be present in model_fields_set — build via validate
+        req = UpdateUrlRequest.model_validate({"geo_rules": None})
+        assert "geo_rules" in req.model_fields_set
+        await svc.update(URL_OID, req, USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["geo_rules"] is None
+
+    @pytest.mark.asyncio
+    async def test_update_empty_map_clears_geo_rules(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc(geo_rules=self.GEO)
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest.model_validate({"geo_rules": {}})
+        await svc.update(URL_OID, req, USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["geo_rules"] is None
+
+    @pytest.mark.asyncio
+    async def test_update_omitted_geo_rules_untouched(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc(geo_rules=self.GEO)
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+        blocked_url_repo.get_patterns.return_value = []
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(long_url="https://new-url.com")
+        await svc.update(URL_OID, req, USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert "geo_rules" not in update_doc["$set"]
+
+    @pytest.mark.asyncio
+    async def test_update_identical_geo_rules_is_noop_and_skips_validation(self):
+        """A read-modify-write PATCH echoing unchanged rules must not fail
+        even if a destination entered the blocklist since creation — the
+        changed-check runs BEFORE validation, like every other handler."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc(geo_rules=self.GEO)
+        url_repo.find_by_id.return_value = existing
+        # Would reject every GEO destination if validation ran
+        blocked_url_repo.get_patterns.return_value = [r"https://example\."]
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(geo_rules=self.GEO)
+        await svc.update(URL_OID, req, USER_OID)
+
+        url_repo.update.assert_not_called()
+        blocked_url_repo.get_patterns.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_blocked_geo_destination_rejected(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+        blocked_url_repo.get_patterns.return_value = [r"https://evil\.com"]
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(geo_rules={"IN": "https://evil.com/x"})
+        with pytest.raises(ValidationError) as exc:
+            await svc.update(URL_OID, req, USER_OID)
+        assert exc.value.field == "geo_rules.IN"
+
+    @pytest.mark.asyncio
+    async def test_update_long_url_now_rejects_blocklisted_destination(self):
+        """The pre-existing edit-path gap: create checked the DB blocklist but
+        update didn't. An edit must not be a side door for blocked URLs."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+        blocked_url_repo.get_patterns.return_value = [r"https://evil\.com"]
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(long_url="https://evil.com/page")
+        with pytest.raises(ValidationError) as exc:
+            await svc.update(URL_OID, req, USER_OID)
+        assert exc.value.field == "long_url"
+        assert "blocked" in str(exc.value).lower()
+
+    def test_v2_doc_to_cache_carries_geo_rules(self):
+        from services.url_service import _v2_doc_to_cache
+
+        doc = make_url_v2_doc(geo_rules=self.GEO)
+        cache_data = _v2_doc_to_cache(doc)
+        assert cache_data.geo_rules == self.GEO
+
+    def test_v2_doc_to_cache_none_when_no_rules(self):
+        from services.url_service import _v2_doc_to_cache
+
+        doc = make_url_v2_doc()
+        cache_data = _v2_doc_to_cache(doc)
+        assert cache_data.geo_rules is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_cache_hit_preserves_geo_rules(self):
+        """The named 'easiest bug to ship': geo rules must survive the cache
+        projection — a cache-hit resolve must still see them."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        # Miss → DB → populate cache
+        url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = make_url_v2_doc(geo_rules=self.GEO)
+        data, _schema = await svc.resolve(ALIAS)
+        assert data.geo_rules == self.GEO
+
+        # The populated cache entry carries the rules
+        cached = url_cache.set.call_args[0][1]
+        assert cached.geo_rules == self.GEO
+
+        # Hit → served straight from cache, rules intact
+        url_cache.get.return_value = cached
+        url_repo.find_by_alias.reset_mock()
+        data2, _ = await svc.resolve(ALIAS)
+        assert data2.geo_rules == self.GEO
+        url_repo.find_by_alias.assert_not_called()
+
+
 # _v2_doc_to_cache — meta_tags mapping
 # ─────────────────────────────────────────────────────────────────────────────
 

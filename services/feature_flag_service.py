@@ -50,6 +50,7 @@ log = get_logger(__name__)
 # Known flag names. Flag docs are edited directly in Mongo, so these
 # constants are the closest thing to a registry — code references flags
 # through them, never through bare string literals at call sites.
+GEO_TARGETING_FLAG = "geo_targeting"
 META_TAGS_FLAG = "custom_meta_tags"
 
 

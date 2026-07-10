@@ -252,3 +252,42 @@ class TestDualCache:
         cache = DualCache(r)
         result = await cache.get_or_set("key", AsyncMock(return_value={"v": 1}))
         assert result is None
+
+
+class TestUrlCacheDataGeoRules:
+    async def test_pre_geo_payload_decodes_with_none(self):
+        """Entries cached before geo_rules existed must stay decodable —
+        the field defaults to None, so no cache version bump is needed."""
+        payload = {
+            "_id": "507f1f77bcf86cd799439011",
+            "alias": "abc1234",
+            "long_url": "https://example.com",
+            "block_bots": False,
+            "password_hash": None,
+            "expiration_time": None,
+            "max_clicks": None,
+            "url_status": "ACTIVE",
+            "schema_version": "v2",
+            "owner_id": "507f1f77bcf86cd799439012",
+            "domain": DOMAIN,
+        }
+        r = _fake_redis(get_returns=json.dumps(payload))
+        cache = UrlCache(r)
+        result = await cache.get("abc1234", DOMAIN)
+        assert result is not None
+        assert result.geo_rules is None
+
+    async def test_geo_rules_round_trip(self):
+        rules = {"IN": "https://example.in/", "US": "https://example.com/us"}
+        data = _url_data(domain=DOMAIN)
+        data = data.model_copy(update={"geo_rules": rules})
+        r = _fake_redis()
+        cache = UrlCache(r)
+        await cache.set("abc1234", data)
+        stored_json = r.setex.call_args[0][2]
+
+        r2 = _fake_redis(get_returns=stored_json)
+        cache2 = UrlCache(r2)
+        result = await cache2.get("abc1234", DOMAIN)
+        assert result is not None
+        assert result.geo_rules == rules

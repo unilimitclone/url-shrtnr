@@ -31,6 +31,7 @@ from dependencies.auth import (
 )
 from dependencies.infra import (
     AppRegistryDep,
+    GeoIP,
     JwtConfig,
     OAuthProviders,
     Settings,
@@ -104,6 +105,7 @@ __all__ = [
     "DeviceAuthSvc",
     "ExportSvc",
     "FeatureFlagSvc",
+    "GeoIP",
     "JwtConfig",
     "JwtUser",
     "JwtVerifiedUser",

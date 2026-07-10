@@ -25,7 +25,11 @@ from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.logging import get_logger
 from schemas.models.url import UrlStatus
 from services.click.consumers.hotness import HotUrl
-from services.edge_cache.contract import EdgeCacheEntry, cache_key
+from services.edge_cache.contract import (
+    EdgeCacheEntry,
+    EdgeCacheGeoEntry,
+    cache_key,
+)
 from services.edge_cache.render import render_meta_preview
 
 log = get_logger(__name__)
@@ -53,6 +57,10 @@ def promotion_skip_reason(
         return "block_bots"
     if url.expiration_time:
         return "has_expiration"  # could expire mid-TTL; rare, so skip all
+    # geo_rules is NOT a skip: geo links promote as geo_redirect entries —
+    # the Worker resolves request.cf.country against the same rules map
+    # origin would, so per-country routing is a decision the edge CAN make.
+    # Rule edits ride the same TTL-staleness window as plain URL edits.
     return None
 
 
@@ -101,9 +109,16 @@ class PromoteToEdgeCacheAction:
             return
 
         # og-links stay eligible: the worker serves og_html to preview bots
-        # and the redirect to everyone else from the same entry.
+        # and the redirect (geo-aware or plain) to everyone else from the
+        # same entry.
         og_html = render_meta_preview(url) if url.meta_title is not None else None
-        entry = EdgeCacheEntry(url=url.long_url, og_html=og_html)
+        entry: EdgeCacheEntry | EdgeCacheGeoEntry
+        if url.geo_rules:
+            entry = EdgeCacheGeoEntry(
+                url=url.long_url, rules=url.geo_rules, og_html=og_html
+            )
+        else:
+            entry = EdgeCacheEntry(url=url.long_url, og_html=og_html)
         ttl = self._jittered_ttl()
         ok = await self._kv.put(
             cache_key(hot.domain, hot.short_code),
@@ -117,6 +132,7 @@ class PromoteToEdgeCacheAction:
                 short_code=hot.short_code,
                 ttl_seconds=ttl,
                 hot_count=hot.count,
+                entry_type=entry.type,
             )
         else:
             # kv client already logged the specifics; this line carries

@@ -43,3 +43,29 @@ class EdgeCacheEntry(BaseModel):
         """Wire format: absent optionals are omitted, not null — pinned by
         the contract fixtures (a plain redirect stays {type,url,status})."""
         return self.model_dump_json(exclude_none=True)
+
+
+class EdgeCacheGeoEntry(BaseModel):
+    """Geo-targeted variant: ``url`` is the default destination and
+    ``rules`` maps ISO 3166-1 alpha-2 codes to per-country overrides.
+    The Worker picks ``rules[request.cf.country] ?? url`` — the same
+    decision origin makes from CF-IPCountry, from the same CF geodata,
+    so edge-served and origin-served answers can never disagree.
+
+    Workers that predate this type see an unknown ``type`` and pass
+    through to origin (pinned by the malformed-fixtures suite), so the
+    entry can ship before or after the Worker deploy."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["geo_redirect"] = "geo_redirect"
+    url: str
+    status: int = 302
+    rules: dict[str, str]
+    # Same semantics as EdgeCacheEntry.og_html: preview bots get the card,
+    # everyone else the geo redirect. Keeps hot geo+meta links correct.
+    og_html: str | None = None
+
+    def to_kv_json(self) -> str:
+        """Wire format: absent optionals are omitted, not null."""
+        return self.model_dump_json(exclude_none=True)

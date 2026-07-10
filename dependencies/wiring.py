@@ -187,6 +187,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         system_default_domain=settings.system_default_domain,
         blocked_url_regex_timeout=settings.blocked_url_regex_timeout,
         max_emoji_alias_length=settings.max_emoji_alias_length,
+        geo_rules_max_countries=settings.geo_rules_max_countries,
         og_writethrough=og_writethrough,
         r2_storage=r2_storage,
         meta_image_max_bytes=r2.upload_max_bytes,

@@ -48,6 +48,7 @@ def _app(user, url_svc, flag_enabled: bool):
 
 
 def test_shorten_with_meta_tags_requires_auth():
+    # 401 for anonymous callers — same contract as geo_rules.
     mock_svc = AsyncMock()
     app = _app(None, mock_svc, flag_enabled=True)
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -55,7 +56,7 @@ def test_shorten_with_meta_tags_requires_auth():
             "/api/v1/shorten",
             json={"long_url": "https://example.com", "meta_tags": META_BODY},
         )
-    assert resp.status_code == 403
+    assert resp.status_code == 401
     mock_svc.create.assert_not_called()
 
 

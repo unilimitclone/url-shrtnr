@@ -25,6 +25,45 @@ from shared.url_utils import normalise_fqdn
 
 ALLOWED_SORT_FIELDS = frozenset({"created_at", "last_click", "total_clicks"})
 
+_GEO_URL_MAX_LENGTH = 8192  # same bound as long_url
+
+# Hard sanity ceiling, NOT the product cap (that's settings.geo_rules_max_
+# countries, service-enforced). This normaliser runs pre-auth on every
+# request body — the ceiling bounds the loop for anonymous callers.
+_GEO_RULES_HARD_CAP = 500
+
+
+def _normalise_geo_rules(v: dict | None) -> dict | None:
+    """Normalise geo_rules keys to uppercase ISO codes.
+
+    JSON parsing guarantees key uniqueness, but normalisation could merge
+    keys like `"in"` and `"IN"` — reject that instead of silently picking one.
+    Semantic validation (real ISO codes, URL safety) lives in the service layer.
+    """
+    if v is None:
+        return None
+    if not isinstance(v, dict):
+        # mode="before" runs ahead of type coercion — pass non-dicts through
+        # so Pydantic rejects them with a normal 422 instead of us crashing.
+        return v
+    if len(v) > _GEO_RULES_HARD_CAP:
+        raise ValueError(f"geo_rules cannot exceed {_GEO_RULES_HARD_CAP} entries")
+    # The product cap is enforced in the service layer from settings
+    # (geo_rules_max_countries) — same split as max_emoji_alias_length.
+    normalised: dict[str, str] = {}
+    for key, url in v.items():
+        code = str(key).strip().upper()
+        if code in normalised:
+            raise ValueError(f"duplicate country code after normalisation: '{code}'")
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError(f"geo_rules['{code}'] must be a non-empty URL string")
+        if len(url) > _GEO_URL_MAX_LENGTH:
+            raise ValueError(
+                f"geo_rules['{code}'] URL exceeds {_GEO_URL_MAX_LENGTH} characters"
+            )
+        normalised[code] = url.strip()
+    return normalised
+
 
 class UrlFilter(RequestBase):
     """Parsed structure for the ``filter`` query parameter in ListUrlsQuery."""
@@ -157,6 +196,16 @@ class CreateUrlRequest(RequestBase):
         ),
         examples=["links.acme.com"],
     )
+    geo_rules: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Per-country destination overrides: ISO 3166-1 alpha-2 country "
+            "code → destination URL (at most 50 entries by default). Visitors from a listed "
+            "country are redirected to that URL; everyone else gets the "
+            "default destination (`url`). Requires authentication."
+        ),
+        examples=[{"IN": "https://example.in/", "US": "https://example.com/us"}],
+    )
     meta_tags: MetaTagsRequest | None = Field(
         default=None, description=_META_TAGS_FIELD_DESC
     )
@@ -177,6 +226,11 @@ class CreateUrlRequest(RequestBase):
         if v is None or v == "":
             return None
         return normalise_fqdn(v)
+
+    @field_validator("geo_rules", mode="before")
+    @classmethod
+    def _norm_geo_rules(cls, v: dict | None) -> dict | None:
+        return _normalise_geo_rules(v)
 
 
 class UpdateUrlRequest(RequestBase):
@@ -245,6 +299,16 @@ class UpdateUrlRequest(RequestBase):
         ),
         examples=["links.acme.com"],
     )
+    geo_rules: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Per-country destination overrides: ISO 3166-1 alpha-2 country "
+            "code → destination URL (at most 50 entries by default). The map replaces any "
+            "existing rules in full. Pass `null` or `{}` to remove all rules; "
+            "omit to keep existing rules unchanged."
+        ),
+        examples=[{"IN": "https://example.in/", "US": "https://example.com/us"}],
+    )
     meta_tags: MetaTagsRequest | None = Field(
         default=None, description=_META_TAGS_FIELD_DESC
     )
@@ -265,6 +329,11 @@ class UpdateUrlRequest(RequestBase):
         if v is None or v == "":
             return None
         return normalise_fqdn(v)
+
+    @field_validator("geo_rules", mode="before")
+    @classmethod
+    def _norm_geo_rules(cls, v: dict | None) -> dict | None:
+        return _normalise_geo_rules(v)
 
 
 class UpdateUrlStatusRequest(BaseModel):

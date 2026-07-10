@@ -170,6 +170,9 @@ class UrlV2Doc(MongoBaseModel):
     block_bots: bool | None = None
     max_clicks: int | None = Field(default=None, ge=0)
     expire_after: datetime | None = None
+    # ISO 3166-1 alpha-2 country code (uppercase) → destination URL override.
+    # long_url stays the fallback for unmatched countries. None = no targeting.
+    geo_rules: dict[str, str] | None = None
     status: UrlStatus = UrlStatus.ACTIVE
     private_stats: bool | None = True  # None for anonymous/unowned URLs
     meta_tags: LinkMetaTags | None = None

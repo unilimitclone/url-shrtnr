@@ -36,6 +36,13 @@ async function dispatch(request: Request): Promise<Response> {
   return response;
 }
 
+/** Build a request carrying request.cf.country like real edge ingress.
+ * country=null simulates CF not populating the field. */
+function geoRequest(url: string, country: string | null): Request {
+  const cf = country === null ? {} : { country };
+  return new Request(url, { cf } as RequestInit);
+}
+
 describe("contract fixtures", () => {
   for (const fixture of fixtures.entries) {
     it(`serves: ${fixture.name}`, async () => {
@@ -49,6 +56,30 @@ describe("contract fixtures", () => {
       expect(response.headers.get("Location")).toBe(fixture.expect.location);
       expect(response.headers.get("X-Spoo-Edge")).toBe("hit");
       expect(response.headers.get("X-Robots-Tag")).toContain("noindex");
+    });
+  }
+
+  for (const fixture of fixtures.geo_entries) {
+    describe(`serves: ${fixture.name}`, () => {
+      for (const geoCase of fixture.cases) {
+        const label = geoCase.country ?? "(cf.country missing)";
+        it(`${label} → ${geoCase.location}`, async () => {
+          await env.EDGE_CACHE.put(fixture.key, JSON.stringify(fixture.value));
+          const code = fixture.key.split(":").slice(2).join(":");
+          const response = await dispatch(
+            geoRequest(
+              `https://spoo.me/${encodeURIComponent(code)}`,
+              geoCase.country,
+            ),
+          );
+
+          expect(response.status).toBe(fixture.value.status);
+          expect(response.headers.get("Location")).toBe(geoCase.location);
+          expect(response.headers.get("X-Spoo-Edge")).toBe("hit");
+          // Geo responses vary per visitor — never cacheable downstream.
+          expect(response.headers.get("Cache-Control")).toBe("no-store");
+        });
+      }
     });
   }
 
@@ -159,6 +190,32 @@ describe("serving behavior", () => {
       new Request("https://spoo.me/headcode", { method: "HEAD" }),
     );
     expect(response.status).toBe(302);
+  });
+
+  it("plain redirect entries never get Cache-Control", async () => {
+    await env.EDGE_CACHE.put(
+      "cache:spoo.me:plaincc",
+      JSON.stringify({ type: "redirect", url: "https://example.com", status: 302 }),
+    );
+    const response = await dispatch(
+      geoRequest("https://spoo.me/plaincc", "IN"),
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Cache-Control")).toBeNull();
+  });
+
+  it("lowercase cf.country is normalized before rule lookup", async () => {
+    await env.EDGE_CACHE.put(
+      "cache:spoo.me:geolc",
+      JSON.stringify({
+        type: "geo_redirect",
+        url: "https://example.com/default",
+        status: 302,
+        rules: { IN: "https://example.in/" },
+      }),
+    );
+    const response = await dispatch(geoRequest("https://spoo.me/geolc", "in"));
+    expect(response.headers.get("Location")).toBe("https://example.in/");
   });
 
   it("www host is normalized to the canonical key", async () => {

@@ -2,23 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://spoo.me/schemas/edge-cache-entry.json",
   "title": "EdgeCacheEntry",
-  "description": "KV value written by PromoteToEdgeCacheAction and OgEdgeWritethrough (services/edge_cache/) and served by the edge Worker. Key format: cache:{domain}:{short_code}, domain lowercased with no www prefix. Absent optionals are omitted, not null (EdgeCacheEntry.to_kv_json). Both sides are tested against fixtures.json — change entry shape, key format, fixtures, Python model, and Worker parsing only in lockstep.",
-  "type": "object",
-  "required": ["type", "status"],
-  "additionalProperties": false,
-  "properties": {
-    "type": {
-      "description": "Entry discriminator. 'redirect': serve Location to everyone (+ og_html to preview bots when present). 'og_only': serve og_html to preview bots, everyone else passes through to origin. Consumers MUST passthrough unknown types (forward compatibility).",
-      "type": "string",
-      "enum": ["redirect", "og_only"]
-    },
-    "url": {
-      "description": "Absolute destination URL to redirect to. Required for type=redirect, absent for og_only.",
-      "type": "string",
-      "format": "uri"
-    },
+  "description": "KV value written by PromoteToEdgeCacheAction and OgEdgeWritethrough (services/edge_cache/) and served by the edge Worker. Key format: cache:{domain}:{short_code}, domain lowercased with no www prefix. Absent optionals are omitted, not null (to_kv_json). Both sides are tested against fixtures.json — change entry shape, key format, fixtures, Python models, and Worker parsing only in lockstep. Consumers MUST passthrough unknown types (forward compatibility for e.g. password_form).",
+  "$defs": {
     "status": {
-      "description": "HTTP redirect status for the redirect branch. Always 302 today.",
+      "description": "HTTP redirect status. Origin always writes 302.",
       "type": "integer",
       "enum": [301, 302]
     },
@@ -28,14 +15,58 @@
       "maxLength": 32768
     }
   },
-  "allOf": [
+  "oneOf": [
     {
-      "if": { "properties": { "type": { "const": "redirect" } } },
-      "then": { "required": ["url"] }
+      "title": "redirect",
+      "description": "Single-destination redirect — one Location for everyone (+ og_html to preview bots when present).",
+      "type": "object",
+      "required": ["type", "url", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["redirect"] },
+        "url": {
+          "description": "Absolute destination URL to redirect to.",
+          "type": "string",
+          "format": "uri"
+        },
+        "status": { "$ref": "#/$defs/status" },
+        "og_html": { "$ref": "#/$defs/og_html" }
+      }
     },
     {
-      "if": { "properties": { "type": { "const": "og_only" } } },
-      "then": { "required": ["og_html"] }
+      "title": "geo_redirect",
+      "description": "Geo-targeted redirect — url is the default destination; rules maps ISO 3166-1 alpha-2 country codes (uppercase) to overrides. Worker serves rules[request.cf.country] ?? url and adds Cache-Control: no-store (the response varies per visitor). og_html, when present, is served to preview bots instead.",
+      "type": "object",
+      "required": ["type", "url", "status", "rules"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["geo_redirect"] },
+        "url": {
+          "description": "Default destination for unmatched / unknown countries.",
+          "type": "string",
+          "format": "uri"
+        },
+        "status": { "$ref": "#/$defs/status" },
+        "rules": {
+          "description": "ISO alpha-2 country code → destination URL override.",
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Z]{2}$" },
+          "additionalProperties": { "type": "string", "format": "uri" }
+        },
+        "og_html": { "$ref": "#/$defs/og_html" }
+      }
+    },
+    {
+      "title": "og_only",
+      "description": "Custom meta-tags without hotness promotion: serve og_html to preview bots, pass everyone else through to origin (keeps click tracking for non-hot og-links).",
+      "type": "object",
+      "required": ["type", "status", "og_html"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["og_only"] },
+        "status": { "$ref": "#/$defs/status" },
+        "og_html": { "$ref": "#/$defs/og_html" }
+      }
     }
   ]
 }

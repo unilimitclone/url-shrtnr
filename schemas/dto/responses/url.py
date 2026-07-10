@@ -79,6 +79,11 @@ class UrlResponse(ResponseBase):
         default=None,
         description="Whether statistics are private (owner-only).",
     )
+    geo_rules: dict[str, str] | None = Field(
+        default=None,
+        description="Per-country destination overrides (ISO alpha-2 code → URL), or null.",
+        examples=[{"IN": "https://example.in/"}],
+    )
     meta_tags: MetaTagsResponse | None = Field(
         default=None, description="Custom social preview, if configured."
     )
@@ -101,6 +106,7 @@ class UrlResponse(ResponseBase):
             created_at=to_unix_timestamp(doc.created_at, default=0),
             status=doc.status,
             private_stats=doc.private_stats,
+            geo_rules=doc.geo_rules,
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
 
@@ -143,6 +149,11 @@ class UpdateUrlResponse(ResponseBase):
         description="Domain fqdn the URL is served on. Null for the system default.",
         examples=["links.acme.com"],
     )
+    geo_rules: dict[str, str] | None = Field(
+        default=None,
+        description="Per-country destination overrides (ISO alpha-2 code → URL), or null.",
+        examples=[{"IN": "https://example.in/"}],
+    )
     updated_at: int = Field(
         description="Last update time as Unix timestamp.", examples=[1704067200]
     )
@@ -164,6 +175,7 @@ class UpdateUrlResponse(ResponseBase):
             block_bots=doc.block_bots,
             private_stats=doc.private_stats,
             domain=doc.domain,
+            geo_rules=doc.geo_rules,
             updated_at=to_unix_timestamp(doc.updated_at, default=0),
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
@@ -190,6 +202,7 @@ class UrlListItem(ResponseBase):
     total_clicks: int | None = None
     last_click: datetime | None = None
     domain: str | None = None
+    geo_rules: dict[str, str] | None = None
     meta_tags: MetaTagsResponse | None = None
 
     @classmethod
@@ -217,6 +230,7 @@ class UrlListItem(ResponseBase):
             total_clicks=doc.total_clicks,
             last_click=_ensure_utc(doc.last_click),
             domain=doc.domain,
+            geo_rules=doc.geo_rules,
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
 

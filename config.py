@@ -451,6 +451,7 @@ class AppSettings(BaseSettings):
     # Validator constraints (overridable by self-hosters via env vars)
     blocked_url_regex_timeout: float = 0.2
     max_emoji_alias_length: int = 15
+    geo_rules_max_countries: int = 50
     url_password_min_length: int = 8
     account_password_min_length: int = 8
     account_password_max_length: int = 128
@@ -458,7 +459,10 @@ class AppSettings(BaseSettings):
     # ── Field validators for safety-critical config ────────────────────
 
     @field_validator(
-        "max_active_api_keys", "max_date_range_days", "max_emoji_alias_length"
+        "max_active_api_keys",
+        "max_date_range_days",
+        "max_emoji_alias_length",
+        "geo_rules_max_countries",
     )
     @classmethod
     def _must_be_positive_int(cls, v: int, info) -> int:
