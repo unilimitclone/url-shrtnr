@@ -95,7 +95,8 @@ async def create_custom_domain(
 
     **Feature gate**: Must be enabled for the calling user.
 
-    **Rate Limits**: 5/hour (route) + 3/day per user (service quota).
+    **Rate Limits**: 10/hour (route, failed attempts count) + `max_per_user`
+    owned domains (service quota, any status).
     """
     await _require_create_enabled(flag_svc, user)
     doc = await service.create(body, user)
