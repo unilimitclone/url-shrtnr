@@ -28,8 +28,8 @@ from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
 from services.export.service import ExportService
 from services.feature_flag_service import FeatureFlagService
-from services.page_layout_service import PageLayoutService
 from services.oauth_service import OAuthService
+from services.page_layout_service import PageLayoutService
 from services.profile_picture_service import ProfilePictureService
 from services.stats_service import StatsService
 from services.url_service import UrlService

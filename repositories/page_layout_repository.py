@@ -25,7 +25,9 @@ class PageLayoutRepository(BaseRepository[PageLayoutDoc]):
         """Return the saved layout doc for (user, page), if any."""
         return await self._find_one({"user_id": user_id, "page": page})
 
-    async def upsert(self, user_id: ObjectId, page: str, layout: dict[str, Any]) -> None:
+    async def upsert(
+        self, user_id: ObjectId, page: str, layout: dict[str, Any]
+    ) -> None:
         """Create or replace the layout for (user, page)."""
         try:
             await self._col.update_one(

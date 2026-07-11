@@ -46,7 +46,6 @@ from dependencies.infra import (
 )
 from dependencies.services import (
     ApiKeySvc,
-    PageLayoutSvc,
     AppGrantRepo,
     ClickSink,
     ClickSvc,
@@ -57,6 +56,7 @@ from dependencies.services import (
     ExportSvc,
     FeatureFlagSvc,
     OAuthSvc,
+    PageLayoutSvc,
     PasswordSvc,
     ProfilePictureSvc,
     StatsSvc,
@@ -65,7 +65,6 @@ from dependencies.services import (
     VerificationSvc,
     fetch_user_profile,
     get_api_key_service,
-    get_page_layout_service,
     get_app_grant_repo,
     get_click_service,
     get_click_sink,
@@ -76,6 +75,7 @@ from dependencies.services import (
     get_export_service,
     get_feature_flag_service,
     get_oauth_service,
+    get_page_layout_service,
     get_password_service,
     get_profile_picture_service,
     get_stats_service,
@@ -93,7 +93,6 @@ __all__ = [
     "URL_READ_SCOPES",
     # services (aliases)
     "ApiKeySvc",
-    "PageLayoutSvc",
     "AppGrantRepo",
     # infra
     "AppRegistryDep",
@@ -115,6 +114,7 @@ __all__ = [
     "OAuthProviders",
     "OAuthSvc",
     "OptionalUser",
+    "PageLayoutSvc",
     "PasswordSvc",
     "ProfilePictureSvc",
     "Settings",
@@ -127,7 +127,6 @@ __all__ = [
     # services (getters)
     "fetch_user_profile",
     "get_api_key_service",
-    "get_page_layout_service",
     "get_app_grant_repo",
     "get_app_registry",
     "get_click_service",
@@ -145,6 +144,7 @@ __all__ = [
     "get_jwt_config",
     "get_oauth_providers",
     "get_oauth_service",
+    "get_page_layout_service",
     "get_password_service",
     "get_profile_picture_service",
     "get_redis",

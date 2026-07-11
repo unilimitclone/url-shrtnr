@@ -49,6 +49,7 @@ async def get_my_features(
     """
     return FeaturesResponse(features=await flag_service.states_for(user))
 
+
 PagePath = Annotated[
     str,
     Path(

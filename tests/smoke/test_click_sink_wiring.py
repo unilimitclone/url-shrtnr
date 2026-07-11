@@ -22,6 +22,7 @@ _COLLECTIONS = (
     "users",
     "verification-tokens",
     "api-keys",
+    "page-layouts",
     "blocked-urls",
     "app-grants",
     "feature_flags",

@@ -22,7 +22,6 @@ from infrastructure.logging import get_logger
 from infrastructure.storage.r2 import R2StorageClient
 from infrastructure.webhook.discord import DiscordWebhookProvider
 from repositories.api_key_repository import ApiKeyRepository
-from repositories.page_layout_repository import PageLayoutRepository
 from repositories.app_grant_repository import AppGrantRepository
 from repositories.blocked_domain_repository import BlockedDomainRepository
 from repositories.blocked_url_repository import BlockedUrlRepository
@@ -31,19 +30,18 @@ from repositories.custom_domain_repository import CustomDomainRepository
 from repositories.feature_flag_repository import FeatureFlagRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
+from repositories.page_layout_repository import PageLayoutRepository
 from repositories.token_repository import TokenRepository
 from repositories.url_repository import UrlRepository
 from repositories.user_repository import UserRepository
 from schemas.enums.domain_status import VerificationMethod
 from services.api_key_service import ApiKeyService
-from services.page_layout_service import PageLayoutService
 from services.auth.credentials import CredentialService
 from services.auth.device import DeviceAuthService
 from services.auth.otp import OtpService
 from services.auth.password import PasswordService
 from services.auth.verification import EmailVerificationService
 from services.cf_saas_backend import CfSaasBackend
-from services.mock_dcv_backend import MockDcvBackend
 from services.click import ClickService, LegacyClickHandler, V2ClickHandler
 from services.click.sinks import InlineSink, RedisStreamSink
 from services.contact_service import ContactService
@@ -53,7 +51,9 @@ from services.export.formatters import default_formatters
 from services.export.service import ExportService
 from services.feature_flag_service import FeatureFlagService
 from services.meta_tags.sinks import NullMetaImageSink, RedisStreamMetaImageSink
+from services.mock_dcv_backend import MockDcvBackend
 from services.oauth_service import OAuthService
+from services.page_layout_service import PageLayoutService
 from services.profile_picture_service import ProfilePictureService
 from services.stats_service import StatsService
 from services.tenant_resolver import CachedMongoTenantResolver
