@@ -88,6 +88,27 @@ h1 {
     margin-top: 24px;
 }
 
+/* Geo-targeting notice — shown when the link varies by visitor country */
+.geo-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 24px;
+    padding: 12px 16px;
+    background: rgba(37, 99, 235, 0.12);
+    border: 1px solid rgba(37, 99, 235, 0.30);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    color: var(--text-secondary);
+    text-align: left;
+}
+
+.geo-banner .ti {
+    font-size: 18px;
+    color: var(--accent-secondary);
+    flex-shrink: 0;
+}
+
 .url-label {
     display: block;
     font-size: 14px;

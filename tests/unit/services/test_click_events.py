@@ -105,3 +105,31 @@ class TestPasswordHashSanitization:
     def test_hashless_url_passes_through_unchanged(self):
         url = make_url_data(password_hash=None)
         assert make_event(url=url).url is url
+
+
+class TestGeoDecisionFields:
+    def test_defaults_when_not_stamped(self):
+        event = make_event()
+        assert event.resolved_country is None
+        assert event.geo_matched is False
+
+    def test_stamped_values_round_trip_through_stream(self):
+        event = make_event(resolved_country="IN", geo_matched=True)
+        restored = from_stream_fields(to_stream_fields(event))
+        assert restored.resolved_country == "IN"
+        assert restored.geo_matched is True
+
+    def test_pre_geo_stream_payload_still_parses(self):
+        """Payloads enqueued before the geo fields existed must decode —
+        at-least-once delivery means old entries can be claimed post-deploy."""
+        import json as _json
+
+        fields = to_stream_fields(make_event())
+        data = _json.loads(fields[STREAM_FIELD_DATA])
+        data.pop("resolved_country", None)
+        data.pop("geo_matched", None)
+        fields[STREAM_FIELD_DATA] = _json.dumps(data)
+
+        restored = from_stream_fields(fields)
+        assert restored.resolved_country is None
+        assert restored.geo_matched is False

@@ -118,7 +118,7 @@ def _make_v2_doc_mock(
     long_url: str = "https://example.com",
     status: str = "ACTIVE",
 ):
-    """Create a mock that quacks like UrlV2Doc for _v2_doc_to_cache."""
+    """Create a mock that quacks like UrlV2Doc for UrlCacheData.from_v2_doc."""
     now = datetime.now(timezone.utc)
     doc = MagicMock()
     doc.id = ObjectId("507f1f77bcf86cd799439011")
@@ -128,6 +128,7 @@ def _make_v2_doc_mock(
     doc.password = None
     doc.expire_after = None
     doc.max_clicks = None
+    doc.geo_rules = None
     doc.status = status
     doc.owner_id = ObjectId("000000000000000000000001")
     doc.total_clicks = 0
@@ -136,6 +137,7 @@ def _make_v2_doc_mock(
     doc.updated_at = None
     doc.private_stats = True
     doc.domain = "spoo.me"
+    doc.meta_tags = None
     return doc
 
 

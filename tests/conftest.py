@@ -105,6 +105,9 @@ def build_test_app(
 
     application = FastAPI(lifespan=lifespan)
     application.state.limiter = limiter
+    # Set outside the lifespan — some tests build TestClient without a `with`
+    # block (no lifespan run) and the redirect route always resolves GeoIP.
+    application.state.geoip = AsyncMock()
     application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     register_error_handlers(application)
 

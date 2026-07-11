@@ -19,6 +19,7 @@ from dependencies import (
     SHORTEN_SCOPES,
     CurrentUser,
     CustomDomainSvc,
+    FeatureFlagSvc,
     Settings,
     UrlSvc,
     optional_scopes_verified,
@@ -28,6 +29,7 @@ from middleware.openapi import AUTH_RESPONSES, OPTIONAL_AUTH_SECURITY
 from middleware.rate_limiter import Limits, dynamic_limit, limiter
 from schemas.dto.requests.url import AliasCheckQuery, CreateUrlRequest
 from schemas.dto.responses.url import AliasCheckResponse, UrlResponse
+from services.feature_flag_service import GEO_TARGETING_FLAG, META_TAGS_FLAG
 from shared.ip_utils import get_client_ip
 
 router = APIRouter(tags=["URL Shortening"])
@@ -51,6 +53,7 @@ async def shorten_v1(
     url_service: UrlSvc,
     custom_domain_service: CustomDomainSvc,
     settings: Settings,
+    flag_svc: FeatureFlagSvc,
     user: CurrentUser | None = Depends(optional_scopes_verified(SHORTEN_SCOPES)),  # noqa: B008
 ) -> UrlResponse:
     """Create a new shortened URL.
@@ -76,9 +79,23 @@ async def shorten_v1(
     - Cannot use private stats
     - URLs not linked to any account
     - Cannot use custom domains
+    - Cannot use geo targeting
+    - Cannot use custom meta tags
     """
     owner_id = user.user_id if user is not None else None
     client_ip = get_client_ip(request)
+
+    if body.geo_rules:
+        if user is None:
+            raise AuthenticationError("Authentication required to set geo_rules")
+        await flag_svc.require(GEO_TARGETING_FLAG, user)
+
+    # optional_scopes_verified already rejects unverified authenticated users,
+    # so the flag is the only remaining gate here.
+    if body.meta_tags is not None:
+        if user is None:
+            raise AuthenticationError("Authentication required to set meta_tags")
+        await flag_svc.require(META_TAGS_FLAG, user)
 
     if body.domain and body.domain != settings.system_default_domain:
         if user is None:

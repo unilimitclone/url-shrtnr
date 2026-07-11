@@ -54,6 +54,11 @@ class ClickEvent(BaseModel):
     user_agent: str
     referrer: str | None
     cf_city: str | None
+    # Geo-targeting decision audit: the ISO alpha-2 code the redirect router
+    # used (None when the link has no geo rules) and whether a rule matched.
+    # Defaults keep pre-existing stream payloads decodable.
+    resolved_country: str | None = None
+    geo_matched: bool = False
     redirect_ms: int
     enqueued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

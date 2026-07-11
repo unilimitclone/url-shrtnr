@@ -415,6 +415,20 @@ async def result(
 # ── Preview page ──────────────────────────────────────────────────────────────
 
 
+def _split_destination(url: str) -> dict:
+    """Split a destination URL into display parts for the preview template."""
+    parsed = urlparse(url)
+    domain = parsed.netloc or parsed.path.split("/")[0]
+    path = (
+        parsed.path
+        + ("?" + parsed.query if parsed.query else "")
+        + ("#" + parsed.fragment if parsed.fragment else "")
+    )
+    if path == "/":
+        path = ""
+    return {"domain": domain, "path": path, "is_https": parsed.scheme == "https"}
+
+
 @router.get("/{short_code}+")
 @limiter.limit(Limits.SHORTEN_LEGACY)
 async def preview_url(
@@ -461,6 +475,10 @@ async def preview_url(
                         "alias": v2.alias,
                         "long_url": v2.long_url,
                         "password": v2.password,
+                        "geo_rules": v2.geo_rules,
+                        "meta_tags": v2.meta_tags.model_dump()
+                        if v2.meta_tags
+                        else None,
                     }
                     schema_type = "v2"
         else:
@@ -473,6 +491,8 @@ async def preview_url(
                     "alias": v2.alias,
                     "long_url": v2.long_url,
                     "password": v2.password,
+                    "geo_rules": v2.geo_rules,
+                    "meta_tags": v2.meta_tags.model_dump() if v2.meta_tags else None,
                 }
                 schema_type = "v2"
             else:
@@ -517,16 +537,20 @@ async def preview_url(
             },
         )
 
-    parsed = urlparse(long_url)
-    domain = parsed.netloc or parsed.path.split("/")[0]
-    path = (
-        parsed.path
-        + ("?" + parsed.query if parsed.query else "")
-        + ("#" + parsed.fragment if parsed.fragment else "")
-    )
-    if path == "/":
-        path = ""
-    is_https = parsed.scheme == "https"
+    default_dest = _split_destination(long_url)
+
+    # Geo-targeted links list EVERY destination — the preview page is the
+    # anti-cloaking transparency surface, so no rule is ever hidden. Grouped
+    # by destination URL (display only; storage stays a flat code→url map).
+    geo_destinations = None
+    if url_data.get("geo_rules"):
+        grouped: dict[str, list[str]] = {}
+        for code, dest in url_data["geo_rules"].items():
+            grouped.setdefault(dest, []).append(code)
+        geo_destinations = [
+            {"countries": sorted(codes), **_split_destination(dest)}
+            for dest, codes in grouped.items()
+        ]
 
     return templates.TemplateResponse(
         request,
@@ -535,11 +559,16 @@ async def preview_url(
             "alias": alias,
             "short_url": f"{host_url}{alias}",
             "long_url": long_url,
-            "domain": domain,
-            "path": path,
-            "is_https": is_https,
+            "domain": default_dest["domain"],
+            "path": default_dest["path"],
+            "is_https": default_dest["is_https"],
+            "geo_destinations": geo_destinations,
             "password_protected": False,
             "host_url": host_url,
+            # Anti-phishing transparency: show the custom card NEXT TO the
+            # real destination — what the sender wants you to see vs where
+            # you'll actually go. v2-only field; None for v1/emoji docs.
+            "meta_tags": url_data.get("meta_tags") if schema_type == "v2" else None,
         },
     )
 

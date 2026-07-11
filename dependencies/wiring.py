@@ -13,10 +13,13 @@ from fastapi import FastAPI
 
 from config import AppSettings
 from infrastructure.cache.feature_flag_cache import FeatureFlagCache
+from infrastructure.cache.meta_fetch_cache import MetaFetchCache
 from infrastructure.cache.url_cache import UrlCache
 from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.cloudflare_client import CloudflareClient
+from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.logging import get_logger
+from infrastructure.storage.r2 import R2StorageClient
 from infrastructure.webhook.discord import DiscordWebhookProvider
 from repositories.api_key_repository import ApiKeyRepository
 from repositories.page_layout_repository import PageLayoutRepository
@@ -45,9 +48,11 @@ from services.click import ClickService, LegacyClickHandler, V2ClickHandler
 from services.click.sinks import InlineSink, RedisStreamSink
 from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
+from services.edge_cache.og_writethrough import OgEdgeWritethrough
 from services.export.formatters import default_formatters
 from services.export.service import ExportService
 from services.feature_flag_service import FeatureFlagService
+from services.meta_tags.sinks import NullMetaImageSink, RedisStreamMetaImageSink
 from services.oauth_service import OAuthService
 from services.profile_picture_service import ProfilePictureService
 from services.stats_service import StatsService
@@ -104,6 +109,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
 
     # ── Infrastructure ───────────────────────────────────────────────────
     url_cache = UrlCache(redis_client, ttl_seconds=settings.redis.redis_ttl_seconds)
+    app.state.meta_fetch_cache = MetaFetchCache(redis_client)
     feature_flag_cache = FeatureFlagCache(
         redis_client,
         ttl_seconds=settings.redis.feature_flag_ttl_seconds,
@@ -112,6 +118,68 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     captcha = HCaptchaProvider(settings.hcaptcha_secret, http_client)
     contact_webhook = DiscordWebhookProvider(settings.contact_webhook, http_client)
     report_webhook = DiscordWebhookProvider(settings.url_report_webhook, http_client)
+
+    # Edge KV write-through for custom meta-tags: preview bots get answered
+    # at the edge from the moment a link's tags are written. None when the
+    # edge cache isn't configured (self-host) — origin serves all previews.
+    og_writethrough = None
+    edge = settings.edge_cache
+    if edge.enabled:
+        og_writethrough = OgEdgeWritethrough(
+            CloudflareKVClient(
+                http_client=http_client,
+                api_token=edge.cf_api_token,
+                account_id=edge.cf_account_id,
+                namespace_id=edge.kv_namespace_id,
+                api_base=edge.api_base,
+                api_host_header=edge.api_host_header,
+            ),
+            system_domain=settings.system_default_domain,
+            ttl_seconds=edge.og_ttl_seconds,
+        )
+        log.info("og_writethrough_enabled", kv_namespace_id=edge.kv_namespace_id)
+
+    # R2 bucket for uploaded og:images. None when unconfigured (self-host):
+    # data-URI uploads are rejected with a clear error, https URLs work.
+    r2_storage = None
+    r2 = settings.r2
+    if r2.enabled:
+        r2_storage = R2StorageClient(
+            http_client=http_client,
+            account_id=r2.account_id,
+            access_key_id=r2.access_key_id,
+            secret_access_key=r2.secret_access_key,
+            bucket=r2.bucket,
+            public_base_url=r2.public_base_url,
+            endpoint_url=r2.endpoint_url,
+            request_timeout_seconds=r2.request_timeout_seconds,
+        )
+        log.info("r2_storage_enabled", bucket=r2.bucket)
+    elif any(
+        (
+            r2.account_id,
+            r2.access_key_id,
+            r2.secret_access_key,
+            r2.bucket,
+            r2.public_base_url,
+        )
+    ):
+        log.warning(
+            "r2_storage_partial_config",
+            detail="some R2_* vars are set but not all five — uploads disabled",
+        )
+
+    # Async og:image validation producer — rides the click queue Redis;
+    # Null sink (silently skipped) when the queue isn't configured.
+    mt = settings.meta_tags
+    queue_redis_for_meta = getattr(app.state, "queue_redis", None)
+    if mt.async_image_validation and queue_redis_for_meta is not None:
+        meta_image_sink = RedisStreamMetaImageSink(
+            queue_redis_for_meta, stream=mt.stream, maxlen=mt.maxlen
+        )
+        log.info("meta_image_validation_enabled", stream=mt.stream)
+    else:
+        meta_image_sink = NullMetaImageSink()
 
     # ── Services ─────────────────────────────────────────────────────────
     app.state.url_service = UrlService(
@@ -124,6 +192,12 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         system_default_domain=settings.system_default_domain,
         blocked_url_regex_timeout=settings.blocked_url_regex_timeout,
         max_emoji_alias_length=settings.max_emoji_alias_length,
+        geo_rules_max_countries=settings.geo_rules_max_countries,
+        og_writethrough=og_writethrough,
+        r2_storage=r2_storage,
+        meta_image_max_bytes=r2.upload_max_bytes,
+        meta_image_sink=meta_image_sink,
+        meta_key_secret=settings.secret_key,
     )
     app.state.stats_service = StatsService(
         click_repo,

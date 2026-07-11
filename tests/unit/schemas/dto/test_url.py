@@ -430,3 +430,137 @@ class TestListUrlsQueryDomainFilter:
 
         q = ListUrlsQuery()
         assert q.domain is None
+
+
+# ── geo_rules ──────────────────────────────────────────────────────────────────
+
+
+class TestGeoRulesField:
+    def test_keys_normalised_to_uppercase(self):
+        req = CreateUrlRequest.model_validate(
+            {
+                "long_url": "https://example.com",
+                "geo_rules": {" in ": "https://example.in/"},
+            }
+        )
+        assert req.geo_rules == {"IN": "https://example.in/"}
+
+    def test_case_colliding_keys_rejected(self):
+        with pytest.raises(ValidationError, match="duplicate country code"):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "geo_rules": {
+                        "in": "https://a.example/",
+                        "IN": "https://b.example/",
+                    },
+                }
+            )
+
+    def test_empty_url_value_rejected(self):
+        with pytest.raises(ValidationError, match="non-empty URL"):
+            CreateUrlRequest.model_validate(
+                {"long_url": "https://example.com", "geo_rules": {"IN": "  "}}
+            )
+
+    def test_oversized_url_value_rejected(self):
+        with pytest.raises(ValidationError, match="exceeds"):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "geo_rules": {"IN": "https://example.in/" + "a" * 8192},
+                }
+            )
+
+    def test_update_null_registers_in_fields_set(self):
+        req = UpdateUrlRequest.model_validate({"geo_rules": None})
+        assert "geo_rules" in req.model_fields_set
+        assert req.geo_rules is None
+
+    def test_update_omitted_not_in_fields_set(self):
+        req = UpdateUrlRequest.model_validate({})
+        assert "geo_rules" not in req.model_fields_set
+
+    def test_url_values_stripped(self):
+        req = UpdateUrlRequest.model_validate(
+            {"geo_rules": {"US": "  https://example.com/us  "}}
+        )
+        assert req.geo_rules == {"US": "https://example.com/us"}
+
+    def test_non_dict_geo_rules_returns_clean_validation_error(self):
+        """A list/string payload must surface as a normal Pydantic 422,
+        not an AttributeError from the mode="before" normaliser."""
+        for bad in (["IN"], "IN", 42):
+            with pytest.raises(ValidationError):
+                CreateUrlRequest.model_validate(
+                    {"long_url": "https://example.com", "geo_rules": bad}
+                )
+
+    def test_hard_entry_ceiling_bounds_the_pre_auth_loop(self):
+        """The normaliser runs before auth — a giant map must be rejected
+        before any per-entry work, independent of the configurable cap."""
+        from itertools import product
+        from string import ascii_uppercase
+
+        keys = ["".join(p) for p in product(ascii_uppercase, repeat=2)][:501]
+        with pytest.raises(ValidationError, match="cannot exceed 500"):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "geo_rules": {k: "https://example.com/x" for k in keys},
+                }
+            )
+
+
+class TestMetaTagsResponseWarnings:
+    """Platform-cliff warnings computed from image_meta — warn, never reject."""
+
+    @staticmethod
+    def _meta(width=None, height=None, bytes_=None):
+        from schemas.models.url import LinkMetaTags, MetaImageMeta
+
+        image_meta = None
+        if width or height or bytes_:
+            image_meta = MetaImageMeta(
+                width=width,
+                height=height,
+                bytes=bytes_,
+                checked_at=datetime.now(timezone.utc),
+            )
+        return LinkMetaTags(
+            title="T", image="https://cdn.example.com/og.png", image_meta=image_meta
+        )
+
+    @staticmethod
+    def _warnings(meta):
+        from schemas.dto.responses.url import MetaTagsResponse
+
+        return MetaTagsResponse.from_model(meta).warnings
+
+    def test_good_image_has_no_warnings(self):
+        assert self._warnings(self._meta(1200, 630, 120_000)) is None
+
+    def test_no_image_meta_has_no_warnings(self):
+        assert self._warnings(self._meta()) is None
+
+    def test_over_300kb_warns_whatsapp(self):
+        w = self._warnings(self._meta(1200, 630, 350_000))
+        assert any("300KB" in x for x in w)
+
+    def test_tiny_image_warns_may_be_dropped(self):
+        w = self._warnings(self._meta(150, 150, 5_000))
+        assert any("200x200" in x for x in w)
+
+    def test_narrow_image_warns_small_thumbnail(self):
+        w = self._warnings(self._meta(500, 500, 50_000))
+        assert any("600px" in x for x in w)
+
+    def test_extreme_aspect_ratio_warns(self):
+        w = self._warnings(self._meta(2000, 400, 50_000))
+        assert any("4:1" in x for x in w)
+
+    def test_dims_unknown_skips_dimension_warnings(self):
+        # Truncated sniff / not-yet-validated external image: bytes may be
+        # known while dims are not — only the byte warning applies.
+        w = self._warnings(self._meta(bytes_=400_000))
+        assert w == ["image exceeds 300KB; WhatsApp may silently drop it"]

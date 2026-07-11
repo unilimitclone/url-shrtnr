@@ -213,7 +213,7 @@ Open your browser and go to `http://localhost:8000` to access the **spoo.me** UR
 **Contributions are always welcome!** 🎉 Here's how you can contribute:
 
 - Bugs are logged using the github issue system. To report a bug, simply [open a new issue](https://github.com/spoo-me/spoo/issues/new).
-- Follow the [contribution guidelines](contributing.md) to get started.
+- Follow the [contribution guidelines](.github/CONTRIBUTING.md) to get started.
 - Make a [pull request](https://github.com/spoo-me/spoo/pull) for any feature or bug fix.
 
 > [!IMPORTANT]

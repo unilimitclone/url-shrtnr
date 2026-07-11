@@ -16,7 +16,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons@latest/iconfont/tabler-icons.min.css">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="{{ url_for('static', path='css/preview.css') }}?v=1">
+    <link rel="stylesheet" href="{{ url_for('static', path='css/preview.css') }}?v=2">
 
     <!-- Favicon -->
     <link rel=" icon" type="image/png" href="{{ url_for('static', path='images/favicon.png') }}">
@@ -63,8 +63,14 @@
                 <span class="url-label">Short URL:</span>
                 <div class="short-url">{{ short_url }}</div>
             </div>
+            {% if geo_destinations %}
+            <div class="geo-banner">
+                <i class="ti ti-world"></i>
+                This link redirects to different destinations depending on the visitor's country.
+            </div>
+            {% endif %}
             <div class="url-display destination">
-                <span class="url-label">Redirects to:</span>
+                <span class="url-label">{% if geo_destinations %}Default destination:{% else %}Redirects to:{% endif %}</span>
                 <div class="long-url">
                     <div class="url-content">
                         <div class="url-header">
@@ -83,6 +89,49 @@
                     </div>
                 </div>
             </div>
+            {% if geo_destinations %}
+            {% for dest in geo_destinations %}
+            <div class="url-display destination">
+                <span class="url-label">{{ dest.countries|join(', ') }}:</span>
+                <div class="long-url">
+                    <div class="url-content">
+                        <div class="url-header">
+                            <img src="https://www.google.com/s2/favicons?domain={{ dest.domain }}&sz=32" class="favicon"
+                                alt="favicon" onerror="this.style.display='none'">
+                            <span class="full-url">
+                                <span class="domain-name">{{ dest.domain }}</span><span class="url-path">{{ dest.path }}</span>
+                            </span>
+                            {% if dest.is_https %}
+                            <span class="https-badge">
+                                <i class="ti ti-lock"></i>
+                                HTTPS
+                            </span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+            {% endif %}
+            {% if meta_tags %}
+            <!-- Custom social preview set by the link owner. Shown next to the
+                 real destination above so recipients can compare what the
+                 sender wants them to see vs where they'll actually go. -->
+            <div class="url-display custom-preview"
+                {% if meta_tags.color %}style="border-left: 3px solid {{ meta_tags.color }}"{% endif %}>
+                <span class="url-label">Custom social preview (set by link owner):</span>
+                <div class="url-content">
+                    {% if meta_tags.image %}
+                    <img src="{{ meta_tags.image }}" alt="" onerror="this.style.display='none'"
+                        style="max-width:100%;border-radius:6px;margin:.5rem 0">
+                    {% endif %}
+                    <div style="font-weight:600">{{ meta_tags.title }}</div>
+                    {% if meta_tags.description %}
+                    <div style="opacity:.7;font-size:.9em">{{ meta_tags.description }}</div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
             <div class="button-group">
                 <a href="/{{ alias }}" class="btn-primary">
                     <i class="ti ti-external-link"></i>

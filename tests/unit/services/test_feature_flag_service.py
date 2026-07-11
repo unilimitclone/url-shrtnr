@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from bson import ObjectId
 
+from errors import ForbiddenError, NotFoundError
 from infrastructure.cache.feature_flag_cache import NEGATIVE_MISS
 from schemas.enums.rollout_type import RolloutType
 from schemas.models.feature_flag import FeatureFlagDoc
@@ -266,6 +267,23 @@ class TestRolloutTier:
         flag = _flag(rollout_type=RolloutType.TIER, tier=None)
         service, _, _ = make_service(flag=flag)
         assert await service.is_enabled("test_flag", _user()) is False
+
+    @pytest.mark.asyncio
+    async def test_current_user_tier_field_flows_through(self):
+        """CurrentUser.tier (UserDoc.plan value) satisfies TIER rollouts —
+        flipping a flag ALLOWLIST→TIER at paid launch is a data change."""
+        from bson import ObjectId
+
+        from dependencies.auth import CurrentUser
+
+        flag = _flag(rollout_type=RolloutType.TIER, tier="PRO")
+        service, _, _ = make_service(flag=flag)
+        pro = CurrentUser(user_id=ObjectId(), email_verified=True, tier="PRO")
+        free = CurrentUser(user_id=ObjectId(), email_verified=True, tier="FREE")
+        anon_tier = CurrentUser(user_id=ObjectId(), email_verified=True)
+        assert await service.is_enabled("test_flag", pro) is True
+        assert await service.is_enabled("test_flag", free) is False
+        assert await service.is_enabled("test_flag", anon_tier) is False
         assert await service.is_enabled("test_flag", _user(tier="pro")) is False
         assert await service.is_enabled("test_flag", _user(tier="free")) is False
 
@@ -339,3 +357,23 @@ class TestStableHash:
         baseline = _digit_bucket(USER_A, "custom_domains")
         for _ in range(1000):
             assert _digit_bucket(USER_A, "custom_domains") == baseline
+
+
+class TestRequire:
+    """require() — the route-facing gate built on is_enabled()."""
+
+    async def test_enabled_flag_returns_silently(self):
+        service, _, _ = make_service(
+            flag=_flag(enabled=True, rollout_type=RolloutType.EVERYONE)
+        )
+        await service.require("geo_targeting", None)  # no raise
+
+    async def test_disabled_flag_raises_403_with_readable_feature_name(self):
+        service, _, _ = make_service(flag=None)
+        with pytest.raises(ForbiddenError, match="Geo targeting is not enabled"):
+            await service.require("geo_targeting", None)
+
+    async def test_hide_raises_404_without_leaking_existence(self):
+        service, _, _ = make_service(flag=None)
+        with pytest.raises(NotFoundError, match="not found"):
+            await service.require("custom_domains", None, hide=True)

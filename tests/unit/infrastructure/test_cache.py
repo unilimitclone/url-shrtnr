@@ -116,6 +116,38 @@ class TestUrlCache:
         ]
 
 
+class TestUrlCacheDataMetaFields:
+    def test_decodes_payload_without_meta_fields(self):
+        # Exact shape of a pre-meta-tags Redis entry: new fields must
+        # default to None so a deploy doesn't 5xx until the cache TTLs out.
+        from infrastructure.cache.url_cache import UrlCacheData
+
+        legacy = (
+            '{"_id":"507f1f77bcf86cd799439011","alias":"a","long_url":"https://x",'
+            '"block_bots":false,"password_hash":null,"expiration_time":null,'
+            '"max_clicks":null,"url_status":"ACTIVE","schema_version":"v2",'
+            '"owner_id":null,"total_clicks":0,"domain":"spoo.me"}'
+        )
+        data = UrlCacheData.model_validate_json(legacy)
+        assert data.meta_title is None
+        assert data.meta_description is None
+        assert data.meta_image is None
+        assert data.meta_color is None
+        assert data.meta_image_width is None
+        assert data.meta_image_height is None
+
+    def test_meta_fields_roundtrip_json(self):
+        from infrastructure.cache.url_cache import UrlCacheData
+
+        data = _url_data(
+            meta_title="T", meta_image="https://x/i.png", meta_color="#112233"
+        )
+        restored = UrlCacheData.model_validate_json(data.model_dump_json(by_alias=True))
+        assert restored.meta_title == "T"
+        assert restored.meta_image == "https://x/i.png"
+        assert restored.meta_color == "#112233"
+
+
 class TestUrlCacheDataVerifyPassword:
     """Unit tests for UrlCacheData.verify_password()."""
 
@@ -220,3 +252,42 @@ class TestDualCache:
         cache = DualCache(r)
         result = await cache.get_or_set("key", AsyncMock(return_value={"v": 1}))
         assert result is None
+
+
+class TestUrlCacheDataGeoRules:
+    async def test_pre_geo_payload_decodes_with_none(self):
+        """Entries cached before geo_rules existed must stay decodable —
+        the field defaults to None, so no cache version bump is needed."""
+        payload = {
+            "_id": "507f1f77bcf86cd799439011",
+            "alias": "abc1234",
+            "long_url": "https://example.com",
+            "block_bots": False,
+            "password_hash": None,
+            "expiration_time": None,
+            "max_clicks": None,
+            "url_status": "ACTIVE",
+            "schema_version": "v2",
+            "owner_id": "507f1f77bcf86cd799439012",
+            "domain": DOMAIN,
+        }
+        r = _fake_redis(get_returns=json.dumps(payload))
+        cache = UrlCache(r)
+        result = await cache.get("abc1234", DOMAIN)
+        assert result is not None
+        assert result.geo_rules is None
+
+    async def test_geo_rules_round_trip(self):
+        rules = {"IN": "https://example.in/", "US": "https://example.com/us"}
+        data = _url_data(domain=DOMAIN)
+        data = data.model_copy(update={"geo_rules": rules})
+        r = _fake_redis()
+        cache = UrlCache(r)
+        await cache.set("abc1234", data)
+        stored_json = r.setex.call_args[0][2]
+
+        r2 = _fake_redis(get_returns=stored_json)
+        cache2 = UrlCache(r2)
+        result = await cache2.get("abc1234", DOMAIN)
+        assert result is not None
+        assert result.geo_rules == rules

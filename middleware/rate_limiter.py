@@ -81,6 +81,9 @@ class Limits:
     URL_DELETE = "60 per minute; 1000 per day"
     URL_BULK_DELETE = "5 per minute; 50 per day"
 
+    # Destination metadata fetch — outbound fetches on our dime; tight.
+    METADATA_FETCH = "20 per minute; 500 per day"
+
     # Custom domains. Create counts FAILED attempts too (slowapi increments
     # at route entry), so the budget must absorb typos, blocked TLDs, and
     # flag-gate 404s without stranding the user for long.

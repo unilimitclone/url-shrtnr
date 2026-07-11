@@ -5,11 +5,18 @@ safe to deserialise across Python versions. Keys are scoped by fqdn:
 ``url_cache:<domain>:<alias>``.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import redis.asyncio as aioredis
 from pydantic import BaseModel, ConfigDict, Field
 
 from infrastructure.crypto import verify_password as verify_password_hash
 from infrastructure.logging import get_logger
+
+if TYPE_CHECKING:
+    from schemas.models.url import UrlV2Doc
 
 log = get_logger(__name__)
 
@@ -31,6 +38,51 @@ class UrlCacheData(BaseModel):
     owner_id: str | None  # ObjectId as string; None for v1 URLs
     total_clicks: int = 0  # Live click count for v1 max-clicks check
     domain: str = ""
+    # ISO alpha-2 country code → destination URL. None for v1/legacy and
+    # non-geo links; entries cached before this field existed deserialize
+    # to None (default), so no cache version bump is needed.
+    geo_rules: dict[str, str] | None = None
+    # Custom meta-tags (v2 only; None = feature disabled on this link).
+    # meta_title is the enabled-signal: LinkMetaTags.title is mandatory.
+    meta_title: str | None = None
+    meta_description: str | None = None
+    meta_image: str | None = None
+    meta_color: str | None = None
+    meta_image_width: int | None = None  # from async image validation
+    meta_image_height: int | None = None
+
+    @classmethod
+    def from_v2_doc(cls, doc: UrlV2Doc) -> UrlCacheData:
+        """Project a UrlV2Doc into the hot-path cache shape.
+
+        On the model (not a service helper) because three callers need it —
+        resolve, the edge write-through, the image validator — and a shared
+        derived projection belongs with the data, not behind a private
+        cross-module import.
+        """
+        im = doc.meta_tags.image_meta if doc.meta_tags else None
+        return cls(
+            id=str(doc.id),
+            alias=doc.alias,
+            long_url=doc.long_url,
+            block_bots=bool(doc.block_bots),
+            password_hash=doc.password,
+            expiration_time=(
+                int(doc.expire_after.timestamp()) if doc.expire_after else None
+            ),
+            max_clicks=doc.max_clicks,
+            url_status=doc.status,
+            schema_version="v2",
+            owner_id=str(doc.owner_id) if doc.owner_id else None,
+            domain=doc.domain,
+            geo_rules=doc.geo_rules,
+            meta_title=doc.meta_tags.title if doc.meta_tags else None,
+            meta_description=doc.meta_tags.description if doc.meta_tags else None,
+            meta_image=doc.meta_tags.image if doc.meta_tags else None,
+            meta_color=doc.meta_tags.color if doc.meta_tags else None,
+            meta_image_width=im.width if im else None,
+            meta_image_height=im.height if im else None,
+        )
 
     def verify_password(self, password: str | None) -> bool:
         """Check a password against this URL's stored hash.

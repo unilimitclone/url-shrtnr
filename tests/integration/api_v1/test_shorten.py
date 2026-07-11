@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import typing
 from unittest.mock import AsyncMock
 
 from bson import ObjectId
 from fastapi.testclient import TestClient
 
 from dependencies import get_current_user, get_url_service
-from errors import ConflictError, ValidationError
+from errors import ConflictError, ForbiddenError, ValidationError
 
 from .conftest import _build_test_app, _make_api_key_doc, _make_url_doc, _make_user
 
@@ -309,3 +310,108 @@ class TestCheckAliasWithCustomDomain:
         assert custom_svc.assert_owned_and_active.await_count == 0
         kwargs = url_svc.check_alias.call_args.kwargs
         assert kwargs.get("domain") is None
+
+
+class TestShortenGeoRules:
+    """geo_rules is authed-only and gated by the geo_targeting feature flag."""
+
+    GEO_BODY: typing.ClassVar[dict] = {
+        "long_url": "https://example.com",
+        "geo_rules": {"IN": "https://example.in/"},
+    }
+
+    @staticmethod
+    def _flag_svc(enabled: bool) -> AsyncMock:
+        svc = AsyncMock()
+        svc.is_enabled = AsyncMock(return_value=enabled)
+        # Mirror the real require(): no-op when enabled, 403 when not.
+        svc.require = AsyncMock(
+            side_effect=None
+            if enabled
+            else ForbiddenError("Geo targeting is not enabled for this account")
+        )
+        return svc
+
+    def test_anonymous_with_geo_rules_returns_401(self):
+        from dependencies import get_feature_flag_service
+
+        mock_svc = AsyncMock()
+        flag_svc = self._flag_svc(True)
+        application = _build_test_app(
+            {
+                get_current_user: lambda: None,
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: flag_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.post("/api/v1/shorten", json=self.GEO_BODY)
+
+        assert resp.status_code == 401
+        mock_svc.create.assert_not_called()
+        # Anonymity is decided before the flag is even consulted
+        flag_svc.require.assert_not_awaited()
+
+    def test_flag_off_returns_403(self):
+        from dependencies import get_feature_flag_service
+
+        user = _make_user()
+        mock_svc = AsyncMock()
+        application = _build_test_app(
+            {
+                get_current_user: lambda: user,
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: self._flag_svc(False),
+            }
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.post("/api/v1/shorten", json=self.GEO_BODY)
+
+        assert resp.status_code == 403
+        mock_svc.create.assert_not_called()
+
+    def test_flag_on_returns_201_with_geo_rules_echoed(self):
+        from dependencies import get_feature_flag_service
+
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.geo_rules = {"IN": "https://example.in/"}
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(return_value=url_doc)
+
+        application = _build_test_app(
+            {
+                get_current_user: lambda: user,
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: self._flag_svc(True),
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.post("/api/v1/shorten", json=self.GEO_BODY)
+
+        assert resp.status_code == 201
+        assert resp.json()["geo_rules"] == {"IN": "https://example.in/"}
+
+    def test_without_geo_rules_flag_never_consulted(self):
+        from dependencies import get_feature_flag_service
+
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(return_value=url_doc)
+        flag_svc = self._flag_svc(False)
+
+        application = _build_test_app(
+            {
+                get_current_user: lambda: user,
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: flag_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.post(
+                "/api/v1/shorten", json={"long_url": "https://example.com"}
+            )
+
+        assert resp.status_code == 201
+        flag_svc.require.assert_not_awaited()

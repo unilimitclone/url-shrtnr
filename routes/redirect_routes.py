@@ -13,7 +13,7 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
 
-from dependencies import ClickSink, UrlSvc
+from dependencies import ClickSink, GeoIP, UrlSvc
 from errors import (
     BlockedUrlError,
     ForbiddenError,
@@ -26,8 +26,9 @@ from infrastructure.templates import templates
 from middleware.rate_limiter import Limits, limiter
 from schemas.enums.domain_status import DomainStatus
 from schemas.models.url import SchemaVersion
-from services.click.bot_detection import should_block_bot
+from services.click.bot_detection import should_block_bot, wants_preview
 from services.click.events import ClickEvent
+from services.meta_preview import build_preview_context
 from shared.ip_utils import get_client_ip
 from shared.url_utils import extract_hostname
 
@@ -105,6 +106,7 @@ async def redirect_url(
     request: Request,
     url_service: UrlSvc,
     click_sink: ClickSink,
+    geoip: GeoIP,
 ) -> Response:
     """Resolve a short code and redirect to the destination URL.
 
@@ -132,6 +134,29 @@ async def redirect_url(
         return _error_page(request, "410", "SHORT URL EXPIRED", 410)
     resolve_ms = int((time.perf_counter() - resolve_start) * 1000)
 
+    # Custom meta-tags: preview crawlers get the owner's OG card instead of
+    # the redirect; everyone else falls through to the 302. This runs before
+    # the password gate (bots get the card, not the 401 page — it reveals
+    # only owner-written text) and returns before the click emit — a preview
+    # serve is never a click.
+    user_agent = request.headers.get("User-Agent", "")
+    if url_data.meta_title is not None and schema == SchemaVersion.V2:
+        bot_param = "bot" in request.query_params
+        if wants_preview(request.method, user_agent, bot_param=bot_param):
+            log.info(
+                "meta_preview_served",
+                short_code=short_code,
+                bot_param=bot_param,
+            )
+            resp = templates.TemplateResponse(
+                request,
+                "meta_preview.html",
+                build_preview_context(url_data, auto_redirect=not bot_param),
+                status_code=200,
+            )
+            resp.headers["X-Robots-Tag"] = _NOINDEX_HEADER
+            return resp
+
     # 2. Password check
     if url_data.password_hash:
         password = request.query_params.get("password")
@@ -144,15 +169,31 @@ async def redirect_url(
                 status_code=401,
             )
 
-    # 3. Pre-emit bot block — the DECISION must run before the redirect is
+    # 3. Geo-targeting decision — must run before the click event is built
+    #    so the routing decision rides the event. CF-IPCountry is free
+    #    (CF-injected, trustworthy behind the tunnel/proxy); the mmdb lookup
+    #    only fires for geo links when the header is absent (self-host).
+    destination = url_data.long_url
+    resolved_country: str | None = None
+    geo_matched = False
+    if url_data.geo_rules:
+        resolved_country = (
+            request.headers.get("CF-IPCountry") or ""
+        ).strip().upper() or None
+        if resolved_country is None:
+            resolved_country = await geoip.get_country_code(user_ip)
+        if resolved_country and resolved_country in url_data.geo_rules:
+            destination = url_data.geo_rules[resolved_country]
+            geo_matched = True
+
+    # 4. Pre-emit bot block — the DECISION must run before the redirect is
     #    served (click processing may happen out-of-band); bot metadata
     #    RECORDING stays in the click pipeline.
-    user_agent = request.headers.get("User-Agent", "")
     if should_block_bot(request.method, user_agent, url_data, schema):
         log.info("click_tracking_bot_blocked", short_code=short_code, schema=schema)
         return _error_page(request, "403", "ACCESS DENIED", 403)
 
-    # 4. Emit click event — skip for HEAD / OPTIONS
+    # 5. Emit click event — skip for HEAD / OPTIONS
     tracking_ms = 0
     if request.method not in ("HEAD", "OPTIONS"):
         referrer = request.headers.get("Referer")
@@ -170,6 +211,8 @@ async def redirect_url(
             user_agent=user_agent,
             referrer=referrer,
             cf_city=cf_city,
+            resolved_country=resolved_country,
+            geo_matched=geo_matched,
             redirect_ms=int((time.perf_counter() - start_time) * 1000),
         )
         try:
@@ -190,7 +233,7 @@ async def redirect_url(
             log.exception("click_tracking_failed", short_code=short_code, schema=schema)
         tracking_ms = int((time.perf_counter() - tracking_start) * 1000)
 
-    # 5. Redirect
+    # 6. Redirect
     total_ms = int((time.perf_counter() - start_time) * 1000)
     if should_sample("url_redirect"):
         log.info(
@@ -205,10 +248,16 @@ async def redirect_url(
             had_max_clicks=bool(getattr(url_data, "max_clicks", None)),
             max_clicks=getattr(url_data, "max_clicks", None),
             owner_id=str(getattr(url_data, "owner_id", "")) or None,
+            geo_targeted=bool(url_data.geo_rules),
+            resolved_country=resolved_country,
+            geo_matched=geo_matched,
             slow=total_ms > 100,
         )
-    resp = RedirectResponse(url_data.long_url, status_code=302)
+    resp = RedirectResponse(destination, status_code=302)
     resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    if url_data.geo_rules:
+        # Response varies by visitor country — no intermediary may cache it
+        resp.headers["Cache-Control"] = "no-store"
     return resp
 
 

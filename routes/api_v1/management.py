@@ -18,6 +18,7 @@ from dependencies import (
     URL_MANAGEMENT_SCOPES,
     CurrentUser,
     CustomDomainSvc,
+    FeatureFlagSvc,
     Settings,
     UrlSvc,
     require_scopes,
@@ -27,6 +28,8 @@ from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.dto.requests.url import UpdateUrlRequest, UpdateUrlStatusRequest
 from schemas.dto.responses.url import DeleteUrlResponse, UpdateUrlResponse
+from services.feature_flag_service import GEO_TARGETING_FLAG, META_TAGS_FLAG
+from shared.ip_utils import get_client_ip
 
 router = APIRouter(tags=["Link Management"])
 
@@ -61,6 +64,7 @@ async def update_url_v1(
     url_service: UrlSvc,
     custom_domain_service: CustomDomainSvc,
     settings: Settings,
+    flag_svc: FeatureFlagSvc,
     user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
 ) -> UpdateUrlResponse:
     """Update an existing URL's properties.
@@ -76,7 +80,8 @@ async def update_url_v1(
     **Rate Limits**: 120/min, 2,000/day
 
     **Updatable Fields**: `long_url`, `alias`, `password`, `block_bots`,
-    `max_clicks`, `expire_after`, `private_stats`, `status`, `domain`
+    `max_clicks`, `expire_after`, `private_stats`, `status`, `domain`,
+    `geo_rules`, `meta_tags`
 
     **Notes**:
 
@@ -85,15 +90,27 @@ async def update_url_v1(
     - Setting `domain` moves the URL to a different tenant; caller must own
       the target as an ACTIVE custom domain, or pass `null` to move back to
       the system default. Alias collision is verified on the target.
+    - `geo_rules` replaces the whole map; pass `null` or `{}` to remove all
+      rules
     - The `url_id` is the MongoDB ObjectId, not the alias
     """
     oid = _parse_url_id(url_id)
+    # Setting geo rules is flag-gated; clearing (null/{}) is always allowed so
+    # de-allowlisted owners can remove their rules during rollback.
+    if "geo_rules" in body.model_fields_set and body.geo_rules:
+        await flag_svc.require(GEO_TARGETING_FLAG, user)
+    # Same deal for meta_tags: setting/replacing is flag-gated, clearing
+    # (null) never is.
+    if "meta_tags" in body.model_fields_set and body.meta_tags is not None:
+        await flag_svc.require(META_TAGS_FLAG, user)
     # Verify domain ownership at the edge so the service can stay opaque about
     # tenancy. `domain` field-set with null means "move to system default" —
     # no ownership check needed for the default namespace.
     if body.domain and body.domain != settings.system_default_domain:
         await custom_domain_service.assert_owned_and_active(user, body.domain)
-    doc = await url_service.update(oid, body, user.user_id)
+    doc = await url_service.update(
+        oid, body, user.user_id, client_ip=get_client_ip(request)
+    )
     return UpdateUrlResponse.from_doc(doc)
 
 

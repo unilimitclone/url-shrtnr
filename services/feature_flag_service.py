@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from bson import ObjectId
 
+from errors import ForbiddenError, NotFoundError
 from infrastructure.cache.feature_flag_cache import (
     NEGATIVE_MISS,
     FeatureFlagCache,
@@ -50,9 +51,6 @@ log = get_logger(__name__)
 # Known flag names. Flag docs are edited directly in Mongo, so these
 # constants are the closest thing to a registry — code references flags
 # through them, never through bare string literals at call sites.
-# geo_targeting / custom_meta_tags / ab_testing gate features that land
-# with the main merge; registering them here first is harmless (unregistered
-# flags read as disabled) and keeps one registry either side of the merge.
 CUSTOM_DOMAINS_FLAG = "custom_domains"
 GEO_TARGETING_FLAG = "geo_targeting"
 META_TAGS_FLAG = "custom_meta_tags"
@@ -160,6 +158,24 @@ class FeatureFlagService:
             )
             for name in EXPOSED_FEATURES
         }
+
+    async def require(
+        self, name: str, user: CurrentUser | None, *, hide: bool = False
+    ) -> None:
+        """Raise unless ``name`` is enabled for ``user``.
+
+        403 by default — the right signal for flag-gated FIELDS on shared
+        endpoints, which appear in public OpenAPI docs and can't be
+        concealed. Pass ``hide=True`` for whole-endpoint features whose
+        existence is itself gated (the custom-domains pattern): 404, so
+        non-allowlisted callers can't tell the feature exists.
+        """
+        if await self.is_enabled(name, user):
+            return
+        if hide:
+            raise NotFoundError("not found")
+        feature = name.replace("_", " ").capitalize()
+        raise ForbiddenError(f"{feature} is not enabled for this account")
 
     async def _lookup(self, name: str) -> FeatureFlagDoc | None:
         """Fetch a flag through cache → repo, returning None for unregistered."""

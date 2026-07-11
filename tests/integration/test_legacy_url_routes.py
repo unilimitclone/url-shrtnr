@@ -505,6 +505,38 @@ def test_preview_v2_url_shows_destination():
     assert "text/html" in resp.headers["content-type"]
 
 
+def test_preview_shows_custom_meta_card_next_to_destination():
+    """og-links: the + page shows BOTH the owner's card and the real
+    destination — the anti-phishing transparency surface."""
+    from schemas.models.url import LinkMetaTags
+
+    db = _mock_db()
+    v2_doc = MagicMock()
+    v2_doc.alias = "abc1234"
+    v2_doc.long_url = "https://example.com/page"
+    v2_doc.password = None
+    v2_doc.meta_tags = LinkMetaTags(
+        title="Custom Card Title", description="Custom desc", color="#FF5733"
+    )
+
+    with (
+        patch("routes.legacy.url_shortener.UrlRepository") as MockUrlRepo,
+        patch("routes.legacy.url_shortener.LegacyUrlRepository") as MockLegacyRepo,
+    ):
+        MockUrlRepo.return_value.find_by_alias = AsyncMock(return_value=v2_doc)
+        MockLegacyRepo.return_value.find_by_id = AsyncMock(return_value=None)
+
+        app = build_test_app(legacy_url_router, overrides={get_db: lambda: db})
+        with TestClient(app) as client:
+            resp = client.get("/abc1234+")
+    assert resp.status_code == 200
+    assert "Custom Card Title" in resp.text  # what the sender wants shown
+    # The real destination host, as rendered in the domain-name span —
+    # exact markup asserted (not a URL substring; keeps CodeQL quiet).
+    assert ">example.com<" in resp.text
+    assert "set by link owner" in resp.text
+
+
 def test_preview_password_protected_hides_destination():
     db = _mock_db()
     v2_doc = MagicMock()
@@ -590,3 +622,92 @@ def test_metric_returns_json():
     assert data["total-shortlinks-raw"] == 150  # 100 + 50
     assert data["total-clicks-raw"] == 8000  # 5000 + 3000
     assert data["github-stars"] == 42
+
+
+def test_preview_geo_link_lists_every_destination():
+    """The preview page is the anti-cloaking surface — every geo destination
+    must be visible, plus the default, plus the variance banner."""
+    db = _mock_db()
+    v2_doc = MagicMock()
+    v2_doc.alias = "abc1234"
+    v2_doc.long_url = "https://example.com/default"
+    v2_doc.password = None
+    v2_doc.geo_rules = {
+        "IN": "https://example.in/offer",
+        "BD": "https://example.in/offer",
+        "US": "https://us.example.com/",
+    }
+
+    with (
+        patch("routes.legacy.url_shortener.UrlRepository") as MockUrlRepo,
+        patch("routes.legacy.url_shortener.LegacyUrlRepository") as MockLegacyRepo,
+    ):
+        MockUrlRepo.return_value.find_by_alias = AsyncMock(return_value=v2_doc)
+        MockLegacyRepo.return_value.find_by_id = AsyncMock(return_value=None)
+
+        app = build_test_app(legacy_url_router, overrides={get_db: lambda: db})
+        with TestClient(app) as client:
+            resp = client.get("/abc1234+")
+
+    assert resp.status_code == 200
+    html = resp.text
+    assert "different destinations depending on the visitor" in html
+    assert "Default destination:" in html
+    assert "example.com" in html  # default
+    assert "example.in" in html
+    assert "us.example.com" in html
+    # Countries sharing a destination are grouped into one row, sorted
+    assert "BD, IN" in html
+    assert "US:" in html
+
+
+def test_preview_non_geo_link_has_no_banner():
+    db = _mock_db()
+    v2_doc = MagicMock()
+    v2_doc.alias = "abc1234"
+    v2_doc.long_url = "https://example.com/page"
+    v2_doc.password = None
+    v2_doc.geo_rules = None
+
+    with (
+        patch("routes.legacy.url_shortener.UrlRepository") as MockUrlRepo,
+        patch("routes.legacy.url_shortener.LegacyUrlRepository") as MockLegacyRepo,
+    ):
+        MockUrlRepo.return_value.find_by_alias = AsyncMock(return_value=v2_doc)
+        MockLegacyRepo.return_value.find_by_id = AsyncMock(return_value=None)
+
+        app = build_test_app(legacy_url_router, overrides={get_db: lambda: db})
+        with TestClient(app) as client:
+            resp = client.get("/abc1234+")
+
+    assert resp.status_code == 200
+    assert "different destinations" not in resp.text
+    assert "Redirects to:" in resp.text
+
+
+def test_preview_password_protected_geo_link_hides_everything():
+    """Password precedence: the protected branch renders first, so geo
+    destinations stay hidden along with the default."""
+    db = _mock_db()
+    v2_doc = MagicMock()
+    v2_doc.alias = "abc1234"
+    v2_doc.long_url = "https://secret.example.com"
+    v2_doc.password = "hashed_password"
+    v2_doc.geo_rules = {"IN": "https://secret.example.in/"}
+
+    with (
+        patch("routes.legacy.url_shortener.UrlRepository") as MockUrlRepo,
+        patch("routes.legacy.url_shortener.LegacyUrlRepository") as MockLegacyRepo,
+    ):
+        MockUrlRepo.return_value.find_by_alias = AsyncMock(return_value=v2_doc)
+        MockLegacyRepo.return_value.find_by_id = AsyncMock(return_value=None)
+
+        app = build_test_app(legacy_url_router, overrides={get_db: lambda: db})
+        with TestClient(app) as client:
+            resp = client.get("/abc1234+")
+
+    assert resp.status_code == 200
+    html = resp.text
+    assert "hidden for security" in html
+    assert "secret.example.in" not in html
+    assert "secret.example.com" not in html
