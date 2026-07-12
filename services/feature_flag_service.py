@@ -204,12 +204,12 @@ class FeatureFlagService:
 
 
 def _email_of(user: CurrentUser) -> str | None:
-    """Best-effort email extraction.
+    """Extract the user's lowercased email for allowlist matching.
 
-    ``CurrentUser`` has ``user_id`` always but email is not on the dataclass
-    today. When auth resolves a JWT or API key the user's email lives on the
-    underlying ``UserDoc`` and isn't propagated here. For now allowlist by
-    email is best-effort: if the email field is added later, this picks it
-    up via ``getattr`` without code changes.
+    ``CurrentUser.email`` is populated on both auth paths: from the "email"
+    JWT claim and from the owning ``UserDoc`` on the API-key path. It is
+    ``None`` only for access tokens minted before the claim existed (fixed
+    on the next refresh) — those users still match by user_id. ``getattr``
+    keeps this tolerant of CurrentUser-shaped stubs without the field.
     """
     return getattr(user, "email", None)

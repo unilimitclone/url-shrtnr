@@ -53,11 +53,13 @@ def _make_user(
     user_id: ObjectId | None = None,
     email_verified: bool = True,
     api_key_doc: ApiKeyDoc | None = None,
+    email: str | None = None,
 ) -> CurrentUser:
     return CurrentUser(
         user_id=user_id or ObjectId(),
         email_verified=email_verified,
         api_key_doc=api_key_doc,
+        email=email,
     )
 
 

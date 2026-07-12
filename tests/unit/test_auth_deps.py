@@ -74,7 +74,11 @@ def make_key_doc(revoked: bool = False, expires_at=None, scopes=None):
     )
 
 
-def make_jwt_token(token_type: str = "access", ttl_seconds: int = 900):
+def make_jwt_token(
+    token_type: str = "access",
+    ttl_seconds: int = 900,
+    email: str | None = None,
+):
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(USER_OID),
@@ -85,6 +89,8 @@ def make_jwt_token(token_type: str = "access", ttl_seconds: int = 900):
         "iat": now,
         "exp": now + timedelta(seconds=ttl_seconds),
     }
+    if email is not None:
+        payload["email"] = email
     return pyjwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 
@@ -102,7 +108,7 @@ class TestGetCurrentUser:
     @pytest.mark.asyncio
     async def test_api_key_valid_returns_current_user(self):
         key_doc = make_key_doc()
-        user_mock = MagicMock(email_verified=True)
+        user_mock = MagicMock(email_verified=True, email="Owner@Example.com")
 
         with (
             patch("dependencies.auth.get_settings", return_value=make_settings()),
@@ -119,6 +125,8 @@ class TestGetCurrentUser:
         assert result.user_id == USER_OID
         assert result.api_key_doc == key_doc
         assert result.email_verified is True
+        # Email comes from the owning UserDoc (already fetched), lowercased.
+        assert result.email == "owner@example.com"
 
     @pytest.mark.asyncio
     async def test_api_key_revoked_returns_none(self):
@@ -191,6 +199,70 @@ class TestGetCurrentUser:
         assert result.user_id == USER_OID
         assert result.email_verified is True
         assert result.api_key_doc is None
+
+    @pytest.mark.asyncio
+    async def test_jwt_email_claim_populates_current_user_lowercased(self):
+        token = make_jwt_token(email="Alice@Example.COM")
+        req = make_request(auth_header=f"Bearer {token}")
+
+        with patch("dependencies.auth.get_settings", return_value=make_settings()):
+            result = await get_current_user(req, db=MagicMock())
+
+        assert result is not None
+        assert result.email == "alice@example.com"
+
+    @pytest.mark.asyncio
+    async def test_jwt_without_email_claim_yields_none_email(self):
+        # Old access tokens minted before the "email" claim existed must
+        # still authenticate — email is simply None, never an error.
+        token = make_jwt_token()
+        req = make_request(auth_header=f"Bearer {token}")
+
+        with patch("dependencies.auth.get_settings", return_value=make_settings()):
+            result = await get_current_user(req, db=MagicMock())
+
+        assert result is not None
+        assert result.email is None
+
+    @pytest.mark.asyncio
+    async def test_jwt_blank_email_claim_yields_none_email(self):
+        token = make_jwt_token(email="   ")
+        req = make_request(auth_header=f"Bearer {token}")
+
+        with patch("dependencies.auth.get_settings", return_value=make_settings()):
+            result = await get_current_user(req, db=MagicMock())
+
+        assert result is not None
+        assert result.email is None
+
+    @pytest.mark.asyncio
+    async def test_token_factory_round_trip_populates_email(self):
+        # Mint with the real TokenFactory → resolve via get_current_user:
+        # the email claim survives the round trip and is lowercased.
+        from schemas.models.user import UserDoc
+        from services.token_factory import TokenFactory
+
+        user_doc = UserDoc.from_mongo(
+            {
+                "_id": USER_OID,
+                "email": "Round.Trip@Example.COM",
+                "email_verified": True,
+                "user_name": "Round Trip",
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
+        token = TokenFactory(make_jwt_settings()).generate_access_token(
+            user_doc, amr="pwd"
+        )
+        req = make_request(auth_header=f"Bearer {token}")
+
+        with patch("dependencies.auth.get_settings", return_value=make_settings()):
+            result = await get_current_user(req, db=MagicMock())
+
+        assert result is not None
+        assert result.user_id == USER_OID
+        assert result.email == "round.trip@example.com"
 
     @pytest.mark.asyncio
     async def test_jwt_refresh_token_rejected(self):
