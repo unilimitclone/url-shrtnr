@@ -102,6 +102,16 @@ class RateLimitError(AppError):
     error_code = "rate_limit_exceeded"
 
 
+class NotConfiguredError(AppError):
+    """An optional feature's required config (e.g. a webhook URL) is unset
+    on this instance — the surface exists but cannot operate.
+
+    JSON twin of the Jinja contact/report handlers' 503 error page."""
+
+    status_code = 503
+    error_code = "not_configured"
+
+
 class R2StorageError(AppError):
     """R2 object PUT failed — the user write that needed it must fail
     loudly rather than store a broken image URL."""

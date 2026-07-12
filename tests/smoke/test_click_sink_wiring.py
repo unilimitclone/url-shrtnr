@@ -28,6 +28,8 @@ _COLLECTIONS = (
     "feature_flags",
     "custom_domains",
     "blocked_domains",
+    "reports",
+    "report_submissions",
 )
 
 

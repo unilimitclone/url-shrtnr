@@ -109,6 +109,19 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
     feature_flags_col = db["feature_flags"]
     await feature_flags_col.create_index([("name", 1)], unique=True)
 
+    # ── reports ────────────────────────────────────────────────────────
+    # One doc per reported (domain, code) — domain is null for the system
+    # default, so the compound unique still keys correctly. Velocity
+    # triage reads sort by last_reported_at; the funnel filters on status.
+    reports_col = db["reports"]
+    await reports_col.create_index([("domain", 1), ("code", 1)], unique=True)
+    await reports_col.create_index([("last_reported_at", -1)])
+    await reports_col.create_index([("status", 1)])
+
+    # ── report_submissions ─────────────────────────────────────────────
+    report_submissions_col = db["report_submissions"]
+    await report_submissions_col.create_index([("created_at", -1)])
+
     # ── custom_domains ────────────────────────────────────────────────
     custom_domains_col = db["custom_domains"]
     # Partial unique on fqdn — REVOKED docs preserved for audit don't reserve

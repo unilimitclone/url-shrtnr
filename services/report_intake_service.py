@@ -1,0 +1,380 @@
+"""
+ReportIntakeService — bulk-first abuse-report intake.
+
+Owns the whole INTAKE half of the url-safety funnel: normalization
+(bare code / full URL / custom domain → ``(domain, code)``),
+domain-scoped existence checks, within-batch dedupe, dedupe+velocity
+storage, the per-POST submission audit record, and the demoted summary
+webhook (ONE Discord embed per submission, never per item — storage is
+the system of record now, the webhook is a notification).
+
+Reporter-claimed ``reason``/``vector`` are stored verbatim as triage
+hints; assessed harm tiers live in the url-safety architecture, not
+here. Resolution / triage / status transitions are explicitly out of
+scope — this service ends at the DB record and the notification.
+
+Framework-agnostic: no FastAPI imports. The route layer owns HTTP
+concerns (client IP, the webhook-unset 503 gate, and the
+missing-captcha-token 400 that mirrors the Jinja form).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Literal
+from urllib.parse import unquote, urlparse
+
+from bson import ObjectId
+
+from errors import ForbiddenError, ValidationError
+from infrastructure.captcha.protocol import CaptchaProvider
+from infrastructure.logging import get_logger
+from infrastructure.webhook.protocol import WebhookProvider
+from repositories.report_repository import ReportRepository, ReportSubmissionRepository
+from repositories.url_repository import UrlRepository
+from schemas.dto.requests.reports import ReportItemRequest
+from services.public_link_resolver import PublicLinkResolver
+
+log = get_logger(__name__)
+
+# Flat caps for all callers initially (no per-key config yet; the schema
+# leaves room via reporter_ids). Anonymous is captcha-gated AND capped
+# tighter — give researchers a reason to get a key.
+ANON_MAX_ITEMS = 25
+AUTHED_MAX_ITEMS = 100
+
+# Summary embed: list at most this many codes, then "… and N more".
+_SUMMARY_MAX_LISTED = 10
+_SUMMARY_LINE_MAX = 80
+
+
+def normalize_report_target(
+    raw: str, system_domain: str
+) -> tuple[str | None, str] | None:
+    """Normalize a reported ``code_or_url`` to ``(domain, code)``.
+
+    Accepts bare codes (``abc123``), schemeless short URLs
+    (``spoo.me/abc123``), full URLs with query/fragment noise
+    (``https://spoo.me/abc123?x=1``), and custom-domain short URLs
+    (``go.customer.com/deal``).
+
+    ``domain`` is ``None`` for the system default domain, the lowercased
+    fqdn otherwise. The code is percent-decoded (emoji aliases arrive
+    encoded) but its case is PRESERVED — codes are case-sensitive.
+    Returns ``None`` when the input can't name a short link (bad scheme,
+    no hostname, empty or multi-segment path).
+    """
+    value = raw.strip()
+    if not value:
+        return None
+
+    if "/" not in value and "://" not in value:
+        # Bare code — system default domain.
+        return (None, unquote(value))
+
+    candidate = value if "://" in value else f"https://{value}"
+    parsed = urlparse(candidate)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if not hostname:
+        return None
+
+    path = parsed.path.strip("/")
+    if not path or "/" in path:
+        # No code, or a multi-segment path — not a short link.
+        return None
+
+    code = unquote(path)
+    domain = None if hostname == system_domain else hostname
+    return (domain, code)
+
+
+@dataclass
+class RejectedItem:
+    """One rejected entry — ``input`` echoes the raw ``code_or_url``."""
+
+    index: int
+    input: str
+    code: Literal["invalid_input", "not_found", "duplicate_in_batch"]
+
+
+@dataclass
+class SubmissionOutcome:
+    """What ``submit`` hands back to the route layer."""
+
+    submission_id: str
+    accepted: int
+    rejected: list[RejectedItem]
+
+
+class ReportIntakeService:
+    """Bulk report intake — normalization, resolution, dedupe, storage,
+    summary webhook.
+
+    Args:
+        report_repo:     Write side of the per-code ``reports`` docs.
+        submission_repo: Per-POST audit trail.
+        resolver:        Shared public resolver — system-domain existence
+                         checks across ALL generations (v1/v2/emoji), the
+                         same source of truth the redirect dispatches on.
+        url_repo:        Domain-scoped v2 lookups for custom-domain codes
+                         (custom domains exist only in v2).
+        captcha:         Verifies anonymous submissions.
+        report_webhook:  WebhookProvider wired to the URL-report Discord
+                         webhook (shared with the legacy Jinja path).
+    """
+
+    def __init__(
+        self,
+        report_repo: ReportRepository,
+        submission_repo: ReportSubmissionRepository,
+        resolver: PublicLinkResolver,
+        url_repo: UrlRepository,
+        captcha: CaptchaProvider,
+        report_webhook: WebhookProvider,
+        *,
+        system_default_domain: str,
+    ) -> None:
+        self._report_repo = report_repo
+        self._submission_repo = submission_repo
+        self._resolver = resolver
+        self._url_repo = url_repo
+        self._captcha = captcha
+        self._report_webhook = report_webhook
+        self._system_default_domain = system_default_domain
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    async def submit(
+        self,
+        items: Sequence[ReportItemRequest],
+        *,
+        reporter_id: ObjectId | None,
+        reporter_email: str | None,
+        reporter_org: str | None,
+        captcha_token: str | None,
+        source: str,
+        ip: str,
+    ) -> SubmissionOutcome:
+        """Process one report submission end to end.
+
+        Args:
+            items:          The reported links (already shape-validated).
+            reporter_id:    Authenticated user's id, or ``None`` for
+                            anonymous — drives the item cap and captcha.
+            reporter_email: Optional follow-up contact (audit record only).
+            reporter_org:   Optional organisation (audit record only).
+            captcha_token:  hCaptcha token — verified for anonymous
+                            submissions only.
+            source:         ``"web"`` or ``"api"`` (API-key callers).
+            ip:             Client IP for the audit record + embed.
+
+        Raises:
+            ValidationError: Empty items or over the caller's item cap —
+                             the whole request fails (the client knows the
+                             cap; partial-accept would hide it).
+            ForbiddenError:  Anonymous captcha verification failed.
+        """
+        cap = ANON_MAX_ITEMS if reporter_id is None else AUTHED_MAX_ITEMS
+        if not items:
+            raise ValidationError("items must contain at least one report")
+        if len(items) > cap:
+            raise ValidationError(
+                f"Too many items: {len(items)} exceeds the "
+                f"{'anonymous' if reporter_id is None else 'authenticated'} "
+                f"cap of {cap} per request"
+            )
+
+        if reporter_id is None and not await self._captcha.verify(captcha_token or ""):
+            log.info("report_intake_captcha_failed")
+            raise ForbiddenError("Invalid captcha, please try again")
+
+        accepted, rejected = await self._triage(items)
+
+        now = datetime.now(timezone.utc)
+        for domain, code, item in accepted:
+            await self._report_repo.record_report(
+                domain,
+                code,
+                reason=item.reason.value,
+                vector=item.vector.value if item.vector else None,
+                details=item.details,
+                reporter_id=reporter_id,
+                source=source,
+                now=now,
+            )
+
+        submission_oid = await self._submission_repo.insert(
+            {
+                "created_at": now,
+                "ip": ip,
+                "reporter_id": reporter_id,
+                "reporter_email": reporter_email,
+                "reporter_org": reporter_org,
+                "source": source,
+                "item_count": len(items),
+                "accepted": len(accepted),
+                "rejected_count": len(rejected),
+            }
+        )
+        submission_id = str(submission_oid)
+
+        # Demoted to a notification: storage above is the system of record,
+        # so a failed send is logged, never surfaced — the reports ARE filed.
+        payload = self._summary_embed(
+            submission_id=submission_id,
+            source=source,
+            authenticated=reporter_id is not None,
+            accepted=accepted,
+            rejected_count=len(rejected),
+            reporter_email=reporter_email,
+            reporter_org=reporter_org,
+            ip=ip,
+        )
+        if not await self._report_webhook.send(payload):
+            log.error("report_summary_webhook_failed", submission_id=submission_id)
+
+        log.info(
+            "report_submission_stored",
+            submission_id=submission_id,
+            source=source,
+            authenticated=reporter_id is not None,
+            item_count=len(items),
+            accepted=len(accepted),
+            rejected=len(rejected),
+        )
+        return SubmissionOutcome(
+            submission_id=submission_id,
+            accepted=len(accepted),
+            rejected=rejected,
+        )
+
+    # ── Private: triage ───────────────────────────────────────────────────────
+
+    async def _triage(
+        self, items: Sequence[ReportItemRequest]
+    ) -> tuple[list[tuple[str | None, str, ReportItemRequest]], list[RejectedItem]]:
+        """Normalize, dedupe, and existence-check every item.
+
+        Per item, in order: unparseable → ``invalid_input``; normalized
+        (domain, code) already seen in this batch → ``duplicate_in_batch``
+        (first occurrence wins, and only it is existence-checked); code
+        missing from every generation → ``not_found``. Bad codes never
+        sink the batch — survivors are returned for storage.
+        """
+        seen: set[tuple[str | None, str]] = set()
+        accepted: list[tuple[str | None, str, ReportItemRequest]] = []
+        rejected: list[RejectedItem] = []
+
+        for index, item in enumerate(items):
+            target = normalize_report_target(
+                item.code_or_url, self._system_default_domain
+            )
+            if target is None:
+                rejected.append(RejectedItem(index, item.code_or_url, "invalid_input"))
+                continue
+            if target in seen:
+                rejected.append(
+                    RejectedItem(index, item.code_or_url, "duplicate_in_batch")
+                )
+                continue
+            seen.add(target)
+
+            domain, code = target
+            if await self._exists(domain, code):
+                accepted.append((domain, code, item))
+            else:
+                rejected.append(RejectedItem(index, item.code_or_url, "not_found"))
+
+        return accepted, rejected
+
+    async def _exists(self, domain: str | None, code: str) -> bool:
+        """Domain-scoped existence check.
+
+        System-domain codes resolve via the shared PublicLinkResolver —
+        the same generation dispatch (v1/v2/emoji) as the redirect, and
+        status-agnostic on purpose: expired/blocked links are still
+        reportable. Custom-domain codes are exact v2 lookups.
+        """
+        if domain is None:
+            return await self._resolver.resolve(code) is not None
+        return await self._url_repo.find_by_alias(code, domain) is not None
+
+    # ── Private: summary embed ────────────────────────────────────────────────
+
+    def _summary_embed(
+        self,
+        *,
+        submission_id: str,
+        source: str,
+        authenticated: bool,
+        accepted: list[tuple[str | None, str, ReportItemRequest]],
+        rejected_count: int,
+        reporter_email: str | None,
+        reporter_org: str | None,
+        ip: str,
+    ) -> dict[str, Any]:
+        """ONE Discord embed per submission — counts, source, up to
+        {_SUMMARY_MAX_LISTED} codes with reasons, submission id.
+
+        Same visual family as ContactService._report_embed (color,
+        code-block fields, footer) but built here: ContactService stays
+        contact-only + the legacy per-code Jinja path.
+        """
+        fields: list[dict[str, Any]] = [
+            {"name": "Submission ID", "value": f"```{submission_id}```"},
+            {
+                "name": "Source",
+                "value": (
+                    f"```{source} · "
+                    f"{'authenticated' if authenticated else 'anonymous'}```"
+                ),
+            },
+            {
+                "name": "Accepted / Rejected",
+                "value": f"```{len(accepted)} / {rejected_count}```",
+            },
+        ]
+
+        if accepted:
+            lines = []
+            for domain, code, item in accepted[:_SUMMARY_MAX_LISTED]:
+                display = f"{domain or self._system_default_domain}/{code}"
+                line = f"{display} — {item.reason.value}"
+                if len(line) > _SUMMARY_LINE_MAX:
+                    line = line[: _SUMMARY_LINE_MAX - 1] + "…"
+                lines.append(line)
+            overflow = len(accepted) - _SUMMARY_MAX_LISTED
+            if overflow > 0:
+                lines.append(f"… and {overflow} more")
+            fields.append(
+                {"name": "Reported Links", "value": "```" + "\n".join(lines) + "```"}
+            )
+
+        if reporter_email or reporter_org:
+            fields.append(
+                {
+                    "name": "Reporter",
+                    "value": f"```{reporter_email or '—'} · {reporter_org or '—'}```",
+                }
+            )
+
+        fields.append({"name": "IP Address", "value": f"```{ip}```"})
+
+        return {
+            "embeds": [
+                {
+                    "title": "New URL Report Submission",
+                    "color": 14177041,
+                    "fields": fields,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "footer": {
+                        "text": "spoo-me",
+                        "icon_url": "https://spoo.me/static/images/favicon.png",
+                    },
+                }
+            ]
+        }

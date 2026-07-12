@@ -32,6 +32,10 @@ from repositories.feature_flag_repository import FeatureFlagRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.page_layout_repository import PageLayoutRepository
+from repositories.report_repository import (
+    ReportRepository,
+    ReportSubmissionRepository,
+)
 from repositories.token_repository import TokenRepository
 from repositories.url_repository import UrlRepository
 from repositories.user_repository import UserRepository
@@ -59,6 +63,7 @@ from services.profile_picture_service import ProfilePictureService
 from services.public_link_resolver import PublicLinkResolver
 from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
+from services.report_intake_service import ReportIntakeService
 from services.stats_service import StatsService
 from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
@@ -223,6 +228,18 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         public_link_resolver,
         app.state.stats_service,
         max_date_range_days=settings.max_date_range_days,
+    )
+    # Report intake shares the resolver (existence checks answer from the
+    # same generation the redirect serves) and the report webhook + captcha
+    # already built above for ContactService.
+    app.state.report_intake_service = ReportIntakeService(
+        ReportRepository(db["reports"]),
+        ReportSubmissionRepository(db["report_submissions"]),
+        public_link_resolver,
+        url_repo,
+        captcha,
+        report_webhook,
+        system_default_domain=settings.system_default_domain,
     )
     app.state.export_service = ExportService(
         app.state.stats_service,
