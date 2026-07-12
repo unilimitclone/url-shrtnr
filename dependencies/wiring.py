@@ -56,6 +56,7 @@ from services.mock_dcv_backend import MockDcvBackend
 from services.oauth_service import OAuthService
 from services.page_layout_service import PageLayoutService
 from services.profile_picture_service import ProfilePictureService
+from services.public_preview_service import PublicPreviewService
 from services.stats_service import StatsService
 from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
@@ -205,6 +206,12 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         click_repo,
         url_repo,
         max_date_range_days=settings.max_date_range_days,
+    )
+    app.state.public_preview_service = PublicPreviewService(
+        url_repo,
+        legacy_repo,
+        emoji_repo,
+        system_default_domain=settings.system_default_domain,
     )
     app.state.export_service = ExportService(
         app.state.stats_service,

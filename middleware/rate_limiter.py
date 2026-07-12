@@ -113,6 +113,11 @@ class Limits:
     # Password-protected URL check
     PASSWORD_CHECK = "10 per minute; 30 per hour"
 
+    # Public link preview (the /{code}+ wire). Like the redirect (which is
+    # limiter-exempt) this endpoint is an existence oracle by design, so it
+    # gets its own bounded budget instead of riding the anon API tier.
+    PUBLIC_PREVIEW = "30 per minute; 2000 per day"
+
 
 # ── Key resolution ───────────────────────────────────────────────────────────
 
