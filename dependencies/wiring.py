@@ -57,6 +57,7 @@ from services.oauth_service import OAuthService
 from services.page_layout_service import PageLayoutService
 from services.profile_picture_service import ProfilePictureService
 from services.public_preview_service import PublicPreviewService
+from services.public_stats_service import PublicStatsService
 from services.stats_service import StatsService
 from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
@@ -212,6 +213,14 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         legacy_repo,
         emoji_repo,
         system_default_domain=settings.system_default_domain,
+    )
+    app.state.public_stats_service = PublicStatsService(
+        url_repo,
+        legacy_repo,
+        emoji_repo,
+        app.state.stats_service,
+        system_default_domain=settings.system_default_domain,
+        max_date_range_days=settings.max_date_range_days,
     )
     app.state.export_service = ExportService(
         app.state.stats_service,

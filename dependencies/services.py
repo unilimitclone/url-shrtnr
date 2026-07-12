@@ -32,6 +32,7 @@ from services.oauth_service import OAuthService
 from services.page_layout_service import PageLayoutService
 from services.profile_picture_service import ProfilePictureService
 from services.public_preview_service import PublicPreviewService
+from services.public_stats_service import PublicStatsService
 from services.stats_service import StatsService
 from services.url_service import UrlService
 
@@ -42,6 +43,10 @@ def get_url_service(request: Request) -> UrlService:
 
 def get_stats_service(request: Request) -> StatsService:
     return request.app.state.stats_service
+
+
+def get_public_stats_service(request: Request) -> PublicStatsService:
+    return request.app.state.public_stats_service
 
 
 def get_export_service(request: Request) -> ExportService:
@@ -128,6 +133,7 @@ def get_public_preview_service(request: Request) -> PublicPreviewService:
 
 UrlSvc = Annotated[UrlService, Depends(get_url_service)]
 StatsSvc = Annotated[StatsService, Depends(get_stats_service)]
+PublicStatsSvc = Annotated[PublicStatsService, Depends(get_public_stats_service)]
 ExportSvc = Annotated[ExportService, Depends(get_export_service)]
 ApiKeySvc = Annotated[ApiKeyService, Depends(get_api_key_service)]
 PageLayoutSvc = Annotated[PageLayoutService, Depends(get_page_layout_service)]
