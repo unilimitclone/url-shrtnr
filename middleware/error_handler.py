@@ -68,12 +68,10 @@ def _wants_json(request: Request) -> bool:
     )
 
 
-# Statuses the edge intercepts when EDGE_COMPOSED_ERRORS is on — must stay
-# in sync with the Caddy handle_response matcher. Two intentionally
-# different sets: the app-level handlers below hand every intercepted
-# status to the edge, while the redirect hot path
-# (routes/redirect_routes.py) only intercepts resolve failures — its 403
-# bot-block page always keeps its server-rendered body.
+# Statuses that return EMPTY bodies under EDGE_COMPOSED_ERRORS — must stay
+# a subset of what Caddy's handle_response matcher composes, or visitors
+# get blank pages (verify at cutover; redirect ⊆ app-level is test-pinned).
+# The redirect set is smaller on purpose: its 403 bot-block keeps its body.
 EDGE_INTERCEPTED_STATUSES = {404, 410, 429, 451, 500}
 REDIRECT_EDGE_INTERCEPTED_STATUSES = {404, 410, 451}
 
@@ -88,7 +86,8 @@ def _error_html(
     the template entirely — Caddy throws the body away and composes the Next
     error page, so rendering it would be wasted work.
     """
-    # getattr-with-default: tests build bare apps without lifespan state.
+    # settings can be absent (app built without lifespan) — default-off is
+    # the fail-safe.
     settings = getattr(request.app.state, "settings", None)
     if (
         getattr(settings, "edge_composed_errors", False)

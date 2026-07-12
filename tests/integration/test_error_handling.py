@@ -404,6 +404,17 @@ def test_page_gone_returns_html():
 # ── Edge-composed errors (EDGE_COMPOSED_ERRORS) ──────────────────────────────
 
 
+def test_redirect_intercept_set_is_subset_of_app_level_set():
+    """An origin-empty status the edge doesn't compose is a blank page —
+    the hot path may only empty-body what the app-level set covers."""
+    from middleware.error_handler import (
+        EDGE_INTERCEPTED_STATUSES,
+        REDIRECT_EDGE_INTERCEPTED_STATUSES,
+    )
+
+    assert REDIRECT_EDGE_INTERCEPTED_STATUSES <= EDGE_INTERCEPTED_STATUSES
+
+
 @pytest.mark.parametrize(
     ("path", "status", "slug"),
     [

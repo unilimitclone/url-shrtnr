@@ -101,7 +101,8 @@ def _error_page(request: Request, code: str, message: str, status: int) -> Respo
         )
 
     slug = _ERROR_SLUGS.get(code)
-    # getattr-with-default: tests build bare apps without lifespan state.
+    # settings can be absent (app built without lifespan) — default-off is
+    # the fail-safe.
     settings = getattr(request.app.state, "settings", None)
     if (
         slug is not None
