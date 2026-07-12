@@ -147,7 +147,7 @@ class PublicStatsService:
         started = time.perf_counter()
         code = unquote(short_code)
 
-        doc, schema = await self._resolve(code)
+        doc, schema, raw_v1 = await self._resolve(code)
         if doc is None:
             raise NotFoundError("short_code not found")
 
@@ -188,7 +188,9 @@ class PublicStatsService:
         alias = doc.alias if is_v2 else code
         now = datetime.now(timezone.utc)
         status = self._effective_status(doc, is_v2, now)
-        link = self._link_facts(doc, alias, status, is_v2=is_v2, is_owner=is_owner)
+        link = self._link_facts(
+            doc, alias, status, is_v2=is_v2, is_owner=is_owner, raw_v1=raw_v1
+        )
 
         if is_v2:
             stats = await self._query_v2_stats(doc, window_start, window_end, tz_name)
@@ -214,30 +216,52 @@ class PublicStatsService:
 
     # ── Private: resolution ───────────────────────────────────────────────────
 
-    async def _resolve(self, code: str) -> tuple[_PublicDoc | None, SchemaVersion]:
+    async def _resolve(
+        self, code: str
+    ) -> tuple[_PublicDoc | None, SchemaVersion, dict | None]:
         """Domain-scoped dispatch, mirroring UrlService._dispatch.
 
         emoji → emojis only; 7 chars → urlsV2 then urls; 6 chars → urls
         then urlsV2; anything else → urlsV2 then urls. v2 lookups are
         scoped to the system default domain; v1/emoji only exist there —
         custom-tenant aliases never resolve on this endpoint.
+
+        Returns ``(typed doc, schema, raw v1 dict)`` — the raw dict (None
+        for v2) carries fields the typed model drops (``creation-date`` /
+        ``creation-time``); one DB read serves both views.
         """
         if is_emoji_alias(code):
-            return await self._emoji_repo.find_by_id(code), SchemaVersion.EMOJI
+            raw = await self._find_v1_raw(self._emoji_repo, code)
+            return EmojiUrlDoc.from_mongo(raw), SchemaVersion.EMOJI, raw
 
         if len(code) == 6:
-            v1_doc = await self._legacy_repo.find_by_id(code)
-            if v1_doc is not None:
-                return v1_doc, SchemaVersion.V1
+            raw = await self._find_v1_raw(self._legacy_repo, code)
+            if raw is not None:
+                return LegacyUrlDoc.from_mongo(raw), SchemaVersion.V1, raw
             v2_doc = await self._url_repo.find_by_alias(
                 code, self._system_default_domain
             )
-            return v2_doc, SchemaVersion.V2
+            return v2_doc, SchemaVersion.V2, None
 
         v2_doc = await self._url_repo.find_by_alias(code, self._system_default_domain)
         if v2_doc is not None:
-            return v2_doc, SchemaVersion.V2
-        return await self._legacy_repo.find_by_id(code), SchemaVersion.V1
+            return v2_doc, SchemaVersion.V2, None
+        raw = await self._find_v1_raw(self._legacy_repo, code)
+        return LegacyUrlDoc.from_mongo(raw), SchemaVersion.V1, raw
+
+    @staticmethod
+    async def _find_v1_raw(
+        repo: LegacyUrlRepository | EmojiUrlRepository, code: str
+    ) -> dict | None:
+        """Fetch a v1/emoji document as a RAW dict by exact ``_id`` match.
+
+        Not ``find_by_id``: that returns a typed ``LegacyUrlDoc``, which
+        silently drops ``creation-date`` / ``creation-time`` (the model
+        doesn't declare them and pydantic ignores extras) — and the link
+        facts need them for ``created_at``. Same pattern as the public
+        preview endpoint, so /stats/{code} and /{code}+ agree.
+        """
+        return await repo.aggregate([{"$match": {"_id": code}}])
 
     # ── Private: gates and derived facts ──────────────────────────────────────
 
@@ -288,6 +312,7 @@ class PublicStatsService:
         *,
         is_v2: bool,
         is_owner: bool,
+        raw_v1: dict | None = None,
     ) -> dict[str, Any]:
         long_url = doc.long_url if is_v2 else doc.url
         return {
@@ -297,13 +322,29 @@ class PublicStatsService:
             # expired, paused, or blocked link's stats page must not out
             # the destination. Owner sessions always get it.
             "long_url": long_url if (status == "active" or is_owner) else None,
-            # v1/emoji docs never stored a creation timestamp.
-            "created_at": _as_utc(doc.created_at) if is_v2 else None,
+            "created_at": (
+                _as_utc(doc.created_at) if is_v2 else self._v1_created_at(raw_v1)
+            ),
             "status": status,
             "max_clicks": doc.max_clicks,
             "block_bots": bool(doc.block_bots),
             "password_protected": bool(doc.password),
         }
+
+    @staticmethod
+    def _v1_created_at(raw_v1: dict | None) -> datetime | None:
+        """Combine v1 ``creation-date`` + ``creation-time`` (both set at
+        shorten time) into a datetime; either missing or unparseable →
+        ``None`` — ancient rows lack them and the page omits the line.
+        Same rule as the public preview endpoint.
+        """
+        if not raw_v1:
+            return None
+        date = raw_v1.get("creation-date")
+        time_of_day = raw_v1.get("creation-time")
+        if not date or not time_of_day:
+            return None
+        return parse_datetime(f"{date}T{time_of_day}")
 
     # ── Private: date window ──────────────────────────────────────────────────
 

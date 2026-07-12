@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from dependencies import get_current_user
 from dependencies.services import get_public_stats_service
 from infrastructure.crypto import hash_password
-from schemas.models.url import EmojiUrlDoc, LegacyUrlDoc, UrlV2Doc
+from schemas.models.url import UrlV2Doc
 from services.public_stats_service import PublicStatsService
 from services.stats_service import StatsService
 
@@ -46,6 +46,11 @@ def _make_v2_doc(alias: str = "abc1234", **overrides: Any) -> UrlV2Doc:
 
 
 def _v1_data(code: str, **overrides: Any) -> dict[str, Any]:
+    """RAW v1/emoji document — what the repos' aggregate helper returns.
+
+    Carries the hyphenated legacy keys, including ``creation-date`` /
+    ``creation-time`` (which the typed LegacyUrlDoc drops).
+    """
     data: dict[str, Any] = {
         "_id": code,
         "url": "https://example.com/legacy",
@@ -59,18 +64,12 @@ def _v1_data(code: str, **overrides: Any) -> dict[str, Any]:
         "referrer": {},
         "bots": {},
         "average_redirection_time": 14.236,
+        "creation-date": "2024-04-18",
+        "creation-time": "09:30:00",
         "last-click": "2026-01-06 10:00:00",
     }
     data.update(overrides)
     return data
-
-
-def _make_v1_doc(code: str = "legacy", **overrides: Any) -> LegacyUrlDoc:
-    return LegacyUrlDoc(**_v1_data(code, **overrides))
-
-
-def _make_emoji_doc(code: str, **overrides: Any) -> EmojiUrlDoc:
-    return EmojiUrlDoc(**_v1_data(code, **overrides))
 
 
 # ── Dict-backed repo fakes ────────────────────────────────────────────────────
@@ -87,13 +86,18 @@ class _DictUrlRepo:
 
 
 class _DictLegacyRepo:
-    """Stand-in for Legacy/EmojiUrlRepository — _id-keyed lookups."""
+    """Stand-in for Legacy/EmojiUrlRepository — raw-dict aggregate reads.
 
-    def __init__(self, docs: dict[str, Any] | None = None) -> None:
+    Only ``aggregate`` is exposed: the service must read v1 docs RAW
+    (typed ``find_by_id`` would drop creation-date/creation-time), so a
+    regression to the typed read fails loudly here.
+    """
+
+    def __init__(self, docs: dict[str, dict[str, Any]] | None = None) -> None:
         self._docs = docs or {}
 
-    async def find_by_id(self, short_code: str) -> Any | None:
-        return self._docs.get(short_code)
+    async def aggregate(self, pipeline: list[dict[str, Any]]) -> dict[str, Any] | None:
+        return self._docs.get(pipeline[0]["$match"]["_id"])
 
 
 class _CapturingClickRepo:
@@ -114,8 +118,8 @@ class _CapturingClickRepo:
 def _build_service(
     *,
     v2_docs: list[UrlV2Doc] | None = None,
-    v1_docs: dict[str, LegacyUrlDoc] | None = None,
-    emoji_docs: dict[str, EmojiUrlDoc] | None = None,
+    v1_docs: dict[str, dict[str, Any]] | None = None,
+    emoji_docs: dict[str, dict[str, Any]] | None = None,
     click_repo: _CapturingClickRepo | None = None,
 ) -> tuple[PublicStatsService, _CapturingClickRepo]:
     click_repo = click_repo or _CapturingClickRepo()
@@ -294,7 +298,7 @@ def test_v2_password_gates():
 
 
 def test_v1_password_gates():
-    doc = _make_v1_doc("legacy", password="hunter2")
+    doc = _v1_data("legacy", password="hunter2")
     service, _ = _build_service(v1_docs={"legacy": doc})
     with _client(service) as client:
         no_password = client.get(_url("legacy"))
@@ -314,7 +318,7 @@ def test_v1_password_gates():
 
 
 def test_v1_wire_shape():
-    doc = _make_v1_doc(
+    doc = _v1_data(
         "legacy",
         **{
             "browser": {
@@ -501,7 +505,7 @@ def test_v2_active_with_max_clicks_reached_reports_expired():
 
 
 def test_v1_max_clicks_reached_reports_expired():
-    doc = _make_v1_doc("legacy", **{"max-clicks": 20, "total-clicks": 20})
+    doc = _v1_data("legacy", **{"max-clicks": 20, "total-clicks": 20})
     service, _ = _build_service(v1_docs={"legacy": doc})
     with _client(service) as client:
         resp = client.get(_url("legacy"))
@@ -513,11 +517,44 @@ def test_v1_max_clicks_reached_reports_expired():
     assert link["max_clicks"] == 20
 
 
+# ── 8b. v1 created_at comes from the RAW doc's creation fields ───────────────
+# (the typed LegacyUrlDoc drops creation-date/creation-time; the service
+# reads raw dicts so /stats/{code} agrees with the preview endpoint)
+
+
+def test_v1_created_at_combines_creation_date_and_time():
+    doc = _v1_data(
+        "legacy",
+        **{"creation-date": "2026-03-10", "creation-time": "12:34:56"},
+    )
+    service, _ = _build_service(v1_docs={"legacy": doc})
+    with _client(service) as client:
+        resp = client.get(_url("legacy"))
+
+    assert resp.status_code == 200
+    assert resp.json()["link"]["created_at"].startswith("2026-03-10T12:34:56")
+
+
+def test_v1_created_at_null_when_creation_fields_missing_or_unparseable():
+    ancient = _v1_data("legacy")
+    del ancient["creation-date"], ancient["creation-time"]
+    garbled = _v1_data("garble", **{"creation-date": "not a date"})
+    service, _ = _build_service(v1_docs={"legacy": ancient, "garble": garbled})
+    with _client(service) as client:
+        ancient_resp = client.get(_url("legacy"))
+        garbled_resp = client.get(_url("garble"))
+
+    assert ancient_resp.status_code == 200
+    assert ancient_resp.json()["link"]["created_at"] is None
+    assert garbled_resp.status_code == 200
+    assert garbled_resp.json()["link"]["created_at"] is None
+
+
 # ── 9. Emoji aliases resolve and collapse to v1 ──────────────────────────────
 
 
 def test_emoji_alias_resolves_as_v1():
-    doc = _make_emoji_doc("🚀", url="https://docs.spoo.me/emoji-urls")
+    doc = _v1_data("🚀", url="https://docs.spoo.me/emoji-urls")
     service, _ = _build_service(emoji_docs={"🚀": doc})
     with _client(service) as client:
         resp = client.get(_url("🚀"))
@@ -529,7 +566,8 @@ def test_emoji_alias_resolves_as_v1():
     assert link["alias"] == "🚀"
     assert link["short_url"] == f"https://{_DOMAIN}/🚀"
     assert link["long_url"] == "https://docs.spoo.me/emoji-urls"
-    assert link["created_at"] is None  # never stored on v1/emoji docs
+    # The emoji path also reads the raw doc, so creation fields surface.
+    assert link["created_at"].startswith("2024-04-18T09:30:00")
 
 
 # ── 10. Resolution order + validation ────────────────────────────────────────
