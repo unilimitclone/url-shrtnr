@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from bson import ObjectId
 from fastapi import APIRouter, Request
 
 from dependencies import AuthUser, OnboardingCacheDep, UserRepo
@@ -114,15 +113,14 @@ async def complete_onboarding(
 
     **Rate Limits**: 30/min
     """
-    user_id = ObjectId(str(user.user_id))
     now = datetime.now(timezone.utc)
-    stamped = await user_repo.complete_onboarding(user_id, now, body.heard_from)
+    stamped = await user_repo.complete_onboarding(user.user_id, now, body.heard_from)
     await cache.delete(str(user.user_id))
     if stamped:
-        log.info("onboarding_completed", user_id=str(user_id))
+        log.info("onboarding_completed", user_id=str(user.user_id))
         return OnboardingCompleteResponse(success=True, onboarded_at=now)
     # Already completed earlier — idempotent; echo the original stamp.
-    existing = await user_repo.find_by_id(user_id)
+    existing = await user_repo.find_by_id(user.user_id)
     when = (
         existing.onboarded_at
         if existing is not None and existing.onboarded_at is not None

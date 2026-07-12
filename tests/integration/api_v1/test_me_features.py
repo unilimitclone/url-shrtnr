@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
-from dependencies import get_current_user, get_feature_flag_service, require_jwt
+from dependencies import (
+    get_current_user,
+    get_feature_flag_service,
+    require_auth,
+    require_jwt,
+)
 from services.feature_flag_service import (
     AB_TESTING_FLAG,
     CUSTOM_DOMAINS_FLAG,
@@ -16,7 +21,7 @@ from services.feature_flag_service import (
     FeatureFlagService,
 )
 
-from .conftest import _build_test_app, _make_user
+from .conftest import _build_test_app, _make_api_key_doc, _make_user
 
 
 def _flag_svc(enabled_names: set[str]) -> FeatureFlagService:
@@ -47,6 +52,22 @@ def test_requires_auth():
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/api/v1/me/features")
     assert resp.status_code == 401
+
+
+def test_api_key_rejected():
+    # /me/* is JWT-only: a request that authenticates with a valid API key
+    # (any scope) must get 403 from the real require_jwt, not slip through
+    # as a session. Pins the AuthUser → JwtUser distinction.
+    user = _make_user(api_key_doc=_make_api_key_doc())
+    app = _build_test_app(
+        {
+            require_auth: lambda: user,
+            get_feature_flag_service: lambda: AsyncMock(),
+        }
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.get("/api/v1/me/features")
+    assert resp.status_code == 403
 
 
 def test_all_hidden_by_default():

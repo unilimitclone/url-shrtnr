@@ -52,8 +52,7 @@ async def get_my_features(
 
 # Closed set: every dashboard board the frontend actually renders. An
 # allowlist (not just a pattern) caps per-user storage and rejects junk
-# slugs — layouts were the one per-user resource with no quota. Grows in
-# lockstep with the frontend's boards.
+# slugs. Grows in lockstep with the frontend's boards.
 PagePath = Annotated[
     Literal["analytics", "overview"],
     Path(description="Layout slot, e.g. `analytics`"),
