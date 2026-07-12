@@ -64,12 +64,12 @@ from schemas.models.url import (
     UrlStatus,
     UrlV2Doc,
 )
+from shared.alias_dispatch import resolution_order
 from shared.datetime_utils import parse_datetime
 from shared.generators import generate_short_code_v2
 from shared.reserved_aliases import is_reserved_alias
 from shared.url_utils import extract_hostname
 from shared.validators import (
-    is_emoji_alias,
     validate_alias,
     validate_blocked_url,
     validate_emoji_alias,
@@ -1111,13 +1111,13 @@ class UrlService:
         """
         Determine URL schema and fetch from the appropriate collection.
 
-        Mirrors get_url_by_length_and_type() exactly:
-          emoji → emojis, schema "emoji"
-          7 chars → urlsV2 first, urls fallback
-          6 chars → urls first, urlsV2 fallback
-          other   → urlsV2 first, urls fallback
+        The lookup order comes from ``shared.alias_dispatch.resolution_order``
+        — the single source of truth shared with the public preview endpoint,
+        so every resolving surface answers a given code from the same
+        generation. Only the per-generation lookup/conversion lives here.
         """
-        if is_emoji_alias(short_code):
+        order = resolution_order(short_code)
+        if order[0] == SchemaVersion.EMOJI:
             doc = await self._emoji_repo.find_by_id(short_code)
             if doc is not None:
                 return (
@@ -1125,14 +1125,9 @@ class UrlService:
                     SchemaVersion.EMOJI,
                 )
             return None, SchemaVersion.EMOJI
-
-        code_len = len(short_code)
-        if code_len == 7:
-            return await self._try_v2_then_v1(short_code)
-        elif code_len == 6:
+        if order[0] == SchemaVersion.V1:
             return await self._try_v1_then_v2(short_code)
-        else:
-            return await self._try_v2_then_v1(short_code)
+        return await self._try_v2_then_v1(short_code)
 
     async def _dispatch_custom_domain(
         self, short_code: str, domain: str
