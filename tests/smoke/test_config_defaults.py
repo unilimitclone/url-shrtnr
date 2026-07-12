@@ -84,6 +84,16 @@ def test_flask_secret_key_fallback() -> None:
         assert settings.secret_key == "flask-secret-123"
 
 
+def test_default_edge_composed_errors_false() -> None:
+    """EDGE_COMPOSED_ERRORS defaults off — self-hosters keep branded error pages.
+
+    Verify the schema default rather than the resolved value so a local .env
+    can't flip this test.
+    """
+    field = AppSettings.model_fields["edge_composed_errors"]
+    assert field.default is False
+
+
 def test_is_production_false_for_development() -> None:
     """is_production should return False for development env."""
     settings = AppSettings()

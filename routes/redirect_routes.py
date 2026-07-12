@@ -46,6 +46,17 @@ _TENANT_ERROR_COPY = {
 }
 _NOINDEX_HEADER = "noindex, nofollow, noarchive"
 
+# Machine-readable slugs for the system-default error page so the edge can
+# route on X-Error-Code. Only 404/410/451 are edge-intercepted; 403 keeps its
+# body always (bot blocks stay server-rendered) but still self-describes.
+_ERROR_SLUGS = {
+    "404": "not_found",
+    "410": "gone",
+    "451": "blocked",
+    "403": "forbidden",
+}
+_EDGE_INTERCEPTED_CODES = {"404", "410", "451"}
+
 
 def _error_page(request: Request, code: str, message: str, status: int) -> Response:
     """Render the error page for a resolve/redirect failure.
@@ -87,6 +98,19 @@ def _error_page(request: Request, code: str, message: str, status: int) -> Respo
             headers={"X-Robots-Tag": _NOINDEX_HEADER},
         )
 
+    slug = _ERROR_SLUGS.get(code)
+    # getattr-with-default: tests build bare apps without lifespan state.
+    settings = getattr(request.app.state, "settings", None)
+    if (
+        slug is not None
+        and getattr(settings, "edge_composed_errors", False)
+        and code in _EDGE_INTERCEPTED_CODES
+        and request.method in {"GET", "HEAD"}
+    ):
+        # Caddy discards the body and composes the Next error page — skip
+        # the template render on the hot path.
+        return Response(status_code=status, headers={"X-Error-Code": slug})
+
     return templates.TemplateResponse(
         request,
         "error.html",
@@ -96,6 +120,7 @@ def _error_page(request: Request, code: str, message: str, status: int) -> Respo
             "host_url": str(request.base_url),
         },
         status_code=status,
+        headers={"X-Error-Code": slug} if slug is not None else None,
     )
 
 

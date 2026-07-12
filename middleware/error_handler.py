@@ -68,8 +68,30 @@ def _wants_json(request: Request) -> bool:
     )
 
 
-def _error_html(request: Request, status_code: int, message: str) -> Response:
-    """Render error.html template for browser requests."""
+# Statuses the edge intercepts when EDGE_COMPOSED_ERRORS is on — must stay
+# in sync with the Caddy handle_response matcher and routes/redirect_routes.py.
+_EDGE_INTERCEPTED_STATUSES = {404, 410, 429, 451, 500}
+
+
+def _error_html(
+    request: Request, status_code: int, message: str, slug: str
+) -> Response:
+    """Render error.html template for browser requests.
+
+    Every HTML error self-describes via ``X-Error-Code`` so the edge can
+    route on it. With ``edge_composed_errors`` on, intercepted statuses skip
+    the template entirely — Caddy throws the body away and composes the Next
+    error page, so rendering it would be wasted work.
+    """
+    # getattr-with-default: tests build bare apps without lifespan state.
+    settings = getattr(request.app.state, "settings", None)
+    if (
+        getattr(settings, "edge_composed_errors", False)
+        and status_code in _EDGE_INTERCEPTED_STATUSES
+        and request.method in {"GET", "HEAD"}
+    ):
+        return Response(status_code=status_code, headers={"X-Error-Code": slug})
+
     host_url = str(request.base_url)
     return templates.TemplateResponse(
         request,
@@ -80,6 +102,7 @@ def _error_html(request: Request, status_code: int, message: str) -> Response:
             "host_url": host_url,
         },
         status_code=status_code,
+        headers={"X-Error-Code": slug},
     )
 
 
@@ -90,7 +113,9 @@ def register_error_handlers(app: FastAPI) -> None:
     async def app_error_handler(request: Request, exc: AppError) -> Response:
         if _wants_json(request):
             return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
-        return _error_html(request, exc.status_code, exc.message.upper())
+        return _error_html(
+            request, exc.status_code, exc.message.upper(), exc.error_code
+        )
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_error_handler(
@@ -118,7 +143,7 @@ def register_error_handlers(app: FastAPI) -> None:
                 status_code=429,
                 content={"error": "Too many requests", "code": "rate_limit_exceeded"},
             )
-        return _error_html(request, 429, "TOO MANY REQUESTS")
+        return _error_html(request, 429, "TOO MANY REQUESTS", "rate_limit_exceeded")
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
@@ -136,4 +161,4 @@ def register_error_handlers(app: FastAPI) -> None:
                     "code": "internal_error",
                 },
             )
-        return _error_html(request, 500, "INTERNAL SERVER ERROR")
+        return _error_html(request, 500, "INTERNAL SERVER ERROR", "internal_error")

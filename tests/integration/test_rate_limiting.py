@@ -140,6 +140,7 @@ def test_rate_limit_html_response_on_page_route():
         resp = c.get("/page/test-limited")
     assert resp.status_code == 429
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "rate_limit_exceeded"
 
 
 def test_rate_limit_key_uses_ip_for_anonymous():

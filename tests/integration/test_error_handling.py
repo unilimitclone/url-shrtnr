@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -115,6 +115,11 @@ async def page_validation(request: Request):
     raise ValidationError("bad page input")
 
 
+@_page_router.post("/page/trigger-not-found-post")
+async def page_not_found_post(request: Request):
+    raise NotFoundError("page not found")
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -192,6 +197,7 @@ def test_app_error_html_on_page_route():
         resp = c.get("/page/trigger-not-found")
     assert resp.status_code == 404
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "not_found"
 
 
 def test_app_error_json_when_accept_json():
@@ -300,6 +306,7 @@ def test_unhandled_exception_returns_500_html():
         resp = c.get("/page/trigger-unhandled")
     assert resp.status_code == 500
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "internal_error"
 
 
 # ── Error shape verification ─────────────────────────────────────────────────
@@ -368,6 +375,7 @@ def test_page_forbidden_returns_html():
         resp = c.get("/page/trigger-forbidden")
     assert resp.status_code == 403
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "forbidden"
 
 
 def test_page_gone_returns_html():
@@ -377,3 +385,72 @@ def test_page_gone_returns_html():
         resp = c.get("/page/trigger-gone")
     assert resp.status_code == 410
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "gone"
+
+
+# ── Edge-composed errors (EDGE_COMPOSED_ERRORS) ──────────────────────────────
+
+
+def _build_edge_composed_app() -> FastAPI:
+    """Build the test app with the edge-composition flag on.
+
+    AppSettings is constructed inside _build_test_app, so patching the env
+    around the build is enough — no lifespan surgery needed.
+    """
+    with patch.dict(os.environ, {"EDGE_COMPOSED_ERRORS": "true"}, clear=False):
+        return _build_test_app()
+
+
+def test_edge_composed_intercepted_status_returns_empty_body():
+    """Flag on: intercepted statuses return no body — Caddy composes the page."""
+    app = _build_edge_composed_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/page/trigger-not-found")
+    assert resp.status_code == 404
+    assert resp.headers["X-Error-Code"] == "not_found"
+    assert resp.content == b""
+
+
+def test_edge_composed_500_returns_empty_body():
+    """Flag on: unhandled exceptions on page routes also skip the template."""
+    app = _build_edge_composed_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/page/trigger-unhandled")
+    assert resp.status_code == 500
+    assert resp.headers["X-Error-Code"] == "internal_error"
+    assert resp.content == b""
+
+
+def test_edge_composed_non_intercepted_status_keeps_body():
+    """403 is not in the intercept set — the branded page still renders."""
+    app = _build_edge_composed_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/page/trigger-forbidden")
+    assert resp.status_code == 403
+    assert resp.headers["X-Error-Code"] == "forbidden"
+    assert "text/html" in resp.headers["content-type"]
+    assert resp.content
+
+
+def test_edge_composed_post_keeps_body():
+    """Flag on: non-GET/HEAD methods keep the rendered body (edge only
+    intercepts GET/HEAD)."""
+    app = _build_edge_composed_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.post("/page/trigger-not-found-post")
+    assert resp.status_code == 404
+    assert resp.headers["X-Error-Code"] == "not_found"
+    assert "text/html" in resp.headers["content-type"]
+    assert resp.content
+
+
+def test_edge_composed_json_path_unaffected():
+    """Flag on: JSON error responses are byte-identical to flag-off."""
+    app = _build_edge_composed_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/api/v1/trigger-not-found")
+    assert resp.status_code == 404
+    data = resp.json()
+    assert data["error"] == "resource not found"
+    assert data["code"] == "not_found"
+    assert "X-Error-Code" not in resp.headers
