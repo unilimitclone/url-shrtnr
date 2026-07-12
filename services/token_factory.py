@@ -58,6 +58,8 @@ class TokenFactory:
             iat            — issued-at (UTC epoch seconds)
             exp            — expiry (iat + access_token_ttl_seconds)
             amr            — authentication method reference list, e.g. ["pwd"]
+            email          — lowercased email from the user document (consumed
+                             by feature-flag email allowlists via CurrentUser)
             email_verified — bool from the user document
         """
         now = int(datetime.now(timezone.utc).timestamp())
@@ -68,6 +70,7 @@ class TokenFactory:
             "iat": now,
             "exp": now + self._settings.access_token_ttl_seconds,
             "amr": [amr],
+            "email": user.email.lower(),
             "email_verified": user.email_verified,
         }
         return pyjwt.encode(payload, self._signing_key(), algorithm=self._algorithm())

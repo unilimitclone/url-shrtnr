@@ -164,11 +164,87 @@ class TestRolloutAllowlist:
 
     @pytest.mark.asyncio
     async def test_no_email_attribute_falls_back_to_user_id(self):
-        # CurrentUser today doesn't carry email — service must not crash.
+        # Stubs without an email attribute — service must not crash.
         flag = _flag(rollout_type=RolloutType.ALLOWLIST, allowlist_user_ids=[USER_A])
         service, _, _ = make_service(flag=flag)
         # _user() with no email omits the attribute; getattr returns None.
         assert await service.is_enabled("test_flag", _user(USER_A)) is True
+
+    @pytest.mark.asyncio
+    async def test_email_only_allowlist_denies_stub_without_email_attribute(self):
+        # Pins _email_of's getattr fallback: a user object with NO email
+        # attribute at all (not CurrentUser with email=None) against an
+        # email-ONLY allowlist → graceful deny, no AttributeError.
+        flag = _flag(
+            rollout_type=RolloutType.ALLOWLIST,
+            allowlist_emails=["alice@example.com"],
+        )
+        service, _, _ = make_service(flag=flag)
+        stub = _user(USER_A)  # SimpleNamespace; email attribute omitted
+        assert not hasattr(stub, "email")
+        assert await service.is_enabled("test_flag", stub) is False
+
+    @pytest.mark.asyncio
+    async def test_current_user_email_field_flows_through(self):
+        """CurrentUser.email (JWT "email" claim / UserDoc email) satisfies
+        email-only allowlists — the real dataclass, not a stub."""
+        from dependencies.auth import CurrentUser
+
+        flag = _flag(
+            rollout_type=RolloutType.ALLOWLIST,
+            allowlist_emails=["alice@example.com"],
+        )
+        service, _, _ = make_service(flag=flag)
+        alice = CurrentUser(
+            user_id=USER_A, email_verified=True, email="alice@example.com"
+        )
+        bob = CurrentUser(user_id=USER_B, email_verified=True, email="bob@example.com")
+        assert await service.is_enabled("test_flag", alice) is True
+        assert await service.is_enabled("test_flag", bob) is False
+
+    @pytest.mark.asyncio
+    async def test_current_user_mixed_case_email_matches(self):
+        # Doc validator lowercases allowlist entries; is_user_in_allowlist
+        # lowercases the user's email — any casing on either side matches.
+        from dependencies.auth import CurrentUser
+
+        flag = _flag(
+            rollout_type=RolloutType.ALLOWLIST,
+            allowlist_emails=["Alice@Example.COM"],
+        )
+        service, _, _ = make_service(flag=flag)
+        alice = CurrentUser(
+            user_id=USER_A, email_verified=True, email="ALICE@example.com"
+        )
+        assert await service.is_enabled("test_flag", alice) is True
+
+    @pytest.mark.asyncio
+    async def test_current_user_none_email_denied_without_error(self):
+        # Old access tokens (pre-"email" claim) resolve to email=None —
+        # email-only allowlists deny them, and nothing raises.
+        from dependencies.auth import CurrentUser
+
+        flag = _flag(
+            rollout_type=RolloutType.ALLOWLIST,
+            allowlist_emails=["alice@example.com"],
+        )
+        service, _, _ = make_service(flag=flag)
+        old_token_user = CurrentUser(user_id=USER_A, email_verified=True)
+        assert old_token_user.email is None
+        assert await service.is_enabled("test_flag", old_token_user) is False
+
+    @pytest.mark.asyncio
+    async def test_current_user_none_email_still_matches_by_user_id(self):
+        from dependencies.auth import CurrentUser
+
+        flag = _flag(
+            rollout_type=RolloutType.ALLOWLIST,
+            allowlist_user_ids=[USER_A],
+            allowlist_emails=["alice@example.com"],
+        )
+        service, _, _ = make_service(flag=flag)
+        old_token_user = CurrentUser(user_id=USER_A, email_verified=True)
+        assert await service.is_enabled("test_flag", old_token_user) is True
 
 
 # ── PERCENTAGE ───────────────────────────────────────────────────────────────

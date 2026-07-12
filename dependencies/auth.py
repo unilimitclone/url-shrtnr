@@ -41,6 +41,12 @@ class CurrentUser:
     email_verified: bool
     api_key_doc: ApiKeyDoc | None = field(default=None)
     amr: str = "pwd"
+    # Lowercased user email — consumed by FeatureFlagService's ALLOWLIST
+    # rollout (allowlist_emails). Populated from the "email" claim on the
+    # JWT path and from the owning UserDoc on the API-key path. None for
+    # access tokens minted before the claim existed; those users match by
+    # user_id only until their next token refresh.
+    email: str | None = field(default=None)
     # UserDoc.plan value (e.g. "FREE") — consumed by FeatureFlagService's
     # TIER rollout via getattr(user, "tier"). Populated from the DB on the
     # API-key path and from the (future) "plan" claim on the JWT path.
@@ -105,6 +111,9 @@ async def get_current_user(
                 user_id=key.user_id,
                 email_verified=email_verified,
                 api_key_doc=key,
+                # The owning UserDoc is already fetched above for
+                # email_verified — no extra DB hit to carry the email.
+                email=user.email.lower() if user and user.email else None,
                 tier=user.plan.value if user and user.plan else None,
             )
 
@@ -131,11 +140,21 @@ async def get_current_user(
         user_id = ObjectId(claims["sub"])
         email_verified = bool(claims.get("email_verified", False))
         amr = claims.get("amr", ["pwd"])[0]
+        # Tolerant read — access tokens minted before the "email" claim
+        # existed simply carry email=None (never an error). Fixed on the
+        # user's next token refresh.
+        raw_email = claims.get("email")
+        email = (
+            raw_email.strip().lower()
+            if isinstance(raw_email, str) and raw_email.strip()
+            else None
+        )
         structlog.contextvars.bind_contextvars(user_id=str(user_id), auth_method="jwt")
         return CurrentUser(
             user_id=user_id,
             email_verified=email_verified,
             amr=amr,
+            email=email,
             # Not issued yet — the paid-plans launch adds the claim; TIER
             # flag rollouts become a pure data change at that point.
             tier=claims.get("plan"),

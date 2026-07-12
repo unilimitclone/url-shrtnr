@@ -146,9 +146,25 @@ class TestJWTHelpers:
         assert payload["iss"] == "spoo.me"
         assert payload["aud"] == "spoo.me.api"
         assert payload["amr"] == ["pwd"]
+        assert payload["email"] == "test@example.com"
         assert payload["email_verified"] is True
         assert "type" not in payload
         assert payload["exp"] - payload["iat"] == 900
+
+    def test_access_token_email_claim_is_lowercased(self):
+        tf = make_token_factory()
+        settings = make_jwt_settings()
+        user = make_user_doc()
+        user = user.model_copy(update={"email": "MixedCase@Example.COM"})
+        token = tf.generate_access_token(user, amr="pwd")
+        payload = pyjwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=["HS256"],
+            audience=settings.jwt_audience,
+            issuer=settings.jwt_issuer,
+        )
+        assert payload["email"] == "mixedcase@example.com"
 
     def test_refresh_token_has_type_field(self):
         tf = make_token_factory()
