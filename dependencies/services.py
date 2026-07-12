@@ -31,6 +31,7 @@ from services.feature_flag_service import FeatureFlagService
 from services.oauth_service import OAuthService
 from services.page_layout_service import PageLayoutService
 from services.profile_picture_service import ProfilePictureService
+from services.public_preview_service import PublicPreviewService
 from services.stats_service import StatsService
 from services.url_service import UrlService
 
@@ -119,6 +120,10 @@ def get_custom_domain_service(request: Request) -> CustomDomainService:
     return request.app.state.custom_domain_service
 
 
+def get_public_preview_service(request: Request) -> PublicPreviewService:
+    return request.app.state.public_preview_service
+
+
 # ── Annotated type aliases — Depends shortcuts for route signatures ──────────
 
 UrlSvc = Annotated[UrlService, Depends(get_url_service)]
@@ -141,3 +146,4 @@ ClickSink = Annotated[ClickEventSink, Depends(get_click_sink)]
 AppGrantRepo = Annotated[AppGrantRepository, Depends(get_app_grant_repo)]
 FeatureFlagSvc = Annotated[FeatureFlagService, Depends(get_feature_flag_service)]
 CustomDomainSvc = Annotated[CustomDomainService, Depends(get_custom_domain_service)]
+PublicPreviewSvc = Annotated[PublicPreviewService, Depends(get_public_preview_service)]

@@ -9,6 +9,7 @@ from routes.api_v1 import (
     management,
     me,
     metadata,
+    public_preview,
     shorten,
     stats,
     urls,
@@ -24,3 +25,4 @@ router.include_router(keys.router)
 router.include_router(custom_domains.router)
 router.include_router(metadata.router)
 router.include_router(me.router)
+router.include_router(public_preview.router)

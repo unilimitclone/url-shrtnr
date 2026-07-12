@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -31,6 +31,7 @@ from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
 from routes.legacy.helpers import humanize_number, is_positive_integer
 from shared.generators import generate_emoji_alias, generate_short_code
+from shared.url_utils import split_destination
 from shared.validators import (
     is_emoji_alias,
     validate_alias,
@@ -415,20 +416,6 @@ async def result(
 # ── Preview page ──────────────────────────────────────────────────────────────
 
 
-def _split_destination(url: str) -> dict:
-    """Split a destination URL into display parts for the preview template."""
-    parsed = urlparse(url)
-    domain = parsed.netloc or parsed.path.split("/")[0]
-    path = (
-        parsed.path
-        + ("?" + parsed.query if parsed.query else "")
-        + ("#" + parsed.fragment if parsed.fragment else "")
-    )
-    if path == "/":
-        path = ""
-    return {"domain": domain, "path": path, "is_https": parsed.scheme == "https"}
-
-
 @router.get("/{short_code}+")
 @limiter.limit(Limits.SHORTEN_LEGACY)
 async def preview_url(
@@ -537,7 +524,7 @@ async def preview_url(
             },
         )
 
-    default_dest = _split_destination(long_url)
+    default_dest = split_destination(long_url)
 
     # Geo-targeted links list EVERY destination — the preview page is the
     # anti-cloaking transparency surface, so no rule is ever hidden. Grouped
@@ -548,7 +535,7 @@ async def preview_url(
         for code, dest in url_data["geo_rules"].items():
             grouped.setdefault(dest, []).append(code)
         geo_destinations = [
-            {"countries": sorted(codes), **_split_destination(dest)}
+            {"countries": sorted(codes), **split_destination(dest)}
             for dest, codes in grouped.items()
         ]
 
