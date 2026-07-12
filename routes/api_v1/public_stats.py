@@ -25,8 +25,11 @@ from services.public_stats_service import PublicStatsService
 
 router = APIRouter(tags=["Public"])
 
+# Dedicated pair — NOT the generic API tier. Reasoning lives on
+# Limits.PUBLIC_STATS_*: anon hits can run 90-day $facet aggregations,
+# and this bucket doubles as the password-guess budget.
 _public_stats_limit, _public_stats_key = dynamic_limit(
-    Limits.API_AUTHED, Limits.API_ANON
+    Limits.PUBLIC_STATS_AUTHED, Limits.PUBLIC_STATS_ANON
 )
 
 _PATH = "/public/stats/{short_code}"
@@ -104,8 +107,8 @@ async def public_stats_get(
 
     **Rate Limits**:
 
-    - Authenticated: 60/min, 5,000/day
-    - Anonymous: 20/min, 1,000/day
+    - Authenticated: 60/min, 2,000/day
+    - Anonymous: 20/min, 500/day
     """
     return await _serve_public_stats(
         public_stats_service,

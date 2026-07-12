@@ -31,7 +31,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import unquote
-from zoneinfo import available_timezones
 
 from bson import ObjectId
 
@@ -54,7 +53,7 @@ from schemas.models.url import (
     UrlStatus,
     UrlV2Doc,
 )
-from services.stats_service import _TIMEZONE_ALIASES, StatsService
+from services.stats_service import StatsService
 from shared.aggregation_strategies import convert_country_name
 from shared.datetime_utils import parse_datetime
 from shared.validators import is_emoji_alias
@@ -143,6 +142,11 @@ class PublicStatsService:
             PasswordRequiredError: Password set, none supplied (401).
             InvalidPasswordError:  Password set, wrong one supplied (401).
             ValidationError:       Bad dates / range too large.
+
+        Note: the privacy gate only applies to v2 — legacy docs have no
+        privacy concept (no ``private_stats`` field exists), so v1/emoji
+        stats are public BY DESIGN, intentional parity with the shipped
+        legacy /stats page.
         """
         started = time.perf_counter()
         code = unquote(short_code)
@@ -160,7 +164,9 @@ class PublicStatsService:
 
         # Private stats answer exactly like a missing code. Semantics:
         # True = private (owned default), None = anonymous/unowned = public,
-        # False = explicitly public. v1/emoji have no flag — always public.
+        # False = explicitly public. v1/emoji have NO privacy concept (the
+        # legacy schema never grew a private_stats field) — public by
+        # design, mirroring the shipped legacy /stats page.
         if is_v2 and doc.private_stats and not is_owner:
             log.info("public_stats_denied", reason="private_stats", short_code=code)
             raise NotFoundError("short_code not found")
@@ -232,6 +238,8 @@ class PublicStatsService:
         """
         if is_emoji_alias(code):
             raw = await self._find_v1_raw(self._emoji_repo, code)
+            if raw is None:  # emoji misses never fall through to urls/urlsV2
+                return None, SchemaVersion.EMOJI, None
             return EmojiUrlDoc.from_mongo(raw), SchemaVersion.EMOJI, raw
 
         if len(code) == 6:
@@ -247,6 +255,8 @@ class PublicStatsService:
         if v2_doc is not None:
             return v2_doc, SchemaVersion.V2, None
         raw = await self._find_v1_raw(self._legacy_repo, code)
+        if raw is None:  # missed both generations
+            return None, SchemaVersion.V1, None
         return LegacyUrlDoc.from_mongo(raw), SchemaVersion.V1, raw
 
     @staticmethod
@@ -383,12 +393,7 @@ class PublicStatsService:
                 f"date range cannot exceed {self._max_date_range_days} days"
             )
 
-        tz_name = _TIMEZONE_ALIASES.get(tz_name, tz_name)
-        if tz_name not in available_timezones():
-            log.info("invalid_timezone_provided", timezone=tz_name, fallback="UTC")
-            tz_name = "UTC"
-
-        return start, end, tz_name
+        return start, end, self._stats.normalize_timezone(tz_name)
 
     # ── Private: v2 stats (StatsService reuse, scoped by url_id) ─────────────
 
@@ -408,22 +413,16 @@ class PublicStatsService:
             "meta.url_id": doc.id,
             "clicked_at": {"$gte": start_date, "$lte": end_date},
         }
-        summary, aggregation_results = await self._stats._execute_all_stats(
-            click_query, _V2_GROUP_BY, start_date, end_date, tz_name
+        return await self._stats.compute(
+            click_query,
+            scope=StatsScope.ANON,
+            short_code=doc.alias,
+            start_date=start_date,
+            end_date=end_date,
+            group_by=_V2_GROUP_BY,
+            metrics=_METRICS,
+            tz_name=tz_name,
         )
-        response = self._stats._format_results(
-            StatsScope.ANON,
-            doc.alias,
-            start_date,
-            end_date,
-            {},
-            _V2_GROUP_BY,
-            _METRICS,
-            tz_name,
-            aggregation_results,
-        )
-        response["summary"] = summary
-        return self._stats._add_metadata(response)
 
     # ── Private: v1/emoji stats (synthesized from the embedded doc) ──────────
 
@@ -493,7 +492,7 @@ class PublicStatsService:
             "total_clicks": doc.total_clicks,
             "unique_clicks": len(doc.ips or []),
             "first_click": None,  # not stored on v1 docs
-            "last_click": self._stats._to_user_tz(last_click, tz_name),
+            "last_click": self._stats.to_user_tz(last_click, tz_name),
             "avg_redirection_time": round(doc.average_redirection_time or 0, 2),
         }
 
@@ -504,8 +503,8 @@ class PublicStatsService:
             "timezone": tz_name,
             "short_code": alias,
             "time_range": {
-                "start_date": self._stats._to_user_tz(start_date, tz_name),
-                "end_date": self._stats._to_user_tz(end_date, tz_name),
+                "start_date": self._stats.to_user_tz(start_date, tz_name),
+                "end_date": self._stats.to_user_tz(end_date, tz_name),
             },
             # The frontend adapter picks bucket size and zero-fills from
             # this — v1 counters are daily, full stop.
@@ -519,7 +518,7 @@ class PublicStatsService:
             "metrics": metrics,
             "summary": summary,
         }
-        return self._stats._add_metadata(response)
+        return self._stats.add_metadata(response)
 
     @staticmethod
     def _v1_dimension_rows(

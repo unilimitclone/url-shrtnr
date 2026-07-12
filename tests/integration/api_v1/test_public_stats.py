@@ -180,6 +180,28 @@ def test_explicitly_private_false_is_public():
     assert resp.json()["generation"] == "v2"
 
 
+# ── 1b. Resolver miss branches answer the same 404 explicitly ────────────────
+
+
+def test_missing_emoji_alias_answers_the_same_404():
+    # Emoji misses never fall through to the urls/urlsV2 collections.
+    service, _ = _build_service()  # emojis collection empty
+    with _client(service) as client:
+        resp = client.get(_url("🚀"))
+
+    assert resp.status_code == 404
+    assert resp.json() == _NOT_FOUND_BODY
+
+
+def test_seven_char_alias_missing_in_both_generations_is_404():
+    service, _ = _build_service()  # urlsV2 AND urls both miss
+    with _client(service) as client:
+        resp = client.get(_url("absent9"))
+
+    assert resp.status_code == 404
+    assert resp.json() == _NOT_FOUND_BODY
+
+
 # ── 2. Anonymous (private_stats=None) is public + link facts wire shape ──────
 
 
@@ -292,6 +314,25 @@ def test_v2_password_gates():
         right = client.post(_url("locked1"), json={"password": "sesame"})
         assert right.status_code == 200
         assert right.json()["link"]["password_protected"] is True
+
+
+# ── 4b. v1/emoji have no privacy gate — deliberate legacy parity ─────────────
+
+
+def test_v1_stats_are_public_by_design_legacy_parity():
+    """v1/emoji stats are PUBLIC by design — pinned as deliberate.
+
+    The legacy schema has no ``private_stats`` field (no privacy concept
+    exists to enforce), and the shipped legacy /stats/{code} page has
+    always served these stats to anyone. Intentional parity: do NOT
+    invent a v1 privacy mechanism here.
+    """
+    service, _ = _build_service(v1_docs={"legacy": _v1_data("legacy")})
+    with _client(service) as client:
+        resp = client.get(_url("legacy"))
+
+    assert resp.status_code == 200
+    assert resp.json()["generation"] == "v1"
 
 
 # ── 5. v1 password gate (plaintext) ──────────────────────────────────────────
