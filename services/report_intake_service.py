@@ -88,7 +88,10 @@ def normalize_report_target(
         return None
 
     code = unquote(path)
-    domain = None if hostname == system_domain else hostname
+    # www.spoo.me serves the same site as spoo.me (Caddy vhost pair) —
+    # reporters paste www URLs; both are the system domain.
+    is_system = hostname == system_domain or hostname == f"www.{system_domain}"
+    domain = None if is_system else hostname
     return (domain, code)
 
 

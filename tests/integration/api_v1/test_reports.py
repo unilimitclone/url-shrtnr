@@ -210,6 +210,9 @@ class TestNormalizeReportTarget:
             "http://SPOO.ME/CaseKept": (None, "CaseKept"),
             "spoo.me:443/withport": (None, "withport"),
             "spoo.me./trailingdot": (None, "trailingdot"),
+            # www serves the same site as the apex (Caddy vhost pair)
+            "www.spoo.me/wwwform": (None, "wwwform"),
+            "https://WWW.spoo.me/wwwform": (None, "wwwform"),
             "go.Customer.com/Deal": ("go.customer.com", "Deal"),
             "%F0%9F%98%80": (None, "😀"),
             "https://spoo.me/%F0%9F%98%80": (None, "😀"),
