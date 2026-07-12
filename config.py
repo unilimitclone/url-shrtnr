@@ -412,6 +412,12 @@ class AppSettings(BaseSettings):
     app_url: str = "https://spoo.me"
     app_name: str = "spoo.me"
 
+    # The Next frontend owns /onboarding; until the edge routes it there,
+    # new OAuth accounts must land on the default redirect or they 404
+    # right after signup. Flip ONBOARDING_REDIRECT_ENABLED=true at frontend
+    # cutover; delete the flag once the old UI is retired.
+    onboarding_redirect_enabled: bool = False
+
     @cached_property
     def system_default_domain(self) -> str:
         """Canonical fqdn for shorts created without an explicit custom domain."""

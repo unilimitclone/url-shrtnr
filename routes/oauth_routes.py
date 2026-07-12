@@ -42,6 +42,21 @@ router = APIRouter(prefix="/oauth", tags=["OAuth"])
 _DASHBOARD_URL = "/dashboard"
 
 
+def resolve_post_auth_redirect(
+    state_next: str, *, is_new: bool, onboarding_enabled: bool
+) -> str:
+    """Destination after a completed OAuth callback.
+
+    Brand-new accounts go to onboarding unless the flow carried an explicit
+    destination (e.g. device-consent deep links must not be hijacked). The
+    flag keeps the redirect dark until the edge actually serves /onboarding —
+    a new account 404ing right after signup is worse than skipping the wizard.
+    """
+    if onboarding_enabled and is_new and not state_next:
+        return "/onboarding"
+    return validate_safe_redirect(state_next)
+
+
 # ── Provider management (fixed paths — must come before parametric routes) ────
 
 
@@ -154,6 +169,7 @@ async def oauth_callback(
     oauth_service: OAuthSvc,
     oauth_providers: OAuthProviders,
     jwt_cfg: JwtConfig,
+    settings: Settings,
 ) -> Response:
     """Handle the OAuth provider callback after user authorization.
 
@@ -213,12 +229,11 @@ async def oauth_callback(
     )
 
     # ── Redirect with cookies ──────────────────────────────────────────────
-    # Brand-new accounts go to onboarding unless the flow carried an explicit
-    # destination (e.g. device-consent deep links must not be hijacked).
-    if result.is_new and not state_data.get("next"):
-        next_url = "/onboarding"
-    else:
-        next_url = validate_safe_redirect(state_data.get("next", ""))
+    next_url = resolve_post_auth_redirect(
+        state_data.get("next", ""),
+        is_new=result.is_new,
+        onboarding_enabled=settings.onboarding_redirect_enabled,
+    )
     resp = RedirectResponse(next_url, status_code=302)
     set_auth_cookies(resp, result.access_token, result.refresh_token, jwt_cfg)
     return resp
