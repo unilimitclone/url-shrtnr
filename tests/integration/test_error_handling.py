@@ -12,6 +12,7 @@ import os
 from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
@@ -23,10 +24,12 @@ os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017/")
 from config import AppSettings
 from errors import (
     AuthenticationError,
+    BlockedUrlError,
     ConflictError,
     ForbiddenError,
     GoneError,
     NotFoundError,
+    RateLimitError,
     ValidationError,
 )
 from middleware.error_handler import register_error_handlers
@@ -105,6 +108,16 @@ async def page_gone(request: Request):
     raise GoneError("page expired")
 
 
+@_page_router.get("/page/trigger-blocked")
+async def page_blocked(request: Request):
+    raise BlockedUrlError("page blocked")
+
+
+@_page_router.get("/page/trigger-rate-limited")
+async def page_rate_limited(request: Request):
+    raise RateLimitError("too many requests")
+
+
 @_page_router.get("/page/trigger-unhandled")
 async def page_unhandled(request: Request):
     raise RuntimeError("unexpected page failure")
@@ -113,6 +126,11 @@ async def page_unhandled(request: Request):
 @_page_router.get("/page/trigger-validation")
 async def page_validation(request: Request):
     raise ValidationError("bad page input")
+
+
+@_page_router.post("/page/trigger-not-found-post")
+async def page_not_found_post(request: Request):
+    raise NotFoundError("page not found")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -192,6 +210,7 @@ def test_app_error_html_on_page_route():
         resp = c.get("/page/trigger-not-found")
     assert resp.status_code == 404
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "not_found"
 
 
 def test_app_error_json_when_accept_json():
@@ -300,6 +319,7 @@ def test_unhandled_exception_returns_500_html():
         resp = c.get("/page/trigger-unhandled")
     assert resp.status_code == 500
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "internal_error"
 
 
 # ── Error shape verification ─────────────────────────────────────────────────
@@ -368,6 +388,7 @@ def test_page_forbidden_returns_html():
         resp = c.get("/page/trigger-forbidden")
     assert resp.status_code == 403
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "forbidden"
 
 
 def test_page_gone_returns_html():
@@ -377,3 +398,79 @@ def test_page_gone_returns_html():
         resp = c.get("/page/trigger-gone")
     assert resp.status_code == 410
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "gone"
+
+
+# ── Edge-composed errors (EDGE_COMPOSED_ERRORS) ──────────────────────────────
+
+
+def test_redirect_intercept_set_is_subset_of_app_level_set():
+    """An origin-empty status the edge doesn't compose is a blank page —
+    the hot path may only empty-body what the app-level set covers."""
+    from middleware.error_handler import (
+        EDGE_INTERCEPTED_STATUSES,
+        REDIRECT_EDGE_INTERCEPTED_STATUSES,
+    )
+
+    assert REDIRECT_EDGE_INTERCEPTED_STATUSES <= EDGE_INTERCEPTED_STATUSES
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "slug"),
+    [
+        ("/page/trigger-not-found", 404, "not_found"),
+        ("/page/trigger-gone", 410, "gone"),
+        ("/page/trigger-rate-limited", 429, "rate_limit_exceeded"),
+        ("/page/trigger-blocked", 451, "blocked"),
+        ("/page/trigger-unhandled", 500, "internal_error"),
+    ],
+)
+def test_edge_composed_intercepted_status_returns_empty_body(
+    edge_composed_errors, path, status, slug
+):
+    """Flag on: intercepted statuses return no body — Caddy composes the page.
+
+    Covers the full EDGE_INTERCEPTED_STATUSES set so an accidental change to
+    the set fails here.
+    """
+    app = _build_test_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get(path)
+    assert resp.status_code == status
+    assert resp.headers["X-Error-Code"] == slug
+    assert resp.content == b""
+
+
+def test_edge_composed_non_intercepted_status_keeps_body(edge_composed_errors):
+    """403 is not in the intercept set — the branded page still renders."""
+    app = _build_test_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/page/trigger-forbidden")
+    assert resp.status_code == 403
+    assert resp.headers["X-Error-Code"] == "forbidden"
+    assert "text/html" in resp.headers["content-type"]
+    assert resp.content
+
+
+def test_edge_composed_post_keeps_body(edge_composed_errors):
+    """Flag on: non-GET/HEAD methods keep the rendered body (edge only
+    intercepts GET/HEAD)."""
+    app = _build_test_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.post("/page/trigger-not-found-post")
+    assert resp.status_code == 404
+    assert resp.headers["X-Error-Code"] == "not_found"
+    assert "text/html" in resp.headers["content-type"]
+    assert resp.content
+
+
+def test_edge_composed_json_path_unaffected(edge_composed_errors):
+    """Flag on: JSON error responses are byte-identical to flag-off."""
+    app = _build_test_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/api/v1/trigger-not-found")
+    assert resp.status_code == 404
+    data = resp.json()
+    assert data["error"] == "resource not found"
+    assert data["code"] == "not_found"
+    assert "X-Error-Code" not in resp.headers

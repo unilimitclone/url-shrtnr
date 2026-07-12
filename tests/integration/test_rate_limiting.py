@@ -140,6 +140,20 @@ def test_rate_limit_html_response_on_page_route():
         resp = c.get("/page/test-limited")
     assert resp.status_code == 429
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "rate_limit_exceeded"
+
+
+def test_rate_limit_html_edge_composed_returns_empty_body(edge_composed_errors):
+    """Flag on: the HTML 429 skips the template — Caddy composes the page."""
+    _reset_limiter()
+    router = _make_limited_router("1/minute", prefix="/page")
+    app = _build_test_app(extra_routers=[router])
+    with TestClient(app, raise_server_exceptions=False) as c:
+        c.get("/page/test-limited")
+        resp = c.get("/page/test-limited")
+    assert resp.status_code == 429
+    assert resp.headers["X-Error-Code"] == "rate_limit_exceeded"
+    assert resp.content == b""
 
 
 def test_rate_limit_key_uses_ip_for_anonymous():

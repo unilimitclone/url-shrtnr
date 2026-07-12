@@ -121,6 +121,7 @@ def test_redirect_not_found_returns_404_html():
         resp = client.get("/notexist")
     assert resp.status_code == 404
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "not_found"
 
 
 def test_redirect_blocked_url_returns_451_html():
@@ -131,6 +132,7 @@ def test_redirect_blocked_url_returns_451_html():
         resp = client.get("/blocked1")
     assert resp.status_code == 451
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "blocked"
 
 
 def test_redirect_expired_url_returns_410_html():
@@ -141,6 +143,57 @@ def test_redirect_expired_url_returns_410_html():
         resp = client.get("/expired1")
     assert resp.status_code == 410
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "gone"
+
+
+def test_redirect_not_found_edge_composed_returns_empty_body(edge_composed_errors):
+    """EDGE_COMPOSED_ERRORS on: the hot-path 404 skips the template — Caddy
+    discards the body and composes the Next error page from X-Error-Code."""
+    url_svc = MagicMock()
+    url_svc.resolve = AsyncMock(side_effect=NotFoundError("not found"))
+    app = _build_app(url_svc)
+    with TestClient(app) as client:
+        resp = client.get("/notexist")
+    assert resp.status_code == 404
+    assert resp.headers["X-Error-Code"] == "not_found"
+    assert resp.content == b""
+
+
+def test_redirect_expired_edge_composed_returns_empty_body(edge_composed_errors):
+    """EDGE_COMPOSED_ERRORS on: the hot-path 410 also skips the template."""
+    url_svc = MagicMock()
+    url_svc.resolve = AsyncMock(side_effect=GoneError("expired"))
+    app = _build_app(url_svc)
+    with TestClient(app) as client:
+        resp = client.get("/expired1")
+    assert resp.status_code == 410
+    assert resp.headers["X-Error-Code"] == "gone"
+    assert resp.content == b""
+
+
+def test_redirect_blocked_edge_composed_returns_empty_body(edge_composed_errors):
+    """EDGE_COMPOSED_ERRORS on: the hot-path 451 also skips the template."""
+    url_svc = MagicMock()
+    url_svc.resolve = AsyncMock(side_effect=BlockedUrlError("blocked"))
+    app = _build_app(url_svc)
+    with TestClient(app) as client:
+        resp = client.get("/blocked1")
+    assert resp.status_code == 451
+    assert resp.headers["X-Error-Code"] == "blocked"
+    assert resp.content == b""
+
+
+def test_redirect_bot_block_edge_composed_keeps_body(edge_composed_errors):
+    """403 is excluded from the redirect intercept set — the bot-block page
+    stays server-rendered while still self-describing via X-Error-Code."""
+    url_data = _make_url_cache(schema="v1", block_bots=True)
+    app = _build_app(_mock_url_service(url_data, schema="v1"))
+    with TestClient(app) as client:
+        resp = client.get("/abc123", headers={"User-Agent": BOT_UA})
+    assert resp.status_code == 403
+    assert resp.headers["X-Error-Code"] == "forbidden"
+    assert "text/html" in resp.headers["content-type"]
+    assert resp.content
 
 
 def test_redirect_password_protected_no_password_returns_401_html():
@@ -194,6 +247,7 @@ def test_redirect_sink_forbidden_blocks_redirect():
         resp = client.get("/abc123", headers={"User-Agent": BROWSER_UA})
     assert resp.status_code == 403
     assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "forbidden"
 
 
 def test_redirect_sink_unexpected_error_still_redirects():

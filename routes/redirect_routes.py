@@ -23,6 +23,7 @@ from errors import (
 )
 from infrastructure.logging import get_logger, should_sample
 from infrastructure.templates import templates
+from middleware.error_handler import REDIRECT_EDGE_INTERCEPTED_STATUSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.enums.domain_status import DomainStatus
 from schemas.models.url import SchemaVersion
@@ -45,6 +46,18 @@ _TENANT_ERROR_COPY = {
     "403": ("Access denied", "You don't have permission to view this URL."),
 }
 _NOINDEX_HEADER = "noindex, nofollow, noarchive"
+
+# Machine-readable slugs for the system-default error page so the edge can
+# route on X-Error-Code. Only REDIRECT_EDGE_INTERCEPTED_STATUSES (defined
+# next to the app-level set in middleware/error_handler.py) skip the body;
+# 403 keeps its body always (bot blocks stay server-rendered) but still
+# self-describes.
+_ERROR_SLUGS = {
+    "404": "not_found",
+    "410": "gone",
+    "451": "blocked",
+    "403": "forbidden",
+}
 
 
 def _error_page(request: Request, code: str, message: str, status: int) -> Response:
@@ -87,6 +100,20 @@ def _error_page(request: Request, code: str, message: str, status: int) -> Respo
             headers={"X-Robots-Tag": _NOINDEX_HEADER},
         )
 
+    slug = _ERROR_SLUGS.get(code)
+    # settings can be absent (app built without lifespan) — default-off is
+    # the fail-safe.
+    settings = getattr(request.app.state, "settings", None)
+    if (
+        slug is not None
+        and getattr(settings, "edge_composed_errors", False)
+        and status in REDIRECT_EDGE_INTERCEPTED_STATUSES
+        and request.method in {"GET", "HEAD"}
+    ):
+        # Caddy discards the body and composes the Next error page — skip
+        # the template render on the hot path.
+        return Response(status_code=status, headers={"X-Error-Code": slug})
+
     return templates.TemplateResponse(
         request,
         "error.html",
@@ -96,6 +123,7 @@ def _error_page(request: Request, code: str, message: str, status: int) -> Respo
             "host_url": str(request.base_url),
         },
         status_code=status,
+        headers={"X-Error-Code": slug} if slug is not None else None,
     )
 
 

@@ -418,6 +418,12 @@ class AppSettings(BaseSettings):
     # cutover; delete the flag once the old UI is retired.
     onboarding_redirect_enabled: bool = False
 
+    # Our-deployment-only: intercepted HTML error statuses return empty
+    # bodies + X-Error-Code so Caddy can compose the Next error page at the
+    # edge. Flip EDGE_COMPOSED_ERRORS=true at frontend cutover; self-hosters
+    # never set it and keep the branded error.html exactly as today.
+    edge_composed_errors: bool = False
+
     @cached_property
     def system_default_domain(self) -> str:
         """Canonical fqdn for shorts created without an explicit custom domain."""
