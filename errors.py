@@ -46,6 +46,18 @@ class AuthenticationError(AppError):
     error_code = "authentication_error"
 
 
+class PasswordRequiredError(AuthenticationError):
+    """A password-protected resource was requested without a password."""
+
+    error_code = "password_required"
+
+
+class InvalidPasswordError(AuthenticationError):
+    """A password-protected resource was requested with the wrong password."""
+
+    error_code = "invalid_password"
+
+
 class ForbiddenError(AppError):
     status_code = 403
     error_code = "forbidden"

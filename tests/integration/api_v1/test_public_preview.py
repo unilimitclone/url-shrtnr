@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from dependencies.services import get_public_preview_service
 from schemas.models.url import UrlV2Doc
+from services.public_link_resolver import PublicLinkResolver
 from services.public_preview_service import PublicPreviewService
 
 from .conftest import _build_test_app, _make_url_doc
@@ -69,10 +70,12 @@ def _make_service(
     )
 
     return PublicPreviewService(
-        url_repo,
-        legacy_repo,
-        emoji_repo,
-        system_default_domain="spoo.me",
+        PublicLinkResolver(
+            url_repo,
+            legacy_repo,
+            emoji_repo,
+            system_default_domain="spoo.me",
+        )
     )
 
 

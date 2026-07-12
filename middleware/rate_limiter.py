@@ -118,6 +118,17 @@ class Limits:
     # gets its own bounded budget instead of riding the anon API tier.
     PUBLIC_PREVIEW = "30 per minute; 2000 per day"
 
+    # Public per-link stats (the /stats/{code} wire). Two reasons this
+    # gets its own budget instead of riding the generic API tier: every
+    # anonymous hit can run a 90-day $facet aggregation over a hot link's
+    # clicks — far heavier than a typical API read — and the same bucket
+    # is the password-guess budget (401s are billed like any request, and
+    # v1 passwords compare server-side for cheap, so the limiter is the
+    # only real brake on guessing). Authed keeps headroom: owners
+    # re-checking their own private/password link ride this endpoint too.
+    PUBLIC_STATS_AUTHED = "60 per minute; 2000 per day"
+    PUBLIC_STATS_ANON = "20 per minute; 500 per day"
+
 
 # ── Key resolution ───────────────────────────────────────────────────────────
 

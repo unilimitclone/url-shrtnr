@@ -57,6 +57,11 @@ _TIMEZONE_ALIASES: dict[str, str] = {
     "US/Pacific": "America/Los_Angeles",
 }
 
+# IANA name snapshot — available_timezones() rescans the tzdata files on
+# every call, far too heavy to rebuild per request. Membership checks use
+# this set instead.
+_KNOWN_TIMEZONES: frozenset[str] = frozenset(available_timezones())
+
 
 class StatsService:
     """Analytics query service.
@@ -77,10 +82,10 @@ class StatsService:
         self._click_repo = click_repo
         self._url_repo = url_repo
 
-    # ── Private: timezone helpers ─────────────────────────────────────────────
+    # ── Timezone helpers (shared with the public stats endpoint) ─────────────
 
     @staticmethod
-    def _to_user_tz(dt: datetime | None, tz_name: str) -> datetime | None:
+    def to_user_tz(dt: datetime | None, tz_name: str) -> datetime | None:
         """Convert a UTC datetime to the user's timezone."""
         if dt is None:
             return None
@@ -98,9 +103,22 @@ class StatsService:
             return dt
 
     @staticmethod
+    def normalize_timezone(tz_name: str) -> str:
+        """Map deprecated aliases to canonical IANA names; unknown → UTC.
+
+        Shared by ``query()`` and the public per-link stats endpoint so
+        both normalize identically (and neither rescans tzdata per call).
+        """
+        tz_name = _TIMEZONE_ALIASES.get(tz_name, tz_name)
+        if tz_name not in _KNOWN_TIMEZONES:
+            log.info("invalid_timezone_provided", timezone=tz_name, fallback="UTC")
+            tz_name = "UTC"
+        return tz_name
+
+    @staticmethod
     def _fmt_tz(dt: datetime | None, tz_name: str) -> datetime | None:
         """Convert a UTC datetime to the user's timezone."""
-        return StatsService._to_user_tz(dt, tz_name)
+        return StatsService.to_user_tz(dt, tz_name)
 
     # ── Private: query building ───────────────────────────────────────────────
 
@@ -283,7 +301,7 @@ class StatsService:
 
         return summary, results
 
-    # ── Private: response formatting ─────────────────────────────────────────
+    # ── Response formatting ──────────────────────────────────────────────────
 
     def _format_results(
         self,
@@ -360,10 +378,13 @@ class StatsService:
         return response
 
     @staticmethod
-    def _add_metadata(response: dict[str, Any]) -> dict[str, Any]:
+    def add_metadata(response: dict[str, Any]) -> dict[str, Any]:
         """Enhance the response with metadata and computed percentages.
 
         Preserves the exact logic from utils/stats_utils.format_stats_response_with_metadata().
+        Public: the v1 branch of the public stats endpoint decorates its
+        synthesized wire with this too, so percentages/computed_metrics
+        can never drift between generations.
         """
         response = response.copy()
 
@@ -405,6 +426,48 @@ class StatsService:
         return response
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+    async def compute(
+        self,
+        click_query: dict[str, Any],
+        *,
+        scope: StatsScope,
+        short_code: str | None,
+        start_date: datetime,
+        end_date: datetime,
+        group_by: list[str],
+        metrics: list[str],
+        tz_name: str,
+        filters: dict[str, list[str]] | None = None,
+    ) -> dict[str, Any]:
+        """Run a pre-built clicks ``$match`` and format the standard wire.
+
+        The single public seam over the aggregation chain ($facet
+        execution → result formatting → summary → metadata). Both
+        ``query()`` and the public per-link stats endpoint go through
+        this, so the wire shape can never drift between the dashboard
+        and the public page.
+
+        The caller owns access control and scoping: ``click_query``
+        arrives fully built (owner-scoped, url_id-scoped, ...) with
+        already-validated dates and a normalized timezone.
+        """
+        summary, aggregation_results = await self._execute_all_stats(
+            click_query, group_by, start_date, end_date, tz_name
+        )
+        response = self._format_results(
+            scope,
+            short_code,
+            start_date,
+            end_date,
+            filters or {},
+            group_by,
+            metrics,
+            tz_name,
+            aggregation_results,
+        )
+        response["summary"] = summary
+        return self.add_metadata(response)
 
     async def query(
         self,
@@ -468,10 +531,7 @@ class StatsService:
             )
 
         # ── Validate timezone ─────────────────────────────────────────────────
-        tz_name = _TIMEZONE_ALIASES.get(tz_name, tz_name)
-        if tz_name not in available_timezones():
-            log.info("invalid_timezone_provided", timezone=tz_name, fallback="UTC")
-            tz_name = "UTC"
+        tz_name = self.normalize_timezone(tz_name)
 
         # ── Scope/target validation ───────────────────────────────────────────
         if scope == StatsScope.ANON:
@@ -510,28 +570,22 @@ class StatsService:
                 )
                 raise AuthenticationError("authentication required for scope=all")
 
-        # ── Execute ───────────────────────────────────────────────────────────
+        # ── Execute + format ──────────────────────────────────────────────────
         click_query = self._build_click_query(
             scope, owner_id, short_code, start_date, end_date, filters
         )
-        summary, aggregation_results = await self._execute_all_stats(
-            click_query, group_by, start_date, end_date, tz_name
+        response = await self.compute(
+            click_query,
+            scope=scope,
+            short_code=short_code,
+            start_date=start_date,
+            end_date=end_date,
+            group_by=group_by,
+            metrics=metrics,
+            tz_name=tz_name,
+            filters=filters,
         )
-
-        # ── Format ────────────────────────────────────────────────────────────
-        response = self._format_results(
-            scope,
-            short_code,
-            start_date,
-            end_date,
-            filters,
-            group_by,
-            metrics,
-            tz_name,
-            aggregation_results,
-        )
-        response["summary"] = summary
-        response = self._add_metadata(response)
+        summary = response.get("summary", {})
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         log.info(
