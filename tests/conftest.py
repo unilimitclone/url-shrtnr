@@ -88,6 +88,7 @@ def build_test_app(
         app.state.stats_service = AsyncMock()
         app.state.export_service = AsyncMock()
         app.state.api_key_service = AsyncMock()
+        app.state.page_layout_service = AsyncMock()
         app.state.oauth_service = AsyncMock()
         app.state.profile_picture_service = AsyncMock()
         app.state.contact_service = AsyncMock()

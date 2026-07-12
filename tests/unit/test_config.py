@@ -121,6 +121,23 @@ def test_is_production(with_mongo, env, expected):
 
 
 @pytest.mark.parametrize(
+    "env, should_boot",
+    [("production", False), ("development", True)],
+    ids=["production_refuses", "development_allows"],
+)
+def test_mock_dcv_refused_in_production(with_mongo, env, should_boot):
+    # The DCV mock verifies unconditionally; a mis-set env var in prod
+    # would let anyone claim any domain. Startup must refuse, not warn.
+    with_mongo.setenv("ENV", env)
+    with_mongo.setenv("CUSTOM_DOMAINS_MOCK_DCV", "true")
+    if should_boot:
+        assert AppSettings().custom_domains.mock_dcv is True
+    else:
+        with pytest.raises(PydanticValidationError, match="MOCK_DCV"):
+            AppSettings()
+
+
+@pytest.mark.parametrize(
     "secret_key, flask_secret_key, expected",
     [
         (None, "flask-secret", "flask-secret"),  # falls back to FLASK_SECRET_KEY

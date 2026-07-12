@@ -21,6 +21,7 @@ class TestEnsureIndexes:
         api_keys_col = AsyncMock()
         tokens_col = AsyncMock()
 
+        page_layouts_col = AsyncMock()
         app_grants_col = AsyncMock()
         feature_flags_col = AsyncMock()
         custom_domains_col = AsyncMock()
@@ -31,6 +32,7 @@ class TestEnsureIndexes:
             "clicks": clicks_col,
             "api-keys": api_keys_col,
             "verification-tokens": tokens_col,
+            "page-layouts": page_layouts_col,
             "app-grants": app_grants_col,
             "feature_flags": feature_flags_col,
             "custom_domains": custom_domains_col,
@@ -43,6 +45,9 @@ class TestEnsureIndexes:
 
         # Check a few critical indexes
         users_col.create_index.assert_any_await([("email", 1)], unique=True)
+        page_layouts_col.create_index.assert_any_await(
+            [("user_id", 1), ("page", 1)], unique=True
+        )
         # Per-domain alias namespace via compound unique. The legacy
         # ``alias_1`` global unique is dropped (see test below).
         urls_v2_col.create_index.assert_any_await(

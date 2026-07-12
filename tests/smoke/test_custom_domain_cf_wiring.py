@@ -32,6 +32,7 @@ def _wire(custom_domains: CustomDomainSettings):
         "users": MagicMock(name="users"),
         "verification-tokens": MagicMock(name="tokens"),
         "api-keys": MagicMock(name="apikeys"),
+        "page-layouts": MagicMock(name="page-layouts"),
         "blocked-urls": MagicMock(name="blocked-urls"),
         "app-grants": MagicMock(name="app-grants"),
         "feature_flags": MagicMock(name="feature_flags"),
@@ -50,6 +51,7 @@ class TestCfSaasWiring:
     def test_single_cf_backend_fills_three_slots(self):
         app = _wire(
             CustomDomainSettings(
+                mock_dcv=False,
                 enabled=True,
                 cf_zone_id="zone1",
                 cf_api_token="tok",
@@ -67,6 +69,7 @@ class TestCfSaasWiring:
     def test_only_cf_methods_registered(self):
         app = _wire(
             CustomDomainSettings(
+                mock_dcv=False,
                 enabled=True,
                 cf_zone_id="zone1",
                 cf_api_token="tok",
@@ -88,7 +91,7 @@ class TestWiringWithoutCfConfigured:
 
     def test_wires_cleanly_when_cf_unset(self):
         # No cf_zone_id / cf_api_token — should not raise at wire time.
-        app = _wire(CustomDomainSettings(enabled=False))
+        app = _wire(CustomDomainSettings(enabled=False, mock_dcv=False))
         svc = app.state.custom_domain_service
         assert svc is not None
         assert isinstance(svc._edge, CfSaasBackend)
@@ -97,4 +100,4 @@ class TestWiringWithoutCfConfigured:
 class TestCfConfigValidation:
     def test_cf_zone_id_without_token_fails_at_settings_load(self):
         with pytest.raises(ValueError, match="cf_api_token"):
-            CustomDomainSettings(cf_zone_id="zone1")
+            CustomDomainSettings(cf_zone_id="zone1", mock_dcv=False)

@@ -19,6 +19,7 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
     urls_v2_col = db["urlsV2"]
     clicks_col = db["clicks"]
     api_keys_col = db["api-keys"]
+    page_layouts_col = db["page-layouts"]
     tokens_col = db["verification-tokens"]
 
     # ── users ──────────────────────────────────────────────────────────────
@@ -86,6 +87,7 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
     await api_keys_col.create_index([("user_id", 1)])
     await api_keys_col.create_index([("token_hash", 1)], unique=True)
     await api_keys_col.create_index([("expires_at", 1)], expireAfterSeconds=0)
+    await page_layouts_col.create_index([("user_id", 1), ("page", 1)], unique=True)
 
     # ── verification-tokens ────────────────────────────────────────────────
     await tokens_col.create_index([("user_id", 1)])

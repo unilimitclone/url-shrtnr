@@ -14,6 +14,8 @@ DeviceRefreshRequest          — POST /auth/device/refresh
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import EmailStr, Field
 
 from schemas.dto.base import RequestBase
@@ -123,4 +125,29 @@ class DeviceRefreshRequest(RequestBase):
     refresh_token: str = Field(
         min_length=1,
         description="JWT refresh token issued by /auth/device/token",
+    )
+
+
+class OnboardingStateRequest(RequestBase):
+    """Request body for PUT /auth/onboarding."""
+
+    step: Literal["welcome", "path", "link", "api", "domain", "apps", "recap"] = Field(
+        description="Wizard step the user is currently on",
+        examples=["domain"],
+    )
+    path: Literal["links", "api"] | None = Field(
+        default=None,
+        description="Chosen onboarding path, once the user has forked",
+        examples=["links"],
+    )
+
+
+class OnboardingCompleteRequest(RequestBase):
+    """Request body for POST /auth/onboarding/complete."""
+
+    heard_from: str | None = Field(
+        default=None,
+        max_length=64,
+        description="HDYHAU attribution answer, captured once at completion",
+        examples=["GitHub"],
     )

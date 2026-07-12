@@ -12,6 +12,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Request
 
 from config import AppSettings, JWTSettings
+from infrastructure.cache.onboarding_cache import OnboardingCache
 from infrastructure.geoip import GeoIPService
 from schemas.models.app import AppEntry
 from services.tenant_resolver import TenantResolver
@@ -57,6 +58,11 @@ def get_app_registry(request: Request) -> dict[str, AppEntry]:
     return request.app.state.app_registry
 
 
+def get_onboarding_cache(request: Request) -> OnboardingCache:
+    """Return the OnboardingCache singleton from app.state."""
+    return request.app.state.onboarding_cache
+
+
 def get_tenant_resolver(request: Request) -> TenantResolver:
     """Return the TenantResolver singleton (used by PR4 middleware)."""
     return request.app.state.tenant_resolver
@@ -68,5 +74,6 @@ Settings = Annotated[AppSettings, Depends(get_settings)]
 JwtConfig = Annotated[JWTSettings, Depends(get_jwt_config)]
 GeoIP = Annotated[GeoIPService, Depends(get_geoip_service)]
 OAuthProviders = Annotated[dict[str, Any], Depends(get_oauth_providers)]
+OnboardingCacheDep = Annotated[OnboardingCache, Depends(get_onboarding_cache)]
 AppRegistryDep = Annotated[dict[str, AppEntry], Depends(get_app_registry)]
 TenantResolverDep = Annotated[TenantResolver, Depends(get_tenant_resolver)]

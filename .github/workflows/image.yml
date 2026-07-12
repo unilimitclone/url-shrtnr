@@ -4,6 +4,10 @@ name: Build Image (edge)
 # `edge` tag. Nothing deploys from here — deploys happen on release publish
 # (deploy.yml). This keeps every merge one dispatch away from prod (or from
 # a rollback) and keeps the buildx cache warm so release builds are fast.
+#
+# workflow_dispatch builds ANY ref (e.g. a feature branch for the beta
+# slice) as a sha-only image — the `edge` tag is guarded to push events
+# so branch builds can never steal it from main.
 
 on:
   push:
@@ -13,6 +17,7 @@ on:
       - '**/*.md'
       - '**/*.rst'
       - 'docs/**'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -54,7 +59,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=edge
+            type=raw,value=edge,enable=${{ github.event_name == 'push' }}
             type=sha,prefix=,format=short
 
       - name: Build and push

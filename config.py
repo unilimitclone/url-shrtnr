@@ -142,6 +142,13 @@ class CustomDomainSettings(BaseSettings):
     # public method short-circuits with FeatureDisabledError.
     enabled: bool = False
 
+    # Local-dev escape hatch: wire MockDcvBackend instead of Cloudflare.
+    # register() returns the same two-record shape prod serves (routing
+    # CNAME + ownership TXT) and verify() always succeeds, so the full
+    # PENDING → ACTIVE dashboard flow works without CF creds. Guarded:
+    # startup fails if enabled while ENV=production (see model_validator).
+    mock_dcv: bool = False
+
     # Quotas. Flat for all users in v1 (no tier branching).
     # All counts must be >= 1 — a zero quota silently bricks the feature
     # (every create raises QuotaExceeded with no log signal that the cause
@@ -405,6 +412,12 @@ class AppSettings(BaseSettings):
     app_url: str = "https://spoo.me"
     app_name: str = "spoo.me"
 
+    # The Next frontend owns /onboarding; until the edge routes it there,
+    # new OAuth accounts must land on the default redirect or they 404
+    # right after signup. Flip ONBOARDING_REDIRECT_ENABLED=true at frontend
+    # cutover; delete the flag once the old UI is retired.
+    onboarding_redirect_enabled: bool = False
+
     @cached_property
     def system_default_domain(self) -> str:
         """Canonical fqdn for shorts created without an explicit custom domain."""
@@ -547,6 +560,14 @@ class AppSettings(BaseSettings):
             self.r2 = R2StorageSettings()
         if self.meta_tags is None:
             self.meta_tags = MetaTagsSettings()
+
+        # The DCV mock makes domain verification succeed unconditionally —
+        # in production that would let anyone claim any domain. Refuse to
+        # boot rather than trust an env var to never be mis-set there.
+        if self.env == "production" and self.custom_domains.mock_dcv:
+            raise ValueError(
+                "CUSTOM_DOMAINS_MOCK_DCV must not be enabled in production"
+            )
 
         return self
 

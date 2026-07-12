@@ -44,6 +44,7 @@ class Limits:
     LOGOUT = "60 per hour"
     TOKEN_REFRESH = "20 per minute"
     AUTH_READ = "60 per minute"
+    ONBOARDING_WRITE = "30 per minute"
     SET_PASSWORD = "5 per minute"
     RESEND_VERIFICATION = "1 per minute; 3 per hour"
     EMAIL_VERIFY = "10 per hour"
@@ -70,6 +71,11 @@ class Limits:
     API_KEY_READ = "60 per minute"
     API_KEY_DELETE = "30 per minute"
 
+    # Per-user page layouts (client debounces writes)
+    LAYOUT_READ = "120 per minute"
+    LAYOUT_WRITE = "60 per minute"
+    LAYOUT_DELETE = "30 per minute"
+
     # URL management
     URL_MANAGE = "120 per minute; 2000 per day"
     URL_DELETE = "60 per minute; 1000 per day"
@@ -78,8 +84,10 @@ class Limits:
     # Destination metadata fetch — outbound fetches on our dime; tight.
     METADATA_FETCH = "20 per minute; 500 per day"
 
-    # Custom domains
-    DOMAIN_CREATE = "5 per hour"
+    # Custom domains. Create counts FAILED attempts too (slowapi increments
+    # at route entry), so the budget must absorb typos, blocked TLDs, and
+    # flag-gate 404s without stranding the user for long.
+    DOMAIN_CREATE = "10 per hour"
     DOMAIN_VERIFY = "10 per minute"
     DOMAIN_READ = "60 per minute"
     DOMAIN_DELETE = "10 per minute"
