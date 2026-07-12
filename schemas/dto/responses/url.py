@@ -285,6 +285,6 @@ class AliasCheckResponse(ResponseBase):
     available: bool = Field(description="Whether the alias is free to use.")
     reason: str | None = Field(
         default=None,
-        description="When unavailable: 'length', 'format', or 'taken'.",
+        description="When unavailable: 'length', 'format', 'reserved', or 'taken'.",
         examples=["taken"],
     )

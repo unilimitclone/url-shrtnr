@@ -66,6 +66,7 @@ from schemas.models.url import (
 )
 from shared.datetime_utils import parse_datetime
 from shared.generators import generate_short_code_v2
+from shared.reserved_aliases import is_reserved_alias
 from shared.url_utils import extract_hostname
 from shared.validators import (
     is_emoji_alias,
@@ -77,7 +78,7 @@ from shared.validators import (
 
 log = get_logger(__name__)
 
-AliasCheckResult = Literal["available", "length", "format", "taken"]
+AliasCheckResult = Literal["available", "length", "format", "reserved", "taken"]
 
 
 def _validate_geo_rules(
@@ -161,6 +162,13 @@ async def _handle_alias(
             if "domain" in request.model_fields_set
             else existing.domain
         )
+        # Same reserved check as create — an edit must not be a side door
+        # for aliases that would be rejected at creation.
+        if scope == service._system_default_domain and is_reserved_alias(
+            request.alias
+        ):
+            log.info("url_alias_reserved", short_code=request.alias, domain=scope)
+            raise ValidationError("Alias is reserved", field="alias")
         if not await service.check_alias_available(request.alias, domain=scope):
             log.info(
                 "url_alias_conflict",
@@ -508,14 +516,18 @@ class UrlService:
         """Evaluate a candidate alias against the full creation rules.
 
         Mirrors what POST /api/v1/shorten would enforce (length, charset,
-        collision) so the UI can surface precise feedback without duplicating
-        the rules. Returns a single literal describing the first failing check,
-        or ``"available"`` when the alias would be accepted today.
+        reserved words, collision) so the UI can surface precise feedback
+        without duplicating the rules. Returns a single literal describing
+        the first failing check, or ``"available"`` when the alias would be
+        accepted today.
         """
         if not (3 <= len(alias) <= 16):
             return "length"
         if not validate_alias(alias):
             return "format"
+        target_domain = domain or self._system_default_domain
+        if target_domain == self._system_default_domain and is_reserved_alias(alias):
+            return "reserved"
         if not await self.check_alias_available(alias, domain=domain):
             return "taken"
         return "available"
@@ -662,6 +674,13 @@ class UrlService:
                 raise ValidationError(
                     "Alias contains invalid characters", field="alias"
                 )
+            # Reserved words only shadow paths on the default domain —
+            # custom-domain namespaces carry no frontend routes.
+            if target_domain == self._system_default_domain and is_reserved_alias(
+                request.alias
+            ):
+                log.info("url_alias_reserved", short_code=request.alias)
+                raise ValidationError("Alias is reserved", field="alias")
             if not await self.check_alias_available(
                 request.alias, domain=target_domain
             ):

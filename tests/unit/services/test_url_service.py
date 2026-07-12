@@ -485,6 +485,57 @@ class TestUrlServiceCreate:
             await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
 
     @pytest.mark.asyncio
+    async def test_create_reserved_alias_raises_validation_error(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        legacy_repo.check_exists.return_value = False
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com", alias="pricing")
+        with pytest.raises(ValidationError):
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+    @pytest.mark.asyncio
+    async def test_create_reserved_alias_allowed_on_custom_domain(self):
+        # Custom-domain namespaces carry no frontend routes — "pricing"
+        # only shadows a path on the default domain.
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com", alias="pricing")
+        await svc.create(
+            req, owner_id=USER_OID, client_ip="1.2.3.4", domain="go.example.com"
+        )
+        url_repo.insert.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_check_alias_reports_reserved(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_repo.check_alias_exists.return_value = False
+        legacy_repo.check_exists.return_value = False
+
+        assert await svc.check_alias("pricing") == "reserved"
+        assert await svc.check_alias("pricing", domain="go.example.com") == "available"
+
+    @pytest.mark.asyncio
     async def test_create_blocked_url_raises_validation_error(self):
         url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
         svc = make_service(

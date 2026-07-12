@@ -131,7 +131,7 @@ async def check_alias(
 ) -> AliasCheckResponse:
     """Check whether a proposed alias would be accepted by POST /api/v1/shorten.
 
-    Reason codes on a negative result (``length``/``format``/``taken``) let the
+    Reason codes on a negative result (``length``/``format``/``reserved``/``taken``) let the
     UI render precise inline feedback without duplicating the validation rules.
 
     Pass ``domain`` to scope the check to a custom-domain tenant — required
