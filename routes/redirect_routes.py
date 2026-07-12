@@ -23,6 +23,7 @@ from errors import (
 )
 from infrastructure.logging import get_logger, should_sample
 from infrastructure.templates import templates
+from middleware.error_handler import REDIRECT_EDGE_INTERCEPTED_STATUSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.enums.domain_status import DomainStatus
 from schemas.models.url import SchemaVersion
@@ -47,15 +48,16 @@ _TENANT_ERROR_COPY = {
 _NOINDEX_HEADER = "noindex, nofollow, noarchive"
 
 # Machine-readable slugs for the system-default error page so the edge can
-# route on X-Error-Code. Only 404/410/451 are edge-intercepted; 403 keeps its
-# body always (bot blocks stay server-rendered) but still self-describes.
+# route on X-Error-Code. Only REDIRECT_EDGE_INTERCEPTED_STATUSES (defined
+# next to the app-level set in middleware/error_handler.py) skip the body;
+# 403 keeps its body always (bot blocks stay server-rendered) but still
+# self-describes.
 _ERROR_SLUGS = {
     "404": "not_found",
     "410": "gone",
     "451": "blocked",
     "403": "forbidden",
 }
-_EDGE_INTERCEPTED_CODES = {"404", "410", "451"}
 
 
 def _error_page(request: Request, code: str, message: str, status: int) -> Response:
@@ -104,7 +106,7 @@ def _error_page(request: Request, code: str, message: str, status: int) -> Respo
     if (
         slug is not None
         and getattr(settings, "edge_composed_errors", False)
-        and code in _EDGE_INTERCEPTED_CODES
+        and status in REDIRECT_EDGE_INTERCEPTED_STATUSES
         and request.method in {"GET", "HEAD"}
     ):
         # Caddy discards the body and composes the Next error page — skip

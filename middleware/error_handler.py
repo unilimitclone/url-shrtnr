@@ -69,8 +69,13 @@ def _wants_json(request: Request) -> bool:
 
 
 # Statuses the edge intercepts when EDGE_COMPOSED_ERRORS is on — must stay
-# in sync with the Caddy handle_response matcher and routes/redirect_routes.py.
-_EDGE_INTERCEPTED_STATUSES = {404, 410, 429, 451, 500}
+# in sync with the Caddy handle_response matcher. Two intentionally
+# different sets: the app-level handlers below hand every intercepted
+# status to the edge, while the redirect hot path
+# (routes/redirect_routes.py) only intercepts resolve failures — its 403
+# bot-block page always keeps its server-rendered body.
+EDGE_INTERCEPTED_STATUSES = {404, 410, 429, 451, 500}
+REDIRECT_EDGE_INTERCEPTED_STATUSES = {404, 410, 451}
 
 
 def _error_html(
@@ -87,7 +92,7 @@ def _error_html(
     settings = getattr(request.app.state, "settings", None)
     if (
         getattr(settings, "edge_composed_errors", False)
-        and status_code in _EDGE_INTERCEPTED_STATUSES
+        and status_code in EDGE_INTERCEPTED_STATUSES
         and request.method in {"GET", "HEAD"}
     ):
         return Response(status_code=status_code, headers={"X-Error-Code": slug})
