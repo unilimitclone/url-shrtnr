@@ -498,8 +498,11 @@ class TestUrlServiceCreate:
         from schemas.dto.requests.url import CreateUrlRequest
 
         req = CreateUrlRequest(long_url="https://example.com", alias="pricing")
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc:
             await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        # Pin the error contract — the frontend keys inline feedback off it.
+        assert exc.value.field == "alias"
+        assert "reserved" in exc.value.message.lower()
 
     @pytest.mark.asyncio
     async def test_create_reserved_alias_allowed_on_custom_domain(self):
@@ -534,6 +537,47 @@ class TestUrlServiceCreate:
 
         assert await svc.check_alias("pricing") == "reserved"
         assert await svc.check_alias("pricing", domain="go.example.com") == "available"
+
+    @pytest.mark.asyncio
+    async def test_check_alias_earlier_checks_win_over_reserved(self, monkeypatch):
+        # check_alias documents "first failing check wins". No real reserved
+        # entry can fail length/format (test_reserved_aliases pins that
+        # invariant), so force the reserved arm on to prove the ordering.
+        import services.url_service as url_service_module
+
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        monkeypatch.setattr(
+            url_service_module, "is_reserved_alias", lambda _alias: True
+        )
+
+        assert await svc.check_alias("ab") == "length"
+        assert await svc.check_alias("bad alias!") == "format"
+
+    @pytest.mark.asyncio
+    async def test_update_domain_move_rejects_reserved_alias_on_default(self):
+        # A domain-only edit must not smuggle a reserved alias onto the
+        # default domain — "pricing" is legal on go.example.com by design.
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc(alias="pricing", domain="go.example.com")
+        url_repo.find_by_id.return_value = existing
+        url_repo.check_alias_exists.return_value = False
+        legacy_repo.check_exists.return_value = False
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(domain=SYSTEM_DEFAULT_DOMAIN)
+        with pytest.raises(ValidationError) as exc:
+            await svc.update(URL_OID, req, USER_OID)
+        assert exc.value.field == "domain"
+        assert "reserved" in exc.value.message.lower()
+        url_repo.update.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_create_blocked_url_raises_validation_error(self):

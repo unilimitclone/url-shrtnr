@@ -191,6 +191,20 @@ async def _handle_domain(
     target = request.domain or service._system_default_domain
     if target == existing.domain:
         return
+    # A domain-only move must not smuggle a reserved alias onto the default
+    # domain — reserved names are legal on custom domains, so the alias may
+    # be arriving from a namespace where it was fine. When alias is also
+    # changing, _handle_alias already vetted the new one against `target`.
+    effective_alias = ops.get("alias", existing.alias)
+    if target == service._system_default_domain and is_reserved_alias(effective_alias):
+        log.info(
+            "url_domain_move_alias_reserved",
+            short_code=effective_alias,
+            from_domain=existing.domain,
+        )
+        raise ValidationError(
+            f"Alias '{effective_alias}' is reserved on {target}", field="domain"
+        )
     # If alias isn't also changing, verify the existing alias is free on the
     # target tenant. The alias handler already ran (it's listed first in
     # FIELD_HANDLERS) and validated its own collision against `target`, so we
