@@ -164,9 +164,7 @@ async def _handle_alias(
         )
         # Same reserved check as create — an edit must not be a side door
         # for aliases that would be rejected at creation.
-        if scope == service._system_default_domain and is_reserved_alias(
-            request.alias
-        ):
+        if scope == service._system_default_domain and is_reserved_alias(request.alias):
             log.info("url_alias_reserved", short_code=request.alias, domain=scope)
             raise ValidationError("Alias is reserved", field="alias")
         if not await service.check_alias_available(request.alias, domain=scope):
