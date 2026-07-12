@@ -41,8 +41,6 @@ def test_existing_account_never_redirects_to_onboarding():
 
 def test_unsafe_next_still_falls_back():
     assert (
-        resolve_post_auth_redirect(
-            "//evil.com", is_new=True, onboarding_enabled=True
-        )
+        resolve_post_auth_redirect("//evil.com", is_new=True, onboarding_enabled=True)
         == "/dashboard"
     )
