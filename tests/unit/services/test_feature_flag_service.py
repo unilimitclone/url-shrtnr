@@ -171,6 +171,20 @@ class TestRolloutAllowlist:
         assert await service.is_enabled("test_flag", _user(USER_A)) is True
 
     @pytest.mark.asyncio
+    async def test_email_only_allowlist_denies_stub_without_email_attribute(self):
+        # Pins _email_of's getattr fallback: a user object with NO email
+        # attribute at all (not CurrentUser with email=None) against an
+        # email-ONLY allowlist → graceful deny, no AttributeError.
+        flag = _flag(
+            rollout_type=RolloutType.ALLOWLIST,
+            allowlist_emails=["alice@example.com"],
+        )
+        service, _, _ = make_service(flag=flag)
+        stub = _user(USER_A)  # SimpleNamespace; email attribute omitted
+        assert not hasattr(stub, "email")
+        assert await service.is_enabled("test_flag", stub) is False
+
+    @pytest.mark.asyncio
     async def test_current_user_email_field_flows_through(self):
         """CurrentUser.email (JWT "email" claim / UserDoc email) satisfies
         email-only allowlists — the real dataclass, not a stub."""

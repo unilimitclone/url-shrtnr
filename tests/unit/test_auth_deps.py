@@ -236,6 +236,21 @@ class TestGetCurrentUser:
         assert result.email is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_email", [42, ["alice@example.com"]])
+    async def test_jwt_non_string_email_claim_yields_none_email(self, bad_email):
+        # A token whose "email" claim is not a string (int, list, …) must
+        # still authenticate — the claim parses to None, never an error.
+        token = make_jwt_token(email=bad_email)
+        req = make_request(auth_header=f"Bearer {token}")
+
+        with patch("dependencies.auth.get_settings", return_value=make_settings()):
+            result = await get_current_user(req, db=MagicMock())
+
+        assert result is not None
+        assert result.user_id == USER_OID
+        assert result.email is None
+
+    @pytest.mark.asyncio
     async def test_token_factory_round_trip_populates_email(self):
         # Mint with the real TokenFactory → resolve via get_current_user:
         # the email claim survives the round trip and is lowercased.
