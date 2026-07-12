@@ -26,6 +26,7 @@ class PutLayoutRequest(RequestBase):
     @field_validator("layout", mode="after")
     @classmethod
     def _cap_size(cls, v: dict[str, Any]) -> dict[str, Any]:
-        if len(json.dumps(v, separators=(",", ":"))) > MAX_LAYOUT_BYTES:
+        raw = json.dumps(v, separators=(",", ":"), ensure_ascii=False)
+        if len(raw.encode("utf-8")) > MAX_LAYOUT_BYTES:
             raise ValueError("layout document too large (max 32 KiB)")
         return v

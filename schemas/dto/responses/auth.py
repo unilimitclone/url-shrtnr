@@ -222,7 +222,7 @@ class OnboardingStateResponse(ResponseBase):
     """
 
     step: str | None = Field(
-        default=None, description="Stored wizard step", examples=["artifact"]
+        default=None, description="Stored wizard step", examples=["link"]
     )
     path: str | None = Field(
         default=None, description="Chosen path (links or api)", examples=["links"]

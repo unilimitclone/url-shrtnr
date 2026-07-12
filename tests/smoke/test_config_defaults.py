@@ -92,7 +92,11 @@ def test_is_production_false_for_development() -> None:
 
 def test_is_production_true_for_production() -> None:
     """is_production should return True when env is 'production'."""
-    with patch.dict(os.environ, {"ENV": "production"}, clear=False):
+    with patch.dict(
+        os.environ,
+        {"ENV": "production", "CUSTOM_DOMAINS_MOCK_DCV": "false"},
+        clear=False,
+    ):
         settings = AppSettings()
         assert settings.is_production is True
 

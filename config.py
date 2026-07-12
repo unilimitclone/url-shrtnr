@@ -145,7 +145,8 @@ class CustomDomainSettings(BaseSettings):
     # Local-dev escape hatch: wire MockDcvBackend instead of Cloudflare.
     # register() returns the same two-record shape prod serves (routing
     # CNAME + ownership TXT) and verify() always succeeds, so the full
-    # PENDING → ACTIVE dashboard flow works without CF creds. Never prod.
+    # PENDING → ACTIVE dashboard flow works without CF creds. Guarded:
+    # startup fails if enabled while ENV=production (see model_validator).
     mock_dcv: bool = False
 
     # Quotas. Flat for all users in v1 (no tier branching).
@@ -553,6 +554,14 @@ class AppSettings(BaseSettings):
             self.r2 = R2StorageSettings()
         if self.meta_tags is None:
             self.meta_tags = MetaTagsSettings()
+
+        # The DCV mock makes domain verification succeed unconditionally —
+        # in production that would let anyone claim any domain. Refuse to
+        # boot rather than trust an env var to never be mis-set there.
+        if self.env == "production" and self.custom_domains.mock_dcv:
+            raise ValueError(
+                "CUSTOM_DOMAINS_MOCK_DCV must not be enabled in production"
+            )
 
         return self
 

@@ -75,6 +75,10 @@ async def get_onboarding_state(
     return OnboardingStateResponse(
         step=step,
         path=data.get("path"),
+        # "done" is the recap PAGE (a step you can sit on and resume to);
+        # "completed" is the terminal marker the client writes when the
+        # user leaves the flow. Reaching done without finishing must NOT
+        # read as completed, so the gate keeps routing back into the flow.
         completed=step == "completed",
     )
 
