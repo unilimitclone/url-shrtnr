@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
+import pytest
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
@@ -23,10 +24,12 @@ os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017/")
 from config import AppSettings
 from errors import (
     AuthenticationError,
+    BlockedUrlError,
     ConflictError,
     ForbiddenError,
     GoneError,
     NotFoundError,
+    RateLimitError,
     ValidationError,
 )
 from middleware.error_handler import register_error_handlers
@@ -103,6 +106,16 @@ async def page_forbidden(request: Request):
 @_page_router.get("/page/trigger-gone")
 async def page_gone(request: Request):
     raise GoneError("page expired")
+
+
+@_page_router.get("/page/trigger-blocked")
+async def page_blocked(request: Request):
+    raise BlockedUrlError("page blocked")
+
+
+@_page_router.get("/page/trigger-rate-limited")
+async def page_rate_limited(request: Request):
+    raise RateLimitError("too many requests")
 
 
 @_page_router.get("/page/trigger-unhandled")
@@ -391,39 +404,35 @@ def test_page_gone_returns_html():
 # ── Edge-composed errors (EDGE_COMPOSED_ERRORS) ──────────────────────────────
 
 
-def _build_edge_composed_app() -> FastAPI:
-    """Build the test app with the edge-composition flag on.
+@pytest.mark.parametrize(
+    ("path", "status", "slug"),
+    [
+        ("/page/trigger-not-found", 404, "not_found"),
+        ("/page/trigger-gone", 410, "gone"),
+        ("/page/trigger-rate-limited", 429, "rate_limit_exceeded"),
+        ("/page/trigger-blocked", 451, "blocked"),
+        ("/page/trigger-unhandled", 500, "internal_error"),
+    ],
+)
+def test_edge_composed_intercepted_status_returns_empty_body(
+    edge_composed_errors, path, status, slug
+):
+    """Flag on: intercepted statuses return no body — Caddy composes the page.
 
-    AppSettings is constructed inside _build_test_app, so patching the env
-    around the build is enough — no lifespan surgery needed.
+    Covers the full EDGE_INTERCEPTED_STATUSES set so an accidental change to
+    the set fails here.
     """
-    with patch.dict(os.environ, {"EDGE_COMPOSED_ERRORS": "true"}, clear=False):
-        return _build_test_app()
-
-
-def test_edge_composed_intercepted_status_returns_empty_body():
-    """Flag on: intercepted statuses return no body — Caddy composes the page."""
-    app = _build_edge_composed_app()
+    app = _build_test_app()
     with TestClient(app, raise_server_exceptions=False) as c:
-        resp = c.get("/page/trigger-not-found")
-    assert resp.status_code == 404
-    assert resp.headers["X-Error-Code"] == "not_found"
+        resp = c.get(path)
+    assert resp.status_code == status
+    assert resp.headers["X-Error-Code"] == slug
     assert resp.content == b""
 
 
-def test_edge_composed_500_returns_empty_body():
-    """Flag on: unhandled exceptions on page routes also skip the template."""
-    app = _build_edge_composed_app()
-    with TestClient(app, raise_server_exceptions=False) as c:
-        resp = c.get("/page/trigger-unhandled")
-    assert resp.status_code == 500
-    assert resp.headers["X-Error-Code"] == "internal_error"
-    assert resp.content == b""
-
-
-def test_edge_composed_non_intercepted_status_keeps_body():
+def test_edge_composed_non_intercepted_status_keeps_body(edge_composed_errors):
     """403 is not in the intercept set — the branded page still renders."""
-    app = _build_edge_composed_app()
+    app = _build_test_app()
     with TestClient(app, raise_server_exceptions=False) as c:
         resp = c.get("/page/trigger-forbidden")
     assert resp.status_code == 403
@@ -432,10 +441,10 @@ def test_edge_composed_non_intercepted_status_keeps_body():
     assert resp.content
 
 
-def test_edge_composed_post_keeps_body():
+def test_edge_composed_post_keeps_body(edge_composed_errors):
     """Flag on: non-GET/HEAD methods keep the rendered body (edge only
     intercepts GET/HEAD)."""
-    app = _build_edge_composed_app()
+    app = _build_test_app()
     with TestClient(app, raise_server_exceptions=False) as c:
         resp = c.post("/page/trigger-not-found-post")
     assert resp.status_code == 404
@@ -444,9 +453,9 @@ def test_edge_composed_post_keeps_body():
     assert resp.content
 
 
-def test_edge_composed_json_path_unaffected():
+def test_edge_composed_json_path_unaffected(edge_composed_errors):
     """Flag on: JSON error responses are byte-identical to flag-off."""
-    app = _build_edge_composed_app()
+    app = _build_test_app()
     with TestClient(app, raise_server_exceptions=False) as c:
         resp = c.get("/api/v1/trigger-not-found")
     assert resp.status_code == 404
