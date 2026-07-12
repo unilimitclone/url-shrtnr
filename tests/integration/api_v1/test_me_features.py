@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
-from dependencies import get_current_user, get_feature_flag_service, require_auth
+from dependencies import get_current_user, get_feature_flag_service, require_jwt
 from services.feature_flag_service import (
     AB_TESTING_FLAG,
     CUSTOM_DOMAINS_FLAG,
@@ -34,7 +34,7 @@ def _flag_svc(enabled_names: set[str]) -> FeatureFlagService:
 def _app(user, enabled_names: set[str]):
     return _build_test_app(
         {
-            require_auth: lambda: user,
+            require_jwt: lambda: user,
             get_current_user: lambda: user,
             get_feature_flag_service: lambda: _flag_svc(enabled_names),
         }
@@ -42,7 +42,7 @@ def _app(user, enabled_names: set[str]):
 
 
 def test_requires_auth():
-    # No auth override at all: the real require_auth runs and rejects.
+    # No auth override at all: the real require_jwt runs and rejects.
     app = _build_test_app({get_feature_flag_service: lambda: AsyncMock()})
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/api/v1/me/features")

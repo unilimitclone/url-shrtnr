@@ -23,6 +23,7 @@ percentage and hex-digit gates per feature.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from typing import TYPE_CHECKING
 
@@ -150,13 +151,12 @@ class FeatureFlagService:
         Inherits ``is_enabled``'s default-deny: unregistered flags, cache
         and repo failures all read as HIDDEN.
         """
+        answers = await asyncio.gather(
+            *(self.is_enabled(name, user) for name in EXPOSED_FEATURES)
+        )
         return {
-            name: (
-                FeatureState.ENABLED
-                if await self.is_enabled(name, user)
-                else FeatureState.HIDDEN
-            )
-            for name in EXPOSED_FEATURES
+            name: FeatureState.ENABLED if enabled else FeatureState.HIDDEN
+            for name, enabled in zip(EXPOSED_FEATURES, answers, strict=True)
         }
 
     async def require(

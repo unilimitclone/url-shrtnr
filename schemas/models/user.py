@@ -110,4 +110,10 @@ class UserDoc(MongoBaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     last_login_at: datetime | None = None
+    # Permanent completion fact — the onboarding wizard's resume pointer is
+    # ephemeral (Redis, 24h), but "this account finished onboarding" must
+    # survive it. Null = never finished.
+    onboarded_at: datetime | None = None
+    # HDYHAU attribution, captured once at onboarding completion.
+    heard_from: str | None = None
     status: UserStatus = UserStatus.ACTIVE

@@ -7,6 +7,8 @@ Errors are handled by BaseRepository.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from bson import ObjectId
 
 from repositories.base import BaseRepository
@@ -52,3 +54,20 @@ class UserRepository(BaseRepository[UserDoc]):
         Returns True if the document was matched.
         """
         return await self._update({"_id": user_id}, update_ops)
+
+    async def complete_onboarding(
+        self, user_id: ObjectId, when: datetime, heard_from: str | None
+    ) -> bool:
+        """Stamp ``onboarded_at`` (and HDYHAU) — first completion wins.
+
+        The filter matches only while ``onboarded_at`` is null, so repeat
+        calls are no-ops and can never overwrite the original timestamp or
+        attribution. Returns True when THIS call did the stamping.
+        """
+        ops: dict = {"onboarded_at": when}
+        if heard_from:
+            ops["heard_from"] = heard_from
+        return await self._update(
+            {"_id": user_id, "onboarded_at": None},
+            {"$set": ops},
+        )

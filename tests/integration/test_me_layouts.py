@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 from bson import ObjectId
 from fastapi.testclient import TestClient
 
-from dependencies import CurrentUser, get_page_layout_service, require_auth
+from dependencies import CurrentUser, get_page_layout_service, require_jwt
 from errors import AuthenticationError
 from routes.api_v1 import router as api_v1_router
 from tests.conftest import build_test_app
@@ -36,7 +36,7 @@ def _build(mock_svc: AsyncMock):
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_auth: _make_user,
+            require_jwt: _make_user,
             get_page_layout_service: lambda: mock_svc,
         },
     )
@@ -80,6 +80,26 @@ def test_get_layout_rejects_bad_page_pattern():
     resp = client.get("/api/v1/me/layouts/Bad%20Page!")
 
     assert resp.status_code == 422
+
+
+def test_get_layout_rejects_unknown_page_slug():
+    # Well-formed but not in the allowlist: the page namespace is a closed
+    # set so one user can't accumulate unbounded junk layout docs.
+    client = _build(AsyncMock())
+
+    resp = client.get("/api/v1/me/layouts/junk-page")
+
+    assert resp.status_code == 422
+
+
+def test_overview_page_is_allowlisted():
+    svc = AsyncMock()
+    svc.get_layout = AsyncMock(return_value=None)
+    client = _build(svc)
+
+    resp = client.get("/api/v1/me/layouts/overview")
+
+    assert resp.status_code == 200
 
 
 # ── PUT ──────────────────────────────────────────────────────────────────────
@@ -146,7 +166,7 @@ def test_layouts_require_auth():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_auth: _raise_unauth,
+            require_jwt: _raise_unauth,
             get_page_layout_service: lambda: AsyncMock(),
         },
     )

@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from config import AppSettings
 from infrastructure.cache.feature_flag_cache import FeatureFlagCache
 from infrastructure.cache.meta_fetch_cache import MetaFetchCache
+from infrastructure.cache.onboarding_cache import OnboardingCache
 from infrastructure.cache.url_cache import UrlCache
 from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.cloudflare_client import CloudflareClient
@@ -110,6 +111,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # ── Infrastructure ───────────────────────────────────────────────────
     url_cache = UrlCache(redis_client, ttl_seconds=settings.redis.redis_ttl_seconds)
     app.state.meta_fetch_cache = MetaFetchCache(redis_client)
+    app.state.onboarding_cache = OnboardingCache(redis_client)
     feature_flag_cache = FeatureFlagCache(
         redis_client,
         ttl_seconds=settings.redis.feature_flag_ttl_seconds,

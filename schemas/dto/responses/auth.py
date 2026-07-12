@@ -71,6 +71,10 @@ class UserProfileResponse(ResponseBase):
     )
     plan: str = Field(description="Subscription plan", examples=["free"])
     password_set: bool = Field(description="Whether the user has set a password")
+    onboarded_at: datetime | None = Field(
+        default=None,
+        description="When the user completed onboarding (null = never)",
+    )
     auth_providers: list[AuthProviderInfo] = Field(description="Linked OAuth providers")
     # pfp is absent from the JSON when None (route handlers use exclude_none=True)
     pfp: UserPfp | None = Field(
@@ -91,6 +95,7 @@ class UserProfileResponse(ResponseBase):
             user_name=user.user_name,
             plan=user.plan,
             password_set=user.password_set,
+            onboarded_at=user.onboarded_at,
             auth_providers=[
                 AuthProviderInfo(
                     provider=p.provider,
@@ -217,8 +222,10 @@ class OAuthProvidersResponse(ResponseBase):
 class OnboardingStateResponse(ResponseBase):
     """Response body for GET/PUT /auth/onboarding (200).
 
-    Empty state (all-null, completed=false) means the user has no stored
-    progress — either onboarding never started or the 24h cache expired.
+    A resume pointer, nothing more. Empty (step=null) means nothing to
+    resume: never started, expired, or already completed — completion is
+    a permanent account fact exposed as ``user.onboarded_at`` on
+    /auth/me, not part of this cache.
     """
 
     step: str | None = Field(
@@ -227,6 +234,12 @@ class OnboardingStateResponse(ResponseBase):
     path: str | None = Field(
         default=None, description="Chosen path (links or api)", examples=["links"]
     )
-    completed: bool = Field(
-        default=False, description="Whether the wizard was finished"
+
+
+class OnboardingCompleteResponse(ResponseBase):
+    """Response body for POST /auth/onboarding/complete (200)."""
+
+    success: bool = Field(description="Always true on success")
+    onboarded_at: datetime = Field(
+        description="When onboarding was completed (first completion wins)"
     )

@@ -131,14 +131,23 @@ class DeviceRefreshRequest(RequestBase):
 class OnboardingStateRequest(RequestBase):
     """Request body for PUT /auth/onboarding."""
 
-    step: Literal[
-        "welcome", "path", "link", "api", "domain", "apps", "done", "completed"
-    ] = Field(
-        description='Current wizard step ("completed" ends the flow)',
+    step: Literal["welcome", "path", "link", "api", "domain", "apps", "recap"] = Field(
+        description="Wizard step the user is currently on",
         examples=["domain"],
     )
     path: Literal["links", "api"] | None = Field(
         default=None,
         description="Chosen onboarding path, once the user has forked",
         examples=["links"],
+    )
+
+
+class OnboardingCompleteRequest(RequestBase):
+    """Request body for POST /auth/onboarding/complete."""
+
+    heard_from: str | None = Field(
+        default=None,
+        max_length=64,
+        description="HDYHAU attribution answer, captured once at completion",
+        examples=["GitHub"],
     )

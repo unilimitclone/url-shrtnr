@@ -12,11 +12,11 @@ the read side of gates the write endpoints already enforce.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Path, Request
 
-from dependencies import AuthUser, FeatureFlagSvc, PageLayoutSvc
+from dependencies import FeatureFlagSvc, JwtUser, PageLayoutSvc
 from middleware.openapi import AUTH_RESPONSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.dto.requests.layouts import PutLayoutRequest
@@ -35,7 +35,7 @@ router = APIRouter(prefix="/me", tags=["Me"])
 @limiter.limit(Limits.DASHBOARD_READ)
 async def get_my_features(
     request: Request,
-    user: AuthUser,
+    user: JwtUser,
     flag_service: FeatureFlagSvc,
 ) -> FeaturesResponse:
     """Return the availability state of every gated feature for this account.
@@ -50,14 +50,13 @@ async def get_my_features(
     return FeaturesResponse(features=await flag_service.states_for(user))
 
 
+# Closed set: every dashboard board the frontend actually renders. An
+# allowlist (not just a pattern) caps per-user storage and rejects junk
+# slugs — layouts were the one per-user resource with no quota. Grows in
+# lockstep with the frontend's boards.
 PagePath = Annotated[
-    str,
-    Path(
-        min_length=1,
-        max_length=32,
-        pattern=r"^[a-z0-9_-]+$",
-        description="Layout slot, e.g. `analytics`",
-    ),
+    Literal["analytics", "overview"],
+    Path(description="Layout slot, e.g. `analytics`"),
 ]
 
 
@@ -71,7 +70,7 @@ PagePath = Annotated[
 async def get_page_layout(
     request: Request,
     page: PagePath,
-    user: AuthUser,
+    user: JwtUser,
     layout_service: PageLayoutSvc,
 ) -> LayoutResponse:
     """Fetch the saved dashboard layout for a page.
@@ -95,7 +94,7 @@ async def put_page_layout(
     request: Request,
     page: PagePath,
     body: PutLayoutRequest,
-    user: AuthUser,
+    user: JwtUser,
     layout_service: PageLayoutSvc,
 ) -> LayoutResponse:
     """Save the layout document for a page.
@@ -122,7 +121,7 @@ async def put_page_layout(
 async def delete_page_layout(
     request: Request,
     page: PagePath,
-    user: AuthUser,
+    user: JwtUser,
     layout_service: PageLayoutSvc,
 ) -> None:
     """Remove the saved layout so the page falls back to the client default.
