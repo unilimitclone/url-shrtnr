@@ -299,6 +299,21 @@ def test_v1_missing_creation_date_gives_null_created_at():
     assert body["generation"] == "v1"
 
 
+def test_v1_malformed_destination_url_still_answers_200():
+    # Raw legacy `url` values can be garbage urlparse refuses (unclosed
+    # IPv6 bracket raises ValueError) — a public endpoint must not 500.
+    doc = _make_v1(url="http://[::1")
+    resp = _get(_make_service(v1_docs={"abc123": doc}), "abc123")
+
+    assert resp.status_code == 200
+    assert resp.json()["destination"] == {
+        "url": "http://[::1",
+        "domain": "http:",
+        "path": "",
+        "is_https": False,
+    }
+
+
 def test_emoji_alias_percent_encoded_resolves_as_v1():
     doc = _make_v1(_id="🚀✨", url="https://docs.spoo.me/emoji-urls")
     resp = _get(

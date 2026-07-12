@@ -38,7 +38,7 @@ class PublicPreviewResponse(ResponseBase):
 
     ``destination`` and ``geo_destinations`` are non-null only while the
     link is active and not password-protected — the preview never reveals
-    more than the redirect would.
+    a destination the redirect would refuse to serve.
     """
 
     generation: Literal["v1", "v2"]

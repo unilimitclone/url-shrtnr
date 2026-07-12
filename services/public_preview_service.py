@@ -5,14 +5,18 @@ Resolves a short code across both URL generations WITHOUT status gating
 (expired / inactive / blocked links still answer; only truly missing codes
 404) and derives the preview wire shape. The safety semantic the page is
 built on: the destination (and geo rules) ride the wire ONLY while the
-link is active and not password-protected — the preview never reveals
-more than the redirect would.
+link is active and not password-protected — the preview never reveals a
+destination the redirect would refuse to serve. For geo-targeted links
+that means enumerating the full country→destination map while a single
+redirect follows only one rule: deliberate anti-cloaking transparency,
+not a leak.
 
 Deliberately does NOT use ``UrlService.resolve`` — it raises on non-active
 statuses and its cache shape lacks ``created_at``. Raw docs are resolved
-here with the same dispatch heuristic (``UrlService._dispatch``), scoped
-to the system default domain. Custom-tenant aliases never resolve on this
-endpoint (known gap, out of scope).
+here instead, in the order ``shared.alias_dispatch.resolution_order``
+prescribes (the same single source of truth the redirect dispatches on).
+Lookups are scoped to the system default domain: custom-domain aliases
+resolve only via the redirect; this endpoint is system-domain-only.
 
 Everything is derived READ-ONLY — this endpoint never writes.
 """
@@ -21,7 +25,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote
 
 from errors import NotFoundError
 from infrastructure.logging import get_logger
@@ -33,36 +37,12 @@ from schemas.dto.responses.public_preview import (
     PreviewGeoDestination,
     PublicPreviewResponse,
 )
-from schemas.models.url import UrlStatus, UrlV2Doc
+from schemas.models.url import SchemaVersion, UrlStatus, UrlV2Doc
+from shared.alias_dispatch import resolution_order
 from shared.datetime_utils import convert_to_gmt, parse_datetime
-from shared.validators import is_emoji_alias
+from shared.url_utils import split_destination
 
 log = get_logger(__name__)
-
-
-def _split_destination(url: str) -> dict:
-    """Split a destination URL into display parts.
-
-    Lifted from the legacy Jinja preview's ``_split_destination``
-    (routes/legacy/url_shortener.py) — importing the route module would
-    drag in template/limiter side-effects. Keep the two in lockstep; the
-    spoo-landing mock mirrors this exact logic.
-    """
-    parsed = urlparse(url)
-    domain = parsed.netloc or parsed.path.split("/")[0]
-    path = (
-        parsed.path
-        + ("?" + parsed.query if parsed.query else "")
-        + ("#" + parsed.fragment if parsed.fragment else "")
-    )
-    if path == "/":
-        path = ""
-    return {
-        "url": url,
-        "domain": domain,
-        "path": path,
-        "is_https": parsed.scheme == "https",
-    }
 
 
 class PublicPreviewService:
@@ -86,38 +66,33 @@ class PublicPreviewService:
     async def get_preview(self, short_code: str) -> PublicPreviewResponse:
         """Resolve *short_code* (status-agnostic) and build the preview.
 
+        Generation lookup order comes from ``resolution_order`` — shared
+        with the redirect so both surfaces always answer a given code from
+        the same generation. Lookups are exact matches; case is never
+        normalized ("/Docs" and "/docs" are different links).
+
         Raises:
             NotFoundError: the code exists in neither generation.
         """
         # Emoji aliases arrive percent-encoded — same as the redirect path.
         short_code = unquote(short_code)
 
-        # Dispatch mirrors UrlService._dispatch: emoji → emojis collection;
-        # 6 chars → v1 first, v2 fallback; anything else → v2 first, v1
-        # fallback. Lookups are exact matches — case is never normalized,
-        # exactly like the redirect ("/Docs" and "/docs" are different links).
-        if is_emoji_alias(short_code):
-            emoji_doc = await self._find_v1_raw(self._emoji_repo, short_code)
-            if emoji_doc is not None:
-                return self._v1_preview(short_code, emoji_doc)
-        elif len(short_code) == 6:
-            v1_doc = await self._find_v1_raw(self._legacy_repo, short_code)
-            if v1_doc is not None:
-                return self._v1_preview(short_code, v1_doc)
-            v2_doc = await self._url_repo.find_by_alias(
-                short_code, self._system_default_domain
-            )
-            if v2_doc is not None:
-                return self._v2_preview(v2_doc)
-        else:
-            v2_doc = await self._url_repo.find_by_alias(
-                short_code, self._system_default_domain
-            )
-            if v2_doc is not None:
-                return self._v2_preview(v2_doc)
-            v1_doc = await self._find_v1_raw(self._legacy_repo, short_code)
-            if v1_doc is not None:
-                return self._v1_preview(short_code, v1_doc)
+        for generation in resolution_order(short_code):
+            if generation is SchemaVersion.V2:
+                v2_doc = await self._url_repo.find_by_alias(
+                    short_code, self._system_default_domain
+                )
+                if v2_doc is not None:
+                    return self._v2_preview(v2_doc)
+            else:
+                repo = (
+                    self._emoji_repo
+                    if generation is SchemaVersion.EMOJI
+                    else self._legacy_repo
+                )
+                v1_doc = await self._find_v1_raw(repo, short_code)
+                if v1_doc is not None:
+                    return self._v1_preview(short_code, v1_doc)
 
         log.info("public_preview_not_found", short_code=short_code)
         raise NotFoundError("short_code not found")
@@ -150,7 +125,7 @@ class PublicPreviewService:
         destination: PreviewDestination | None = None
         geo_destinations: list[PreviewGeoDestination] | None = None
         if status == "active" and not password_protected:
-            destination = PreviewDestination(**_split_destination(doc.long_url))
+            destination = PreviewDestination(**split_destination(doc.long_url))
             geo_destinations = self._group_geo_rules(doc.geo_rules)
 
         created_at = parse_datetime(doc.created_at)
@@ -170,9 +145,14 @@ class PublicPreviewService:
 
         The persisted status flip happens on the click path
         (``UrlRepository.expire_if_max_clicks``); a time-based flip has no
-        writer at all. The preview must agree with what the redirect would
-        do, so an ACTIVE doc whose ``expire_after`` has passed or whose
-        max-clicks budget is exhausted reads ``expired`` — derived here,
+        writer at all — the redirect never compares ``expire_after`` to
+        now. The invariant this endpoint holds is one-directional: the
+        preview never reveals a destination the redirect would refuse.
+        Deriving time-based expiry here is therefore DELIBERATELY STRICTER
+        than the expiry-blind redirect (a lapsed-but-still-ACTIVE link
+        reads ``expired`` and withholds its destination even though the
+        redirect would still serve it). Do not "fix" that divergence by
+        deleting the check — it errs in the safe direction. Derived here,
         never written back.
         """
         if doc.status == UrlStatus.ACTIVE:
@@ -199,7 +179,7 @@ class PublicPreviewService:
         for country, dest in geo_rules.items():
             grouped.setdefault(dest, []).append(country)
         return [
-            PreviewGeoDestination(countries=sorted(codes), **_split_destination(dest))
+            PreviewGeoDestination(countries=sorted(codes), **split_destination(dest))
             for dest, codes in grouped.items()
         ]
 
@@ -212,9 +192,7 @@ class PublicPreviewService:
 
         destination: PreviewDestination | None = None
         if status == "active" and not password_protected:
-            destination = PreviewDestination(
-                **_split_destination(data.get("url") or "")
-            )
+            destination = PreviewDestination(**split_destination(data.get("url") or ""))
 
         return PublicPreviewResponse(
             generation="v1",

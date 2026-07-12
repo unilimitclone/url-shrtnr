@@ -45,6 +45,43 @@ def extract_fqdn(url: str) -> str:
     return host.lower().rstrip(".")
 
 
+def split_destination(url: str) -> dict:
+    """Split a destination URL into display parts for preview surfaces.
+
+    Single source of truth for the legacy Jinja preview page AND the
+    public preview API (the spoo-landing mock mirrors this logic):
+    ``{url, domain, path, is_https}`` where ``path`` keeps query and
+    fragment and collapses a bare ``"/"`` to ``""``.
+
+    ``urlparse`` raises ``ValueError`` on some malformed inputs (e.g. an
+    unclosed IPv6 bracket) and legacy v1 ``url`` values are raw — a public
+    endpoint must not 500 on them. Such values fall back to being treated
+    as the domain themselves, matching the frontend mock's try/catch.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return {
+            "url": url,
+            "domain": url.split("/")[0],
+            "path": "",
+            "is_https": False,
+        }
+    path = (
+        parsed.path
+        + ("?" + parsed.query if parsed.query else "")
+        + ("#" + parsed.fragment if parsed.fragment else "")
+    )
+    if path == "/":
+        path = ""
+    return {
+        "url": url,
+        "domain": parsed.netloc or parsed.path.split("/")[0],
+        "path": path,
+        "is_https": parsed.scheme == "https",
+    }
+
+
 def normalise_fqdn(value: object) -> str:
     """Strict canonical form for custom-domain fqdns.
 
