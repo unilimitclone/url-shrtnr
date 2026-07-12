@@ -1,10 +1,13 @@
 """
 PublicStatsService — public per-link statistics for the /stats/{code} page.
 
-Resolves a short code across BOTH URL generations (``urlsV2``, legacy
-``urls``, ``emojis``) scoped to the system default domain, enforces the
-public-page privacy rules, and returns link facts plus the modern stats
-wire shape (identical keys to GET /api/v1/stats).
+Resolves a short code across BOTH URL generations and returns link facts
+plus the modern stats wire shape (identical keys to GET /api/v1/stats).
+
+Resolution, raw v1/emoji reads, derived effective status, and created_at
+all come from ``services.public_link_resolver`` — the single source of
+truth shared with the public preview endpoint, so the two public surfaces
+can never disagree about which link a code names or what state it is in.
 
 Privacy semantics (frozen contract):
   - a v2 link with private stats answers BYTE-IDENTICALLY to a missing
@@ -30,7 +33,6 @@ from __future__ import annotations
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import unquote
 
 from bson import ObjectId
 
@@ -42,25 +44,16 @@ from errors import (
 )
 from infrastructure.crypto import verify_password
 from infrastructure.logging import get_logger
-from repositories.legacy.emoji_url_repository import EmojiUrlRepository
-from repositories.legacy.legacy_url_repository import LegacyUrlRepository
-from repositories.url_repository import UrlRepository
 from schemas.enums.stats import StatsScope
-from schemas.models.url import (
-    EmojiUrlDoc,
-    LegacyUrlDoc,
-    SchemaVersion,
-    UrlStatus,
-    UrlV2Doc,
-)
+from schemas.models.url import LegacyUrlDoc, UrlV2Doc
+from services.public_link_resolver import PublicLinkResolver, ResolvedPublicLink
 from services.stats_service import StatsService
 from shared.aggregation_strategies import convert_country_name
 from shared.datetime_utils import parse_datetime
-from shared.validators import is_emoji_alias
 
 log = get_logger(__name__)
 
-_PublicDoc = UrlV2Doc | LegacyUrlDoc | EmojiUrlDoc
+_PublicDoc = UrlV2Doc | LegacyUrlDoc
 
 # Dimensions are FIXED per generation (no group_by on the wire). v1 never
 # emits city (not stored); v2 never emits bots (tracked per-click, not as
@@ -72,43 +65,25 @@ _METRICS = ["clicks", "unique_clicks"]
 _V1_LAST_CLICK_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-def _as_utc(dt: datetime | None) -> datetime | None:
-    """Make a stored datetime timezone-aware (BSON datetimes are naive UTC)."""
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
 class PublicStatsService:
     """Public stats query service.
 
     Args:
-        url_repo:              Repository for the ``urlsV2`` collection.
-        legacy_repo:           Repository for the legacy ``urls`` collection.
-        emoji_repo:            Repository for the ``emojis`` collection.
-        stats_service:         The shared StatsService (v2 aggregation reuse).
-        system_default_domain: Canonical fqdn — resolution is scoped to it;
-                               custom-tenant aliases never resolve here.
-        max_date_range_days:   Maximum allowed date range in days.
+        resolver:            The shared public-link resolver (resolution,
+                             raw v1 reads, derived status, created_at).
+        stats_service:       The shared StatsService (v2 aggregation reuse).
+        max_date_range_days: Maximum allowed date range in days.
     """
 
     def __init__(
         self,
-        url_repo: UrlRepository,
-        legacy_repo: LegacyUrlRepository,
-        emoji_repo: EmojiUrlRepository,
+        resolver: PublicLinkResolver,
         stats_service: StatsService,
         *,
-        system_default_domain: str,
         max_date_range_days: int = 90,
     ) -> None:
-        self._url_repo = url_repo
-        self._legacy_repo = legacy_repo
-        self._emoji_repo = emoji_repo
+        self._resolver = resolver
         self._stats = stats_service
-        self._system_default_domain = system_default_domain
         self._max_date_range_days = max_date_range_days
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -149,14 +124,16 @@ class PublicStatsService:
         legacy /stats page.
         """
         started = time.perf_counter()
-        code = unquote(short_code)
 
-        doc, schema, raw_v1 = await self._resolve(code)
-        if doc is None:
+        link = await self._resolver.resolve(short_code)
+        if link is None:
             raise NotFoundError("short_code not found")
 
-        is_v2 = schema == SchemaVersion.V2
-        generation = "v2" if is_v2 else "v1"
+        is_v2 = link.is_v2
+        # The resolver keeps v1 docs RAW (legacy-only fields survive for
+        # created_at); typed access (parsed datetimes, int coercion, map
+        # defaults) drives the gates and the synthesis.
+        doc: _PublicDoc = link.v2_doc if is_v2 else LegacyUrlDoc.from_mongo(link.raw_v1)
 
         # Owner bypass rides the same request. The anonymous sentinel
         # owner_id can never equal a real user id, so no special-casing.
@@ -168,7 +145,9 @@ class PublicStatsService:
         # legacy schema never grew a private_stats field) — public by
         # design, mirroring the shipped legacy /stats page.
         if is_v2 and doc.private_stats and not is_owner:
-            log.info("public_stats_denied", reason="private_stats", short_code=code)
+            log.info(
+                "public_stats_denied", reason="private_stats", short_code=link.alias
+            )
             raise NotFoundError("short_code not found")
 
         if not is_owner and doc.password:
@@ -176,14 +155,14 @@ class PublicStatsService:
                 log.info(
                     "public_stats_denied",
                     reason="password_required",
-                    short_code=code,
+                    short_code=link.alias,
                 )
                 raise PasswordRequiredError("this link's stats are password protected")
             if not self._password_matches(doc, is_v2, password):
                 log.info(
                     "public_stats_denied",
                     reason="invalid_password",
-                    short_code=code,
+                    short_code=link.alias,
                 )
                 raise InvalidPasswordError("incorrect password")
 
@@ -191,25 +170,21 @@ class PublicStatsService:
             start_date, end_date, tz_name
         )
 
-        alias = doc.alias if is_v2 else code
-        now = datetime.now(timezone.utc)
-        status = self._effective_status(doc, is_v2, now)
-        link = self._link_facts(
-            doc, alias, status, is_v2=is_v2, is_owner=is_owner, raw_v1=raw_v1
-        )
+        status = link.effective_status()
+        facts = self._link_facts(link, doc, status, is_owner=is_owner)
 
         if is_v2:
             stats = await self._query_v2_stats(doc, window_start, window_end, tz_name)
         else:
             stats = self._synthesize_v1_stats(
-                doc, alias, window_start, window_end, tz_name
+                doc, link.alias, window_start, window_end, tz_name
             )
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         log.info(
             "public_stats_query",
-            short_code=alias,
-            generation=generation,
+            short_code=link.alias,
+            generation=link.generation,
             status=status,
             owner_bypass=is_owner,
             start_date=window_start.isoformat(),
@@ -218,60 +193,7 @@ class PublicStatsService:
             duration_ms=duration_ms,
         )
 
-        return {"generation": generation, "link": link, "stats": stats}
-
-    # ── Private: resolution ───────────────────────────────────────────────────
-
-    async def _resolve(
-        self, code: str
-    ) -> tuple[_PublicDoc | None, SchemaVersion, dict | None]:
-        """Domain-scoped dispatch, mirroring UrlService._dispatch.
-
-        emoji → emojis only; 7 chars → urlsV2 then urls; 6 chars → urls
-        then urlsV2; anything else → urlsV2 then urls. v2 lookups are
-        scoped to the system default domain; v1/emoji only exist there —
-        custom-tenant aliases never resolve on this endpoint.
-
-        Returns ``(typed doc, schema, raw v1 dict)`` — the raw dict (None
-        for v2) carries fields the typed model drops (``creation-date`` /
-        ``creation-time``); one DB read serves both views.
-        """
-        if is_emoji_alias(code):
-            raw = await self._find_v1_raw(self._emoji_repo, code)
-            if raw is None:  # emoji misses never fall through to urls/urlsV2
-                return None, SchemaVersion.EMOJI, None
-            return EmojiUrlDoc.from_mongo(raw), SchemaVersion.EMOJI, raw
-
-        if len(code) == 6:
-            raw = await self._find_v1_raw(self._legacy_repo, code)
-            if raw is not None:
-                return LegacyUrlDoc.from_mongo(raw), SchemaVersion.V1, raw
-            v2_doc = await self._url_repo.find_by_alias(
-                code, self._system_default_domain
-            )
-            return v2_doc, SchemaVersion.V2, None
-
-        v2_doc = await self._url_repo.find_by_alias(code, self._system_default_domain)
-        if v2_doc is not None:
-            return v2_doc, SchemaVersion.V2, None
-        raw = await self._find_v1_raw(self._legacy_repo, code)
-        if raw is None:  # missed both generations
-            return None, SchemaVersion.V1, None
-        return LegacyUrlDoc.from_mongo(raw), SchemaVersion.V1, raw
-
-    @staticmethod
-    async def _find_v1_raw(
-        repo: LegacyUrlRepository | EmojiUrlRepository, code: str
-    ) -> dict | None:
-        """Fetch a v1/emoji document as a RAW dict by exact ``_id`` match.
-
-        Not ``find_by_id``: that returns a typed ``LegacyUrlDoc``, which
-        silently drops ``creation-date`` / ``creation-time`` (the model
-        doesn't declare them and pydantic ignores extras) — and the link
-        facts need them for ``created_at``. Same pattern as the public
-        preview endpoint, so /stats/{code} and /{code}+ agree.
-        """
-        return await repo.aggregate([{"$match": {"_id": code}}])
+        return {"generation": link.generation, "link": facts, "stats": stats}
 
     # ── Private: gates and derived facts ──────────────────────────────────────
 
@@ -282,79 +204,28 @@ class PublicStatsService:
             return verify_password(password, doc.password)
         return password == doc.password
 
-    def _effective_status(self, doc: _PublicDoc, is_v2: bool, now: datetime) -> str:
-        """Derive the wire status (lowercase) — READ-ONLY, no writes.
-
-        The persisted EXPIRED flip happens on the click path; this endpoint
-        must never report "active" for a link the redirect would refuse.
-        """
-        if is_v2:
-            if doc.status == UrlStatus.ACTIVE and self._expiry_reached(
-                doc.expire_after, doc.max_clicks, doc.total_clicks, now
-            ):
-                return "expired"
-            return doc.status.value.lower()
-        # v1/emoji docs have no status field — mirror the legacy stats
-        # page's inline rule: expiration-time passed or max-clicks reached.
-        if self._expiry_reached(
-            doc.expiration_time, doc.max_clicks, doc.total_clicks, now
-        ):
-            return "expired"
-        return "active"
-
     @staticmethod
-    def _expiry_reached(
-        expire_at: datetime | None,
-        max_clicks: int | None,
-        total_clicks: int,
-        now: datetime,
-    ) -> bool:
-        if max_clicks is not None and total_clicks >= max_clicks:
-            return True
-        expire_at = _as_utc(expire_at)
-        return expire_at is not None and expire_at <= now
-
     def _link_facts(
-        self,
+        link: ResolvedPublicLink,
         doc: _PublicDoc,
-        alias: str,
         status: str,
         *,
-        is_v2: bool,
         is_owner: bool,
-        raw_v1: dict | None = None,
     ) -> dict[str, Any]:
-        long_url = doc.long_url if is_v2 else doc.url
+        long_url = doc.long_url if link.is_v2 else doc.url
         return {
-            "alias": alias,
-            "short_url": f"https://{self._system_default_domain}/{alias}",
+            "alias": link.alias,
+            "short_url": link.short_url,
             # Destination-only-while-active, like the preview page: an
             # expired, paused, or blocked link's stats page must not out
             # the destination. Owner sessions always get it.
             "long_url": long_url if (status == "active" or is_owner) else None,
-            "created_at": (
-                _as_utc(doc.created_at) if is_v2 else self._v1_created_at(raw_v1)
-            ),
+            "created_at": link.created_at(),
             "status": status,
             "max_clicks": doc.max_clicks,
             "block_bots": bool(doc.block_bots),
             "password_protected": bool(doc.password),
         }
-
-    @staticmethod
-    def _v1_created_at(raw_v1: dict | None) -> datetime | None:
-        """Combine v1 ``creation-date`` + ``creation-time`` (both set at
-        shorten time) into a datetime; either missing or unparseable →
-        ``None`` — ancient rows lack them and the page omits the line.
-        Same rule as the public preview endpoint.
-        """
-        if not raw_v1:
-            return None
-        date = raw_v1.get("creation-date")
-        time_of_day = raw_v1.get("creation-time")
-        if not date or not time_of_day:
-            return None
-        return parse_datetime(f"{date}T{time_of_day}")
 
     # ── Private: date window ──────────────────────────────────────────────────
 
@@ -428,7 +299,7 @@ class PublicStatsService:
 
     def _synthesize_v1_stats(
         self,
-        doc: LegacyUrlDoc | EmojiUrlDoc,
+        doc: LegacyUrlDoc,
         alias: str,
         start_date: datetime,
         end_date: datetime,

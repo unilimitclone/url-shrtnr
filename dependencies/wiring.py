@@ -56,6 +56,7 @@ from services.mock_dcv_backend import MockDcvBackend
 from services.oauth_service import OAuthService
 from services.page_layout_service import PageLayoutService
 from services.profile_picture_service import ProfilePictureService
+from services.public_link_resolver import PublicLinkResolver
 from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
 from services.stats_service import StatsService
@@ -208,18 +209,19 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         url_repo,
         max_date_range_days=settings.max_date_range_days,
     )
-    app.state.public_preview_service = PublicPreviewService(
+    # One resolver serves BOTH public read-only surfaces (preview + stats)
+    # so they can never disagree about which link a code names or what
+    # state it is in.
+    public_link_resolver = PublicLinkResolver(
         url_repo,
         legacy_repo,
         emoji_repo,
         system_default_domain=settings.system_default_domain,
     )
+    app.state.public_preview_service = PublicPreviewService(public_link_resolver)
     app.state.public_stats_service = PublicStatsService(
-        url_repo,
-        legacy_repo,
-        emoji_repo,
+        public_link_resolver,
         app.state.stats_service,
-        system_default_domain=settings.system_default_domain,
         max_date_range_days=settings.max_date_range_days,
     )
     app.state.export_service = ExportService(

@@ -17,6 +17,7 @@ from dependencies import get_current_user
 from dependencies.services import get_public_stats_service
 from infrastructure.crypto import hash_password
 from schemas.models.url import UrlV2Doc
+from services.public_link_resolver import PublicLinkResolver
 from services.public_stats_service import PublicStatsService
 from services.stats_service import StatsService
 
@@ -88,7 +89,7 @@ class _DictUrlRepo:
 class _DictLegacyRepo:
     """Stand-in for Legacy/EmojiUrlRepository — raw-dict aggregate reads.
 
-    Only ``aggregate`` is exposed: the service must read v1 docs RAW
+    Only ``aggregate`` is exposed: the resolver must read v1 docs RAW
     (typed ``find_by_id`` would drop creation-date/creation-time), so a
     regression to the typed read fails loudly here.
     """
@@ -124,14 +125,13 @@ def _build_service(
 ) -> tuple[PublicStatsService, _CapturingClickRepo]:
     click_repo = click_repo or _CapturingClickRepo()
     stats_service = StatsService(click_repo, _DictUrlRepo(), max_date_range_days=90)
-    service = PublicStatsService(
+    resolver = PublicLinkResolver(
         _DictUrlRepo(v2_docs),
         _DictLegacyRepo(v1_docs),
         _DictLegacyRepo(emoji_docs),
-        stats_service,
         system_default_domain=_DOMAIN,
-        max_date_range_days=90,
     )
+    service = PublicStatsService(resolver, stats_service, max_date_range_days=90)
     return service, click_repo
 
 
