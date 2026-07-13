@@ -133,6 +133,17 @@ class TestFormatters:
         assert "total_clicks" in csv_text
         assert "100" in csv_text
 
+    def test_csv_formatter_null_avg_redirection_time_writes_empty_cell(self):
+        # null = no measurement — the export must not fabricate a 0
+        data = {
+            **SAMPLE_STATS,
+            "summary": {**SAMPLE_STATS["summary"], "avg_redirection_time": None},
+        }
+        content = CsvFormatter().serialize(data)
+        with zipfile.ZipFile(BytesIO(content)) as zf, zf.open("summary.csv") as f:
+            csv_text = f.read().decode("utf-8")
+        assert "avg_redirection_time,\r\n" in csv_text
+
     def test_csv_formatter_empty_metrics_produces_summary_only(self):
         data = {**SAMPLE_STATS, "metrics": {}}
         content = CsvFormatter().serialize(data)

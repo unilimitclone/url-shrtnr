@@ -75,7 +75,8 @@ class CsvFormatter:
                 ("unique_clicks", summary.get("unique_clicks", 0)),
                 ("first_click", summary.get("first_click", "")),
                 ("last_click", summary.get("last_click", "")),
-                ("avg_redirection_time", summary.get("avg_redirection_time", 0)),
+                # null = no measurement — an empty cell, never a fabricated 0
+                ("avg_redirection_time", summary.get("avg_redirection_time", "")),
             ]
             _write_rows(zf, "summary.csv", summary_rows)
 

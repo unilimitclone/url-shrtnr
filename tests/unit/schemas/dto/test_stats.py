@@ -113,3 +113,15 @@ class TestStatsResponse:
         assert d["scope"] == "all"
         assert d["summary"]["total_clicks"] == 10
         assert "clicks_by_time" in d["metrics"]
+
+    def test_summary_avg_redirection_time_is_nullable(self):
+        # null = no measurement in the range — distinct from a real 0.0
+        s = StatsSummary(total_clicks=0, unique_clicks=0)
+        assert s.avg_redirection_time is None
+        assert s.model_dump()["avg_redirection_time"] is None
+        assert (
+            StatsSummary(
+                total_clicks=5, unique_clicks=3, avg_redirection_time=12.34
+            ).avg_redirection_time
+            == 12.34
+        )
