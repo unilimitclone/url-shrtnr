@@ -7,8 +7,9 @@ Tests verify behavior, not implementation details.
 
 from __future__ import annotations
 
+import time as time_module
 import typing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,7 +25,7 @@ from errors import (
 )
 from infrastructure.cache.url_cache import UrlCacheData
 from schemas.models.base import ANONYMOUS_OWNER_ID
-from schemas.models.url import EmojiUrlDoc, LegacyUrlDoc, UrlV2Doc
+from schemas.models.url import EmojiUrlDoc, LegacyUrlDoc, UrlStatus, UrlV2Doc
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -113,6 +114,8 @@ def make_active_cache(
     block_bots: bool = False,
     max_clicks: int | None = None,
     password_hash: str | None = None,
+    expiration_time: int | None = None,
+    url_status: str = "ACTIVE",
 ) -> UrlCacheData:
     return UrlCacheData(
         id=str(URL_OID),
@@ -120,11 +123,12 @@ def make_active_cache(
         long_url="https://example.com",
         block_bots=block_bots,
         password_hash=password_hash,
-        expiration_time=None,
+        expiration_time=expiration_time,
         max_clicks=max_clicks,
-        url_status="ACTIVE",
+        url_status=url_status,
         schema_version=schema,
         owner_id=str(USER_OID),
+        domain=SYSTEM_DEFAULT_DOMAIN,
     )
 
 
@@ -2237,3 +2241,435 @@ class TestValidateMetaTags:
                 MetaTagsRequest(title="ok"), long_url="https://evil-token.com/login"
             )
         assert exc.value.field == "long_url"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestUrlServiceTimeExpiry — resolve-time enforcement of expire_after
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestUrlServiceTimeExpiry:
+    """Time-based expiry is enforced lazily at resolve (both cache-hit and
+    DB paths); v2 additionally persists the status flip, mirroring
+    max-clicks (expire_if_time_reached + invalidate)."""
+
+    PAST_TS = int(time_module.time()) - 3600
+    FUTURE_TS = int(time_module.time()) + 3600
+
+    def _svc(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        return svc, url_repo, url_cache, legacy_repo, emoji_repo
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_v2_past_expiry_raises_gone_and_flips(self):
+        svc, url_repo, url_cache, *_ = self._svc()
+        url_cache.get.return_value = make_active_cache(expiration_time=self.PAST_TS)
+        url_repo.expire_if_time_reached.return_value = True
+
+        with pytest.raises(GoneError):
+            await svc.resolve(ALIAS)
+
+        url_repo.expire_if_time_reached.assert_awaited_once_with(URL_OID)
+        url_cache.invalidate.assert_awaited_once_with(ALIAS, SYSTEM_DEFAULT_DOMAIN)
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_v2_future_expiry_resolves(self):
+        svc, url_repo, url_cache, *_ = self._svc()
+        cached = make_active_cache(expiration_time=self.FUTURE_TS)
+        url_cache.get.return_value = cached
+
+        result, _schema = await svc.resolve(ALIAS)
+
+        assert result is cached
+        url_repo.expire_if_time_reached.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_flip_already_done_elsewhere_skips_invalidate(self):
+        """modified_count=0 (concurrent resolve won the flip) — still 410,
+        but no duplicate invalidation side effect."""
+        svc, url_repo, url_cache, *_ = self._svc()
+        url_cache.get.return_value = make_active_cache(expiration_time=self.PAST_TS)
+        url_repo.expire_if_time_reached.return_value = False
+
+        with pytest.raises(GoneError):
+            await svc.resolve(ALIAS)
+
+        url_cache.invalidate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_db_path_v2_past_expiry_raises_gone_after_recache(self):
+        svc, url_repo, url_cache, *_ = self._svc()
+        url_cache.get.return_value = None
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        url_repo.find_by_alias.return_value = make_url_v2_doc(expire_after=past)
+        url_repo.expire_if_time_reached.return_value = True
+
+        with pytest.raises(GoneError):
+            await svc.resolve(ALIAS)
+
+        # Recache-before-raise keeps hot expired links O(1) — the entry is
+        # written (step 3) before the expiry raise (step 4c).
+        url_cache.set.assert_awaited_once()
+        url_repo.expire_if_time_reached.assert_awaited_once_with(URL_OID)
+
+    @pytest.mark.asyncio
+    async def test_stored_blocked_wins_over_time_expiry(self):
+        """Ordering: stored-status checks run first — BLOCKED must keep
+        raising BlockedUrlError, and no flip may touch a BLOCKED doc."""
+        svc, url_repo, url_cache, *_ = self._svc()
+        url_cache.get.return_value = make_active_cache(
+            expiration_time=self.PAST_TS, url_status="BLOCKED"
+        )
+
+        with pytest.raises(BlockedUrlError):
+            await svc.resolve(ALIAS)
+
+        url_repo.expire_if_time_reached.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stored_expired_skips_flip(self):
+        svc, url_repo, url_cache, *_ = self._svc()
+        url_cache.get.return_value = make_active_cache(
+            expiration_time=self.PAST_TS, url_status="EXPIRED"
+        )
+
+        with pytest.raises(GoneError):
+            await svc.resolve(ALIAS)
+
+        url_repo.expire_if_time_reached.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cached_v1_past_expiry_raises_gone_without_flip(self):
+        """v1 has no status field — lazy-raise forever, never a flip."""
+        svc, url_repo, url_cache, *_ = self._svc()
+        url_cache.get.return_value = make_active_cache(
+            schema="v1", alias="abcdef", expiration_time=self.PAST_TS
+        )
+
+        with pytest.raises(GoneError):
+            await svc.resolve("abcdef")
+
+        url_repo.expire_if_time_reached.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_db_emoji_past_aware_expiry_raises_gone(self):
+        svc, url_repo, url_cache, _legacy_repo, emoji_repo = self._svc()
+        url_cache.get.return_value = None
+        emoji_repo.find_by_id.return_value = EmojiUrlDoc.from_mongo(
+            {
+                "_id": "🐍🔥💎",
+                "url": "https://emoji.example.com",
+                "block-bots": False,
+                "total-clicks": 0,
+                "expiration-time": datetime.now(timezone.utc) - timedelta(hours=1),
+            }
+        )
+
+        with pytest.raises(GoneError):
+            await svc.resolve("🐍🔥💎")
+
+        url_repo.expire_if_time_reached.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_db_v1_naive_expiry_is_ambiguous_and_resolves(self):
+        """tz-naive v1 expiration-time never enforces — matches
+        v1_is_expired (public pages) and convert_to_gmt (legacy stats)."""
+        svc, _url_repo, url_cache, legacy_repo, _emoji_repo = self._svc()
+        url_cache.get.return_value = None
+        naive_past = datetime(2020, 1, 1)  # naive → ambiguous
+        legacy_repo.find_by_id.return_value = LegacyUrlDoc.from_mongo(
+            {
+                "_id": "abcdef",
+                "url": "https://legacy.example.com",
+                "block-bots": False,
+                "total-clicks": 0,
+                "expiration-time": naive_past,
+            }
+        )
+
+        result, schema = await svc.resolve("abcdef")
+
+        assert result.expiration_time is None
+        assert schema == "v1"
+
+    @pytest.mark.asyncio
+    async def test_db_v1_aware_past_expiry_raises_gone(self):
+        svc, _url_repo, url_cache, legacy_repo, _emoji_repo = self._svc()
+        url_cache.get.return_value = None
+        legacy_repo.find_by_id.return_value = LegacyUrlDoc.from_mongo(
+            {
+                "_id": "abcdef",
+                "url": "https://legacy.example.com",
+                "block-bots": False,
+                "total-clicks": 0,
+                "expiration-time": datetime.now(timezone.utc) - timedelta(hours=1),
+            }
+        )
+
+        with pytest.raises(GoneError):
+            await svc.resolve("abcdef")
+
+    @pytest.mark.asyncio
+    async def test_custom_domain_past_expiry_flips_and_invalidates_scoped_key(self):
+        """Custom tenants ride the same enforcement — dispatch is v2-only,
+        the flip is by _id, and the invalidation must target the
+        tenant-scoped cache key (data.domain), not the system default."""
+        svc, url_repo, url_cache, *_ = self._svc()
+        url_cache.get.return_value = None
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        url_repo.find_by_alias.return_value = make_url_v2_doc(
+            alias="customalias", expire_after=past, domain="links.acme.com"
+        )
+        url_repo.expire_if_time_reached.return_value = True
+
+        with pytest.raises(GoneError):
+            await svc.resolve("customalias", domain="links.acme.com")
+
+        url_repo.find_by_alias.assert_awaited_once_with("customalias", "links.acme.com")
+        url_repo.expire_if_time_reached.assert_awaited_once_with(URL_OID)
+        url_cache.invalidate.assert_awaited_once_with("customalias", "links.acme.com")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestEffectiveStatusClause — Mongo clause ≡ UrlV2Doc.effective_status
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _matches_expired_clause(doc: UrlV2Doc, now: datetime) -> bool:
+    """Python evaluation of effective_status_clause(EXPIRED, now) — must
+    mirror _derived_expiry_arms exactly (the predicate-pin's referee)."""
+    if doc.status == "EXPIRED":
+        return True
+    if doc.status == "ACTIVE":
+        expire = doc.expire_after
+        if expire is not None:
+            aware = expire if expire.tzinfo else expire.replace(tzinfo=timezone.utc)
+            if aware <= now:
+                return True
+        if doc.max_clicks is not None and doc.total_clicks >= doc.max_clicks:
+            return True
+    return False
+
+
+class TestEffectiveStatusClause:
+    def test_expired_clause_shape(self):
+        from services.url_service import effective_status_clause
+
+        now = datetime.now(timezone.utc)
+        clause = effective_status_clause(UrlStatus.EXPIRED, now)
+        assert clause == {
+            "$or": [
+                {"status": UrlStatus.EXPIRED},
+                {"status": UrlStatus.ACTIVE, "expire_after": {"$lte": now}},
+                {
+                    "status": UrlStatus.ACTIVE,
+                    "max_clicks": {"$ne": None},
+                    "$expr": {"$gte": ["$total_clicks", "$max_clicks"]},
+                },
+            ]
+        }
+
+    def test_active_clause_is_complement_of_derived_arms(self):
+        from services.url_service import (
+            _derived_expiry_arms,
+            effective_status_clause,
+        )
+
+        now = datetime.now(timezone.utc)
+        clause = effective_status_clause(UrlStatus.ACTIVE, now)
+        assert clause == {
+            "status": UrlStatus.ACTIVE,
+            "$nor": _derived_expiry_arms(now),
+        }
+
+    @pytest.mark.parametrize("status", [UrlStatus.INACTIVE, UrlStatus.BLOCKED])
+    def test_stored_is_truth_for_admin_states(self, status):
+        from services.url_service import effective_status_clause
+
+        clause = effective_status_clause(status, datetime.now(timezone.utc))
+        assert clause == {"status": status}
+
+    def test_predicate_pin_matrix(self):
+        """effective_status == EXPIRED iff doc matches the EXPIRED clause,
+        across the full status x expiry x max-clicks matrix. If this
+        fails, the model property and the Mongo filter have diverged."""
+        now = datetime.now(timezone.utc)
+        statuses = ["ACTIVE", "INACTIVE", "EXPIRED", "BLOCKED"]
+        expiries = [None, now - timedelta(hours=1), now + timedelta(hours=1)]
+        clicks = [(None, 0), (5, 5), (5, 2)]
+
+        for status in statuses:
+            for expire_after in expiries:
+                for max_clicks, total_clicks in clicks:
+                    doc = make_url_v2_doc(
+                        status=status,
+                        expire_after=expire_after,
+                        max_clicks=max_clicks,
+                    )
+                    doc.total_clicks = total_clicks
+                    case = f"{status}/{expire_after}/{max_clicks}:{total_clicks}"
+                    assert (doc.effective_status == UrlStatus.EXPIRED) == (
+                        _matches_expired_clause(doc, now)
+                    ), case
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestListFilterComposition — status/search $or clauses compose via $and
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestListFilterComposition:
+    def _svc(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        url_repo.count_by_query.return_value = 0
+        url_repo.find_by_owner.return_value = []
+        return svc, url_repo
+
+    @pytest.mark.asyncio
+    async def test_expired_filter_includes_derived_arms(self):
+        svc, url_repo = self._svc()
+        from schemas.dto.requests.url import ListUrlsQuery
+
+        await svc.list_by_owner(USER_OID, ListUrlsQuery(filter='{"status": "EXPIRED"}'))
+
+        q = url_repo.count_by_query.call_args[0][0]
+        assert q["owner_id"] == USER_OID
+        arms = q["$or"]
+        assert {"status": UrlStatus.EXPIRED} in arms
+        assert any(a.get("expire_after") for a in arms)
+
+    @pytest.mark.asyncio
+    async def test_active_filter_excludes_derived_expired(self):
+        svc, url_repo = self._svc()
+        from schemas.dto.requests.url import ListUrlsQuery
+
+        await svc.list_by_owner(USER_OID, ListUrlsQuery(filter='{"status": "ACTIVE"}'))
+
+        q = url_repo.count_by_query.call_args[0][0]
+        assert q["status"] == UrlStatus.ACTIVE
+        assert "$nor" in q
+
+    @pytest.mark.asyncio
+    async def test_status_and_search_compose_via_and(self):
+        """Both clauses carry $or — naive merging would clobber one."""
+        svc, url_repo = self._svc()
+        from schemas.dto.requests.url import ListUrlsQuery
+
+        await svc.list_by_owner(
+            USER_OID,
+            ListUrlsQuery(filter='{"status": "EXPIRED", "search": "example"}'),
+        )
+
+        q = url_repo.count_by_query.call_args[0][0]
+        assert "$or" not in q  # neither clause owns the top level
+        status_clause, search_clause = None, None
+        for clause in q["$and"]:
+            if any("status" in arm for arm in clause["$or"]):
+                status_clause = clause
+            else:
+                search_clause = clause
+        assert status_clause is not None
+        assert search_clause is not None
+
+    @pytest.mark.asyncio
+    async def test_search_only_still_merges_to_top_level(self):
+        svc, url_repo = self._svc()
+        from schemas.dto.requests.url import ListUrlsQuery
+
+        await svc.list_by_owner(USER_OID, ListUrlsQuery(filter='{"search": "ex"}'))
+
+        q = url_repo.count_by_query.call_args[0][0]
+        assert "$or" in q
+        assert "$and" not in q
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestAutoReactivateRequiresRequestedChange — §7 resurrection regressions
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestAutoReactivateRequiresRequestedChange:
+    """Reactivation is driven by the REQUESTED change — ambient field
+    values must not resurrect an EXPIRED URL on unrelated edits."""
+
+    def _expired_doc(self, **overrides):
+        base = {
+            "_id": URL_OID,
+            "alias": ALIAS,
+            "owner_id": USER_OID,
+            "domain": SYSTEM_DEFAULT_DOMAIN,
+            "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "long_url": "https://example.com",
+            "status": "EXPIRED",
+            "private_stats": True,
+        }
+        base.update(overrides)
+        return UrlV2Doc.from_mongo(base)
+
+    def _svc(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.update.return_value = True
+        return svc, url_repo
+
+    @pytest.mark.asyncio
+    async def test_unrelated_edit_does_not_resurrect(self):
+        """Max-clicks-expired doc with a future expire_after: editing only
+        long_url must NOT flip it back to ACTIVE."""
+        svc, url_repo = self._svc()
+        url_repo.find_by_id.return_value = self._expired_doc(
+            max_clicks=3,
+            total_clicks=3,
+            expire_after=datetime.now(timezone.utc) + timedelta(days=30),
+        )
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        await svc.update(
+            URL_OID, UpdateUrlRequest(long_url="https://other.org"), USER_OID
+        )
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert "status" not in update_doc["$set"]
+
+    @pytest.mark.asyncio
+    async def test_noop_update_does_not_write(self):
+        svc, url_repo = self._svc()
+        url_repo.find_by_id.return_value = self._expired_doc(
+            max_clicks=3,
+            total_clicks=3,
+            expire_after=datetime.now(timezone.utc) + timedelta(days=30),
+        )
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        result = await svc.update(URL_OID, UpdateUrlRequest(), USER_OID)
+
+        url_repo.update.assert_not_called()
+        assert result.status == UrlStatus.EXPIRED
+
+    @pytest.mark.asyncio
+    async def test_extending_expiry_on_time_flipped_doc_reactivates(self):
+        """The legitimate path still works: a time-expired (flipped) doc
+        whose expire_after is explicitly extended goes back to ACTIVE."""
+        svc, url_repo = self._svc()
+        url_repo.find_by_id.return_value = self._expired_doc(
+            expire_after=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        future = datetime.now(timezone.utc) + timedelta(days=7)
+        await svc.update(URL_OID, UpdateUrlRequest(expire_after=future), USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["status"] == "ACTIVE"

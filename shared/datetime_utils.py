@@ -62,6 +62,16 @@ def to_unix_timestamp(dt: datetime | None, default: int | None = None) -> int | 
     return int(dt.timestamp())
 
 
+def as_aware_utc(dt: Any) -> datetime | None:
+    """Normalize a stored datetime for comparison — Mongo returns naive
+    UTC datetimes by default (the client is not ``tz_aware``)."""
+    if not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def convert_to_gmt(expiration_time: str) -> datetime | None:
     """Parse an ISO 8601 string and convert to UTC.
 

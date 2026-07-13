@@ -154,6 +154,24 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             {"$set": {"status": UrlStatus.EXPIRED}},
         )
 
+    async def expire_if_time_reached(self, url_id: ObjectId) -> bool:
+        """Conditionally expire the URL if its expire_after has passed.
+
+        Atomic conditional update mirroring ``expire_if_max_clicks`` —
+        matches only ACTIVE docs so BLOCKED/INACTIVE are never clobbered.
+        Returns True only if this call performed the flip (modified_count).
+        ``$lte`` on a date never matches null/missing (BSON type
+        bracketing), so no explicit null guard is needed.
+        """
+        return await self._update_modified(
+            {
+                "_id": url_id,
+                "status": UrlStatus.ACTIVE,
+                "expire_after": {"$lte": datetime.now(timezone.utc)},
+            },
+            {"$set": {"status": UrlStatus.EXPIRED}},
+        )
+
     async def find_by_owner(
         self,
         query: dict,

@@ -3,8 +3,10 @@
 import json
 from unittest.mock import AsyncMock, patch
 
+from bson import ObjectId
+
 from infrastructure.cache.dual_cache import DualCache
-from infrastructure.cache.url_cache import UrlCache
+from infrastructure.cache.url_cache import UrlCache, UrlCacheData
 
 from .conftest import _fake_redis, _url_data
 
@@ -291,3 +293,56 @@ class TestUrlCacheDataGeoRules:
         result = await cache2.get("abc1234", DOMAIN)
         assert result is not None
         assert result.geo_rules == rules
+
+
+class TestUrlCacheDataIsTimeExpired:
+    def _data(self, expiration_time):
+        return UrlCacheData(
+            id="x",
+            alias="abc1234",
+            long_url="https://example.com",
+            block_bots=False,
+            password_hash=None,
+            expiration_time=expiration_time,
+            max_clicks=None,
+            url_status="ACTIVE",
+            schema_version="v2",
+            owner_id=None,
+        )
+
+    def test_none_never_expires(self):
+        assert self._data(None).is_time_expired(1_800_000_000) is False
+
+    def test_past_is_expired(self):
+        assert self._data(1_000).is_time_expired(2_000) is True
+
+    def test_boundary_equal_is_expired(self):
+        # <= convention, shared with UrlV2Doc.effective_status
+        assert self._data(2_000).is_time_expired(2_000) is True
+
+    def test_future_is_not_expired(self):
+        assert self._data(3_000).is_time_expired(2_000) is False
+
+
+class TestFromV2DocExpirationNormalization:
+    def test_naive_expire_after_treated_as_utc(self):
+        """Mongo returns naive UTC — the projection must not interpret it
+        in host-local time."""
+        from datetime import datetime, timezone
+
+        from schemas.models.url import UrlV2Doc
+
+        naive = datetime(2025, 6, 1, 12, 0, 0)  # naive UTC from Mongo
+        doc = UrlV2Doc.from_mongo(
+            {
+                "_id": ObjectId(),
+                "alias": "abc1234",
+                "domain": "spoo.me",
+                "created_at": naive,
+                "long_url": "https://example.com",
+                "expire_after": naive,
+            }
+        )
+        data = UrlCacheData.from_v2_doc(doc)
+        expected = int(naive.replace(tzinfo=timezone.utc).timestamp())
+        assert data.expiration_time == expected

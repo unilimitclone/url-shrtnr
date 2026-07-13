@@ -167,6 +167,29 @@ class TestUrlRepository:
         assert await self._repo(col).expire_if_max_clicks(URL_OID, 100) is False
 
     @pytest.mark.asyncio
+    async def test_expire_if_time_reached_flips_active_past_expiry(self):
+        col = make_collection()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=1))
+        result = await self._repo(col).expire_if_time_reached(URL_OID)
+        (filter_doc, update_doc) = col.update_one.call_args[0]
+        assert filter_doc["_id"] == URL_OID
+        # ACTIVE guard: BLOCKED/INACTIVE must never be clobbered, and the
+        # flip stays idempotent between concurrent resolves.
+        assert filter_doc["status"] == "ACTIVE"
+        assert "$lte" in filter_doc["expire_after"]
+        assert isinstance(filter_doc["expire_after"]["$lte"], datetime)
+        assert update_doc == {"$set": {"status": "EXPIRED"}}
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_expire_if_time_reached_returns_false_when_not_flipped(self):
+        """Not matched (future/absent expiry, non-ACTIVE) or already
+        flipped by a concurrent resolve — either way, no side effects."""
+        col = make_collection()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=0))
+        assert await self._repo(col).expire_if_time_reached(URL_OID) is False
+
+    @pytest.mark.asyncio
     async def test_find_by_owner_returns_models(self):
         col = make_collection()
         cursor = col.find.return_value

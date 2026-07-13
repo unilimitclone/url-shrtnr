@@ -564,3 +564,39 @@ class TestMetaTagsResponseWarnings:
         # known while dims are not — only the byte warning applies.
         w = self._warnings(self._meta(bytes_=400_000))
         assert w == ["image exceeds 300KB; WhatsApp may silently drop it"]
+
+
+# ── Derived status in from_doc (time/max-click expiry folded) ────────────────
+
+
+class TestFromDocDerivedStatus:
+    """All three DTOs serialize EFFECTIVE status — a stored-ACTIVE doc
+    whose expiry has passed must read EXPIRED on the wire even before
+    the persisted flip happens."""
+
+    PAST = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+    def test_url_response_derives_expired(self):
+        r = UrlResponse.from_doc(_make_doc(expire_after=self.PAST), "https://spoo.me")
+        assert r.status == "EXPIRED"
+
+    def test_update_response_derives_expired(self):
+        r = UpdateUrlResponse.from_doc(_make_doc(expire_after=self.PAST))
+        assert r.status == "EXPIRED"
+
+    def test_list_item_derives_expired(self):
+        r = UrlListItem.from_doc(_make_doc(expire_after=self.PAST))
+        assert r.status == "EXPIRED"
+
+    def test_list_item_derives_expired_from_max_clicks(self):
+        r = UrlListItem.from_doc(_make_doc(max_clicks=10, total_clicks=42))
+        assert r.status == "EXPIRED"
+
+    def test_inactive_stored_is_not_folded(self):
+        r = UrlListItem.from_doc(_make_doc(status="INACTIVE", expire_after=self.PAST))
+        assert r.status == "INACTIVE"
+
+    def test_future_expiry_stays_active(self):
+        future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        r = UrlListItem.from_doc(_make_doc(expire_after=future))
+        assert r.status == "ACTIVE"

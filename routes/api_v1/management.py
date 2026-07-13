@@ -153,7 +153,10 @@ async def update_url_status_v1(
 
     **Note**: `BLOCKED` is an admin-set status — blocked URLs cannot be modified
     or deleted by the owner. `EXPIRED` URLs (auto-set on max clicks or expiry
-    time) can be reactivated by setting status back to `ACTIVE`.
+    time) can be reactivated by setting status back to `ACTIVE` — but only
+    after the expiry condition is lifted (raise/clear `max_clicks`, extend/
+    clear `expire_after` via PATCH), otherwise the URL immediately reads
+    as expired again.
 
     **Use Cases**:
 

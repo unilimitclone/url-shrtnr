@@ -1,11 +1,19 @@
 """Unit tests for UrlV2Doc, LegacyUrlDoc, EmojiUrlDoc, and LinkMetaTags."""
 
+from datetime import timedelta
+
 import pytest
 from bson import ObjectId
 from pydantic import ValidationError as PydanticValidationError
 
 from schemas.models.base import ANONYMOUS_OWNER_ID
-from schemas.models.url import EmojiUrlDoc, LegacyUrlDoc, LinkMetaTags, UrlV2Doc
+from schemas.models.url import (
+    EmojiUrlDoc,
+    LegacyUrlDoc,
+    LinkMetaTags,
+    UrlStatus,
+    UrlV2Doc,
+)
 
 from .conftest import now, oid
 
@@ -297,3 +305,75 @@ class TestLinkMetaTags:
             }
         )
         assert doc.meta_tags is None
+
+
+# ── UrlV2Doc.effective_status ─────────────────────────────────────────────────
+
+
+class TestUrlV2DocEffectiveStatus:
+    """The derived-status predicate shared by the redirect, the DTOs, and
+    the public resolver. The Mongo filter clause must express the same
+    predicate — pinned in tests/unit/services/test_url_service.py."""
+
+    def _make(self, **overrides):
+        base = {
+            "_id": oid(),
+            "alias": "abc1234",
+            "owner_id": oid(),
+            "domain": "spoo.me",
+            "created_at": now(),
+            "long_url": "https://example.com",
+        }
+        base.update(overrides)
+        return UrlV2Doc.model_validate(base)
+
+    def test_active_without_expiry_stays_active(self):
+        assert self._make().effective_status == UrlStatus.ACTIVE
+
+    def test_active_with_future_expiry_stays_active(self):
+        doc = self._make(expire_after=now() + timedelta(hours=1))
+        assert doc.effective_status == UrlStatus.ACTIVE
+
+    def test_active_with_past_expiry_reads_expired(self):
+        doc = self._make(expire_after=now() - timedelta(seconds=1))
+        assert doc.effective_status == UrlStatus.EXPIRED
+
+    def test_boundary_expiry_equal_to_now_reads_expired(self):
+        # <= convention — an expiry stamped exactly now is already expired.
+        doc = self._make(expire_after=now() - timedelta(microseconds=1))
+        assert doc.effective_status == UrlStatus.EXPIRED
+
+    def test_naive_past_expiry_treated_as_utc(self):
+        # Mongo returns naive UTC datetimes — they must still enforce.
+        naive_past = (now() - timedelta(hours=1)).replace(tzinfo=None)
+        doc = self._make(expire_after=naive_past)
+        assert doc.effective_status == UrlStatus.EXPIRED
+
+    def test_max_clicks_exhausted_reads_expired(self):
+        doc = self._make(max_clicks=5, total_clicks=5)
+        assert doc.effective_status == UrlStatus.EXPIRED
+
+    def test_max_clicks_not_exhausted_stays_active(self):
+        doc = self._make(max_clicks=5, total_clicks=4)
+        assert doc.effective_status == UrlStatus.ACTIVE
+
+    @pytest.mark.parametrize("status", ["INACTIVE", "BLOCKED", "EXPIRED"])
+    def test_non_active_stored_status_never_folded(self, status):
+        # Derivation only applies to ACTIVE — stored non-ACTIVE is truth.
+        doc = self._make(status=status, expire_after=now() - timedelta(hours=1))
+        assert doc.effective_status == UrlStatus(status)
+
+    def test_wire_casing_pin(self):
+        """The public-page contract is frozen lowercase — .value.lower()
+        in v2_effective_status is load-bearing over UPPERCASE enum values."""
+        from services.public_link_resolver import v2_effective_status
+
+        assert v2_effective_status(self._make()) == "active"
+        expired = self._make(expire_after=now() - timedelta(hours=1))
+        assert v2_effective_status(expired) == "expired"
+        assert {s.value for s in UrlStatus} == {
+            "ACTIVE",
+            "INACTIVE",
+            "EXPIRED",
+            "BLOCKED",
+        }

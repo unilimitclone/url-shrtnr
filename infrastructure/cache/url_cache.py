@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from infrastructure.crypto import verify_password as verify_password_hash
 from infrastructure.logging import get_logger
+from shared.datetime_utils import to_unix_timestamp
 
 if TYPE_CHECKING:
     from schemas.models.url import UrlV2Doc
@@ -31,7 +32,8 @@ class UrlCacheData(BaseModel):
     long_url: str
     block_bots: bool
     password_hash: str | None
-    expiration_time: int | None  # Unix timestamp
+    # Unix timestamp; None = no expiry OR tz-ambiguous v1 value (never expires)
+    expiration_time: int | None
     max_clicks: int | None
     url_status: str  # ACTIVE, INACTIVE, BLOCKED, EXPIRED
     schema_version: str  # "v1" or "v2"
@@ -67,9 +69,9 @@ class UrlCacheData(BaseModel):
             long_url=doc.long_url,
             block_bots=bool(doc.block_bots),
             password_hash=doc.password,
-            expiration_time=(
-                int(doc.expire_after.timestamp()) if doc.expire_after else None
-            ),
+            # to_unix_timestamp treats naive as UTC — v2 datetimes come back
+            # from Mongo naive-UTC, so this stays host-TZ-independent.
+            expiration_time=to_unix_timestamp(doc.expire_after),
             max_clicks=doc.max_clicks,
             url_status=doc.status,
             schema_version="v2",
@@ -83,6 +85,13 @@ class UrlCacheData(BaseModel):
             meta_image_width=im.width if im else None,
             meta_image_height=im.height if im else None,
         )
+
+    def is_time_expired(self, now_ts: float) -> bool:
+        """Time-lapse check for the hot path. ``expiration_time`` is None
+        for links without expiry AND for v1 rows whose stored value is
+        tz-ambiguous (see ``_legacy_doc_to_cache``) — both never expire here.
+        """
+        return self.expiration_time is not None and self.expiration_time <= now_ts
 
     def verify_password(self, password: str | None) -> bool:
         """Check a password against this URL's stored hash.
