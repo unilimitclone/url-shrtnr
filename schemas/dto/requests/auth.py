@@ -3,6 +3,7 @@ Request DTOs for authentication endpoints.
 
 LoginRequest                  — POST /auth/login
 RegisterRequest               — POST /auth/register
+UpdateProfileRequest          — PATCH /auth/me
 SetPasswordRequest            — POST /auth/set-password
 VerifyEmailRequest            — POST /auth/verify-email
 SendVerificationRequest       — POST /auth/send-verification  (no body)
@@ -51,6 +52,22 @@ class RegisterRequest(RequestBase):
         min_length=1,
         max_length=255,
         description="Display name (optional)",
+        examples=["Jane Doe"],
+    )
+
+
+class UpdateProfileRequest(RequestBase):
+    """Request body for PATCH /auth/me.
+
+    ``user_name`` is required but nullable: an explicit ``null`` clears
+    the display name (an accidental ``{}`` must not). Bounds mirror
+    RegisterRequest — the two write paths for the same field.
+    """
+
+    user_name: str | None = Field(
+        min_length=1,
+        max_length=255,
+        description="New display name, or null to clear it",
         examples=["Jane Doe"],
     )
 

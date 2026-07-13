@@ -288,7 +288,12 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         token_factory,
         app.state.email_provider,
     )
-    app.state.profile_picture_service = ProfilePictureService(user_repo)
+    app.state.profile_picture_service = ProfilePictureService(
+        user_repo,
+        r2_storage=r2_storage,
+        upload_max_bytes=r2.upload_max_bytes,
+        key_secret=settings.secret_key,
+    )
     app.state.contact_service = ContactService(
         contact_webhook,
         report_webhook,

@@ -10,6 +10,8 @@ GET  /dashboard/billing     → billing page
 GET  /dashboard/apps          → connected apps + ecosystem
 GET  /dashboard/profile-pictures  → available pictures (JSON)
 POST /dashboard/profile-pictures  → set profile picture (JSON)
+POST /dashboard/profile-pictures/upload  → upload a custom picture (JSON)
+DELETE /dashboard/profile-pictures       → unset picture (JSON)
 """
 
 from __future__ import annotations
@@ -21,8 +23,8 @@ from pydantic import BaseModel, Field
 from dependencies import (
     AppGrantRepo,
     AppRegistryDep,
-    AuthUser,
     CurrentUser,
+    JwtUser,
     OptionalUser,
     ProfilePictureSvc,
 )
@@ -243,6 +245,14 @@ class SetProfilePictureRequest(BaseModel):
     picture_id: str = Field(min_length=1, max_length=200)
 
 
+class UploadProfilePictureRequest(BaseModel):
+    # Size/type gates run in the service against the configured cap
+    # (R2_UPLOAD_MAX_BYTES) — same posture as meta-tag image uploads.
+    image: str = Field(
+        min_length=1, description="base64 data URI (image/png, image/jpeg, image/webp)"
+    )
+
+
 class AvailablePicturesResponse(BaseModel):
     pictures: list[AvailablePicture]
 
@@ -255,7 +265,7 @@ class ProfilePictureMessageResponse(BaseModel):
 @limiter.limit(Limits.DASHBOARD_READ)
 async def get_profile_pictures(
     request: Request,
-    user: AuthUser,
+    user: JwtUser,
     svc: ProfilePictureSvc,
 ) -> AvailablePicturesResponse:
     pictures = await svc.get_available_pictures(user.user_id)
@@ -267,8 +277,31 @@ async def get_profile_pictures(
 async def set_profile_picture(
     request: Request,
     body: SetProfilePictureRequest,
-    user: AuthUser,
+    user: JwtUser,
     svc: ProfilePictureSvc,
 ) -> ProfilePictureMessageResponse:
     await svc.set_picture(user.user_id, body.picture_id)
     return ProfilePictureMessageResponse(message="Profile picture updated successfully")
+
+
+@router.post("/profile-pictures/upload")
+@limiter.limit(Limits.PROFILE_PICTURE_UPLOAD)
+async def upload_profile_picture(
+    request: Request,
+    body: UploadProfilePictureRequest,
+    user: JwtUser,
+    svc: ProfilePictureSvc,
+) -> ProfilePictureMessageResponse:
+    await svc.upload_picture(user.user_id, body.image)
+    return ProfilePictureMessageResponse(message="Profile picture updated successfully")
+
+
+@router.delete("/profile-pictures")
+@limiter.limit(Limits.PROFILE_PICTURE_SET)
+async def unset_profile_picture(
+    request: Request,
+    user: JwtUser,
+    svc: ProfilePictureSvc,
+) -> ProfilePictureMessageResponse:
+    await svc.unset_picture(user.user_id)
+    return ProfilePictureMessageResponse(message="Profile picture removed")

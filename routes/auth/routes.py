@@ -9,6 +9,7 @@ POST /auth/register
 POST /auth/refresh
 POST /auth/logout
 GET  /auth/me
+PATCH /auth/me
 POST /auth/set-password
 """
 
@@ -24,6 +25,7 @@ from dependencies import (
     JwtConfig,
     JwtUser,
     PasswordSvc,
+    ProfilePictureSvc,
     UserRepo,
     fetch_user_profile,
 )
@@ -36,6 +38,7 @@ from schemas.dto.requests.auth import (
     LoginRequest,
     RegisterRequest,
     SetPasswordRequest,
+    UpdateProfileRequest,
 )
 from schemas.dto.responses.auth import (
     LoginResponse,
@@ -261,6 +264,37 @@ async def me(
     """
     profile = await fetch_user_profile(user_repo, ObjectId(str(user.user_id)))
     return MeResponse(user=UserProfileResponse.from_user(profile))
+
+
+@router.patch(
+    "/auth/me",
+    responses=ERROR_RESPONSES,
+    operation_id="updateCurrentUser",
+    summary="Update Current User",
+)
+@limiter.limit(Limits.PROFILE_UPDATE)
+async def update_me(
+    request: Request,
+    body: UpdateProfileRequest,
+    user: JwtUser,
+    profile_service: ProfilePictureSvc,
+) -> MeResponse:
+    """Update the authenticated user's profile.
+
+    Currently only ``user_name`` is editable. Registration makes the
+    display name write-once, so accounts that skipped it need this to
+    set one later. Send a string to set the name or ``null`` to clear it.
+
+    **Authentication**: Required (JWT only — API keys cannot rename the account)
+
+    **Rate Limits**: 10/min
+    """
+    # Same normalization as register: strip, whitespace-only → not set.
+    user_name = (body.user_name or "").strip() or None
+    updated = await profile_service.update_user_name(
+        ObjectId(str(user.user_id)), user_name
+    )
+    return MeResponse(user=UserProfileResponse.from_user(updated))
 
 
 @router.post(

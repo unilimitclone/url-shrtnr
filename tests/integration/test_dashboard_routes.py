@@ -22,7 +22,7 @@ from dependencies import (
     get_current_user,
     get_profile_picture_service,
 )
-from errors import NotFoundError
+from errors import NotFoundError, ValidationError
 from middleware.error_handler import register_error_handlers
 from middleware.rate_limiter import limiter
 from routes.dashboard_routes import router as dashboard_router
@@ -50,6 +50,8 @@ def _mock_svc(profile=None, pictures=None):
     svc.get_dashboard_profile = AsyncMock(return_value=profile or _PROFILE)
     svc.get_available_pictures = AsyncMock(return_value=pictures or [])
     svc.set_picture = AsyncMock()
+    svc.upload_picture = AsyncMock()
+    svc.unset_picture = AsyncMock()
     return svc
 
 
@@ -207,3 +209,98 @@ def test_profile_pictures_post_invalid_id_returns_404():
     with TestClient(app) as c:
         resp = c.post("/dashboard/profile-pictures", json={"picture_id": "bad_id"})
     assert resp.status_code == 404
+
+
+# ── Profile picture upload ───────────────────────────────────────────────────
+
+
+def test_profile_picture_upload_unauth_returns_401():
+    app = _build_test_app(user=None)
+    with TestClient(app) as c:
+        resp = c.post(
+            "/dashboard/profile-pictures/upload",
+            json={"image": "data:image/png;base64,aGk="},
+        )
+    assert resp.status_code == 401
+
+
+def test_profile_picture_upload_missing_image_returns_422():
+    app = _build_test_app(user=_TEST_USER)
+    with TestClient(app) as c:
+        resp = c.post("/dashboard/profile-pictures/upload", json={})
+    assert resp.status_code == 422
+
+
+def test_profile_picture_upload_valid_returns_success():
+    svc = _mock_svc()
+    app = _build_test_app(user=_TEST_USER, svc=svc)
+    with TestClient(app) as c:
+        resp = c.post(
+            "/dashboard/profile-pictures/upload",
+            json={"image": "data:image/png;base64,aGk="},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["message"] == "Profile picture updated successfully"
+    svc.upload_picture.assert_called_once()
+
+
+def test_profile_picture_upload_invalid_image_returns_400():
+    svc = _mock_svc()
+    svc.upload_picture = AsyncMock(
+        side_effect=ValidationError(
+            "image bytes do not match the declared image type", field="image"
+        )
+    )
+    app = _build_test_app(user=_TEST_USER, svc=svc)
+    with TestClient(app) as c:
+        resp = c.post(
+            "/dashboard/profile-pictures/upload",
+            json={"image": "data:image/png;base64,aGk="},
+        )
+    assert resp.status_code == 400
+    assert resp.json()["field"] == "image"
+
+
+# ── Profile picture unset ────────────────────────────────────────────────────
+
+
+def test_profile_picture_delete_unauth_returns_401():
+    app = _build_test_app(user=None)
+    with TestClient(app) as c:
+        resp = c.delete("/dashboard/profile-pictures")
+    assert resp.status_code == 401
+
+
+def test_profile_picture_delete_returns_success():
+    svc = _mock_svc()
+    app = _build_test_app(user=_TEST_USER, svc=svc)
+    with TestClient(app) as c:
+        resp = c.delete("/dashboard/profile-pictures")
+    assert resp.status_code == 200
+    assert resp.json()["message"] == "Profile picture removed"
+    svc.unset_picture.assert_called_once_with(_TEST_USER.user_id)
+
+
+def test_profile_picture_endpoints_reject_api_key_auth():
+    """The whole account-profile surface is JWT-only, matching PATCH /auth/me."""
+    svc = _mock_svc()
+    api_key_user = CurrentUser(
+        user_id=ObjectId(), email_verified=True, api_key_doc=MagicMock()
+    )
+    app = _build_test_app(user=api_key_user, svc=svc)
+    with TestClient(app, raise_server_exceptions=False) as c:
+        assert c.get("/dashboard/profile-pictures").status_code == 403
+        assert (
+            c.post("/dashboard/profile-pictures", json={"picture_id": "x"}).status_code
+            == 403
+        )
+        assert (
+            c.post(
+                "/dashboard/profile-pictures/upload", json={"image": "data:;base64,x"}
+            ).status_code
+            == 403
+        )
+        assert c.delete("/dashboard/profile-pictures").status_code == 403
+    svc.set_picture.assert_not_called()
+    svc.upload_picture.assert_not_called()
+    svc.unset_picture.assert_not_called()
