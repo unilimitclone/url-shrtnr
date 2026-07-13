@@ -6,8 +6,10 @@ import string
 import emoji as _emoji
 import pytest
 
+from shared.emoji_policy import check_emoji_alias, generation_pool
 from shared.generators import (
     generate_emoji_alias,
+    generate_emoji_alias_v2,
     generate_otp_code,
     generate_secure_token,
     generate_short_code,
@@ -40,9 +42,40 @@ class TestGenerateShortCodeV2:
         assert set(generate_short_code_v2()).issubset(_ALPHANUM)
 
 
+class TestGenerateEmojiAliasV2:
+    def test_default_length_is_3(self):
+        assert len(_emoji.emoji_list(generate_emoji_alias_v2())) == 3
+
+    @pytest.mark.parametrize("length", [1, 5, 15])
+    def test_custom_length(self, length):
+        assert len(_emoji.emoji_list(generate_emoji_alias_v2(length))) == length
+
+    @pytest.mark.parametrize("length", [0, 16])
+    def test_length_out_of_range(self, length):
+        with pytest.raises(ValueError):
+            generate_emoji_alias_v2(length)
+
+    def test_draws_from_safe_pool(self):
+        pool = set(generation_pool())
+        for _ in range(20):
+            alias = generate_emoji_alias_v2()
+            assert all(ch in pool for ch in alias)
+
+    def test_output_passes_acceptance_policy(self):
+        for _ in range(20):
+            assert check_emoji_alias(generate_emoji_alias_v2()) == "ok"
+
+    def test_produces_variety(self):
+        assert len({generate_emoji_alias_v2() for _ in range(20)}) > 1
+
+
 class TestGenerateEmojiAlias:
     def test_returns_exactly_3_emojis(self):
         assert len(_emoji.emoji_list(generate_emoji_alias())) == 3
+
+    def test_draws_from_safe_pool(self):
+        pool = set(generation_pool())
+        assert all(ch in pool for ch in generate_emoji_alias())
 
     def test_produces_variety(self):
         assert len({generate_emoji_alias() for _ in range(20)}) > 1

@@ -28,7 +28,7 @@ _BOT_UA_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "bot_user_agents.txt"
 )
 
-# Repo-root data/ (same home as emojis.json, see shared/generators.py).
+# Repo-root data/ (same home as bot_user_agents.txt above).
 # Canonical copy; edge/spoo-edge-cache/contract/preview_bots.json must stay
 # byte-identical — pinned by tests on both sides.
 _PREVIEW_BOTS_PATH = os.path.join(
