@@ -7,11 +7,10 @@ form build against these exact fields.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import Field
 
 from schemas.dto.base import ResponseBase
+from schemas.enums.report import RejectionCode
 
 
 class ContactOkResponse(ResponseBase):
@@ -30,7 +29,7 @@ class RejectedReportItem(ResponseBase):
 
     index: int
     input: str
-    code: Literal["invalid_input", "not_found", "duplicate_in_batch"]
+    code: RejectionCode
 
 
 class ReportSubmissionResponse(ResponseBase):

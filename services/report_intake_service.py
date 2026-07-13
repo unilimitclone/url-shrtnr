@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 from bson import ObjectId
@@ -35,6 +35,7 @@ from infrastructure.webhook.protocol import WebhookProvider
 from repositories.report_repository import ReportRepository, ReportSubmissionRepository
 from repositories.url_repository import UrlRepository
 from schemas.dto.requests.reports import ReportItemRequest
+from schemas.enums.report import RejectionCode
 from services.public_link_resolver import PublicLinkResolver
 
 log = get_logger(__name__)
@@ -101,7 +102,7 @@ class RejectedItem:
 
     index: int
     input: str
-    code: Literal["invalid_input", "not_found", "duplicate_in_batch"]
+    code: RejectionCode
 
 
 @dataclass
@@ -236,6 +237,7 @@ class ReportIntakeService:
             reporter_email=reporter_email,
             reporter_org=reporter_org,
             ip=ip,
+            now=now,
         )
         if not await self._report_webhook.send(payload):
             log.error("report_summary_webhook_failed", submission_id=submission_id)
@@ -319,13 +321,16 @@ class ReportIntakeService:
         reporter_email: str | None,
         reporter_org: str | None,
         ip: str,
+        now: datetime,
     ) -> dict[str, Any]:
         """ONE Discord embed per submission — counts, source, up to
         {_SUMMARY_MAX_LISTED} codes with reasons, submission id.
 
         Same visual family as ContactService._report_embed (color,
         code-block fields, footer) but built here: ContactService stays
-        contact-only + the legacy per-code Jinja path.
+        contact-only + the legacy per-code Jinja path. ``now`` is the
+        submission timestamp already stamped on the audit record, so the
+        embed and the record can never disagree.
         """
         fields: list[dict[str, Any]] = [
             {"name": "Submission ID", "value": f"```{submission_id}```"},
@@ -373,7 +378,7 @@ class ReportIntakeService:
                     "title": "New URL Report Submission",
                     "color": 14177041,
                     "fields": fields,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": now.isoformat(),
                     "footer": {
                         "text": "spoo-me",
                         "icon_url": "https://spoo.me/static/images/favicon.png",

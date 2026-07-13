@@ -297,6 +297,8 @@ def test_single_item_wire_shape_storage_and_summary_webhook():
     assert embed["fields"][2]["value"] == "```1 / 0```"
     assert "spoo.me/abc1234 — phishing" in embed["fields"][3]["value"]
     assert embed["footer"]["text"] == "spoo-me"
+    # The embed carries the SAME instant the audit record was stamped with.
+    assert embed["timestamp"] == sub["created_at"].isoformat()
 
 
 def test_details_and_vector_stored():
@@ -423,6 +425,35 @@ def test_re_report_increments_the_same_document():
         assert ops["$inc"]["count"] == 1
     # The re-report contributes its reason to the triage-hint set.
     assert reports_col.update_calls[1][1]["$addToSet"] == {"reasons": "malware"}
+
+
+def test_summary_embed_clips_long_lines_and_reports_overflow():
+    # 11 accepted items: the first has an oversized code (line-clip branch),
+    # the 11th spills past the 10-code listing cap (overflow branch).
+    long_code = "x" * 100
+    codes = [long_code] + [f"bulk{i}" for i in range(10)]
+    webhook = _FakeWebhook()
+    service, _, _ = _build_service(
+        v2_docs=[_make_v2_doc(code) for code in codes], webhook=webhook
+    )
+    with _client(service) as c:
+        resp = c.post(_URL, json={"items": _items(*codes)})
+
+    assert resp.status_code == 200
+    assert resp.json()["accepted"] == 11
+
+    embed = webhook.payloads[0]["embeds"][0]
+    links_field = next(f for f in embed["fields"] if f["name"] == "Reported Links")
+    lines = links_field["value"].strip("`").split("\n")
+    # 10 listed codes + the overflow line.
+    assert len(lines) == 11
+    assert lines[10] == "… and 1 more"
+    # The oversized line is clipped to the 80-char cap, ellipsis-terminated.
+    full_line = f"spoo.me/{long_code} — phishing"
+    assert lines[0] == full_line[:79] + "…"
+    assert len(lines[0]) == 80
+    # The in-budget lines are untouched.
+    assert lines[1] == "spoo.me/bulk0 — phishing"
 
 
 # ── Caps ──────────────────────────────────────────────────────────────────────

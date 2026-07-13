@@ -7,6 +7,13 @@ live in the url-safety architecture, not here.
 """
 
 from enum import Enum
+from typing import Literal
+
+# Per-item rejection codes on the POST /api/v1/reports wire. ONE shared
+# alias — the service dataclass and the response DTO both annotate with
+# this, so a fourth code added to one side but not the other is a type
+# error at the source instead of a 500 at response serialization.
+RejectionCode = Literal["invalid_input", "not_found", "duplicate_in_batch"]
 
 
 class ReportReason(str, Enum):
