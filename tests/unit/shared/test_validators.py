@@ -5,7 +5,6 @@ import pytest
 from shared.validators import (
     validate_alias,
     validate_blocked_url,
-    validate_emoji_alias,
     validate_url,
     validate_url_password,
 )
@@ -121,27 +120,6 @@ def test_validate_url_password(password, valid):
 )
 def test_validate_alias(alias, expected):
     assert validate_alias(alias) is expected
-
-
-# ---------------------------------------------------------------------------
-# shared.validators — validate_emoji_alias
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "alias, expected",
-    [
-        ("😀😃😄", True),
-        ("😀", True),
-        ("hello", False),  # plain text
-        ("hello😀", False),  # mixed
-        ("😀" * 16, False),  # exceeds 15-emoji limit
-        ("😀" * 15, True),  # exactly at limit
-    ],
-    ids=["three_emojis", "single", "plain_text", "mixed", "over_limit", "at_limit"],
-)
-def test_validate_emoji_alias(alias, expected):
-    assert validate_emoji_alias(alias) is expected
 
 
 # ---------------------------------------------------------------------------

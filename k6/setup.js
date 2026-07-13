@@ -38,7 +38,7 @@ export function createTestUrls() {
     }
   }
 
-  // Create 2 emoji URLs
+  // Create 2 legacy emoji URLs (exercises the tightened legacy path)
   for (let i = 0; i < 2; i++) {
     const res = http.post(`${BASE_URL}/emoji`, `url=https://httpstat.us/200`, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
@@ -47,6 +47,18 @@ export function createTestUrls() {
     if (check(res, { 'emoji URL created': (r) => r.status === 200 })) {
       const data = res.json();
       testUrls.emoji.push(data.emoji_alias || data.short_url.split('/').pop());
+    }
+  }
+
+  // Create 2 v2 emoji URLs (auto-generated via alias_type)
+  for (let i = 0; i < 2; i++) {
+    const res = http.post(`${BASE_URL}/api/v1/shorten`, JSON.stringify({
+      url: 'https://httpstat.us/200',
+      alias_type: 'emoji',
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+    if (check(res, { 'v2 emoji URL created': (r) => r.status === 201 })) {
+      testUrls.emoji.push(res.json().alias);
     }
   }
 
