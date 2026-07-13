@@ -390,6 +390,13 @@ function validateUrl(url) {
 function validateAlias(alias) {
     if (!alias) return { valid: true, message: '' }; // Optional field
 
+    // Coarse emoji gate — the server enforces the real emoji policy and
+    // returns precise reasons via check-alias.
+    const emojiPattern = /^[\p{Extended_Pictographic}\p{Emoji_Modifier}\u200D\uFE0F\u20E3]+$/u;
+    if (emojiPattern.test(alias)) {
+        return { valid: true, message: '' };
+    }
+
     if (alias.length < 3) {
         return { valid: false, message: 'Must be at least 3 characters' };
     }
@@ -400,7 +407,7 @@ function validateAlias(alias) {
 
     const aliasPattern = /^[a-zA-Z0-9_-]+$/;
     if (!aliasPattern.test(alias)) {
-        return { valid: false, message: 'Only letters, numbers, underscores, and hyphens are allowed' };
+        return { valid: false, message: 'Use letters, numbers, underscores, hyphens — or emoji only' };
     }
 
     return { valid: true, message: '' };

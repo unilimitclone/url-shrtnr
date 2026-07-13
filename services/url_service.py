@@ -70,19 +70,26 @@ from shared.alias_dispatch import (
     v2_lookup_code,
 )
 from shared.datetime_utils import parse_datetime, to_unix_timestamp
-from shared.generators import generate_short_code_v2
+from shared.emoji_policy import (
+    canonicalize_emoji_alias,
+    check_emoji_alias,
+    is_emoji_candidate,
+    is_emoji_only_shape,
+)
+from shared.generators import generate_emoji_alias_v2, generate_short_code_v2
 from shared.reserved_aliases import is_reserved_alias
 from shared.url_utils import extract_hostname
 from shared.validators import (
     validate_alias,
     validate_blocked_url,
-    validate_emoji_alias,
     validate_url,
 )
 
 log = get_logger(__name__)
 
-AliasCheckResult = Literal["available", "length", "format", "reserved", "taken"]
+AliasCheckResult = Literal[
+    "available", "length", "format", "reserved", "taken", "emoji_policy"
+]
 
 
 def _validate_geo_rules(
@@ -157,7 +164,14 @@ async def _handle_long_url(
 async def _handle_alias(
     request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
 ) -> None:
-    if request.alias is not None and request.alias != existing.alias:
+    if request.alias is None:
+        return
+    # Same validation + canonicalization as create — an edit must not be a
+    # side door for aliases that would be rejected at creation. Compare the
+    # CANONICAL form against the stored alias so echoing a VS16 variant of
+    # the current alias is a no-op, not a self-collision.
+    new_alias = service._validate_and_canonicalize_custom_alias(request.alias)
+    if new_alias != existing.alias:
         # Scope the collision check to wherever the URL will land. If the same
         # request is also moving the URL to a different domain, we must verify
         # the new alias is free on the *target* tenant — not the current one.
@@ -166,19 +180,17 @@ async def _handle_alias(
             if "domain" in request.model_fields_set
             else existing.domain
         )
-        # Same reserved check as create — an edit must not be a side door
-        # for aliases that would be rejected at creation.
-        if scope == service._system_default_domain and is_reserved_alias(request.alias):
-            log.info("url_alias_reserved", short_code=request.alias, domain=scope)
+        if scope == service._system_default_domain and is_reserved_alias(new_alias):
+            log.info("url_alias_reserved", short_code=new_alias, domain=scope)
             raise ValidationError("Alias is reserved", field="alias")
-        if not await service.check_alias_available(request.alias, domain=scope):
+        if not await service.check_alias_available(new_alias, domain=scope):
             log.info(
                 "url_alias_conflict",
-                short_code=request.alias,
+                short_code=new_alias,
                 domain=scope,
             )
             raise ConflictError("Alias is already in use")
-        ops["alias"] = request.alias
+        ops["alias"] = new_alias
 
 
 async def _handle_domain(
@@ -379,6 +391,9 @@ class UrlService:
         system_default_domain: str,
         blocked_url_regex_timeout: float = 0.2,
         max_emoji_alias_length: int = 15,
+        emoji_accept_max_version: float = 15.1,
+        emoji_generate_max_version: float = 12.0,
+        emoji_generated_alias_length: int = 3,
         geo_rules_max_countries: int = 50,
         og_writethrough: OgEdgeWritethrough | None = None,
         r2_storage: R2StorageClient | None = None,
@@ -397,6 +412,9 @@ class UrlService:
         self._system_default_domain = system_default_domain
         self._blocked_url_regex_timeout = blocked_url_regex_timeout
         self._max_emoji_alias_length = max_emoji_alias_length
+        self._emoji_accept_max_version = emoji_accept_max_version
+        self._emoji_generate_max_version = emoji_generate_max_version
+        self._emoji_generated_alias_length = emoji_generated_alias_length
         self._geo_rules_max_countries = geo_rules_max_countries
         # Edge KV write-through for og-links; None when edge cache is
         # unconfigured (self-host) — origin then serves all previews.
@@ -565,7 +583,15 @@ class UrlService:
         if await self._url_repo.check_alias_exists(alias, target_domain):
             return False
         if target_domain == self._system_default_domain:
-            return not await self._legacy_repo.check_exists(alias)
+            if await self._legacy_repo.check_exists(alias):
+                return False
+            # Legacy emoji _ids may carry historically-accepted variation
+            # selectors; a legacy ⭐️ must block a new canonical ⭐ or the
+            # v2-first resolve order would shadow the live legacy link.
+            if is_emoji_candidate(alias):
+                return not await self._emoji_repo.check_exists_vs16_insensitive(
+                    alias
+                )
         return True
 
     async def check_alias(
@@ -574,11 +600,27 @@ class UrlService:
         """Evaluate a candidate alias against the full creation rules.
 
         Mirrors what POST /api/v1/shorten would enforce (length, charset,
-        reserved words, collision) so the UI can surface precise feedback
-        without duplicating the rules. Returns a single literal describing
-        the first failing check, or ``"available"`` when the alias would be
-        accepted today.
+        emoji policy, reserved words, collision) so the UI can surface
+        precise feedback without duplicating the rules. Returns a single
+        literal describing the first failing check, or ``"available"`` when
+        the alias would be accepted today.
         """
+        if is_emoji_candidate(alias):
+            canonical = canonicalize_emoji_alias(alias)
+            if not is_emoji_only_shape(canonical):
+                return "format"
+            verdict = check_emoji_alias(
+                canonical,
+                max_graphemes=self._max_emoji_alias_length,
+                max_version=self._emoji_accept_max_version,
+            )
+            if verdict in ("length", "empty"):
+                return "length"
+            if verdict != "ok":
+                return "emoji_policy"
+            if not await self.check_alias_available(canonical, domain=domain):
+                return "taken"
+            return "available"
         if not (3 <= len(alias) <= 16):
             return "length"
         if not validate_alias(alias):
@@ -726,25 +768,19 @@ class UrlService:
 
         # 5. Alias — generate or validate custom (may loop; done after cheap checks)
         if request.alias:
-            if not validate_alias(request.alias) and not validate_emoji_alias(
-                request.alias, max_emojis=self._max_emoji_alias_length
-            ):
-                raise ValidationError(
-                    "Alias contains invalid characters", field="alias"
-                )
+            alias = self._validate_and_canonicalize_custom_alias(request.alias)
             # Reserved words only shadow paths on the default domain —
             # custom-domain namespaces carry no frontend routes.
             if target_domain == self._system_default_domain and is_reserved_alias(
-                request.alias
+                alias
             ):
-                log.info("url_alias_reserved", short_code=request.alias)
+                log.info("url_alias_reserved", short_code=alias)
                 raise ValidationError("Alias is reserved", field="alias")
-            if not await self.check_alias_available(
-                request.alias, domain=target_domain
-            ):
-                log.info("url_alias_conflict", short_code=request.alias)
+            if not await self.check_alias_available(alias, domain=target_domain):
+                log.info("url_alias_conflict", short_code=alias)
                 raise ConflictError("Alias is already in use")
-            alias = request.alias
+        elif request.alias_type == "emoji":
+            alias = await self._generate_unique_emoji_alias(domain=target_domain)
         else:
             alias = await self._generate_unique_alias(domain=target_domain)
 
@@ -1279,6 +1315,53 @@ class UrlService:
                 return candidate
         log.error("url_alias_generation_exhausted", domain=target_domain)
         raise AppError("Could not generate a unique alias; please try again")
+
+    async def _generate_unique_emoji_alias(self, *, domain: str | None = None) -> str:
+        """Generate an emoji alias from the safe pool, unique for *domain*.
+
+        Uses the full ``check_alias_available`` (not the bare v2 check) so
+        candidates are also collision-checked against the legacy ``urls``
+        and ``emojis`` collections on the system domain.
+        """
+        target_domain = domain or self._system_default_domain
+        for _ in range(10):
+            candidate = generate_emoji_alias_v2(
+                self._emoji_generated_alias_length,
+                max_version=self._emoji_generate_max_version,
+            )
+            if await self.check_alias_available(candidate, domain=target_domain):
+                return candidate
+        log.error(
+            "url_alias_generation_exhausted", domain=target_domain, kind="emoji"
+        )
+        raise AppError("Could not generate a unique alias; please try again")
+
+    def _validate_and_canonicalize_custom_alias(self, alias: str) -> str:
+        """Return the canonical stored form of a custom alias, or raise.
+
+        The one enforcement point for create AND update: alphanumeric
+        aliases pass through unchanged; emoji aliases are canonicalized
+        (unquote → NFC → VS16-strip) and checked against the acceptance
+        policy with the configured caps.
+        """
+        if validate_alias(alias):
+            return alias  # pure alphanumeric — DTO already bounded 3-16
+        canonical = canonicalize_emoji_alias(alias)
+        verdict = check_emoji_alias(
+            canonical,
+            max_graphemes=self._max_emoji_alias_length,
+            max_version=self._emoji_accept_max_version,
+        )
+        if verdict == "length":
+            raise ValidationError(
+                f"emoji alias must be 1-{self._max_emoji_alias_length} emoji",
+                field="alias",
+            )
+        if verdict != "ok":
+            raise ValidationError(
+                "alias contains unsupported emoji or characters", field="alias"
+            )
+        return canonical
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────

@@ -83,6 +83,80 @@ class TestCreateUrlRequest:
         assert req.max_clicks == 100
 
 
+class TestCreateUrlRequestAliasShape:
+    """DTO-level alias gate: structural failures are 422; the emoji
+    *policy* (qualification/version/grapheme caps) is service-enforced."""
+
+    @pytest.mark.parametrize("alias", ["abc", "my-link_9", "a" * 16])
+    def test_alphanumeric_in_bounds_accepted(self, alias):
+        req = CreateUrlRequest.model_validate(
+            {"long_url": "https://example.com", "alias": alias}
+        )
+        assert req.alias == alias
+
+    @pytest.mark.parametrize("alias", ["ab", "a" * 17])
+    def test_alphanumeric_out_of_bounds_rejected(self, alias):
+        with pytest.raises(ValidationError):
+            CreateUrlRequest.model_validate(
+                {"long_url": "https://example.com", "alias": alias}
+            )
+
+    @pytest.mark.parametrize(
+        "alias",
+        [
+            "🚀🔥",
+            "⭐",
+            "👍🏽👍🏽",
+            # Policy-rejected but emoji-shaped: pass the DTO, fail in service
+            "🏳️‍🌈",
+            "🇺🇸",
+            "1️⃣",
+        ],
+    )
+    def test_emoji_shaped_accepted(self, alias):
+        req = CreateUrlRequest.model_validate(
+            {"long_url": "https://example.com", "alias": alias}
+        )
+        assert req.alias == alias
+
+    @pytest.mark.parametrize("alias", ["abc🎉", "🎉 🎉", "café", "a b", "🎉x"])
+    def test_mixed_or_garbage_rejected(self, alias):
+        with pytest.raises(ValidationError):
+            CreateUrlRequest.model_validate(
+                {"long_url": "https://example.com", "alias": alias}
+            )
+
+    def test_alias_type_defaults_alphanumeric(self):
+        req = CreateUrlRequest.model_validate({"long_url": "https://example.com"})
+        assert req.alias_type == "alphanumeric"
+
+    def test_alias_type_emoji_accepted(self):
+        req = CreateUrlRequest.model_validate(
+            {"long_url": "https://example.com", "alias_type": "emoji"}
+        )
+        assert req.alias_type == "emoji"
+
+    def test_alias_type_invalid_rejected(self):
+        with pytest.raises(ValidationError):
+            CreateUrlRequest.model_validate(
+                {"long_url": "https://example.com", "alias_type": "hieroglyphs"}
+            )
+
+
+class TestUpdateUrlRequestAliasShape:
+    def test_emoji_alias_accepted(self):
+        req = UpdateUrlRequest.model_validate({"alias": "🚀🔥"})
+        assert req.alias == "🚀🔥"
+
+    def test_mixed_alias_rejected(self):
+        with pytest.raises(ValidationError):
+            UpdateUrlRequest.model_validate({"alias": "abc🎉"})
+
+    def test_short_alphanumeric_rejected(self):
+        with pytest.raises(ValidationError):
+            UpdateUrlRequest.model_validate({"alias": "ab"})
+
+
 # ── UpdateUrlRequest ───────────────────────────────────────────────────────────
 
 

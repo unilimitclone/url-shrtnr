@@ -31,11 +31,17 @@
         return out;
     }
 
+    // Coarse gates only — the server's check-alias endpoint is the source
+    // of truth (emoji policy, reserved words, collisions).
+    const ALNUM_ALIAS = /^[a-zA-Z0-9_-]+$/;
+    const EMOJI_ALIAS = /^[\p{Extended_Pictographic}\p{Emoji_Modifier}\u200D\uFE0F\u20E3]+$/u;
+
     function clientValidate(alias) {
+        if (EMOJI_ALIAS.test(alias)) return null; // server verdict decides
         if (alias.length < 3) return 'Must be at least 3 characters';
         if (alias.length > 16) return 'Must be at most 16 characters';
-        if (!/^[a-zA-Z0-9_-]+$/.test(alias)) {
-            return 'Only letters, numbers, underscores, and hyphens are allowed';
+        if (!ALNUM_ALIAS.test(alias)) {
+            return 'Use letters, numbers, underscores, hyphens — or emoji only';
         }
         return null;
     }
@@ -43,9 +49,13 @@
     function reasonToMessage(reason) {
         switch (reason) {
             case 'length':
-                return 'Must be 3-16 characters';
+                return 'Must be 3-16 characters (or 1-15 emoji)';
             case 'format':
-                return 'Only letters, numbers, underscores, and hyphens are allowed';
+                return 'Use letters, numbers, underscores, hyphens — or emoji only';
+            case 'reserved':
+                return 'This alias is reserved';
+            case 'emoji_policy':
+                return "That emoji combination isn't supported — use single emojis without flags or joined sequences";
             case 'taken':
                 return 'This alias is already taken';
             default:
