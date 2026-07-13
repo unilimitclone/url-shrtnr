@@ -15,10 +15,9 @@ Invariants (load-bearing — preserved from the preview endpoint):
     only via the redirect; the public surfaces are system-domain-only.
   - v1/emoji documents are fetched RAW — the typed ``LegacyUrlDoc``
     silently drops ``creation-date`` / ``creation-time``.
-  - Derived expiry is DELIBERATELY STRICTER than the expiry-blind
-    redirect: a public surface must never reveal a destination the
-    redirect would refuse, so status may err toward "expired", never
-    away from it.
+  - Derived expiry is IDENTICAL to the redirect's derivation
+    (``UrlV2Doc.effective_status``): a public surface must never reveal
+    a destination the redirect would refuse.
   - Everything is derived READ-ONLY — nothing here writes.
 """
 
@@ -32,45 +31,24 @@ from urllib.parse import unquote
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
-from schemas.models.url import SchemaVersion, UrlStatus, UrlV2Doc
+from schemas.models.url import SchemaVersion, UrlV2Doc
 from shared.alias_dispatch import resolution_order
-from shared.datetime_utils import convert_to_gmt, parse_datetime
+from shared.datetime_utils import as_aware_utc, convert_to_gmt, parse_datetime
 
 # ── Derivation helpers (generation-specific primitives) ──────────────────────
 
 
-def as_aware_utc(dt: Any) -> datetime | None:
-    """Normalize a stored datetime for comparison — Mongo returns naive
-    UTC datetimes by default (the client is not ``tz_aware``)."""
-    if not isinstance(dt, datetime):
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
 def v2_effective_status(doc: UrlV2Doc) -> str:
-    """Lowercase wire status, folding derived expiry into ``expired``.
+    """Lowercase wire adapter over ``UrlV2Doc.effective_status``.
 
-    The persisted status flip happens on the click path
-    (``UrlRepository.expire_if_max_clicks``); a time-based flip has no
-    writer at all — the redirect never compares ``expire_after`` to
-    now. The invariant the public surfaces hold is one-directional:
-    they never reveal a destination the redirect would refuse.
-    Deriving time-based expiry here is therefore DELIBERATELY STRICTER
-    than the expiry-blind redirect (a lapsed-but-still-ACTIVE link
-    reads ``expired`` and withholds its destination even though the
-    redirect would still serve it). Do not "fix" that divergence by
-    deleting the check — it errs in the safe direction. Derived here,
-    never written back.
+    The derivation (time lapse + max-click exhaustion folded into
+    EXPIRED) lives on the model and is shared with the redirect's
+    enforcement — the public surfaces and the redirect answer from the
+    same predicate by construction. Only the wire casing is decided
+    here (``"active" | "inactive" | "expired" | "blocked"``, frozen by
+    the public-page contract).
     """
-    if doc.status == UrlStatus.ACTIVE:
-        expire_after = as_aware_utc(doc.expire_after)
-        if expire_after is not None and expire_after <= datetime.now(timezone.utc):
-            return "expired"
-        if doc.max_clicks is not None and doc.total_clicks >= doc.max_clicks:
-            return "expired"
-    return doc.status.value.lower()
+    return doc.effective_status.value.lower()
 
 
 def v1_is_expired(data: dict) -> bool:

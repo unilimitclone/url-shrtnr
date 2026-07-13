@@ -74,7 +74,13 @@ class UrlResponse(ResponseBase):
         description="Creation time as Unix timestamp.",
         examples=[1704067200],
     )
-    status: UrlStatus = Field(description="URL status.", examples=["ACTIVE"])
+    status: UrlStatus = Field(
+        description=(
+            "URL status. Derived — reflects time and max-click expiry even "
+            "before the stored flip is persisted."
+        ),
+        examples=["ACTIVE"],
+    )
     private_stats: bool | None = Field(
         default=None,
         description="Whether statistics are private (owner-only).",
@@ -104,7 +110,7 @@ class UrlResponse(ResponseBase):
             if doc.owner_id and doc.owner_id != ANONYMOUS_OWNER_ID
             else None,
             created_at=to_unix_timestamp(doc.created_at, default=0),
-            status=doc.status,
+            status=doc.effective_status,
             private_stats=doc.private_stats,
             geo_rules=doc.geo_rules,
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
@@ -127,7 +133,12 @@ class UpdateUrlResponse(ResponseBase):
         examples=["https://example.com/long/url"],
     )
     status: UrlStatus | None = Field(
-        default=None, description="URL status.", examples=["ACTIVE"]
+        default=None,
+        description=(
+            "URL status. Derived — reflects time and max-click expiry even "
+            "before the stored flip is persisted."
+        ),
+        examples=["ACTIVE"],
     )
     password_set: bool = Field(description="Whether the URL is password-protected.")
     max_clicks: int | None = Field(
@@ -168,7 +179,7 @@ class UpdateUrlResponse(ResponseBase):
             id=str(doc.id),
             alias=doc.alias,
             long_url=doc.long_url,
-            status=doc.status,
+            status=doc.effective_status,
             password_set=doc.password is not None,
             max_clicks=doc.max_clicks,
             expire_after=to_unix_timestamp(doc.expire_after),
@@ -187,6 +198,8 @@ class UrlListItem(ResponseBase):
     ``created_at`` and ``last_click`` are ISO 8601 strings (e.g. "2024-01-01T00:00:00Z").
     ``expire_after`` is a Unix timestamp integer or null.
     These formats match the existing endpoint exactly.
+    ``status`` is derived — it reflects time and max-click expiry even
+    before the stored flip is persisted.
     """
 
     id: str
@@ -220,7 +233,7 @@ class UrlListItem(ResponseBase):
             id=str(doc.id),
             alias=doc.alias,
             long_url=doc.long_url,
-            status=doc.status,
+            status=doc.effective_status,
             created_at=_ensure_utc(doc.created_at),
             expire_after=to_unix_timestamp(doc.expire_after),
             max_clicks=doc.max_clicks,

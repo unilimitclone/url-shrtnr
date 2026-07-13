@@ -65,7 +65,7 @@ from schemas.models.url import (
     UrlV2Doc,
 )
 from shared.alias_dispatch import resolution_order
-from shared.datetime_utils import parse_datetime
+from shared.datetime_utils import parse_datetime, to_unix_timestamp
 from shared.generators import generate_short_code_v2
 from shared.reserved_aliases import is_reserved_alias
 from shared.url_utils import extract_hostname
@@ -427,7 +427,8 @@ class UrlService:
         Raises:
             NotFoundError:   URL not found in any collection.
             BlockedUrlError: URL status is BLOCKED (v2 only).
-            GoneError:       URL status is EXPIRED or INACTIVE (v2 only).
+            GoneError:       URL status is EXPIRED or INACTIVE (v2 only),
+                             or the expiration time has passed (any schema).
         """
         scope = domain or self._system_default_domain
         is_custom = scope != self._system_default_domain
@@ -448,6 +449,7 @@ class UrlService:
                     source="cache",
                 )
                 _raise_for_status(cached.url_status)
+            await self._raise_if_time_expired(cached, schema, short_code, "cache")
             if should_sample("cache_operation"):
                 log.debug(
                     "url_cache_hit",
@@ -502,7 +504,41 @@ class UrlService:
             )
             raise GoneError("URL has expired (max clicks reached)")
 
+        # 4c. Raise for URLs whose expiration time has passed (any schema)
+        await self._raise_if_time_expired(url_cache_data, schema, short_code, "db")
+
         return url_cache_data, schema
+
+    async def _raise_if_time_expired(
+        self, data: UrlCacheData, schema: SchemaVersion, short_code: str, source: str
+    ) -> None:
+        """Enforce time-based expiry at resolve time. v2: persist the flip
+        (mirrors max-clicks, ``expire_if_time_reached``) then raise; v1/emoji
+        have no status field — lazy-raise forever.
+
+        Post-flip reads stay O(1): the DB branch recaches the link as
+        minimal EXPIRED on the next resolve (cache populate runs before
+        the non-ACTIVE raise) — do NOT "optimize" that recache away.
+        """
+        if not data.is_time_expired(time.time()):
+            return
+        log.info(
+            "url_resolve_expired_time",
+            short_code=short_code,
+            schema=schema,
+            source=source,
+        )
+        if schema == SchemaVersion.V2 and data.url_status == UrlStatus.ACTIVE:
+            flipped = await self._url_repo.expire_if_time_reached(ObjectId(data.id))
+            if flipped:
+                log.info(
+                    "url_expired",
+                    url_id=data.id,
+                    short_code=short_code,
+                    reason="expiration_time_reached",
+                )
+                await self._url_cache.invalidate(short_code, data.domain)
+        raise GoneError("URL has expired (expiration time reached)")
 
     async def check_alias_available(
         self, alias: str, *, domain: str | None = None
@@ -910,7 +946,11 @@ class UrlService:
     def _auto_reactivate(
         self, existing: UrlV2Doc, update_ops: dict, now: datetime
     ) -> None:
-        """Reactivate an EXPIRED URL if expiry conditions improve.
+        """Reactivate an EXPIRED URL if the REQUESTED CHANGE improves an
+        expiry condition — every arm requires its field in ``update_ops``
+        so ambient values can't resurrect the URL (an unrelated edit to a
+        max-clicks-expired link with a future expire_after must not
+        reactivate it).
 
         Only applies when the URL is currently EXPIRED and the caller
         did not explicitly set a new status.
@@ -925,11 +965,13 @@ class UrlService:
 
         max_clicks_cleared = "max_clicks" in update_ops and new_max is None
         max_clicks_raised = (
-            new_max is not None
-            and existing.max_clicks is not None
+            "max_clicks" in update_ops
+            and new_max is not None
             and new_max > existing.total_clicks
         )
-        expire_extended = new_expire is not None and new_expire > now
+        expire_extended = (
+            "expire_after" in update_ops and new_expire is not None and new_expire > now
+        )
         expire_cleared = "expire_after" in update_ops and new_expire is None
 
         if max_clicks_cleared or max_clicks_raised or expire_extended or expire_cleared:
@@ -1027,9 +1069,15 @@ class UrlService:
 
         f = query.parsed_filter
 
+        # Compound clauses (status, search) may each carry their own $or —
+        # collect them and compose via $and so they can't clobber each other.
+        and_clauses: list[dict] = []
+
         if f:
             if f.status:
-                mongo_query["status"] = f.status
+                and_clauses.append(
+                    effective_status_clause(f.status, datetime.now(timezone.utc))
+                )
 
             date_range: dict = {}
             if f.created_after:
@@ -1056,11 +1104,18 @@ class UrlService:
             if f.search:
                 try:
                     pattern = re.compile(re.escape(f.search), re.IGNORECASE)
-                    mongo_query["$or"] = [{"alias": pattern}, {"long_url": pattern}]
+                    and_clauses.append(
+                        {"$or": [{"alias": pattern}, {"long_url": pattern}]}
+                    )
                 except re.error:
                     raise ValidationError(
                         "Invalid search pattern", field="filter.search"
                     ) from None
+
+        if len(and_clauses) == 1:
+            mongo_query.update(and_clauses[0])
+        elif and_clauses:
+            mongo_query["$and"] = and_clauses
 
         sort_order = (
             -1 if query.sort_order.lower() in ("desc", "descending", "-1") else 1
@@ -1208,6 +1263,34 @@ def _raise_for_status(status: UrlStatus) -> None:
     raise GoneError("URL has expired or is no longer active")
 
 
+def _derived_expiry_arms(now: datetime) -> list[dict]:
+    """Mongo arms matching ACTIVE-stored docs whose effective status is
+    EXPIRED. MUST express the same predicate as
+    ``UrlV2Doc.effective_status`` — pinned by test.
+    """
+    return [
+        {"status": UrlStatus.ACTIVE, "expire_after": {"$lte": now}},
+        {
+            "status": UrlStatus.ACTIVE,
+            "max_clicks": {"$ne": None},
+            "$expr": {"$gte": ["$total_clicks", "$max_clicks"]},
+        },
+    ]
+
+
+def effective_status_clause(status: UrlStatus, now: datetime) -> dict:
+    """Mongo filter matching docs by EFFECTIVE status (see
+    ``UrlV2Doc.effective_status``) — the stored field alone lags for
+    ACTIVE docs whose expiry has passed but whose flip hasn't been
+    observed yet.
+    """
+    if status is UrlStatus.EXPIRED:
+        return {"$or": [{"status": UrlStatus.EXPIRED}, *_derived_expiry_arms(now)]}
+    if status is UrlStatus.ACTIVE:
+        return {"status": UrlStatus.ACTIVE, "$nor": _derived_expiry_arms(now)}
+    return {"status": status}  # INACTIVE / BLOCKED: stored is truth
+
+
 def _legacy_doc_to_cache(
     short_code: str,
     doc: LegacyUrlDoc | EmojiUrlDoc,
@@ -1219,9 +1302,13 @@ def _legacy_doc_to_cache(
     v1/emoji shorts only exist under the system default domain — they
     predate custom domains and won't ever be created elsewhere.
     """
+    # Only tz-aware stored values enforce expiry — a naive v1
+    # ``expiration-time`` is ambiguous and never expires, matching
+    # ``v1_is_expired`` (public pages) and ``convert_to_gmt`` (legacy
+    # stats) so the redirect and the read surfaces agree on v1.
     expiration_time = None
-    if doc.expiration_time:
-        expiration_time = int(doc.expiration_time.timestamp())
+    if doc.expiration_time is not None and doc.expiration_time.tzinfo is not None:
+        expiration_time = to_unix_timestamp(doc.expiration_time)
     return UrlCacheData(
         id=short_code,
         alias=short_code,

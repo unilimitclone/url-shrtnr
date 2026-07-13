@@ -12,7 +12,7 @@ Three separate schemas map to three MongoDB collections:
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from schemas.models.base import ANONYMOUS_OWNER_ID, MongoBaseModel, PyObjectId
+from shared.datetime_utils import as_aware_utc
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -179,6 +180,22 @@ class UrlV2Doc(MongoBaseModel):
     total_clicks: int = Field(default=0, ge=0)
     last_click: datetime | None = None
     updated_at: datetime | None = None
+
+    @property
+    def effective_status(self) -> UrlStatus:
+        """Status with derived expiry folded in — time lapse and max-click
+        exhaustion read as EXPIRED even before the persisted flip (the
+        flip happens on the click/redirect path; between observations the
+        stored field may lag). Never read ``status`` raw on a wire path.
+        """
+        if self.status is not UrlStatus.ACTIVE:
+            return self.status
+        expire_after = as_aware_utc(self.expire_after)
+        if expire_after is not None and expire_after <= datetime.now(timezone.utc):
+            return UrlStatus.EXPIRED
+        if self.max_clicks is not None and self.total_clicks >= self.max_clicks:
+            return UrlStatus.EXPIRED
+        return self.status
 
 
 class LegacyUrlDoc(MongoBaseModel):
