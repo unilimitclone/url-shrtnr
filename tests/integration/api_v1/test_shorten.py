@@ -247,9 +247,7 @@ class TestShortenEmojiAlias:
             {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
         )
         with TestClient(application, raise_server_exceptions=True) as client:
-            resp = client.get(
-                "/api/v1/shorten/check-alias", params={"alias": "🇺🇸"}
-            )
+            resp = client.get("/api/v1/shorten/check-alias", params={"alias": "🇺🇸"})
 
         assert resp.status_code == 200
         assert resp.json() == {"available": False, "reason": "emoji_policy"}

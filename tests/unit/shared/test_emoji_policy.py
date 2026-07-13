@@ -28,9 +28,7 @@ WOMAN_TECHNOLOGIST = "\U0001f469‍\U0001f4bb"  # 👩‍💻 ZWJ sequence
 RAINBOW_FLAG = "\U0001f3f3️‍\U0001f308"  # 🏳️‍🌈 ZWJ sequence
 KEYCAP_ONE = "1️⃣"  # 1️⃣
 US_FLAG = "\U0001f1fa\U0001f1f8"  # 🇺🇸 regional indicators
-ENGLAND_FLAG = (
-    "\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f"
-)  # 🏴󠁧󠁢󠁥󠁮󠁧󠁿 tag sequence
+ENGLAND_FLAG = "\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f"  # 🏴󠁧󠁢󠁥󠁮󠁧󠁿 tag sequence
 SKIN_SWATCH = "\U0001f3ff"  # 🏿 standalone component
 MELTING_FACE = "\U0001fae0"  # 🫠 E14.0
 SHAKING_FACE = "\U0001fae8"  # 🫨 E15.0
@@ -133,7 +131,10 @@ class TestCheckEmojiAlias:
         assert check_emoji_alias(SHAKING_FACE, max_version=12.0) == "policy"
         assert check_emoji_alias(SHAKING_FACE, max_version=15.1) == "ok"
         assert check_emoji_alias(MELTING_FACE, max_version=12.0) == "policy"
-        assert check_emoji_alias(MELTING_FACE, max_version=DEFAULT_ACCEPT_MAX_VERSION) == "ok"
+        assert (
+            check_emoji_alias(MELTING_FACE, max_version=DEFAULT_ACCEPT_MAX_VERSION)
+            == "ok"
+        )
 
     def test_expects_canonical_input(self):
         # Raw VS16 forms are the caller's job to canonicalize first;

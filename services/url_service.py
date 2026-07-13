@@ -589,9 +589,7 @@ class UrlService:
             # selectors; a legacy ⭐️ must block a new canonical ⭐ or the
             # v2-first resolve order would shadow the live legacy link.
             if is_emoji_candidate(alias):
-                return not await self._emoji_repo.check_exists_vs16_insensitive(
-                    alias
-                )
+                return not await self._emoji_repo.check_exists_vs16_insensitive(alias)
         return True
 
     async def check_alias(
@@ -1331,9 +1329,7 @@ class UrlService:
             )
             if await self.check_alias_available(candidate, domain=target_domain):
                 return candidate
-        log.error(
-            "url_alias_generation_exhausted", domain=target_domain, kind="emoji"
-        )
+        log.error("url_alias_generation_exhausted", domain=target_domain, kind="emoji")
         raise AppError("Could not generate a unique alias; please try again")
 
     def _validate_and_canonicalize_custom_alias(self, alias: str) -> str:

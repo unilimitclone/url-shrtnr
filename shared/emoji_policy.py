@@ -176,6 +176,4 @@ def vs16_insensitive_pattern(canonical: str) -> str:
     per-codepoint ``re`` hides that mistake — pinned by the repository
     test that runs the emitted pattern through Mongo semantics.
     """
-    return (
-        "^" + "".join(re.escape(char) + f"(?:{_VS16})?" for char in canonical) + "$"
-    )
+    return "^" + "".join(re.escape(char) + f"(?:{_VS16})?" for char in canonical) + "$"
