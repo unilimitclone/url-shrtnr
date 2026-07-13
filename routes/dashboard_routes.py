@@ -23,8 +23,8 @@ from pydantic import BaseModel, Field
 from dependencies import (
     AppGrantRepo,
     AppRegistryDep,
-    AuthUser,
     CurrentUser,
+    JwtUser,
     OptionalUser,
     ProfilePictureSvc,
 )
@@ -265,7 +265,7 @@ class ProfilePictureMessageResponse(BaseModel):
 @limiter.limit(Limits.DASHBOARD_READ)
 async def get_profile_pictures(
     request: Request,
-    user: AuthUser,
+    user: JwtUser,
     svc: ProfilePictureSvc,
 ) -> AvailablePicturesResponse:
     pictures = await svc.get_available_pictures(user.user_id)
@@ -277,7 +277,7 @@ async def get_profile_pictures(
 async def set_profile_picture(
     request: Request,
     body: SetProfilePictureRequest,
-    user: AuthUser,
+    user: JwtUser,
     svc: ProfilePictureSvc,
 ) -> ProfilePictureMessageResponse:
     await svc.set_picture(user.user_id, body.picture_id)
@@ -289,7 +289,7 @@ async def set_profile_picture(
 async def upload_profile_picture(
     request: Request,
     body: UploadProfilePictureRequest,
-    user: AuthUser,
+    user: JwtUser,
     svc: ProfilePictureSvc,
 ) -> ProfilePictureMessageResponse:
     await svc.upload_picture(user.user_id, body.image)
@@ -300,7 +300,7 @@ async def upload_profile_picture(
 @limiter.limit(Limits.PROFILE_PICTURE_SET)
 async def unset_profile_picture(
     request: Request,
-    user: AuthUser,
+    user: JwtUser,
     svc: ProfilePictureSvc,
 ) -> ProfilePictureMessageResponse:
     await svc.unset_picture(user.user_id)

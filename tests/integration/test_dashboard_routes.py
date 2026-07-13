@@ -279,3 +279,30 @@ def test_profile_picture_delete_returns_success():
     assert resp.status_code == 200
     assert resp.json()["message"] == "Profile picture removed"
     svc.unset_picture.assert_called_once_with(_TEST_USER.user_id)
+
+
+def test_profile_picture_endpoints_reject_api_key_auth():
+    """The whole account-profile surface is JWT-only, matching PATCH /auth/me."""
+    svc = _mock_svc()
+    api_key_user = CurrentUser(
+        user_id=ObjectId(), email_verified=True, api_key_doc=MagicMock()
+    )
+    app = _build_test_app(user=api_key_user, svc=svc)
+    with TestClient(app, raise_server_exceptions=False) as c:
+        assert c.get("/dashboard/profile-pictures").status_code == 403
+        assert (
+            c.post(
+                "/dashboard/profile-pictures", json={"picture_id": "x"}
+            ).status_code
+            == 403
+        )
+        assert (
+            c.post(
+                "/dashboard/profile-pictures/upload", json={"image": "data:;base64,x"}
+            ).status_code
+            == 403
+        )
+        assert c.delete("/dashboard/profile-pictures").status_code == 403
+    svc.set_picture.assert_not_called()
+    svc.upload_picture.assert_not_called()
+    svc.unset_picture.assert_not_called()
