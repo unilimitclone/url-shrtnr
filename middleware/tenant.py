@@ -117,9 +117,11 @@ _RESERVED_PREFIXES = (
 #   - U+1F000-1FAFF: every plane-1 pictograph block (mahjong 1F004, cards
 #     1F0CF, enclosed 1F170-1F251, pictographs, transport, supplemental,
 #     Extended-A/B, skin tones 1F3FB-1F3FF, regional indicators)
-#   - singletons ©®™‼⁉ℹ〰〽㊗㊙ and ZWJ/VS15/VS16/keycap combiners plus
-#     tag chars (E0020-E007F), so legacy-lenient forms *reach* the router
-#     and 404 gracefully instead of being middleware-policed
+#   - singleton emoji outside those ranges (00A9 ©, 00AE ®, 2122 ™, 203C,
+#     2049, 2139, 3030, 303D, 3297, 3299) and ZWJ/VS15/VS16/keycap
+#     combiners plus tag chars (E0020-E007F), so legacy-lenient forms
+#     *reach* the router and 404 gracefully instead of being
+#     middleware-policed
 _ALIAS_PATTERN = re.compile(
     r"^/"
     r"(?:[A-Za-z0-9_\-]"

@@ -865,7 +865,7 @@ class TestUrlServiceCreateEmojiAlias:
 
     @pytest.mark.asyncio
     async def test_alias_type_ignored_when_alias_provided(self):
-        svc, url_repo, *_ = self._svc()
+        svc, _url_repo, *_ = self._svc()
         from schemas.dto.requests.url import CreateUrlRequest
 
         req = CreateUrlRequest(

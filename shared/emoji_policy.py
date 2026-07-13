@@ -169,7 +169,13 @@ def vs16_insensitive_pattern(canonical: str) -> str:
     Used for collision checks against the legacy ``emojis`` collection,
     whose ``_id``s may contain historically-accepted variation selectors —
     a legacy ``⭐️🎉`` must block a new canonical ``⭐🎉``.
+
+    The VS16 is wrapped in a group: MongoDB's PCRE matches bytewise, so a
+    bare ``\\uFE0F?`` would make only the selector's LAST UTF-8 byte
+    optional (silently never matching the selector-free form). Python's
+    per-codepoint ``re`` hides that mistake — pinned by the repository
+    test that runs the emitted pattern through Mongo semantics.
     """
     return (
-        "^" + "".join(re.escape(char) + f"{_VS16}?" for char in canonical) + "$"
+        "^" + "".join(re.escape(char) + f"(?:{_VS16})?" for char in canonical) + "$"
     )

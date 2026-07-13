@@ -30,9 +30,9 @@ from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
 from routes.legacy.helpers import humanize_number, is_positive_integer
+from shared.emoji_policy import canonicalize_emoji_alias, check_emoji_alias
 from shared.generators import generate_emoji_alias, generate_short_code
 from shared.url_utils import split_destination
-from shared.emoji_policy import canonicalize_emoji_alias, check_emoji_alias
 from shared.validators import (
     is_emoji_alias,
     validate_alias,

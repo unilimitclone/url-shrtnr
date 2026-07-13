@@ -30,9 +30,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import emoji  # noqa: E402
+import emoji
 
-from shared.emoji_policy import (  # noqa: E402
+from shared.emoji_policy import (
     DEFAULT_GENERATE_MAX_VERSION,
     check_emoji_alias,
     generation_pool,
