@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError as PydanticValidationError
 from slowapi.errors import RateLimitExceeded
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from errors import AppError
 from infrastructure.logging import get_logger
@@ -74,6 +75,11 @@ def _wants_json(request: Request) -> bool:
 # The redirect set is smaller on purpose: its 403 bot-block keeps its body.
 EDGE_INTERCEPTED_STATUSES = {404, 410, 429, 451, 500}
 REDIRECT_EDGE_INTERCEPTED_STATUSES = {404, 410, 451}
+
+# Slugs for framework-raised HTTPExceptions (a path matching no route, a
+# method the route doesn't take). Mirrors the AppError error_code
+# vocabulary so the edge composes them identically.
+_HTTP_STATUS_SLUGS = {404: "not_found", 405: "method_not_allowed"}
 
 
 def _error_html(
@@ -148,6 +154,24 @@ def register_error_handlers(app: FastAPI) -> None:
                 content={"error": "Too many requests", "code": "rate_limit_exceeded"},
             )
         return _error_html(request, 429, "TOO MANY REQUESTS", "rate_limit_exceeded")
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(
+        request: Request, exc: StarletteHTTPException
+    ) -> Response:
+        # Requests that match NO route (e.g. /foo/bar — deeper than any
+        # pattern) raise Starlette's own HTTPException and would otherwise
+        # bypass content negotiation entirely: raw {"detail": "Not Found"}
+        # even for browsers, and no X-Error-Code for the edge to compose on.
+        slug = _HTTP_STATUS_SLUGS.get(exc.status_code, f"http_{exc.status_code}")
+        message = str(exc.detail) if exc.detail else "Error"
+        if _wants_json(request):
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"error": message, "code": slug},
+                headers=exc.headers,
+            )
+        return _error_html(request, exc.status_code, message.upper(), slug)
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:

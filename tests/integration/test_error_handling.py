@@ -228,6 +228,31 @@ def test_app_error_json_when_accept_json():
     assert "application/json" in resp.headers["content-type"]
 
 
+# ── Unmatched routes (framework-raised 404s) ────────────────────────────────
+
+
+def test_unmatched_route_returns_html():
+    """A path matching NO route (nested, deeper than any pattern) must get
+    the same negotiated HTML + X-Error-Code as route-raised 404s — not
+    Starlette's default {"detail": "Not Found"} JSON."""
+    app = _build_test_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/foo/bar", headers={"Accept": "text/html"})
+    assert resp.status_code == 404
+    assert "text/html" in resp.headers["content-type"]
+    assert resp.headers["X-Error-Code"] == "not_found"
+
+
+def test_unmatched_route_json_when_accept_json():
+    app = _build_test_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/foo/bar", headers={"Accept": "application/json"})
+    assert resp.status_code == 404
+    data = resp.json()
+    assert data["code"] == "not_found"
+    assert "detail" not in data
+
+
 # ── Validation errors ────────────────────────────────────────────────────────
 
 
