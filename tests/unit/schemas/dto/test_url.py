@@ -183,6 +183,7 @@ class TestListUrlsQuery:
 class TestUrlResponse:
     def test_serialization(self):
         r = UrlResponse(
+            id="661f1f77bcf86cd799439099",
             alias="abc1234",
             short_url="https://spoo.me/abc1234",
             long_url="https://example.com",
@@ -192,12 +193,14 @@ class TestUrlResponse:
             private_stats=True,
         )
         d = r.model_dump()
+        assert d["id"] == "661f1f77bcf86cd799439099"
         assert d["alias"] == "abc1234"
         assert d["created_at"] == 1704067200
         assert d["status"] == "ACTIVE"
 
     def test_owner_id_optional(self):
         r = UrlResponse(
+            id="661f1f77bcf86cd799439099",
             alias="abc1234",
             short_url="https://spoo.me/abc1234",
             long_url="https://example.com",
@@ -257,6 +260,9 @@ class TestUrlResponseFromDoc:
     def test_basic_fields(self):
         doc = _make_doc()
         r = UrlResponse.from_doc(doc, "https://spoo.me")
+        # Same serialization the list item uses — the ObjectId hex the
+        # management endpoints address.
+        assert r.id == str(doc.id)
         assert r.alias == "test123"
         assert r.short_url == "https://spoo.me/test123"
         assert r.long_url == "https://example.com/long"

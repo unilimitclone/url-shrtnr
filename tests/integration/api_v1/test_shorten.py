@@ -70,6 +70,30 @@ class TestShorten:
         assert body["alias"] == url_doc.alias
         assert "short_url" in body
         assert body["status"] == "ACTIVE"
+        assert body["id"] == str(url_doc.id)
+
+    def test_shorten_response_id_addresses_management_endpoints(self):
+        """The create response must carry the ObjectId hex the {url_id}
+        routes address — without it a consumer cannot manage what it just
+        created except via a list round-trip."""
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(return_value=url_doc)
+
+        application = _build_test_app(
+            {get_current_user: lambda: user, get_url_service: lambda: mock_svc}
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.post(
+                "/api/v1/shorten", json={"long_url": "https://example.com"}
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        # Same serialization the list item uses: 24-char ObjectId hex.
+        assert body["id"] == str(url_doc.id)
+        assert ObjectId(body["id"]) == url_doc.id
 
     def test_shorten_with_alias(self):
         url_doc = _make_url_doc(alias="myalias")
