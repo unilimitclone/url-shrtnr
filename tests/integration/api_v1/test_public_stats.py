@@ -457,6 +457,132 @@ def test_v1_wire_shape():
     assert "generated_at" in stats
 
 
+# ── 6b. Drifted v1 analytics entries are skipped, never a 500 ─────────────────
+# (live repro on beta: a dimension entry whose value was a bare LIST hit
+# ``int(entry)`` → TypeError → unhandled → the whole stats page 500ed on
+# every request, forever. Skip, don't sink: malformed sub-entries drop out,
+# everything parseable still renders.)
+
+
+def test_v1_malformed_dimension_entries_are_skipped_not_500():
+    doc = _v1_data(
+        "legacy",
+        **{
+            # Clean dimension — must render untouched.
+            "browser": {
+                "Chrome": {"counts": 12, "ips": ["1.1.1.1", "2.2.2.2"]},
+            },
+            # The live repro shape: entry is a bare list.
+            "referrer": {
+                "google_com": ["1.1.1.1", "2.2.2.2"],
+                "t_co": {"counts": 4, "ips": ["3.3.3.3"]},
+            },
+            # Dict entry whose counts is itself junk.
+            "os_name": {
+                "Windows": {"counts": ["huh"], "ips": ["1.1.1.1"]},
+                "Linux": {"counts": 2, "ips": ["4.4.4.4"]},
+            },
+            # Bare scalar that isn't int-able.
+            "country": {
+                "United States": "not-a-number",
+                "India": {"counts": 5, "ips": ["3.3.3.3"]},
+            },
+        },
+    )
+    service, _ = _build_service(v1_docs={"legacy": doc})
+    with _client(service) as client:
+        resp = client.get(_url("legacy", _WINDOW))
+
+    assert resp.status_code == 200
+    metrics = resp.json()["stats"]["metrics"]
+
+    # Clean dimension is untouched.
+    assert metrics["clicks_by_browser"] == [
+        {"browser": "Chrome", "clicks": 12, "clicks_percentage": 100.0}
+    ]
+    assert metrics["unique_clicks_by_browser"] == [
+        {"browser": "Chrome", "unique_clicks": 2, "unique_clicks_percentage": 100.0}
+    ]
+
+    # Malformed entries are absent; their clean siblings render.
+    assert metrics["clicks_by_referrer"] == [
+        {"referrer": "t_co", "clicks": 4, "clicks_percentage": 100.0}
+    ]
+    assert metrics["clicks_by_os"] == [
+        {"os": "Linux", "clicks": 2, "clicks_percentage": 100.0}
+    ]
+    assert metrics["clicks_by_country"] == [
+        {"country": "IN", "clicks": 5, "clicks_percentage": 100.0}
+    ]
+
+
+def test_v1_every_entry_malformed_yields_empty_dimension_not_500():
+    doc = _v1_data("legacy", **{"referrer": {"google_com": ["1.1.1.1"]}})
+    service, _ = _build_service(v1_docs={"legacy": doc})
+    with _client(service) as client:
+        resp = client.get(_url("legacy", _WINDOW))
+
+    assert resp.status_code == 200
+    metrics = resp.json()["stats"]["metrics"]
+    assert metrics["clicks_by_referrer"] == []
+    assert metrics["unique_clicks_by_referrer"] == []
+
+
+def test_v1_non_list_ips_container_keeps_count_drops_uniques():
+    # A parseable count with an unrecognisable ips container renders the
+    # count honestly and reports zero uniques — no guessing, no crash.
+    doc = _v1_data(
+        "legacy",
+        **{"browser": {"Chrome": {"counts": 7, "ips": "1.1.1.1"}}},
+    )
+    service, _ = _build_service(v1_docs={"legacy": doc})
+    with _client(service) as client:
+        resp = client.get(_url("legacy", _WINDOW))
+
+    assert resp.status_code == 200
+    metrics = resp.json()["stats"]["metrics"]
+    assert metrics["clicks_by_browser"] == [
+        {"browser": "Chrome", "clicks": 7, "clicks_percentage": 100.0}
+    ]
+    # (no percentage key — add_metadata omits it when the total is zero)
+    assert metrics["unique_clicks_by_browser"] == [
+        {"browser": "Chrome", "unique_clicks": 0}
+    ]
+
+
+def test_v1_unhashable_ips_elements_keep_count_and_clean_uniques():
+    # A recognised ips container holding drifted UNHASHABLE elements
+    # (nested lists) must not TypeError the set-union — string elements
+    # still count as uniques, the rest are dropped.
+    doc = _v1_data(
+        "legacy",
+        **{
+            "browser": {
+                "Chrome": {"counts": 7, "ips": [["1.1.1.1"], "2.2.2.2", {"a": 1}]}
+            }
+        },
+    )
+    service, _ = _build_service(v1_docs={"legacy": doc})
+    with _client(service) as client:
+        resp = client.get(_url("legacy", _WINDOW))
+
+    assert resp.status_code == 200
+    metrics = resp.json()["stats"]["metrics"]
+    assert metrics["clicks_by_browser"] == [
+        {"browser": "Chrome", "clicks": 7, "clicks_percentage": 100.0}
+    ]
+    assert metrics["unique_clicks_by_browser"] == [
+        {"browser": "Chrome", "unique_clicks": 1, "unique_clicks_percentage": 100.0}
+    ]
+
+
+# NOTE: no malformed TIME-SERIES bucket test — that path is unreachable.
+# counter/unique_counter/bots are typed dict[str, int] on LegacyUrlDoc, so
+# pydantic coerces scalar drift ("7" → 7) and rejects non-scalars at
+# from_mongo, before the synthesis loops run. The dimension maps are
+# dict[str, Any] — which is exactly why drift reaches _v1_dimension_rows.
+
+
 # ── 7. v2 wire reuses the stats machinery, scoped by url_id ──────────────────
 
 

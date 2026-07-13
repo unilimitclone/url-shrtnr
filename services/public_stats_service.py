@@ -403,19 +403,50 @@ class PublicStatsService:
         unique rows ride the same order so the frontend zip keeps the
         backend's ranking. Values that transform to the same output (e.g.
         two spellings hitting the "XX" country fallback) are merged.
+
+        v1 data spans four years of Flask-era schema drift, so entries
+        whose count defies both known forms (a bare list was seen live)
+        are SKIPPED — one drifted sub-entry must never 500 the whole
+        stats page, and inventing a count for an unknown shape would be
+        dishonest. Skips are logged once per dimension, not per row.
         """
         clicks: dict[str, int] = {}
         unique_ips: dict[str, set[str]] = {}
+        skipped: list[str] = []
         for raw_value, entry in (source or {}).items():
             if isinstance(entry, dict):
-                count = int(entry.get("counts", 0) or 0)
+                try:
+                    count = int(entry.get("counts", 0) or 0)
+                except (TypeError, ValueError):
+                    skipped.append(raw_value)
+                    continue
                 ips = entry.get("ips") or []
+                if isinstance(ips, (list, tuple, set)):
+                    # v1 wrote plain strings; drifted elements (nested
+                    # lists, dicts) don't hash — count stands, uniques don't
+                    ips = [ip for ip in ips if isinstance(ip, str)]
+                else:
+                    ips = []  # unknown container — count stands, uniques don't
             else:  # defensively tolerate bare counters in legacy data
-                count = int(entry or 0)
+                try:
+                    count = int(entry or 0)
+                except (TypeError, ValueError):
+                    skipped.append(raw_value)
+                    continue
                 ips = []
             value = transform(raw_value) if transform else raw_value
             clicks[value] = clicks.get(value, 0) + count
             unique_ips.setdefault(value, set()).update(ips)
+
+        if skipped:
+            # Cardinality is unbounded (one entry per distinct referrer/etc),
+            # so cap the sample — skipped_count carries the true total.
+            log.info(
+                "v1_dimension_entries_skipped",
+                dimension=key,
+                skipped_count=len(skipped),
+                values=skipped[:20],
+            )
 
         ordered = sorted(clicks, key=lambda value: clicks[value], reverse=True)
         clicks_rows = [{key: value, "clicks": clicks[value]} for value in ordered]
