@@ -94,8 +94,10 @@ class Limits:
     DOMAIN_DELETE = "10 per minute"
     DOMAIN_WRITE = "30 per minute"
 
-    # Dashboard — profile pictures
+    # Dashboard — profile pictures. Uploads are tighter: each one is an
+    # R2 PUT on our dime.
     PROFILE_PICTURE_SET = "10 per minute"
+    PROFILE_PICTURE_UPLOAD = "5 per minute"
 
     # Contact / report
     CONTACT = "5 per minute; 20 per hour; 50 per day"

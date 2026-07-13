@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -83,10 +84,14 @@ class AuthProviderEntry(BaseModel):
 
 
 class ProfilePicture(BaseModel):
-    """Embedded profile picture sub-document."""
+    """Embedded profile picture sub-document.
+
+    ``source`` is the OAuth provider the picture came from, or ``upload``
+    for a user-uploaded image (stored in R2).
+    """
 
     url: str
-    source: OAuthProvider
+    source: OAuthProvider | Literal["upload"]
     last_updated: datetime | None = None
 
 

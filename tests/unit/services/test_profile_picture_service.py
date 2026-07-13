@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import os
+import struct
+import zlib
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,7 +15,7 @@ os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017/")
 
 from bson import ObjectId
 
-from errors import NotFoundError
+from errors import NotFoundError, ValidationError
 from services.profile_picture_service import ProfilePictureService
 
 
@@ -45,11 +48,35 @@ def _make_user_doc(pfp_url=None, providers=None):
     return doc
 
 
-def _make_service(user_doc=None):
+def _make_service(user_doc=None, storage=None):
     repo = MagicMock()
     repo.find_by_id = AsyncMock(return_value=user_doc)
     repo.update = AsyncMock()
-    return ProfilePictureService(repo), repo
+    return ProfilePictureService(repo, r2_storage=storage), repo
+
+
+def _png_bytes(width=3, height=2) -> bytes:
+    ihdr = struct.pack(">II", width, height) + b"\x08\x06\x00\x00\x00"
+    chunk = (
+        struct.pack(">I", 13)
+        + b"IHDR"
+        + ihdr
+        + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+    )
+    return b"\x89PNG\r\n\x1a\n" + chunk
+
+
+def _data_uri(data: bytes, mime="image/png") -> str:
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+
+
+def _storage(configured=True) -> MagicMock:
+    s = MagicMock()
+    s.is_configured = configured
+    s.put_object = AsyncMock(
+        return_value="https://og.spoo.me/profile-pictures/x/abc.png"
+    )
+    return s
 
 
 # ── get_dashboard_profile ────────────────────────────────────────────────────
@@ -171,7 +198,7 @@ async def test_set_picture_rejects_arbitrary_url():
     repo.update.assert_not_called()
 
 
-# ── update_user_name ─────────────────────────────────────────────────────────────
+# ── update_user_name ─────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -196,3 +223,92 @@ async def test_update_user_name_user_not_found_raises():
     with pytest.raises(NotFoundError, match="User not found"):
         await svc.update_user_name(ObjectId(), "Jane Doe")
     repo.update.assert_not_called()
+
+
+# ── upload_picture ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_upload_picture_stores_r2_url_with_upload_source():
+    user = _make_user_doc()
+    storage = _storage()
+    svc, repo = _make_service(user, storage=storage)
+    await svc.upload_picture(user.id, _data_uri(_png_bytes()))
+    storage.put_object.assert_awaited_once()
+    key = storage.put_object.call_args[0][0]
+    assert key.startswith("profile-pictures/")
+    assert key.endswith(".png")
+    pfp = repo.update.call_args[0][1]["$set"]["pfp"]
+    assert pfp["url"] == "https://og.spoo.me/profile-pictures/x/abc.png"
+    assert pfp["source"] == "upload"
+
+
+@pytest.mark.asyncio
+async def test_upload_picture_rejects_non_data_uri():
+    user = _make_user_doc()
+    svc, repo = _make_service(user, storage=_storage())
+    with pytest.raises(ValidationError, match="data URI"):
+        await svc.upload_picture(user.id, "https://example.com/pic.png")
+    repo.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upload_picture_rejects_mime_mismatch():
+    # Declared jpeg, bytes are PNG — the security gate.
+    user = _make_user_doc()
+    svc, repo = _make_service(user, storage=_storage())
+    with pytest.raises(ValidationError, match="do not match"):
+        await svc.upload_picture(user.id, _data_uri(_png_bytes(), mime="image/jpeg"))
+    repo.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upload_picture_rejects_oversized():
+    user = _make_user_doc()
+    svc, repo = _make_service(user, storage=_storage())
+    big = _data_uri(b"\x89PNG\r\n\x1a\n" + b"0" * 600_000)
+    with pytest.raises(ValidationError, match="exceeds"):
+        await svc.upload_picture(user.id, big)
+    repo.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upload_picture_storage_unconfigured_raises():
+    user = _make_user_doc()
+    svc, repo = _make_service(user, storage=None)
+    with pytest.raises(ValidationError, match="not available"):
+        await svc.upload_picture(user.id, _data_uri(_png_bytes()))
+    repo.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upload_picture_user_not_found_raises():
+    svc, _ = _make_service(None, storage=_storage())
+    with pytest.raises(NotFoundError, match="User not found"):
+        await svc.upload_picture(ObjectId(), _data_uri(_png_bytes()))
+
+
+# ── unset_picture ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_unset_picture_clears_pfp():
+    user = _make_user_doc(pfp_url="https://img.example.com/pic.jpg")
+    svc, repo = _make_service(user)
+    await svc.unset_picture(user.id)
+    repo.update.assert_called_once_with(user.id, {"$set": {"pfp": None}})
+
+
+@pytest.mark.asyncio
+async def test_unset_picture_idempotent_when_no_pfp():
+    user = _make_user_doc()
+    svc, repo = _make_service(user)
+    await svc.unset_picture(user.id)
+    repo.update.assert_called_once_with(user.id, {"$set": {"pfp": None}})
+
+
+@pytest.mark.asyncio
+async def test_unset_picture_user_not_found_raises():
+    svc, _ = _make_service(None)
+    with pytest.raises(NotFoundError, match="User not found"):
+        await svc.unset_picture(ObjectId())

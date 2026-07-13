@@ -14,7 +14,7 @@ VerifyEmailResponse — POST /auth/verify-email  (200)
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
@@ -51,8 +51,10 @@ class UserPfp(ResponseBase):
         description="Profile picture URL",
         examples=["https://lh3.googleusercontent.com/a/photo"],
     )
-    source: OAuthProvider | None = Field(
-        default=None, description="Source of the profile picture", examples=["google"]
+    source: OAuthProvider | Literal["upload"] | None = Field(
+        default=None,
+        description="Source of the profile picture — an OAuth provider or `upload`",
+        examples=["google"],
     )
 
 
