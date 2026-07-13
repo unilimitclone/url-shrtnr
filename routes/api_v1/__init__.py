@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from routes.api_v1 import (
+    apps,
     custom_domains,
     exports,
     keys,
@@ -25,6 +26,7 @@ router.include_router(stats.router)
 router.include_router(public_stats.router)
 router.include_router(exports.router)
 router.include_router(keys.router)
+router.include_router(apps.router)
 router.include_router(custom_domains.router)
 router.include_router(metadata.router)
 router.include_router(me.router)

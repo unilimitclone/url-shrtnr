@@ -54,6 +54,7 @@ class Limits:
     # Device auth flow (extensions, apps, CLIs)
     DEVICE_AUTH = "10 per minute"
     DEVICE_TOKEN = "10 per minute"
+    APP_GRANTS_READ = "60 per minute"
 
     # OAuth
     OAUTH_INIT = "10 per minute"
