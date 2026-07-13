@@ -74,6 +74,18 @@ class TestCustomDomainResponse:
         assert r.status == DomainStatus.ACTIVE
         assert r.verification_method == VerificationMethod.CF_HTTP_DCV
 
+    def test_timestamps_serialize_with_explicit_utc_offset(self):
+        # Wire regression guard for the move to the shared UtcDatetime
+        # type: naive Mongo read-backs are stamped UTC and the textual
+        # form stays `+00:00`, exactly as the old field_serializer emitted.
+        r = CustomDomainResponse.from_doc(
+            _doc(created_at=datetime(2025, 1, 1), updated_at=datetime(2025, 1, 2))
+        )
+        dumped = r.model_dump()
+        assert dumped["created_at"] == "2025-01-01T00:00:00+00:00"
+        assert dumped["updated_at"] == "2025-01-02T00:00:00+00:00"
+        assert dumped["last_verified_at"] is None
+
 
 class TestCustomDomainListResponse:
     def test_paginated_shape(self):
