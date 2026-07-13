@@ -364,7 +364,14 @@ class PublicStatsService:
             "unique_clicks": len(doc.ips or []),
             "first_click": None,  # not stored on v1 docs
             "last_click": self._stats.to_user_tz(last_click, tz_name),
-            "avg_redirection_time": round(doc.average_redirection_time or 0, 2),
+            # The legacy schema can't tell "never measured" from a true
+            # 0.0 average (it stores 0.0 for both), so falsy maps to null
+            # — same semantic as v2: null = no measurement, never 0.
+            "avg_redirection_time": (
+                round(doc.average_redirection_time, 2)
+                if doc.average_redirection_time
+                else None
+            ),
         }
 
         response: dict[str, Any] = {

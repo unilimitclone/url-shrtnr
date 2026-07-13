@@ -457,6 +457,27 @@ def test_v1_wire_shape():
     assert "generated_at" in stats
 
 
+def test_v1_never_measured_avg_redirection_time_is_null_not_zero():
+    """No measurement = null on the wire, never a fabricated 0.
+
+    Pre-measurement legacy docs either lack the field entirely or carry
+    the schema default 0.0 — both mean "never measured", and neither may
+    surface as an instant-redirect 0.
+    """
+    ancient = _v1_data("legacy")
+    del ancient["average_redirection_time"]
+    zeroed = _v1_data("zeroed", average_redirection_time=0.0)
+    service, _ = _build_service(v1_docs={"legacy": ancient, "zeroed": zeroed})
+    with _client(service) as client:
+        missing = client.get(_url("legacy", _WINDOW))
+        zero = client.get(_url("zeroed", _WINDOW))
+
+    assert missing.status_code == 200
+    assert missing.json()["stats"]["summary"]["avg_redirection_time"] is None
+    assert zero.status_code == 200
+    assert zero.json()["stats"]["summary"]["avg_redirection_time"] is None
+
+
 # ── 6b. Drifted v1 analytics entries are skipped, never a 500 ─────────────────
 # (live repro on beta: a dimension entry whose value was a bare LIST hit
 # ``int(entry)`` → TypeError → unhandled → the whole stats page 500ed on
@@ -639,6 +660,26 @@ def test_v2_wire_scopes_match_by_url_id_not_short_code():
     assert match["meta.url_id"] == doc.id
     assert "meta.short_code" not in match
     assert set(match) == {"meta.url_id", "clicked_at"}
+
+
+def test_v2_zero_clicks_window_yields_null_avg_redirection_time():
+    """Zero clicks in the window: null = no measurement, never 0."""
+    doc = _make_v2_doc(alias="quiet12")
+    # The real $facet shape for an empty window: every facet is [].
+    facet_result: dict[str, Any] = {
+        "_summary": [],
+        **{dim: [] for dim in ("time", "browser", "os", "country", "city", "referrer")},
+    }
+    service, _ = _build_service(
+        v2_docs=[doc], click_repo=_CapturingClickRepo(facet_result)
+    )
+    with _client(service) as client:
+        resp = client.get(_url("quiet12", _WINDOW))
+
+    assert resp.status_code == 200
+    summary = resp.json()["stats"]["summary"]
+    assert summary["total_clicks"] == 0
+    assert summary["avg_redirection_time"] is None
 
 
 # ── 8. Effective status is derived (read-only) ───────────────────────────────

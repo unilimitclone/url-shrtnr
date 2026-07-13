@@ -252,13 +252,14 @@ class StatsService:
             {"$facet": facet_stages},
         ]
 
-        # Default empty summary
+        # Default empty summary. avg_redirection_time is None, not 0 —
+        # "no measurements in range" must never read as an instant redirect.
         summary: dict[str, Any] = {
             "total_clicks": 0,
             "unique_clicks": 0,
             "first_click": None,
             "last_click": None,
-            "avg_redirection_time": 0,
+            "avg_redirection_time": None,
         }
         results: dict[str, list[dict[str, Any]]] = {}
 
@@ -272,13 +273,16 @@ class StatsService:
                 summary_list = facet_results.get("_summary", [])
                 if summary_list:
                     s = summary_list[0]
+                    # $avg yields None when no click in range carried a
+                    # redirect_ms measurement — pass it through as null.
+                    avg_redirect = s.get("avg_redirection_time")
                     summary = {
                         "total_clicks": s.get("total_clicks", 0),
                         "unique_clicks": s.get("unique_clicks", 0),
                         "first_click": self._fmt_tz(s.get("first_click"), tz_name),
                         "last_click": self._fmt_tz(s.get("last_click"), tz_name),
-                        "avg_redirection_time": round(
-                            s.get("avg_redirection_time") or 0, 2
+                        "avg_redirection_time": (
+                            round(avg_redirect, 2) if avg_redirect is not None else None
                         ),
                     }
 

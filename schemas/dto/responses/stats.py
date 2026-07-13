@@ -27,7 +27,9 @@ class StatsSummary(ResponseBase):
     unique_clicks: int
     first_click: datetime | None = None
     last_click: datetime | None = None
-    avg_redirection_time: float
+    # null = no redirect measurements in the range (never 0 — a zero would
+    # read as an instant redirect, not as absence of data)
+    avg_redirection_time: float | None = None
 
 
 class StatsTimeRange(ResponseBase):

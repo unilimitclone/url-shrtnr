@@ -393,6 +393,38 @@ class TestResponseStructure:
             owner_id=OWNER_ID,
         )
         assert result["metrics"]["clicks_by_browser"] == []
+        assert result["summary"]["avg_redirection_time"] is None
+
+    @pytest.mark.asyncio
+    async def test_avg_redirection_time_rounded_when_measured(self):
+        svc, click_repo, url_repo = make_service()
+        url_repo.check_stats_privacy.return_value = privacy_info()
+        click_repo.aggregate.return_value = facet_response(avg_redirect=120.456)
+
+        result = await svc.query(query=_q(), owner_id=OWNER_ID)
+        assert result["summary"]["avg_redirection_time"] == 120.46
+
+    @pytest.mark.asyncio
+    async def test_avg_redirection_time_null_when_no_clicks_in_range(self):
+        """Zero clicks in the window (empty _summary facet): null, never 0."""
+        svc, click_repo, url_repo = make_service()
+        url_repo.check_stats_privacy.return_value = privacy_info()
+        click_repo.aggregate.return_value = [{"_summary": [], "time": []}]
+
+        result = await svc.query(query=_q(), owner_id=OWNER_ID)
+        assert result["summary"]["total_clicks"] == 0
+        assert result["summary"]["avg_redirection_time"] is None
+
+    @pytest.mark.asyncio
+    async def test_avg_redirection_time_null_when_clicks_carry_no_measurement(self):
+        """Clicks exist but $avg found no redirect_ms values: null, never 0."""
+        svc, click_repo, url_repo = make_service()
+        url_repo.check_stats_privacy.return_value = privacy_info()
+        click_repo.aggregate.return_value = facet_response(total=3, avg_redirect=None)
+
+        result = await svc.query(query=_q(), owner_id=OWNER_ID)
+        assert result["summary"]["total_clicks"] == 3
+        assert result["summary"]["avg_redirection_time"] is None
 
 
 # ── Tests: timezone handling ──────────────────────────────────────────────────

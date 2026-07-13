@@ -218,6 +218,24 @@ def test_analytics_post_returns_json():
     assert "average_monthly_clicks" in data
 
 
+def test_analytics_post_missing_avg_redirection_time_stays_numeric_zero():
+    """Legacy wire compat: the shipped Flask-era JSON always carried a
+    number here and old clients do not null-guard, so the 0 default stays
+    on this surface (the modern API uses null for "no measurement")."""
+    db = _mock_db()
+    url_data = dict(SAMPLE_URL_DATA)
+    del url_data["average_redirection_time"]
+
+    with patch("routes.legacy.stats.LegacyUrlRepository") as MockLegacyRepo:
+        MockLegacyRepo.return_value.aggregate = AsyncMock(return_value=url_data)
+
+        app = build_test_app(legacy_stats_router, overrides={get_db: lambda: db})
+        with TestClient(app) as client:
+            resp = client.post("/stats/abc123")
+    assert resp.status_code == 200
+    assert resp.json()["average_redirection_time"] == 0
+
+
 def test_analytics_get_renders_stats_page():
     db = _mock_db()
 
