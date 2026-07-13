@@ -3,6 +3,10 @@ GET    /api/v1/me/features       — per-account feature availability
 GET    /api/v1/me/layouts/{page} — fetch the saved dashboard layout (null = default)
 PUT    /api/v1/me/layouts/{page} — save the layout document verbatim
 DELETE /api/v1/me/layouts/{page} — reset to default (idempotent)
+GET    /api/v1/me/profile-pictures        — available pictures
+POST   /api/v1/me/profile-pictures        — set a provider picture by id
+POST   /api/v1/me/profile-pictures/upload — upload a custom picture (data URI)
+DELETE /api/v1/me/profile-pictures        — unset the picture
 
 Per-user preferences namespace. Layout documents are client-owned JSON blobs:
 the frontend versions and validates them, the server stores them opaquely
@@ -16,12 +20,20 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Path, Request
 
-from dependencies import FeatureFlagSvc, JwtUser, PageLayoutSvc
+from dependencies import FeatureFlagSvc, JwtUser, PageLayoutSvc, ProfilePictureSvc
 from middleware.openapi import AUTH_RESPONSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.dto.requests.layouts import PutLayoutRequest
+from schemas.dto.requests.profile_pictures import (
+    SetProfilePictureRequest,
+    UploadProfilePictureRequest,
+)
 from schemas.dto.responses.features import FeaturesResponse
 from schemas.dto.responses.layouts import LayoutResponse
+from schemas.dto.responses.profile_pictures import (
+    AvailablePicturesResponse,
+    ProfilePictureMessageResponse,
+)
 
 router = APIRouter(prefix="/me", tags=["Me"])
 
@@ -130,3 +142,96 @@ async def delete_page_layout(
     **Authentication**: Required.
     """
     await layout_service.delete_layout(user.user_id, page)
+
+
+@router.get(
+    "/profile-pictures",
+    responses=AUTH_RESPONSES,
+    operation_id="getMyProfilePictures",
+    summary="Get Available Profile Pictures",
+)
+@limiter.limit(Limits.DASHBOARD_READ)
+async def get_profile_pictures(
+    request: Request,
+    user: JwtUser,
+    svc: ProfilePictureSvc,
+) -> AvailablePicturesResponse:
+    """List the profile pictures available to this account.
+
+    One entry per linked OAuth provider picture, with `is_current` marking
+    the active one.
+
+    **Authentication**: Required.
+    """
+    pictures = await svc.get_available_pictures(user.user_id)
+    return AvailablePicturesResponse(pictures=pictures)
+
+
+@router.post(
+    "/profile-pictures",
+    responses=AUTH_RESPONSES,
+    operation_id="setMyProfilePicture",
+    summary="Set Profile Picture",
+)
+@limiter.limit(Limits.PROFILE_PICTURE_SET)
+async def set_profile_picture(
+    request: Request,
+    body: SetProfilePictureRequest,
+    user: JwtUser,
+    svc: ProfilePictureSvc,
+) -> ProfilePictureMessageResponse:
+    """Set the profile picture to one of the available provider pictures.
+
+    `picture_id` must be an id returned by the GET endpoint; unknown ids
+    yield 404.
+
+    **Authentication**: Required.
+    """
+    await svc.set_picture(user.user_id, body.picture_id)
+    return ProfilePictureMessageResponse(message="Profile picture updated successfully")
+
+
+@router.post(
+    "/profile-pictures/upload",
+    responses=AUTH_RESPONSES,
+    operation_id="uploadMyProfilePicture",
+    summary="Upload Profile Picture",
+)
+@limiter.limit(Limits.PROFILE_PICTURE_UPLOAD)
+async def upload_profile_picture(
+    request: Request,
+    body: UploadProfilePictureRequest,
+    user: JwtUser,
+    svc: ProfilePictureSvc,
+) -> ProfilePictureMessageResponse:
+    """Upload a custom profile picture as a base64 data URI.
+
+    Accepts image/png, image/jpeg and image/webp; size and content-type
+    validation happens server-side against the configured upload cap.
+
+    **Authentication**: Required.
+    """
+    await svc.upload_picture(user.user_id, body.image)
+    return ProfilePictureMessageResponse(message="Profile picture updated successfully")
+
+
+@router.delete(
+    "/profile-pictures",
+    responses=AUTH_RESPONSES,
+    operation_id="deleteMyProfilePicture",
+    summary="Remove Profile Picture",
+)
+@limiter.limit(Limits.PROFILE_PICTURE_SET)
+async def unset_profile_picture(
+    request: Request,
+    user: JwtUser,
+    svc: ProfilePictureSvc,
+) -> ProfilePictureMessageResponse:
+    """Unset the profile picture so the account falls back to the default.
+
+    Idempotent: returns 200 whether or not a picture was set.
+
+    **Authentication**: Required.
+    """
+    await svc.unset_picture(user.user_id)
+    return ProfilePictureMessageResponse(message="Profile picture removed")

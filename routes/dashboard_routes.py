@@ -8,17 +8,14 @@ GET  /dashboard/statistics  → statistics page
 GET  /dashboard/settings    → settings page
 GET  /dashboard/billing     → billing page
 GET  /dashboard/apps          → connected apps + ecosystem
-GET  /dashboard/profile-pictures  → available pictures (JSON)
-POST /dashboard/profile-pictures  → set profile picture (JSON)
-POST /dashboard/profile-pictures/upload  → upload a custom picture (JSON)
-DELETE /dashboard/profile-pictures       → unset picture (JSON)
+GET  /dashboard/profile-pictures  → available pictures (JSON, legacy)
+POST /dashboard/profile-pictures  → set profile picture (JSON, legacy)
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
-from pydantic import BaseModel, Field
 
 from dependencies import (
     AppGrantRepo,
@@ -31,8 +28,13 @@ from dependencies import (
 from infrastructure.logging import get_logger
 from infrastructure.templates import templates
 from middleware.rate_limiter import Limits, limiter
+from schemas.dto.requests.profile_pictures import SetProfilePictureRequest
+from schemas.dto.responses.profile_pictures import (
+    AvailablePicturesResponse,
+    ProfilePictureMessageResponse,
+)
 from schemas.models.app import AppStatus
-from services.profile_picture_service import AvailablePicture, ProfilePictureService
+from services.profile_picture_service import ProfilePictureService
 
 log = get_logger(__name__)
 
@@ -238,27 +240,9 @@ async def dashboard_apps(
     )
 
 
-# ── Profile pictures (JSON API) ─────────────────────────────────────────────
-
-
-class SetProfilePictureRequest(BaseModel):
-    picture_id: str = Field(min_length=1, max_length=200)
-
-
-class UploadProfilePictureRequest(BaseModel):
-    # Size/type gates run in the service against the configured cap
-    # (R2_UPLOAD_MAX_BYTES) — same posture as meta-tag image uploads.
-    image: str = Field(
-        min_length=1, description="base64 data URI (image/png, image/jpeg, image/webp)"
-    )
-
-
-class AvailablePicturesResponse(BaseModel):
-    pictures: list[AvailablePicture]
-
-
-class ProfilePictureMessageResponse(BaseModel):
-    message: str
+# ── Profile pictures (JSON API, legacy) ──────────────────────────────────────
+# Canonical home: /api/v1/me/profile-pictures (routes/api_v1/me.py). This pair
+# exists only for the legacy Jinja dashboard; drop it with the Jinja pages.
 
 
 @router.get("/profile-pictures")
@@ -282,26 +266,3 @@ async def set_profile_picture(
 ) -> ProfilePictureMessageResponse:
     await svc.set_picture(user.user_id, body.picture_id)
     return ProfilePictureMessageResponse(message="Profile picture updated successfully")
-
-
-@router.post("/profile-pictures/upload")
-@limiter.limit(Limits.PROFILE_PICTURE_UPLOAD)
-async def upload_profile_picture(
-    request: Request,
-    body: UploadProfilePictureRequest,
-    user: JwtUser,
-    svc: ProfilePictureSvc,
-) -> ProfilePictureMessageResponse:
-    await svc.upload_picture(user.user_id, body.image)
-    return ProfilePictureMessageResponse(message="Profile picture updated successfully")
-
-
-@router.delete("/profile-pictures")
-@limiter.limit(Limits.PROFILE_PICTURE_SET)
-async def unset_profile_picture(
-    request: Request,
-    user: JwtUser,
-    svc: ProfilePictureSvc,
-) -> ProfilePictureMessageResponse:
-    await svc.unset_picture(user.user_id)
-    return ProfilePictureMessageResponse(message="Profile picture removed")
