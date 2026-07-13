@@ -34,16 +34,19 @@
     // Coarse gates only — the server's check-alias endpoint is the source
     // of truth (emoji policy, reserved words, collisions).
     const ALNUM_ALIAS = /^[a-zA-Z0-9_-]+$/;
-    const EMOJI_ALIAS = /^[\p{Extended_Pictographic}\p{Emoji_Modifier}\u200D\uFE0F\u20E3]+$/u;
+    const EMOJI_ALIAS = /^[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}0-9#*\u200D\uFE0F\u20E3]+$/u;
 
     function clientValidate(alias) {
-        if (EMOJI_ALIAS.test(alias)) return null; // server verdict decides
-        if (alias.length < 3) return 'Must be at least 3 characters';
-        if (alias.length > 16) return 'Must be at most 16 characters';
-        if (!ALNUM_ALIAS.test(alias)) {
-            return 'Use letters, numbers, underscores, hyphens — or emoji only';
+        // Alphanumeric branch first: the emoji class includes 0-9#* (keycap
+        // bases), so pure-alnum input must get its length feedback here
+        // instead of deferring to the server.
+        if (ALNUM_ALIAS.test(alias)) {
+            if (alias.length < 3) return 'Must be at least 3 characters';
+            if (alias.length > 16) return 'Must be at most 16 characters';
+            return null;
         }
-        return null;
+        if (EMOJI_ALIAS.test(alias)) return null; // server verdict decides
+        return 'Use letters, numbers, underscores, hyphens — or emoji only';
     }
 
     function reasonToMessage(reason) {

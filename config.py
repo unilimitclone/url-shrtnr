@@ -516,6 +516,13 @@ class AppSettings(BaseSettings):
             raise ValueError(
                 "emoji_generate_max_version must be <= emoji_accept_max_version"
             )
+        # generate_emoji_alias_v2 rejects lengths over 15, and generated
+        # aliases must pass the acceptance grapheme cap — fail at boot,
+        # not on every alias_type="emoji" request at runtime.
+        if self.emoji_generated_alias_length > min(15, self.max_emoji_alias_length):
+            raise ValueError(
+                "emoji_generated_alias_length must be <= 15 and <= max_emoji_alias_length"
+            )
         return self
 
     @field_validator("http_client_timeout", "blocked_url_regex_timeout")

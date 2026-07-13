@@ -2,6 +2,8 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
+#     # MUST track the resolved version in uv.lock — the whole point of
+#     # this script is inspecting the exact emoji dataset the app runs.
 #     "emoji==2.15.0",
 #     "regex>=2024.0.0",
 # ]

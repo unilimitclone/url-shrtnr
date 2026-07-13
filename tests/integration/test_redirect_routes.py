@@ -101,6 +101,21 @@ def test_redirect_emits_click_event_snapshot():
     assert event.redirect_ms >= 0
 
 
+def test_redirect_event_carries_resolved_alias_not_path_form():
+    """Emoji codes can resolve through a byte-variant (VS16) of the stored
+    alias; the event must carry the RESOLVED identity — click handlers key
+    legacy _id updates and v2 max-clicks cache invalidation off it, and the
+    raw path form would silently drop those writes."""
+    url_data = _make_url_cache(alias="⭐🎉", long_url="https://example.com/star")
+    sink = _mock_click_sink()
+    app = _build_app(_mock_url_service(url_data), sink)
+    with TestClient(app, follow_redirects=False) as client:
+        resp = client.get("/⭐️🎉", headers={"User-Agent": BROWSER_UA})  # VS16 variant
+    assert resp.status_code == 302
+    event = sink.emit.await_args.args[0]
+    assert event.short_code == "⭐🎉"
+
+
 def test_redirect_event_strips_password_hash():
     """v1 password hashes are plaintext — they must never enter the event."""
     url_data = _make_url_cache(password_hash="mypassword", schema="v1")

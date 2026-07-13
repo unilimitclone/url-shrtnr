@@ -195,6 +195,19 @@ class TestVs16InsensitivePattern:
         assert pattern.fullmatch("a.b")
         assert pattern.fullmatch("axb") is None
 
+    def test_matches_under_bytewise_semantics(self):
+        # THE regression pin for the Mongo bug: MongoDB's PCRE matches
+        # bytewise, so an ungrouped `️?` makes only the selector's
+        # LAST UTF-8 byte optional and never matches the selector-free
+        # form. Python's per-codepoint str matching hides that — only
+        # bytes-mode re reproduces Mongo's behavior, so the pattern must
+        # pass here too.
+        pattern = re.compile(vs16_insensitive_pattern(STAR + PARTY).encode())
+        assert pattern.fullmatch((STAR + PARTY).encode())
+        assert pattern.fullmatch((STAR + VS16 + PARTY).encode())
+        assert pattern.fullmatch((STAR + VS16 + PARTY + VS16).encode())
+        assert pattern.fullmatch((PARTY + STAR).encode()) is None
+
 
 class TestGraphemeSegmentation:
     """Pin the \\X behavior the policy depends on."""

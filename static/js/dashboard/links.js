@@ -390,27 +390,27 @@ function validateUrl(url) {
 function validateAlias(alias) {
     if (!alias) return { valid: true, message: '' }; // Optional field
 
+    // Alphanumeric branch first: the emoji class includes 0-9#* (keycap
+    // bases), so pure-alnum input must get its length feedback here.
+    const aliasPattern = /^[a-zA-Z0-9_-]+$/;
+    if (aliasPattern.test(alias)) {
+        if (alias.length < 3) {
+            return { valid: false, message: 'Must be at least 3 characters' };
+        }
+        if (alias.length > 16) {
+            return { valid: false, message: 'Must be at most 16 characters' };
+        }
+        return { valid: true, message: '' };
+    }
+
     // Coarse emoji gate — the server enforces the real emoji policy and
     // returns precise reasons via check-alias.
-    const emojiPattern = /^[\p{Extended_Pictographic}\p{Emoji_Modifier}\u200D\uFE0F\u20E3]+$/u;
+    const emojiPattern = /^[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}0-9#*\u200D\uFE0F\u20E3]+$/u;
     if (emojiPattern.test(alias)) {
         return { valid: true, message: '' };
     }
 
-    if (alias.length < 3) {
-        return { valid: false, message: 'Must be at least 3 characters' };
-    }
-
-    if (alias.length > 16) {
-        return { valid: false, message: 'Must be at most 16 characters' };
-    }
-
-    const aliasPattern = /^[a-zA-Z0-9_-]+$/;
-    if (!aliasPattern.test(alias)) {
-        return { valid: false, message: 'Use letters, numbers, underscores, hyphens — or emoji only' };
-    }
-
-    return { valid: true, message: '' };
+    return { valid: false, message: 'Use letters, numbers, underscores, hyphens — or emoji only' };
 }
 
 function validatePassword(password) {
