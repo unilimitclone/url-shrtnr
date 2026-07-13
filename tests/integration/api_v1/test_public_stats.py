@@ -550,6 +550,32 @@ def test_v1_non_list_ips_container_keeps_count_drops_uniques():
     ]
 
 
+def test_v1_unhashable_ips_elements_keep_count_and_clean_uniques():
+    # A recognised ips container holding drifted UNHASHABLE elements
+    # (nested lists) must not TypeError the set-union — string elements
+    # still count as uniques, the rest are dropped.
+    doc = _v1_data(
+        "legacy",
+        **{
+            "browser": {
+                "Chrome": {"counts": 7, "ips": [["1.1.1.1"], "2.2.2.2", {"a": 1}]}
+            }
+        },
+    )
+    service, _ = _build_service(v1_docs={"legacy": doc})
+    with _client(service) as client:
+        resp = client.get(_url("legacy", _WINDOW))
+
+    assert resp.status_code == 200
+    metrics = resp.json()["stats"]["metrics"]
+    assert metrics["clicks_by_browser"] == [
+        {"browser": "Chrome", "clicks": 7, "clicks_percentage": 100.0}
+    ]
+    assert metrics["unique_clicks_by_browser"] == [
+        {"browser": "Chrome", "unique_clicks": 1, "unique_clicks_percentage": 100.0}
+    ]
+
+
 # NOTE: no malformed TIME-SERIES bucket test — that path is unreachable.
 # counter/unique_counter/bots are typed dict[str, int] on LegacyUrlDoc, so
 # pydantic coerces scalar drift ("7" → 7) and rejects non-scalars at

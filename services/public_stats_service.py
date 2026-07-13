@@ -421,7 +421,11 @@ class PublicStatsService:
                     skipped.append(raw_value)
                     continue
                 ips = entry.get("ips") or []
-                if not isinstance(ips, (list, tuple, set)):
+                if isinstance(ips, (list, tuple, set)):
+                    # v1 wrote plain strings; drifted elements (nested
+                    # lists, dicts) don't hash — count stands, uniques don't
+                    ips = [ip for ip in ips if isinstance(ip, str)]
+                else:
                     ips = []  # unknown container — count stands, uniques don't
             else:  # defensively tolerate bare counters in legacy data
                 try:
