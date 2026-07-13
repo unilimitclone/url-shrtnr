@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import Field, field_serializer
+from pydantic import Field
 
-from schemas.dto.base import ResponseBase
+from schemas.dto.base import ResponseBase, UtcDatetime
 from schemas.enums.domain_status import DomainStatus, VerificationMethod
 from schemas.models.custom_domain import CustomDomainDoc
 
@@ -39,9 +38,9 @@ class CustomDomainResponse(ResponseBase):
         default_factory=list,
         description="Human-readable setup warnings/instructions specific to this domain.",
     )
-    created_at: datetime
-    updated_at: datetime | None = None
-    last_verified_at: datetime | None = None
+    created_at: UtcDatetime
+    updated_at: UtcDatetime | None = None
+    last_verified_at: UtcDatetime | None = None
     last_verification_error: str | None = None
     root_redirect: str | None = Field(
         default=None,
@@ -55,17 +54,6 @@ class CustomDomainResponse(ResponseBase):
         default=None,
         description="Override body served at /robots.txt. Honored only when status=ACTIVE.",
     )
-
-    @field_serializer("created_at", "updated_at", "last_verified_at")
-    def _ser_as_utc(self, dt: datetime | None) -> str | None:
-        # PyMongo returns naive datetimes; without explicit tzinfo the JSON
-        # form omits the offset and clients parse it as local time. Stamp
-        # UTC so the wire format is unambiguous (`...+00:00`).
-        if dt is None:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.isoformat()
 
     @classmethod
     def from_doc(cls, doc: CustomDomainDoc) -> CustomDomainResponse:

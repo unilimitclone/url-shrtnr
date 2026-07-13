@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from pydantic import ValidationError
 
@@ -13,6 +15,8 @@ from schemas.dto.requests.auth import (
 )
 from schemas.dto.responses.auth import (
     AuthProviderInfo,
+    OAuthProviderDetail,
+    OnboardingCompleteResponse,
     UserProfileResponse,
 )
 
@@ -116,3 +120,65 @@ class TestUserProfileResponse:
             ],
         )
         assert r.auth_providers[0].provider == "google"
+
+
+# ── UTC stamping on the wire ───────────────────────────────────────────────────
+#
+# PyMongo (no tz_aware) hands back naive datetimes. Without an explicit
+# offset in the JSON, `new Date("2026-07-13T09:00:00")` in a browser parses
+# the value as LOCAL time and silently shifts the instant. These tests pin
+# that every auth timestamp leaves with an explicit UTC offset.
+
+_NAIVE = datetime(2025, 1, 15, 10, 30)  # what a Mongo read-back looks like
+_AWARE = datetime(2025, 1, 15, 10, 30, tzinfo=timezone.utc)
+_WIRE = "2025-01-15T10:30:00+00:00"
+
+
+def _profile(**overrides) -> UserProfileResponse:
+    base = {
+        "id": "507f1f77bcf86cd799439011",
+        "email": "u@example.com",
+        "email_verified": True,
+        "plan": "free",
+        "password_set": True,
+        "auth_providers": [],
+    }
+    base.update(overrides)
+    return UserProfileResponse(**base)
+
+
+class TestAuthTimestampsCarryUtcOffset:
+    def test_onboarded_at_naive_is_stamped_utc(self):
+        d = _profile(onboarded_at=_NAIVE).model_dump()
+        assert d["onboarded_at"] == _WIRE
+
+    def test_onboarded_at_aware_keeps_instant(self):
+        d = _profile(onboarded_at=_AWARE).model_dump()
+        assert d["onboarded_at"] == _WIRE
+
+    def test_onboarded_at_none_stays_null(self):
+        d = _profile().model_dump()
+        assert d["onboarded_at"] is None
+
+    def test_provider_linked_at_naive_is_stamped_utc(self):
+        info = AuthProviderInfo(provider="google", linked_at=_NAIVE)
+        assert info.model_dump()["linked_at"] == _WIRE
+
+    def test_provider_linked_at_none_stays_null(self):
+        info = AuthProviderInfo(provider="google")
+        assert info.model_dump()["linked_at"] is None
+
+    def test_oauth_provider_detail_linked_at_naive_is_stamped_utc(self):
+        detail = OAuthProviderDetail(provider="google", linked_at=_NAIVE)
+        assert detail.model_dump()["linked_at"] == _WIRE
+
+    def test_onboarding_complete_naive_and_aware_match_exactly(self):
+        # First call stamps an aware datetime, the idempotent repeat echoes
+        # the naive Mongo read-back — the wire form must be identical.
+        first = OnboardingCompleteResponse(success=True, onboarded_at=_AWARE)
+        repeat = OnboardingCompleteResponse(success=True, onboarded_at=_NAIVE)
+        assert (
+            first.model_dump()["onboarded_at"]
+            == repeat.model_dump()["onboarded_at"]
+            == _WIRE
+        )

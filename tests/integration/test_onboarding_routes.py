@@ -116,6 +116,29 @@ def test_complete_is_idempotent_and_keeps_original_stamp():
     assert resp.json()["onboarded_at"].startswith("2026-07-01")
 
 
+def test_complete_first_call_emits_explicit_utc_offset():
+    repo = AsyncMock()
+    repo.complete_onboarding = AsyncMock(return_value=True)
+    with _build(user_repo=repo) as client:
+        resp = client.post("/auth/onboarding/complete", json={})
+    assert resp.json()["onboarded_at"].endswith("+00:00")
+
+
+def test_complete_repeat_call_matches_first_call_wire_format():
+    # The repeat path echoes the Mongo read-back, which is NAIVE (the
+    # client is not tz_aware). The wire form must be identical to the
+    # first call's aware stamp — offsetless ISO parses as local time in
+    # JS, and a format that flips between calls is worse.
+    repo = AsyncMock()
+    repo.complete_onboarding = AsyncMock(return_value=False)  # already stamped
+    doc = AsyncMock()
+    doc.onboarded_at = datetime(2026, 7, 1)  # naive, as read back from Mongo
+    repo.find_by_id = AsyncMock(return_value=doc)
+    with _build(user_repo=repo) as client:
+        resp = client.post("/auth/onboarding/complete", json={})
+    assert resp.json()["onboarded_at"] == "2026-07-01T00:00:00+00:00"
+
+
 def test_complete_rejects_oversized_heard_from():
     with _build() as client:
         resp = client.post("/auth/onboarding/complete", json={"heard_from": "x" * 65})

@@ -13,12 +13,11 @@ VerifyEmailResponse — POST /auth/verify-email  (200)
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
-from schemas.dto.base import ResponseBase
+from schemas.dto.base import ResponseBase, UtcDatetime
 from schemas.models.user import OAuthProvider, ProviderProfile
 
 if TYPE_CHECKING:
@@ -36,7 +35,7 @@ class AuthProviderInfo(ResponseBase):
         description="Email address from the OAuth provider",
         examples=["user@gmail.com"],
     )
-    linked_at: datetime | None = Field(
+    linked_at: UtcDatetime | None = Field(
         default=None,
         description="When the provider was linked",
         examples=["2025-01-15T10:30:00+00:00"],
@@ -73,7 +72,7 @@ class UserProfileResponse(ResponseBase):
     )
     plan: str = Field(description="Subscription plan", examples=["free"])
     password_set: bool = Field(description="Whether the user has set a password")
-    onboarded_at: datetime | None = Field(
+    onboarded_at: UtcDatetime | None = Field(
         default=None,
         description="When the user completed onboarding (null = never)",
     )
@@ -202,7 +201,7 @@ class OAuthProviderDetail(ResponseBase):
     email_verified: bool = Field(
         default=False, description="Email verified by provider"
     )
-    linked_at: datetime | None = Field(
+    linked_at: UtcDatetime | None = Field(
         default=None, description="When the provider was linked"
     )
     profile: ProviderProfile = Field(
@@ -242,6 +241,6 @@ class OnboardingCompleteResponse(ResponseBase):
     """Response body for POST /auth/onboarding/complete (200)."""
 
     success: bool = Field(description="Always true on success")
-    onboarded_at: datetime = Field(
+    onboarded_at: UtcDatetime = Field(
         description="When onboarding was completed (first completion wins)"
     )
