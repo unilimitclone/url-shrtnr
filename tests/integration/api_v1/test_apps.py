@@ -142,7 +142,9 @@ class TestListAppGrants:
         assert item["app"] == "spoo-retired"
         assert item["app_name"] == "spoo-retired"
         assert item["icon"] is None
-        assert item["permissions"] == []
+        # Never understate access: the grant is still full-account even
+        # when its catalogue entry is gone.
+        assert item["permissions"] == ["Full access to your spoo.me account"]
 
     def test_grants_sorted_newest_granted_first(self):
         user = _make_user()

@@ -69,13 +69,19 @@ class AppGrantResponse(ResponseBase):
     @classmethod
     def from_grant(cls, doc: AppGrantDoc, entry: AppEntry | None) -> AppGrantResponse:
         # A grant can outlive its registry entry; it still holds live tokens,
-        # so it is listed with fallback labels rather than hidden.
+        # so it is listed with fallback labels rather than hidden. The
+        # permissions fallback must never read as "no access": the grant is
+        # full-account regardless of what the catalogue once said.
         return cls(
             id=str(doc.id),
             app=doc.app_id,
             app_name=entry.name if entry else doc.app_id,
             icon=entry.icon if entry else None,
-            permissions=list(entry.permissions) if entry else [],
+            permissions=(
+                list(entry.permissions)
+                if entry
+                else ["Full access to your spoo.me account"]
+            ),
             granted_at=doc.granted_at,
             last_used_at=doc.last_used_at,
         )
