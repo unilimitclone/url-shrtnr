@@ -435,10 +435,13 @@ class PublicStatsService:
             unique_ips.setdefault(value, set()).update(ips)
 
         if skipped:
+            # Cardinality is unbounded (one entry per distinct referrer/etc),
+            # so cap the sample — skipped_count carries the true total.
             log.info(
                 "v1_dimension_entries_skipped",
                 dimension=key,
-                values=skipped,
+                skipped_count=len(skipped),
+                values=skipped[:20],
             )
 
         ordered = sorted(clicks, key=lambda value: clicks[value], reverse=True)
