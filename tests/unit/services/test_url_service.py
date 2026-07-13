@@ -2412,6 +2412,28 @@ class TestUrlServiceTimeExpiry:
         with pytest.raises(GoneError):
             await svc.resolve("abcdef")
 
+    @pytest.mark.asyncio
+    async def test_custom_domain_past_expiry_flips_and_invalidates_scoped_key(self):
+        """Custom tenants ride the same enforcement — dispatch is v2-only,
+        the flip is by _id, and the invalidation must target the
+        tenant-scoped cache key (data.domain), not the system default."""
+        svc, url_repo, url_cache, *_ = self._svc()
+        url_cache.get.return_value = None
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        url_repo.find_by_alias.return_value = make_url_v2_doc(
+            alias="customalias", expire_after=past, domain="links.acme.com"
+        )
+        url_repo.expire_if_time_reached.return_value = True
+
+        with pytest.raises(GoneError):
+            await svc.resolve("customalias", domain="links.acme.com")
+
+        url_repo.find_by_alias.assert_awaited_once_with(
+            "customalias", "links.acme.com"
+        )
+        url_repo.expire_if_time_reached.assert_awaited_once_with(URL_OID)
+        url_cache.invalidate.assert_awaited_once_with("customalias", "links.acme.com")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestEffectiveStatusClause — Mongo clause ≡ UrlV2Doc.effective_status
