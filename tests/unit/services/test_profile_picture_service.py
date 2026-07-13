@@ -169,3 +169,30 @@ async def test_set_picture_rejects_arbitrary_url():
     with pytest.raises(NotFoundError):
         await svc.set_picture(user.id, "evil_attacker_id")
     repo.update.assert_not_called()
+
+
+# ── update_user_name ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_update_user_name_sets_name():
+    user = _make_user_doc()
+    svc, repo = _make_service(user)
+    await svc.update_user_name(user.id, "Jane Doe")
+    repo.update.assert_called_once_with(user.id, {"$set": {"user_name": "Jane Doe"}})
+
+
+@pytest.mark.asyncio
+async def test_update_user_name_clears_with_none():
+    user = _make_user_doc()
+    svc, repo = _make_service(user)
+    await svc.update_user_name(user.id, None)
+    repo.update.assert_called_once_with(user.id, {"$set": {"user_name": None}})
+
+
+@pytest.mark.asyncio
+async def test_update_user_name_user_not_found_raises():
+    svc, repo = _make_service(None)
+    with pytest.raises(NotFoundError, match="User not found"):
+        await svc.update_user_name(ObjectId(), "Jane Doe")
+    repo.update.assert_not_called()

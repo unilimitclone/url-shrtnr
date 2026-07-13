@@ -27,6 +27,7 @@ from dependencies import (
     get_credential_service,
     get_oauth_service,
     get_password_service,
+    get_profile_picture_service,
     get_user_repo,
     get_verification_service,
     require_auth,
@@ -300,6 +301,102 @@ def test_me_requires_auth():
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/auth/me")
     assert resp.status_code == 401
+
+
+# ── Update profile (PATCH /auth/me) ───────────────────────────────────────────
+
+
+def _update_me_app(mock_svc, mock_user):
+    return build_test_app(
+        auth_router,
+        oauth_router,
+        overrides={
+            get_profile_picture_service: lambda: mock_svc,
+            require_auth: lambda: mock_user,
+        },
+    )
+
+
+def test_update_me_sets_user_name_and_strips():
+    user_oid = ObjectId()
+    updated = _make_user_doc(user_id=user_oid).model_copy(
+        update={"user_name": "Jane Doe"}
+    )
+    mock_svc = AsyncMock()
+    mock_svc.update_user_name.return_value = updated
+    mock_user = CurrentUser(user_id=user_oid, email_verified=True)
+
+    app = _update_me_app(mock_svc, mock_user)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.patch("/auth/me", json={"user_name": "  Jane Doe  "})
+    assert resp.status_code == 200
+    assert resp.json()["user"]["user_name"] == "Jane Doe"
+    mock_svc.update_user_name.assert_awaited_once_with(user_oid, "Jane Doe")
+
+
+def test_update_me_null_clears_user_name():
+    user_oid = ObjectId()
+    updated = _make_user_doc(user_id=user_oid).model_copy(update={"user_name": None})
+    mock_svc = AsyncMock()
+    mock_svc.update_user_name.return_value = updated
+    mock_user = CurrentUser(user_id=user_oid, email_verified=True)
+
+    app = _update_me_app(mock_svc, mock_user)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.patch("/auth/me", json={"user_name": None})
+    assert resp.status_code == 200
+    assert resp.json()["user"]["user_name"] is None
+    mock_svc.update_user_name.assert_awaited_once_with(user_oid, None)
+
+
+def test_update_me_whitespace_only_normalizes_to_none():
+    user_oid = ObjectId()
+    updated = _make_user_doc(user_id=user_oid).model_copy(update={"user_name": None})
+    mock_svc = AsyncMock()
+    mock_svc.update_user_name.return_value = updated
+    mock_user = CurrentUser(user_id=user_oid, email_verified=True)
+
+    app = _update_me_app(mock_svc, mock_user)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.patch("/auth/me", json={"user_name": "   "})
+    assert resp.status_code == 200
+    mock_svc.update_user_name.assert_awaited_once_with(user_oid, None)
+
+
+def test_update_me_missing_field_returns_422():
+    mock_user = CurrentUser(user_id=ObjectId(), email_verified=True)
+    app = _update_me_app(AsyncMock(), mock_user)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.patch("/auth/me", json={})
+    assert resp.status_code == 422
+
+
+def test_update_me_too_long_returns_422():
+    mock_user = CurrentUser(user_id=ObjectId(), email_verified=True)
+    app = _update_me_app(AsyncMock(), mock_user)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.patch("/auth/me", json={"user_name": "x" * 256})
+    assert resp.status_code == 422
+
+
+def test_update_me_requires_auth():
+    app = build_test_app(auth_router, oauth_router, overrides={})
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.patch("/auth/me", json={"user_name": "Jane"})
+    assert resp.status_code == 401
+
+
+def test_update_me_rejects_api_key_auth():
+    """An API key must not be able to rename the account — JWT only."""
+    mock_svc = AsyncMock()
+    mock_user = CurrentUser(
+        user_id=ObjectId(), email_verified=True, api_key_doc=MagicMock()
+    )
+    app = _update_me_app(mock_svc, mock_user)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.patch("/auth/me", json={"user_name": "Jane"})
+    assert resp.status_code == 403
+    mock_svc.update_user_name.assert_not_awaited()
 
 
 # ── Set password ──────────────────────────────────────────────────────────────

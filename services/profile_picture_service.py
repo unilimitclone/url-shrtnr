@@ -1,5 +1,6 @@
 """
-ProfilePictureService — dashboard profile and profile picture management.
+ProfilePictureService — dashboard profile, display name, and profile
+picture management.
 
 Extracts user profile building and profile picture logic from the route layer.
 """
@@ -14,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from errors import NotFoundError
 from infrastructure.logging import get_logger
 from repositories.user_repository import UserRepository
-from schemas.models.user import OAuthProvider, ProfilePicture
+from schemas.models.user import OAuthProvider, ProfilePicture, UserDoc
 
 log = get_logger(__name__)
 
@@ -65,6 +66,26 @@ class ProfilePictureService:
             profile["pfp"] = {"url": user_doc.pfp.url, "source": user_doc.pfp.source}
 
         return profile
+
+    async def update_user_name(
+        self, user_id: ObjectId, user_name: str | None
+    ) -> UserDoc:
+        """Set (or clear, with None) the user's display name.
+
+        Returns the updated user document for the profile response.
+        Raises NotFoundError if the user is not found.
+        """
+        user_doc = await self._user_repo.find_by_id(user_id)
+        if not user_doc:
+            raise NotFoundError("User not found")
+
+        await self._user_repo.update(user_id, {"$set": {"user_name": user_name}})
+        log.info(
+            "user_name_updated",
+            user_id=str(user_id),
+            cleared=user_name is None,
+        )
+        return user_doc.model_copy(update={"user_name": user_name})
 
     async def get_available_pictures(self, user_id: ObjectId) -> list[AvailablePicture]:
         """Return profile pictures available from connected OAuth providers.
