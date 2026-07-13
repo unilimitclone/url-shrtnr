@@ -291,9 +291,7 @@ def test_profile_picture_endpoints_reject_api_key_auth():
     with TestClient(app, raise_server_exceptions=False) as c:
         assert c.get("/dashboard/profile-pictures").status_code == 403
         assert (
-            c.post(
-                "/dashboard/profile-pictures", json={"picture_id": "x"}
-            ).status_code
+            c.post("/dashboard/profile-pictures", json={"picture_id": "x"}).status_code
             == 403
         )
         assert (
