@@ -580,6 +580,45 @@ class UrlService:
             return "taken"
         return "available"
 
+    async def get_owned(self, url_id: ObjectId, owner_id: ObjectId) -> UrlV2Doc:
+        """Fetch a single URL by ObjectId, scoped to its owner.
+
+        Ownership is enforced IN the query — a foreign id answers exactly
+        like a missing one (404, no existence oracle). Status-blind for the
+        owner: expired/disabled/blocked links return with their status
+        field rather than raising, since the owner is reading their own
+        inventory, not following a redirect.
+
+        Raises:
+            NotFoundError: URL doesn't exist or belongs to someone else.
+        """
+        doc = await self._url_repo.find_by_id_and_owner(url_id, owner_id)
+        if doc is None:
+            raise NotFoundError("URL not found")
+        return doc
+
+    async def get_owned_by_alias(
+        self, alias: str, owner_id: ObjectId, *, domain: str | None = None
+    ) -> UrlV2Doc:
+        """Fetch a single URL by its natural key ``(domain, alias)``, scoped
+        to its owner.
+
+        ``domain`` of None means the system default namespace. v2-only by
+        construction — the ``urlsV2`` collection is all this reads, so
+        v1/emoji legacy shorts never answer here. Same ownership-in-query
+        and status-blind semantics as ``get_owned``.
+
+        Raises:
+            NotFoundError: no owned URL under that (domain, alias).
+        """
+        target_domain = domain or self._system_default_domain
+        doc = await self._url_repo.find_by_alias_and_owner(
+            alias, target_domain, owner_id
+        )
+        if doc is None:
+            raise NotFoundError("URL not found")
+        return doc
+
     async def resolve_meta_image(
         self, meta: MetaTagsRequest, owner_id: ObjectId
     ) -> tuple[MetaTagsRequest, dict | None]:

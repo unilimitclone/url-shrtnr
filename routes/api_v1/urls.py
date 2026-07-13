@@ -1,28 +1,43 @@
 """
-GET    /api/v1/urls            — list authenticated user's shortened URLs
-DELETE /api/v1/urls?domain=    — bulk-delete URLs scoped to one custom domain
+GET    /api/v1/urls                    — list authenticated user's shortened URLs
+GET    /api/v1/urls/{url_id}           — fetch one owned URL by ObjectId
+GET    /api/v1/urls/{domain}/{alias}   — fetch one owned URL by its natural key
+DELETE /api/v1/urls?domain=            — bulk-delete URLs scoped to one custom domain
 
 Requires authentication. Listing returns paginated list with camelCase keys.
+Single-resource GETs serve the exact same item shape the list serves per
+element, are status-blind for the owner, and answer 404 for foreign links
+(ownership is in the query — no existence oracle).
 Bulk delete is owner-scoped and refuses the system-default namespace.
+
+Route-ordering note: FastAPI matches routes in definition order. The two
+single-resource GETs cannot shadow each other (different segment counts)
+nor the management routes on the same shapes (those are PATCH/DELETE —
+method filtering keeps them apart), and the literal ``/urls`` list/bulk
+routes never match a subpath.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
+from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
 
 from dependencies import (
     URL_MANAGEMENT_SCOPES,
     URL_READ_SCOPES,
     CurrentUser,
     CustomDomainSvc,
+    Settings,
     UrlSvc,
     require_scopes,
 )
-from errors import ValidationError
+from errors import NotFoundError, ValidationError
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
+from middleware.tenant import _normalise_host
+from routes.api_v1.management import _parse_url_id
 from schemas.dto.requests.url import ListUrlsQuery
 from schemas.dto.responses.url import (
     BulkDeleteUrlsResponse,
@@ -71,6 +86,130 @@ async def list_urls_v1(
     result = await url_service.list_by_owner(user.user_id, query)
     result["items"] = [UrlListItem.from_doc(doc) for doc in result["items"]]
     return result
+
+
+@router.get(
+    "/urls/{url_id}",
+    responses=ERROR_RESPONSES,
+    operation_id="getUrl",
+    summary="Get URL by ID",
+)
+@limiter.limit(Limits.API_AUTHED)
+async def get_url_v1(
+    request: Request,
+    url_id: Annotated[
+        str,
+        Path(description="Unique identifier of the URL (MongoDB ObjectId)."),
+    ],
+    url_service: UrlSvc,
+    user: CurrentUser = Depends(require_scopes(URL_READ_SCOPES)),  # noqa: B008
+) -> UrlListItem:
+    """Fetch a single URL you own by its id.
+
+    Returns the same item shape as one element of `GET /urls` — including
+    derived `status`, so expired/disabled/blocked links return normally
+    with their status field (you are reading your inventory, not following
+    a redirect).
+
+    **Authentication**: Required — you must own the URL.
+
+    **API Key Scope**: `urls:manage`, `urls:read`, or `admin:all`
+
+    **Rate Limits**: 60/min, 5,000/day
+
+    **Errors**:
+
+    - `400` — malformed id (not a valid ObjectId)
+    - `404` — no URL with that id in your account. A URL owned by someone
+      else answers identically; this endpoint never confirms foreign ids.
+    """
+    oid = _parse_url_id(url_id)
+    doc = await url_service.get_owned(oid, user.user_id)
+    return UrlListItem.from_doc(doc)
+
+
+def _resolve_lookup_domain(raw: str, system_default_domain: str) -> str:
+    """Map a domain path segment to the stored domain key.
+
+    Normalises the host (lowercase, port and trailing dot stripped — the
+    same rules the tenant middleware applies to the Host header) and folds
+    the system domain's names onto the canonical default-domain key,
+    mirroring the tenant resolver's system-default short-circuit (which
+    also accepts the ``www.`` alias). Anything else scopes the lookup to
+    that custom domain.
+    """
+    host = _normalise_host(raw)
+    if not host:
+        # Unparseable host — nothing can live there, same answer as unknown.
+        raise NotFoundError("URL not found")
+    if host in (system_default_domain, f"www.{system_default_domain}"):
+        return system_default_domain
+    return host
+
+
+@router.get(
+    "/urls/{domain}/{alias}",
+    responses=ERROR_RESPONSES,
+    operation_id="getUrlByAddress",
+    summary="Get URL by Domain and Alias",
+)
+@limiter.limit(Limits.API_AUTHED)
+async def get_url_by_address_v1(
+    request: Request,
+    domain: Annotated[
+        str,
+        Path(
+            max_length=253,
+            description=(
+                "Domain the short link lives on. Always explicit: pass the "
+                "system domain (e.g. `spoo.me`) for default-namespace links "
+                "or an owned custom domain fqdn. Case and `:port` are "
+                "ignored."
+            ),
+            examples=["spoo.me", "links.acme.com"],
+        ),
+    ],
+    alias: Annotated[
+        str,
+        Path(
+            description=(
+                "Short code of the URL. Emoji aliases arrive percent-encoded."
+            ),
+            examples=["mylink"],
+        ),
+    ],
+    url_service: UrlSvc,
+    settings: Settings,
+    user: CurrentUser = Depends(require_scopes(URL_READ_SCOPES)),  # noqa: B008
+) -> UrlListItem:
+    """Fetch a single URL you own by its natural key: domain + alias.
+
+    The address every short link is already known by — no id lookup
+    round-trip needed. Returns the same item shape as one element of
+    `GET /urls`, status-blind for the owner (expired/disabled/blocked
+    links return with their status field).
+
+    **Authentication**: Required — you must own the URL.
+
+    **API Key Scope**: `urls:manage`, `urls:read`, or `admin:all`
+
+    **Rate Limits**: 60/min, 5,000/day
+
+    **Errors**:
+
+    - `404` — no URL at that address in your account. Unknown domains and
+      links owned by someone else answer identically; this endpoint never
+      confirms what exists outside your account.
+
+    **Note**: only current-generation links resolve here — that is all the
+    managed collection holds.
+    """
+    short_code = unquote(alias)
+    lookup_domain = _resolve_lookup_domain(domain, settings.system_default_domain)
+    doc = await url_service.get_owned_by_alias(
+        short_code, user.user_id, domain=lookup_domain
+    )
+    return UrlListItem.from_doc(doc)
 
 
 @router.delete(
