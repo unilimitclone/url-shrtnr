@@ -103,20 +103,30 @@ _RESERVED_PREFIXES = (
 )
 
 # Alias paths allowed on custom tenants. Match `/<alias>` and
-# `/<alias>/password` only. Alias body is `[A-Za-z0-9_-]{3,16}` per
-# `shared.validators.validate_alias` plus the URL-safe slice of the emoji
-# range used in v2. Stats suffix (`+`) is intentionally NOT matched so
-# `/<alias>+` falls through to 404 — analytics surface stays on spoo.me.
+# `/<alias>/password` only. Stats suffix (`+`) is intentionally NOT matched
+# so `/<alias>+` falls through to 404 — analytics surface stays on spoo.me.
 #
-# Emoji ranges: Misc Symbols & Pictographs (1F300-1F5FF), Emoticons
-# (1F600-1F64F), Transport & Map (1F680-1F6FF), Supplemental Symbols
-# (1F900-1F9FF), Extended-A (1FA70-1FAFF), and percent-encoded forms.
+# This is a deliberately COARSE gate: "plausibly a short code", nothing
+# more. The emoji acceptance policy lives in `shared.emoji_policy` and runs
+# at creation; unknown/over-broad aliases matched here still 404 in the
+# route. Coverage, broader than the policy by design:
+#   - `[A-Za-z0-9_-]` per `shared.validators.validate_alias`
+#   - `%XX` percent-encoded runs (browsers encode emoji paths)
+#   - U+2190-2BFF: arrows through Misc Symbols, Dingbats, and the 2B00
+#     block (⭐ ⬛) — decoded-unicode emoji outside plane 1
+#   - U+1F000-1FAFF: every plane-1 pictograph block (mahjong 1F004, cards
+#     1F0CF, enclosed 1F170-1F251, pictographs, transport, supplemental,
+#     Extended-A/B, skin tones 1F3FB-1F3FF, regional indicators)
+#   - singletons ©®™‼⁉ℹ〰〽㊗㊙ and ZWJ/VS15/VS16/keycap combiners plus
+#     tag chars (E0020-E007F), so legacy-lenient forms *reach* the router
+#     and 404 gracefully instead of being middleware-policed
 _ALIAS_PATTERN = re.compile(
     r"^/"
     r"(?:[A-Za-z0-9_\-]"
-    r"|[\U0001F300-\U0001F5FF\U0001F600-\U0001F64F"
-    r"\U0001F680-\U0001F6FF\U0001F900-\U0001F9FF\U0001FA70-\U0001FAFF]"
-    r"|%[0-9A-Fa-f]{2})+"
+    r"|%[0-9A-Fa-f]{2}"
+    r"|[\u00A9\u00AE\u200D\u203C\u2049\u20E3\u2122\u2139"
+    r"\u2190-\u2BFF\u3030\u303D\u3297\u3299\uFE0E\uFE0F]"
+    r"|[\U0001F000-\U0001FAFF\U000E0020-\U000E007F])+"
     r"(?:/password)?$"
 )
 

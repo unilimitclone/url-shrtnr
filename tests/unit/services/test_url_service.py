@@ -303,15 +303,75 @@ class TestUrlServiceResolve:
         )
 
         url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = None  # v2 is tried first now
         emoji_doc = make_emoji_doc("🐍🔥💎")
         emoji_repo.find_by_id.return_value = emoji_doc
 
         _result, schema = await svc.resolve("🐍🔥💎")
 
         assert schema == "emoji"
+        url_repo.find_by_alias.assert_called_once_with("🐍🔥💎", SYSTEM_DEFAULT_DOMAIN)
         emoji_repo.find_by_id.assert_called_once_with("🐍🔥💎")
-        url_repo.find_by_alias.assert_not_called()
         legacy_repo.find_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_emoji_v2_hit_wins_over_legacy(self):
+        # v2-first ordering: an emoji alias stored in urlsV2 must answer
+        # before the legacy emojis collection is even consulted.
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = make_url_v2_doc(alias="🐍🔥💎")
+
+        _result, schema = await svc.resolve("🐍🔥💎")
+
+        assert schema == "v2"
+        emoji_repo.find_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_emoji_vs16_variant_resolves_canonical_v2_doc(self):
+        # A pasted ⭐️-style variant (stray U+FE0F) must find the v2 doc
+        # stored under the canonical alias, and cache under the canonical key.
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        vs16 = "️"
+        url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = make_url_v2_doc(alias="⭐🎉")
+
+        _result, schema = await svc.resolve("⭐" + vs16 + "🎉")
+
+        assert schema == "v2"
+        url_cache.get.assert_called_once_with("⭐🎉", SYSTEM_DEFAULT_DOMAIN)
+        url_repo.find_by_alias.assert_called_once_with("⭐🎉", SYSTEM_DEFAULT_DOMAIN)
+
+    @pytest.mark.asyncio
+    async def test_emoji_legacy_lookup_tries_raw_then_canonical(self):
+        # Legacy emojis _ids keep their historical bytes: the raw request
+        # form is tried first (exact legacy semantics), canonical second.
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        vs16 = "️"
+        raw = "⭐" + vs16 + "🎉"
+        url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = None
+        emoji_repo.find_by_id.side_effect = [None, make_emoji_doc("⭐🎉")]
+
+        _result, schema = await svc.resolve(raw)
+
+        assert schema == "emoji"
+        assert [c.args[0] for c in emoji_repo.find_by_id.call_args_list] == [
+            raw,
+            "⭐🎉",
+        ]
 
     @pytest.mark.asyncio
     async def test_cache_miss_other_length_tries_v2_first(self):
@@ -2358,6 +2418,7 @@ class TestUrlServiceTimeExpiry:
     async def test_db_emoji_past_aware_expiry_raises_gone(self):
         svc, url_repo, url_cache, _legacy_repo, emoji_repo = self._svc()
         url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = None  # v2 is tried first now
         emoji_repo.find_by_id.return_value = EmojiUrlDoc.from_mongo(
             {
                 "_id": "🐍🔥💎",

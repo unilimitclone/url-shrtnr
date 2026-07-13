@@ -64,7 +64,11 @@ from schemas.models.url import (
     UrlStatus,
     UrlV2Doc,
 )
-from shared.alias_dispatch import resolution_order
+from shared.alias_dispatch import (
+    emoji_lookup_candidates,
+    resolution_order,
+    v2_lookup_code,
+)
 from shared.datetime_utils import parse_datetime, to_unix_timestamp
 from shared.generators import generate_short_code_v2
 from shared.reserved_aliases import is_reserved_alias
@@ -432,6 +436,12 @@ class UrlService:
         """
         scope = domain or self._system_default_domain
         is_custom = scope != self._system_default_domain
+        # Emoji codes can arrive as byte-variant forms (stray VS16 from
+        # keyboards / copy-paste). Canonicalize once here so the cache key
+        # and every v2 lookup use one form; the raw form is kept for exact
+        # legacy ``emojis`` ``_id`` matches inside _dispatch.
+        raw_code = short_code
+        short_code = v2_lookup_code(short_code)
         # 1. Cache hit
         cached = await self._url_cache.get(short_code, scope)
         if cached is not None:
@@ -467,7 +477,7 @@ class UrlService:
                 short_code, scope
             )
         else:
-            url_cache_data, schema = await self._dispatch(short_code)
+            url_cache_data, schema = await self._dispatch(short_code, raw_code)
         if url_cache_data is None:
             log.info("url_resolve_not_found", short_code=short_code, domain=scope)
             raise NotFoundError("URL not found")
@@ -1161,7 +1171,7 @@ class UrlService:
     # ── Private helpers ───────────────────────────────────────────────────────
 
     async def _dispatch(
-        self, short_code: str
+        self, short_code: str, raw_code: str | None = None
     ) -> tuple[UrlCacheData | None, SchemaVersion]:
         """
         Determine URL schema and fetch from the appropriate collection.
@@ -1170,15 +1180,32 @@ class UrlService:
         — the single source of truth shared with the public preview endpoint,
         so every resolving surface answers a given code from the same
         generation. Only the per-generation lookup/conversion lives here.
+
+        ``short_code`` is the canonical lookup form (v2 + cache key);
+        ``raw_code`` is the as-requested form, needed for exact legacy
+        ``emojis`` ``_id`` matches (defaults to ``short_code``).
         """
-        order = resolution_order(short_code)
-        if order[0] == SchemaVersion.EMOJI:
-            doc = await self._emoji_repo.find_by_id(short_code)
-            if doc is not None:
-                return (
-                    _emoji_doc_to_cache(short_code, doc, self._system_default_domain),
-                    SchemaVersion.EMOJI,
-                )
+        raw = raw_code if raw_code is not None else short_code
+        order = resolution_order(raw)
+        if SchemaVersion.EMOJI in order:
+            # v2 first — new emoji links live in urlsV2 under the canonical
+            # alias. Creation collision-checks against the legacy collection
+            # (VS16-insensitively), so a v2 hit can never shadow a live
+            # legacy variant.
+            v2_doc = await self._url_repo.find_by_alias(
+                short_code, self._system_default_domain
+            )
+            if v2_doc is not None:
+                return UrlCacheData.from_v2_doc(v2_doc), SchemaVersion.V2
+            for candidate in emoji_lookup_candidates(raw):
+                doc = await self._emoji_repo.find_by_id(candidate)
+                if doc is not None:
+                    return (
+                        _emoji_doc_to_cache(
+                            candidate, doc, self._system_default_domain
+                        ),
+                        SchemaVersion.EMOJI,
+                    )
             return None, SchemaVersion.EMOJI
         if order[0] == SchemaVersion.V1:
             return await self._try_v1_then_v2(short_code)

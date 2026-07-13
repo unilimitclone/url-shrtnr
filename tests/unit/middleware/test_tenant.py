@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
@@ -255,6 +256,45 @@ class TestCustomTenantRouting:
                     f"expected 404 on {path}, got {r.status_code}"
                 )
                 assert r.headers["X-Robots-Tag"] == "noindex, nofollow, noarchive"
+
+
+class TestAliasPatternEmojiCoverage:
+    """The coarse alias gate must pass every emoji shape a code can arrive
+    as (decoded unicode incl. combiners, and percent-encoded) — policy
+    enforcement lives at creation, not in the middleware."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/⭐",  # 2B00 block (outside plane 1 — the old pattern missed it)
+            "/☕",  # Misc Symbols (2600)
+            "/✂",  # Dingbats (2700)
+            "/🀄",  # Mahjong (1F004)
+            "/🈚",  # Enclosed ideographs (1F200)
+            "/🟧",  # Geometric Extended (1F7E0)
+            "/👍🏽👍🏽",  # skin-tone modifier sequences
+            "/🚀🔥🎉",
+            "/🏳️‍🌈",  # ZWJ + VS16 (legacy-lenient forms must reach the router)
+            "/1️⃣",  # keycap combiner
+            "/🇺🇸",  # regional indicators
+            "/🏴󠁧󠁢󠁥󠁮󠁧󠁿",  # tag sequence
+            "/%F0%9F%91%8D",  # percent-encoded emoji
+            "/⭐/password",
+        ],
+    )
+    def test_emoji_paths_match(self, path):
+        from middleware.tenant import _ALIAS_PATTERN
+
+        assert _ALIAS_PATTERN.match(path), f"expected alias match for {path!r}"
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/", "/⭐+", "/a b", "/café", "/⭐/extra", "/mylink/password/x"],
+    )
+    def test_non_alias_paths_rejected(self, path):
+        from middleware.tenant import _ALIAS_PATTERN
+
+        assert not _ALIAS_PATTERN.match(path), f"expected no match for {path!r}"
 
 
 class TestRoutingConfig:

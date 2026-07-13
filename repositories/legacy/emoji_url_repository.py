@@ -15,6 +15,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError, WriteError
 from infrastructure.logging import get_logger
 from repositories.base import BaseRepository
 from schemas.models.url import EmojiUrlDoc
+from shared.emoji_policy import vs16_insensitive_pattern
 
 log = get_logger(__name__)
 
@@ -95,6 +96,19 @@ class EmojiUrlRepository(BaseRepository[EmojiUrlDoc]):
     async def check_exists(self, alias: str) -> bool:
         """Return True if the emoji alias exists in the collection."""
         doc = await self._find_one_raw({"_id": alias}, {"_id": 1})
+        return doc is not None
+
+    async def check_exists_vs16_insensitive(self, canonical: str) -> bool:
+        """True if any doc's ``_id`` equals *canonical* modulo optional
+        ``U+FE0F`` after each codepoint.
+
+        v1 accepted byte-variant emoji, so a legacy ``⭐️🎉`` must block a
+        new canonical ``⭐🎉`` — otherwise the v2-first resolve order would
+        shadow the live legacy link. Create-path-only; the unanchorable
+        regex scan is acceptable on this small, frozen collection.
+        """
+        pattern = vs16_insensitive_pattern(canonical)
+        doc = await self._find_one_raw({"_id": {"$regex": pattern}}, {"_id": 1})
         return doc is not None
 
     async def aggregate(self, pipeline: list[dict]) -> dict[str, Any] | None:
