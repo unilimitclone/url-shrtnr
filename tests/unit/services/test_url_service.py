@@ -2428,9 +2428,7 @@ class TestUrlServiceTimeExpiry:
         with pytest.raises(GoneError):
             await svc.resolve("customalias", domain="links.acme.com")
 
-        url_repo.find_by_alias.assert_awaited_once_with(
-            "customalias", "links.acme.com"
-        )
+        url_repo.find_by_alias.assert_awaited_once_with("customalias", "links.acme.com")
         url_repo.expire_if_time_reached.assert_awaited_once_with(URL_OID)
         url_cache.invalidate.assert_awaited_once_with("customalias", "links.acme.com")
 
