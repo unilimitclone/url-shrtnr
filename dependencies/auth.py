@@ -231,6 +231,7 @@ URL_READ_SCOPES: set[str] = {
     ApiKeyScope.ADMIN_ALL,
 }
 SHORTEN_SCOPES: set[str] = {ApiKeyScope.SHORTEN_CREATE, ApiKeyScope.ADMIN_ALL}
+REPORTS_SCOPES: set[str] = {ApiKeyScope.REPORTS_CREATE, ApiKeyScope.ADMIN_ALL}
 DOMAIN_MANAGE_SCOPES: set[str] = {ApiKeyScope.DOMAINS_MANAGE, ApiKeyScope.ADMIN_ALL}
 DOMAIN_READ_SCOPES: set[str] = {
     ApiKeyScope.DOMAINS_MANAGE,

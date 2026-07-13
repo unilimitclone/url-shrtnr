@@ -61,7 +61,8 @@ async def create_api_key(
     **Rate Limits**: 5/hour
 
     **Available Scopes**: `shorten:create`, `urls:manage`, `urls:read`,
-    `stats:read`, `admin:all`
+    `stats:read`, `domains:manage`, `domains:read`, `reports:create`,
+    `admin:all`
 
     **Notes**:
 

@@ -11,6 +11,7 @@ from routes.api_v1 import (
     metadata,
     public_preview,
     public_stats,
+    reports,
     shorten,
     stats,
     urls,
@@ -28,3 +29,4 @@ router.include_router(custom_domains.router)
 router.include_router(metadata.router)
 router.include_router(me.router)
 router.include_router(public_preview.router)
+router.include_router(reports.router)

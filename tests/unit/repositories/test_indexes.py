@@ -25,6 +25,8 @@ class TestEnsureIndexes:
         app_grants_col = AsyncMock()
         feature_flags_col = AsyncMock()
         custom_domains_col = AsyncMock()
+        reports_col = AsyncMock()
+        report_submissions_col = AsyncMock()
 
         db.__getitem__ = lambda self, name: {
             "users": users_col,
@@ -36,6 +38,8 @@ class TestEnsureIndexes:
             "app-grants": app_grants_col,
             "feature_flags": feature_flags_col,
             "custom_domains": custom_domains_col,
+            "reports": reports_col,
+            "report_submissions": report_submissions_col,
         }[name]
 
         # create_collection raises CollectionInvalid when collection already exists
@@ -76,6 +80,15 @@ class TestEnsureIndexes:
         )
         app_grants_col.create_index.assert_any_await([("app_id", 1), ("revoked_at", 1)])
         feature_flags_col.create_index.assert_any_await([("name", 1)], unique=True)
+        # Reports: dedupe+velocity storage keys on the (domain, code) pair —
+        # domain null for the system default. Secondary indexes serve the
+        # funnel's triage reads (velocity sort, status filter).
+        reports_col.create_index.assert_any_await(
+            [("domain", 1), ("code", 1)], unique=True
+        )
+        reports_col.create_index.assert_any_await([("last_reported_at", -1)])
+        reports_col.create_index.assert_any_await([("status", 1)])
+        report_submissions_col.create_index.assert_any_await([("created_at", -1)])
         custom_domains_col.create_index.assert_any_await(
             [("fqdn", 1)],
             unique=True,

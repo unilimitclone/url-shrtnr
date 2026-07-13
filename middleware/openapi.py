@@ -41,6 +41,14 @@ EXPORT_RESPONSES = {
     },
 }
 
+NOT_CONFIGURED_RESPONSES = {
+    **ERROR_RESPONSES,
+    503: {
+        "description": "Not configured — the required webhook is unset on this instance",
+        "model": ErrorResponse,
+    },
+}
+
 # ── Security overrides for route decorators ───────────────────────────────────
 # Use these in openapi_extra to override the global security requirement.
 
@@ -98,6 +106,10 @@ OPENAPI_TAGS = [
     {
         "name": "OAuth",
         "description": "OAuth provider login, linking, and unlinking",
+    },
+    {
+        "name": "Reports & Contact",
+        "description": "Report abusive URLs and contact the site operators",
     },
     {
         "name": "System",

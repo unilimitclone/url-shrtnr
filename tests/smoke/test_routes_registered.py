@@ -95,6 +95,8 @@ def test_all_expected_paths_registered(smoke_app: FastAPI) -> None:
         "/api/v1/export",
         "/api/v1/keys",
         "/api/v1/keys/{key_id}",
+        "/api/v1/reports",
+        "/api/v1/contact",
         # Dashboard
         "/dashboard",
         "/dashboard/",
@@ -161,6 +163,8 @@ def test_route_methods_correct(smoke_app: FastAPI) -> None:
         ("/api/v1/keys", "POST"),
         ("/api/v1/keys", "GET"),
         ("/api/v1/keys/{key_id}", "DELETE"),
+        ("/api/v1/reports", "POST"),
+        ("/api/v1/contact", "POST"),
         ("/oauth/providers", "GET"),
         ("/oauth/providers/{provider_name}/unlink", "DELETE"),
         ("/oauth/{provider}", "GET"),

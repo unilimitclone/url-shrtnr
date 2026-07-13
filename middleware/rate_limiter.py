@@ -99,6 +99,18 @@ class Limits:
     # Contact / report
     CONTACT = "5 per minute; 20 per hour; 50 per day"
 
+    # Report intake (POST /api/v1/reports). Counted per SUBMISSION, not per
+    # item — one bulk POST of 100 codes is one unit of downstream triage
+    # work, and per-item billing would push researchers back to
+    # one-code-at-a-time filing (the exact friction bulk intake exists to
+    # remove). Anonymous stays tight because it's also the abuse-of-abuse
+    # budget: captcha + the 25-item cap bounds a day of anonymous garbage
+    # at 1,000 codes. Authenticated is generous on purpose — an abuse desk
+    # working a campaign files hundreds of codes in minutes, and the API
+    # key gives us a reputation handle if a reporter turns out to be noise.
+    REPORTS_AUTHED = "30 per minute; 500 per day"
+    REPORTS_ANON = "5 per minute; 40 per day"
+
     # URL shortener (legacy endpoint)
     SHORTEN_LEGACY = "100 per minute"
 
