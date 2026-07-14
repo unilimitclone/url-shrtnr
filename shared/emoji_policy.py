@@ -135,6 +135,34 @@ def _grapheme_accepted(grapheme: str, max_version: float) -> bool:
     return len(grapheme) == 2 and _SKIN_TONE_MIN <= grapheme[1] <= _SKIN_TONE_MAX
 
 
+def emoji_display_name(char: str) -> str:
+    """Human-readable name for *char* from the ``emoji`` package's ``en``
+    field — the same single source of truth the accepted set is derived
+    from, so no second dataset is introduced.
+
+    ``:rocket:`` -> ``"rocket"``: surrounding colons stripped, underscores
+    spaced, lowercased. Powers client-side search (resolve "rocket" -> 🚀).
+    """
+    return emoji.EMOJI_DATA[char]["en"].strip(":").replace("_", " ").lower()
+
+
+def emoji_keywords(char: str) -> tuple[str, ...]:
+    """Extra search aliases for *char* from the ``emoji`` package's ``alias``
+    list, cleaned like :func:`emoji_display_name` and with the display name
+    itself dropped. Empty when the package lists no aliases for *char*.
+
+    Cleanly available from the pinned package (no second dataset, no
+    hand-maintained map), so it rides along to widen name search.
+    """
+    name = emoji_display_name(char)
+    seen: dict[str, None] = {}
+    for alias in emoji.EMOJI_DATA[char].get("alias", ()):
+        cleaned = alias.strip(":").replace("_", " ").lower()
+        if cleaned and cleaned != name:
+            seen.setdefault(cleaned, None)
+    return tuple(seen)
+
+
 @lru_cache(maxsize=8)
 def accepted_singletons(
     max_version: float = DEFAULT_ACCEPT_MAX_VERSION,

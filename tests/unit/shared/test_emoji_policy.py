@@ -13,6 +13,8 @@ from shared.emoji_policy import (
     accepted_singletons,
     canonicalize_emoji_alias,
     check_emoji_alias,
+    emoji_display_name,
+    emoji_keywords,
     generation_pool,
     is_emoji_candidate,
     is_emoji_only_shape,
@@ -224,6 +226,34 @@ class TestAcceptedSingletons:
     def test_empty_set_raises(self):
         with pytest.raises(ValueError):
             accepted_singletons(0.1)
+
+
+class TestEmojiDisplayName:
+    def test_strips_colons_spaces_underscores_lowercases(self):
+        assert emoji_display_name("\U0001f680") == "rocket"
+        assert emoji_display_name(PARTY) == "party popper"
+
+    def test_names_non_empty_and_colon_free_for_accepted(self):
+        for e in accepted_singletons():
+            name = emoji_display_name(e)
+            assert name
+            assert ":" not in name
+            assert name == name.lower()
+
+
+class TestEmojiKeywords:
+    def test_extra_aliases_cleaned(self):
+        # 🎉 has alias ":tada:" beyond its "party popper" name.
+        assert "tada" in emoji_keywords(PARTY)
+
+    def test_excludes_the_display_name(self):
+        for e in accepted_singletons():
+            assert emoji_display_name(e) not in emoji_keywords(e)
+
+    def test_empty_when_no_aliases(self):
+        # ⭐ / 🚀 carry no alias list in the pinned package.
+        assert emoji_keywords(STAR) == ()
+        assert emoji_keywords("\U0001f680") == ()
 
 
 class TestVs16InsensitivePattern:

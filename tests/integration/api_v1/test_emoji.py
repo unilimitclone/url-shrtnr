@@ -42,11 +42,31 @@ def test_response_shape():
         "accept_max_version",
         "generate_max_version",
         "max_graphemes",
-        "accepted",
-        "generate",
+        "emoji",
     }
-    assert isinstance(body["accepted"], list)
-    assert isinstance(body["generate"], list)
+    emoji_list = body["emoji"]
+    assert isinstance(emoji_list, list)
+    assert len(emoji_list) > 0
+    # Every entry is a {c, n, gen} object (k is optional).
+    for entry in emoji_list:
+        assert set(entry) <= {"c", "n", "gen", "k"}
+        assert {"c", "n", "gen"} <= set(entry)
+        assert isinstance(entry["c"], str) and entry["c"]
+        assert isinstance(entry["n"], str)
+        assert isinstance(entry["gen"], bool)
+
+
+def test_names_are_non_colon_non_empty():
+    for entry in _get().json()["emoji"]:
+        assert entry["n"]
+        assert ":" not in entry["n"]
+
+
+def test_optional_keywords_when_present_is_a_string_list():
+    for entry in _get().json()["emoji"]:
+        if "k" in entry:
+            assert isinstance(entry["k"], list) and entry["k"]
+            assert all(isinstance(x, str) and x for x in entry["k"])
 
 
 def test_caps_and_max_graphemes_match_settings():
@@ -57,38 +77,36 @@ def test_caps_and_max_graphemes_match_settings():
     assert body["max_graphemes"] == settings.max_emoji_alias_length
 
 
-def test_accepted_non_empty_and_contains_known_safe_emoji():
-    accepted = _get().json()["accepted"]
-    assert len(accepted) > 0
-    assert STAR in accepted
-    assert PARTY in accepted
+def test_contains_known_safe_emoji_with_expected_name():
+    by_char = {e["c"]: e for e in _get().json()["emoji"]}
+    assert STAR in by_char and by_char[STAR]["n"] == "star"
+    assert PARTY in by_char and by_char[PARTY]["n"] == "party popper"
+    # 🚀 rocket resolves by name — the search use case.
+    assert any(e["n"] == "rocket" and e["c"] == "\U0001f680" for e in by_char.values())
 
 
-def test_generate_is_within_the_safe_space():
-    body = _get().json()
-    accepted, generate = set(body["accepted"]), body["generate"]
+def test_gen_flagged_entries_are_within_the_safe_space():
+    generate = [e["c"] for e in _get().json()["emoji"] if e["gen"]]
     assert len(generate) > 0
-    # The generation pool is a subset of the accepted picker list.
-    assert set(generate) <= accepted
-    # And every generated entry is itself an accepted single-codepoint alias.
+    # Every gen=true entry is itself an accepted single-codepoint alias.
     for e in generate:
         assert check_emoji_alias(e) == "ok"
 
 
-def test_accepted_excludes_known_rejected_forms():
-    accepted = set(_get().json()["accepted"])
-    assert US_FLAG not in accepted  # regional-indicator flag
-    assert WOMAN_TECHNOLOGIST not in accepted  # ZWJ family
-    assert KEYCAP_ONE not in accepted  # keycap
-    assert SMILEY_TEXT_DEFAULT not in accepted  # text-default, needs VS16
+def test_excludes_known_rejected_forms():
+    chars = {e["c"] for e in _get().json()["emoji"]}
+    assert US_FLAG not in chars  # regional-indicator flag
+    assert WOMAN_TECHNOLOGIST not in chars  # ZWJ family
+    assert KEYCAP_ONE not in chars  # keycap
+    assert SMILEY_TEXT_DEFAULT not in chars  # text-default, needs VS16
 
 
-def test_accepted_excludes_anything_the_policy_would_reject():
+def test_excludes_anything_the_policy_would_reject():
     # Nothing the picker offers may be something the create endpoint 400s:
     # the derivation agrees with the validator for the whole sample.
     accept_cap = AppSettings().emoji_accept_max_version
-    for e in _get().json()["accepted"]:
-        assert check_emoji_alias(e, max_version=accept_cap) == "ok"
+    for entry in _get().json()["emoji"]:
+        assert check_emoji_alias(entry["c"], max_version=accept_cap) == "ok"
 
 
 def test_cache_control_header():

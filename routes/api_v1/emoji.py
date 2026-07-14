@@ -24,8 +24,13 @@ from fastapi import APIRouter, Request, Response
 from dependencies import Settings
 from middleware.openapi import ERROR_RESPONSES, PUBLIC_SECURITY
 from middleware.rate_limiter import Limits, limiter
-from schemas.dto.responses.emoji import EmojiSetResponse
-from shared.emoji_policy import accepted_singletons, generation_pool
+from schemas.dto.responses.emoji import EmojiEntry, EmojiSetResponse
+from shared.emoji_policy import (
+    accepted_singletons,
+    emoji_display_name,
+    emoji_keywords,
+    generation_pool,
+)
 
 router = APIRouter(tags=["URL Shortening"])
 
@@ -36,30 +41,44 @@ _CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=604800"
 
 
 def _build_set(settings) -> EmojiSetResponse:
+    gen = set(generation_pool(settings.emoji_generate_max_version))
+    emoji_list = []
+    for char in accepted_singletons(settings.emoji_accept_max_version):
+        keywords = emoji_keywords(char)
+        emoji_list.append(
+            EmojiEntry(
+                c=char,
+                n=emoji_display_name(char),
+                gen=char in gen,
+                k=list(keywords) or None,
+            )
+        )
     return EmojiSetResponse(
         accept_max_version=settings.emoji_accept_max_version,
         generate_max_version=settings.emoji_generate_max_version,
         max_graphemes=settings.max_emoji_alias_length,
-        accepted=list(accepted_singletons(settings.emoji_accept_max_version)),
-        generate=list(generation_pool(settings.emoji_generate_max_version)),
+        emoji=emoji_list,
     )
 
 
 def _etag(payload: EmojiSetResponse) -> str:
     """A strong, quoted ETag derived from the set's content and caps.
 
-    Any change to the caps or either list (a deploy bumping the pinned
-    ``emoji`` package, or a settings override) changes the digest, so the
-    ETag revalidates to fresh data for free.
+    Any change to the caps, the emoji list, or an entry's name/gen/aliases
+    (a deploy bumping the pinned ``emoji`` package, or a settings override)
+    changes the digest, so the ETag revalidates to fresh data for free.
     """
     h = hashlib.sha256()
     h.update(
         f"{payload.accept_max_version}|{payload.generate_max_version}"
         f"|{payload.max_graphemes}|".encode()
     )
-    h.update("".join(payload.accepted).encode())
-    h.update(b"\x00")
-    h.update("".join(payload.generate).encode())
+    for entry in payload.emoji:
+        h.update(entry.c.encode())
+        h.update(b"1" if entry.gen else b"0")
+        h.update(entry.n.encode())
+        h.update(",".join(entry.k or ()).encode())
+        h.update(b"\x00")
     return f'"{h.hexdigest()[:16]}"'
 
 
@@ -69,6 +88,7 @@ def _etag(payload: EmojiSetResponse) -> str:
     openapi_extra=PUBLIC_SECURITY,
     operation_id="getEmojiSet",
     summary="Accepted Emoji Set",
+    response_model_exclude_none=True,
 )
 @limiter.limit(Limits.API_CHECK_ANON)
 async def emoji_set(
@@ -76,13 +96,16 @@ async def emoji_set(
     response: Response,
     settings: Settings,
 ) -> EmojiSetResponse:
-    """Return the accepted emoji sets and their policy caps.
+    """Return the accepted emoji catalogue and its policy caps.
 
-    ``accepted`` is every single-codepoint emoji a custom alias may use
-    (the picker's list); ``generate`` is the server's auto-generation pool.
-    Values are raw emoji in canonical form (no variation selectors). Skin
-    tone is a client-side modifier appended to a base emoji, so skin-tone
-    variants are not enumerated in ``accepted``.
+    ``emoji`` lists every single-codepoint emoji a custom alias may use
+    (the picker's list). Each entry carries ``c`` (the raw canonical
+    character), ``n`` (a searchable name like "rocket"), ``gen`` (whether
+    it is in the server's auto-generation pool), and an optional ``k``
+    (extra search aliases when the source lists any). Skin tone is a
+    client-side modifier appended to a base emoji, so skin-tone variants
+    are not enumerated. Categories are not exposed by the source data, so
+    a picker relies on search and recents.
 
     **Authentication**: None. The response is identical for everyone.
 
