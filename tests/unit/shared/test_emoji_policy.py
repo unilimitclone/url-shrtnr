@@ -10,6 +10,7 @@ import regex
 from shared.emoji_policy import (
     DEFAULT_ACCEPT_MAX_VERSION,
     DEFAULT_GENERATE_MAX_VERSION,
+    accepted_singletons,
     canonicalize_emoji_alias,
     check_emoji_alias,
     generation_pool,
@@ -172,6 +173,57 @@ class TestGenerationPool:
     def test_empty_pool_raises(self):
         with pytest.raises(ValueError):
             generation_pool(0.1)
+
+
+class TestAcceptedSingletons:
+    def test_non_empty_and_cached(self):
+        accepted = accepted_singletons()
+        assert len(accepted) > 500
+        assert accepted is accepted_singletons()  # lru_cache
+
+    def test_all_single_codepoint(self):
+        assert all(len(e) == 1 for e in accepted_singletons())
+
+    def test_agrees_with_validator(self):
+        # THE contract: membership is exactly what check_emoji_alias accepts
+        # for a single-codepoint grapheme, so the picker can never offer
+        # something the create endpoint would 400.
+        for e in accepted_singletons():
+            assert check_emoji_alias(e) == "ok", f"accepted entry rejected: {e!r}"
+
+    def test_contains_known_safe_emoji(self):
+        accepted = set(accepted_singletons())
+        assert STAR in accepted
+        assert PARTY in accepted
+
+    def test_excludes_policy_rejected_forms(self):
+        accepted = set(accepted_singletons())
+        assert SMILEY_TEXT_DEFAULT not in accepted  # text-default (needs VS16)
+        assert SKIN_SWATCH not in accepted  # standalone component
+        # Multi-codepoint forms are excluded by construction (single-cp only).
+        assert THUMBS_MEDIUM not in accepted  # base + skin tone
+        assert US_FLAG not in accepted  # regional-indicator pair
+        assert WOMAN_TECHNOLOGIST not in accepted  # ZWJ sequence
+
+    def test_accept_cap_is_superset_of_generate_cap(self):
+        narrow = set(accepted_singletons(DEFAULT_GENERATE_MAX_VERSION))
+        wide = set(accepted_singletons(DEFAULT_ACCEPT_MAX_VERSION))
+        assert narrow < wide
+        # Newer emoji live only in the wider (acceptance) cap.
+        assert MELTING_FACE in wide and MELTING_FACE not in narrow
+
+    def test_generation_pool_derives_from_accepted(self):
+        # generation_pool is accepted_singletons at the generate cap minus
+        # regional indicators (a no-op, since single indicators aren't
+        # fully-qualified) — so the pool is a subset of the accepted set.
+        assert set(generation_pool()) <= set(accepted_singletons())
+        assert set(generation_pool(DEFAULT_GENERATE_MAX_VERSION)) <= set(
+            accepted_singletons(DEFAULT_GENERATE_MAX_VERSION)
+        )
+
+    def test_empty_set_raises(self):
+        with pytest.raises(ValueError):
+            accepted_singletons(0.1)
 
 
 class TestVs16InsensitivePattern:

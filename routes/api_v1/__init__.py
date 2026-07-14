@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from routes.api_v1 import (
     apps,
     custom_domains,
+    emoji,
     exports,
     keys,
     management,
@@ -20,6 +21,7 @@ from routes.api_v1 import (
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(shorten.router)
+router.include_router(emoji.router)
 router.include_router(urls.router)
 router.include_router(management.router)
 router.include_router(stats.router)

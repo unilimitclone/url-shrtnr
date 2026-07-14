@@ -135,27 +135,52 @@ def _grapheme_accepted(grapheme: str, max_version: float) -> bool:
     return len(grapheme) == 2 and _SKIN_TONE_MIN <= grapheme[1] <= _SKIN_TONE_MAX
 
 
+@lru_cache(maxsize=8)
+def accepted_singletons(
+    max_version: float = DEFAULT_ACCEPT_MAX_VERSION,
+) -> tuple[str, ...]:
+    """Every single-codepoint grapheme the policy accepts at *max_version*.
+
+    The single-codepoint arm of :func:`_grapheme_accepted`, materialized
+    into the exhaustive set a user may CHOOSE from at a given cap. It runs
+    the very same predicate the validator applies per grapheme, so
+    membership here is exactly ``check_emoji_alias(e) == "ok"`` for any
+    one-codepoint ``e`` (below the length cap).
+
+    Base + skin-tone combinations are deliberately NOT enumerated: the base
+    emoji is enough for a picker and skin tone is a client-side modifier, so
+    the accepted set is single-codepoint only. Derived (not checked in) so
+    it can never drift from the validator; ``emoji`` is version-pinned.
+
+    This is the ONE derivation of the accepted space: :func:`generation_pool`
+    is this set at the (lower) generation cap, minus regional indicators.
+    """
+    pool = tuple(
+        e
+        for e in emoji.EMOJI_DATA
+        if len(e) == 1 and _grapheme_accepted(e, max_version)
+    )
+    if not pool:
+        raise ValueError(f"empty accepted emoji set for max_version={max_version}")
+    return pool
+
+
 @lru_cache(maxsize=4)
 def generation_pool(
     max_version: float = DEFAULT_GENERATE_MAX_VERSION,
 ) -> tuple[str, ...]:
-    """Derive the auto-generation emoji pool from ``EMOJI_DATA``.
+    """Derive the auto-generation emoji pool from the accepted set.
 
-    Single-codepoint, fully-qualified, ``E <= max_version``, excluding
-    regional indicators (belt-and-suspenders — single indicators are not
-    fully-qualified anyway). Derived rather than checked in as an artifact
-    so the pool can never drift from the validator that accepts its output;
-    ``emoji`` is version-pinned, and unit tests assert every pool entry
-    passes :func:`check_emoji_alias`.
+    :func:`accepted_singletons` at *max_version* (the generation cap sits
+    below the acceptance cap so auto-generated codes render on older
+    platforms), minus regional indicators (belt-and-suspenders — single
+    indicators are not fully-qualified anyway, so they are already absent).
+    Every pool entry therefore passes :func:`check_emoji_alias` by
+    construction; unit tests pin that invariant.
     """
     lo, hi = _REGIONAL_INDICATOR_RANGE
     pool = tuple(
-        e
-        for e, data in emoji.EMOJI_DATA.items()
-        if len(e) == 1
-        and data["status"] == emoji.STATUS["fully_qualified"]
-        and data.get("E", float("inf")) <= max_version
-        and not (lo <= ord(e) <= hi)
+        e for e in accepted_singletons(max_version) if not (lo <= ord(e) <= hi)
     )
     if not pool:
         raise ValueError(f"empty emoji generation pool for max_version={max_version}")
