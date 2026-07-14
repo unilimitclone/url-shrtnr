@@ -5,6 +5,7 @@ Request DTOs for URL shortening and management endpoints.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -21,6 +22,7 @@ from schemas.dto.base import RequestBase
 from schemas.dto.requests._descriptions import LIST_URLS_FILTER_DESC
 from schemas.models.url import UrlStatus
 from shared.datetime_utils import parse_datetime
+from shared.emoji_policy import is_emoji_only_shape
 from shared.url_utils import normalise_fqdn
 
 ALLOWED_SORT_FIELDS = frozenset({"created_at", "last_click", "total_clicks"})
@@ -31,6 +33,38 @@ _GEO_URL_MAX_LENGTH = 8192  # same bound as long_url
 # countries, service-enforced). This normaliser runs pre-auth on every
 # request body — the ceiling bounds the loop for anonymous callers.
 _GEO_RULES_HARD_CAP = 500
+
+
+_ALNUM_ALIAS_RE = re.compile(r"[a-zA-Z0-9_-]+\Z")
+
+_ALIAS_FIELD_DESC = (
+    "Custom short code. Either alphanumeric (a-z, A-Z, 0-9, `_`, `-`; "
+    "3-16 chars) or emoji-only (1-15 fully-qualified emoji — no ZWJ "
+    "sequences, flags, or keycaps). Auto-generated if omitted."
+)
+
+
+def _validate_alias_shape(v: str | None) -> str | None:
+    """Structural alias gate shared by create/update.
+
+    Alphanumeric aliases enforce their 3-16 char bounds here (422, exactly
+    like the old ``pattern=`` violations). Anything else must at least be
+    emoji-shaped — mixed emoji+text and garbage fail fast as 422. The
+    emoji *policy* (qualification, version caps, grapheme count) is
+    service-enforced (400): the caps are settings-configurable and DTOs
+    stay settings-free.
+    """
+    if v is None:
+        return v
+    if _ALNUM_ALIAS_RE.fullmatch(v):
+        if not (3 <= len(v) <= 16):
+            raise ValueError("alphanumeric alias must be 3-16 characters")
+        return v
+    if not is_emoji_only_shape(v):
+        raise ValueError(
+            "alias must be alphanumeric (a-z, A-Z, 0-9, _, -) or emoji-only"
+        )
+    return v
 
 
 def _normalise_geo_rules(v: dict | None) -> dict | None:
@@ -156,11 +190,17 @@ class CreateUrlRequest(RequestBase):
     )
     alias: str | None = Field(
         default=None,
-        min_length=3,
-        max_length=16,
-        pattern=r"^[a-zA-Z0-9_-]+$",
-        description="Custom short code. Alphanumeric, hyphens, underscores. 3-16 chars. Auto-generated if omitted.",
-        examples=["mylink"],
+        min_length=1,
+        max_length=64,
+        description=_ALIAS_FIELD_DESC,
+        examples=["mylink", "🚀🔥"],
+    )
+    alias_type: Literal["alphanumeric", "emoji"] = Field(
+        default="alphanumeric",
+        description=(
+            "Alias style to auto-generate when `alias` is omitted. "
+            "Ignored when `alias` is provided."
+        ),
     )
     password: str | None = Field(
         default=None,
@@ -212,6 +252,11 @@ class CreateUrlRequest(RequestBase):
         default=None, description=_META_TAGS_FIELD_DESC
     )
 
+    @field_validator("alias")
+    @classmethod
+    def _alias_shape(cls, v: str | None) -> str | None:
+        return _validate_alias_shape(v)
+
     @field_validator("expire_after", mode="before")
     @classmethod
     def _parse_expire_after(cls, v: str | int | None) -> datetime | None:
@@ -252,11 +297,14 @@ class UpdateUrlRequest(RequestBase):
     )
     alias: str | None = Field(
         default=None,
-        min_length=3,
-        max_length=16,
-        pattern=r"^[a-zA-Z0-9_-]+$",
-        description="New custom short code. Pass `null` to keep existing. Must be unique and available.",
-        examples=["newlink"],
+        min_length=1,
+        max_length=64,
+        description=(
+            "New custom short code (alphanumeric 3-16 chars, or emoji-only "
+            "1-15 emoji). Pass `null` to keep existing. Must be unique and "
+            "available."
+        ),
+        examples=["newlink", "🚀🔥"],
     )
     password: str | None = Field(
         default=None,
@@ -314,6 +362,11 @@ class UpdateUrlRequest(RequestBase):
     meta_tags: MetaTagsRequest | None = Field(
         default=None, description=_META_TAGS_FIELD_DESC
     )
+
+    @field_validator("alias")
+    @classmethod
+    def _alias_shape(cls, v: str | None) -> str | None:
+        return _validate_alias_shape(v)
 
     @field_validator("expire_after", mode="before")
     @classmethod
@@ -445,8 +498,8 @@ class AliasCheckQuery(RequestBase):
     alias: str = Field(
         min_length=1,
         max_length=64,
-        description="Candidate alias to check.",
-        examples=["mylink"],
+        description="Candidate alias to check (alphanumeric or emoji-only).",
+        examples=["mylink", "🚀🔥"],
     )
     domain: str | None = Field(
         default=None,

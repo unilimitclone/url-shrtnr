@@ -32,7 +32,11 @@ from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
 from schemas.models.url import SchemaVersion, UrlV2Doc
-from shared.alias_dispatch import resolution_order
+from shared.alias_dispatch import (
+    emoji_lookup_candidates,
+    resolution_order,
+    v2_lookup_code,
+)
 from shared.datetime_utils import as_aware_utc, convert_to_gmt, parse_datetime
 
 # ── Derivation helpers (generation-specific primitives) ──────────────────────
@@ -177,8 +181,10 @@ class PublicLinkResolver:
         code = unquote(short_code)
         for generation in resolution_order(code):
             if generation is SchemaVersion.V2:
+                # Emoji codes look up under their canonical form — v2
+                # stores canonical aliases only (see shared.alias_dispatch).
                 v2_doc = await self._url_repo.find_by_alias(
-                    code, self._system_default_domain
+                    v2_lookup_code(code), self._system_default_domain
                 )
                 if v2_doc is not None:
                     return ResolvedPublicLink(
@@ -187,13 +193,20 @@ class PublicLinkResolver:
                         short_url=self._short_url(v2_doc.alias),
                         v2_doc=v2_doc,
                     )
+            elif generation is SchemaVersion.EMOJI:
+                # Raw form first (exact legacy semantics), then canonical —
+                # same candidate order as the redirect's _dispatch.
+                for candidate in emoji_lookup_candidates(code):
+                    raw = await self._find_v1_raw(self._emoji_repo, candidate)
+                    if raw is not None:
+                        return ResolvedPublicLink(
+                            schema=generation,
+                            alias=candidate,
+                            short_url=self._short_url(candidate),
+                            raw_v1=raw,
+                        )
             else:
-                repo = (
-                    self._emoji_repo
-                    if generation is SchemaVersion.EMOJI
-                    else self._legacy_repo
-                )
-                raw = await self._find_v1_raw(repo, code)
+                raw = await self._find_v1_raw(self._legacy_repo, code)
                 if raw is not None:
                     return ResolvedPublicLink(
                         schema=generation,

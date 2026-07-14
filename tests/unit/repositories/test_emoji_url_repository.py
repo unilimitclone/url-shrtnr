@@ -89,6 +89,36 @@ class TestEmojiUrlRepository:
         assert await self._repo(col).check_exists("\u274c") is False
 
     @pytest.mark.asyncio
+    async def test_check_exists_vs16_insensitive_queries_regex(self):
+        col = make_collection()
+        col.find_one = AsyncMock(return_value={"_id": "\u2b50\ufe0f\U0001f389"})
+        repo = self._repo(col)
+
+        assert await repo.check_exists_vs16_insensitive("\u2b50\U0001f389") is True
+
+        query, projection = col.find_one.await_args.args
+        pattern = query["_id"]["$regex"]
+        # The emitted pattern must match the canonical form and every
+        # VS16-decorated variant of it, and nothing else. Assert in
+        # BYTES mode: Mongo's PCRE matches bytewise, and only bytes-mode
+        # re distinguishes the correct grouped `(?:VS16)?` from the buggy
+        # ungrouped form (which str-mode matching lets through).
+        import re
+
+        compiled = re.compile(pattern.encode())
+        assert compiled.fullmatch("\u2b50\U0001f389".encode())
+        assert compiled.fullmatch("\u2b50\ufe0f\U0001f389".encode())
+        assert not compiled.fullmatch("\U0001f389\u2b50".encode())
+        assert projection == {"_id": 1}
+
+    @pytest.mark.asyncio
+    async def test_check_exists_vs16_insensitive_false(self):
+        col = make_collection()
+        col.find_one = AsyncMock(return_value=None)
+        repo = self._repo(col)
+        assert await repo.check_exists_vs16_insensitive("\u2b50") is False
+
+    @pytest.mark.asyncio
     async def test_aggregate_returns_first_result(self):
         col = make_collection()
         cursor = col.aggregate.return_value

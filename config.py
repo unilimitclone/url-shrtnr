@@ -474,6 +474,14 @@ class AppSettings(BaseSettings):
     # Validator constraints (overridable by self-hosters via env vars)
     blocked_url_regex_timeout: float = 0.2
     max_emoji_alias_length: int = 15
+    # Newest Unicode emoji version accepted in custom emoji aliases.
+    # 15.1 renders on iOS 17.4+ / Android 14+ / Windows 11 23H2+.
+    emoji_accept_max_version: float = 15.1
+    # Cap for auto-generated emoji aliases. 12.0 is the Windows 10 glyph
+    # ceiling (Segoe UI Emoji's last update, May 2019) — generated codes
+    # must render everywhere.
+    emoji_generate_max_version: float = 12.0
+    emoji_generated_alias_length: int = 3
     geo_rules_max_countries: int = 50
     url_password_min_length: int = 8
     account_password_min_length: int = 8
@@ -485,6 +493,7 @@ class AppSettings(BaseSettings):
         "max_active_api_keys",
         "max_date_range_days",
         "max_emoji_alias_length",
+        "emoji_generated_alias_length",
         "geo_rules_max_countries",
     )
     @classmethod
@@ -492,6 +501,29 @@ class AppSettings(BaseSettings):
         if v < 1:
             raise ValueError(f"{info.field_name} must be >= 1, got {v}")
         return v
+
+    @field_validator("emoji_accept_max_version", "emoji_generate_max_version")
+    @classmethod
+    def _emoji_version_cap_sane(cls, v: float, info) -> float:
+        if v <= 0:
+            raise ValueError(f"{info.field_name} must be > 0, got {v}")
+        return v
+
+    @model_validator(mode="after")
+    def _emoji_generate_within_accept(self) -> AppSettings:
+        # Generated aliases must themselves be accepted as custom aliases.
+        if self.emoji_generate_max_version > self.emoji_accept_max_version:
+            raise ValueError(
+                "emoji_generate_max_version must be <= emoji_accept_max_version"
+            )
+        # generate_emoji_alias_v2 rejects lengths over 15, and generated
+        # aliases must pass the acceptance grapheme cap — fail at boot,
+        # not on every alias_type="emoji" request at runtime.
+        if self.emoji_generated_alias_length > min(15, self.max_emoji_alias_length):
+            raise ValueError(
+                "emoji_generated_alias_length must be <= 15 and <= max_emoji_alias_length"
+            )
+        return self
 
     @field_validator("http_client_timeout", "blocked_url_regex_timeout")
     @classmethod

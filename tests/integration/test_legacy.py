@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from bson import ObjectId
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -307,10 +308,13 @@ def test_legacy_shorten_alias_exists():
 def test_legacy_emoji_shorten_success():
     """POST /emoji with url -> JSON response with short_url."""
     mock_db = _make_mock_db()
+    mock_url_svc = AsyncMock()
+    mock_url_svc.check_alias_available = AsyncMock(return_value=True)
 
     app = _build_legacy_test_app(
         {
             get_db: lambda: mock_db,
+            get_url_service: lambda: mock_url_svc,
         }
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -335,13 +339,103 @@ def test_legacy_emoji_shorten_success():
     assert "original_url" in body
 
 
-def test_legacy_emoji_get_returns_400():
-    """GET /emoji without url -> 400 JSON."""
+def test_legacy_emoji_custom_alias_stored_canonical():
+    """A VS16-variant custom alias is canonicalized before storage."""
     mock_db = _make_mock_db()
+    mock_url_svc = AsyncMock()
+    mock_url_svc.check_alias_available = AsyncMock(return_value=True)
 
     app = _build_legacy_test_app(
         {
             get_db: lambda: mock_db,
+            get_url_service: lambda: mock_url_svc,
+        }
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with (
+        patch("routes.legacy.url_shortener.validate_url", return_value=True),
+        patch("routes.legacy.url_shortener.validate_blocked_url", return_value=True),
+    ):
+        resp = client.post(
+            "/emoji",
+            data={"url": "https://example.com/long", "emojies": "⭐️🎉"},
+            headers={"Accept": "application/json"},
+        )
+
+    assert resp.status_code == 200
+    inserted = mock_db["emojis"].insert_one.call_args[0][0]
+    assert inserted["_id"] == "⭐🎉"
+    mock_url_svc.check_alias_available.assert_awaited_once_with("⭐🎉")
+
+
+@pytest.mark.parametrize("alias", ["🇺🇸", "🏳️‍🌈", "1️⃣", "🎉" * 16])
+def test_legacy_emoji_policy_rejected_returns_400(alias):
+    """Formerly-lenient sequences (flags, ZWJ, keycaps, over-length) now 400
+    with the frozen EmojiError shape."""
+    mock_db = _make_mock_db()
+    mock_url_svc = AsyncMock()
+    mock_url_svc.check_alias_available = AsyncMock(return_value=True)
+
+    app = _build_legacy_test_app(
+        {
+            get_db: lambda: mock_db,
+            get_url_service: lambda: mock_url_svc,
+        }
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with (
+        patch("routes.legacy.url_shortener.validate_url", return_value=True),
+        patch("routes.legacy.url_shortener.validate_blocked_url", return_value=True),
+    ):
+        resp = client.post(
+            "/emoji",
+            data={"url": "https://example.com/long", "emojies": alias},
+            headers={"Accept": "application/json"},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json() == {"EmojiError": "Invalid emoji"}
+
+
+def test_legacy_emoji_collision_with_v2_returns_400():
+    """Cross-system uniqueness: an alias taken in urlsV2 must 400 here."""
+    mock_db = _make_mock_db()
+    mock_url_svc = AsyncMock()
+    mock_url_svc.check_alias_available = AsyncMock(return_value=False)
+
+    app = _build_legacy_test_app(
+        {
+            get_db: lambda: mock_db,
+            get_url_service: lambda: mock_url_svc,
+        }
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with (
+        patch("routes.legacy.url_shortener.validate_url", return_value=True),
+        patch("routes.legacy.url_shortener.validate_blocked_url", return_value=True),
+    ):
+        resp = client.post(
+            "/emoji",
+            data={"url": "https://example.com/long", "emojies": "🚀🔥"},
+            headers={"Accept": "application/json"},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json() == {"EmojiError": "Emoji already exists"}
+
+
+def test_legacy_emoji_get_returns_400():
+    """GET /emoji without url -> 400 JSON."""
+    mock_db = _make_mock_db()
+    mock_url_svc = AsyncMock()
+
+    app = _build_legacy_test_app(
+        {
+            get_db: lambda: mock_db,
+            get_url_service: lambda: mock_url_svc,
         }
     )
     client = TestClient(app, raise_server_exceptions=False)

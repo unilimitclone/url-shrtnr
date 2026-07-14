@@ -62,6 +62,13 @@ async def shorten_v1(
     protection, expiration, click limits, and bot blocking. Authenticated
     users may target an owned, ACTIVE custom domain via the ``domain`` field.
 
+    **Emoji aliases**: ``alias`` also accepts an emoji-only short code
+    (e.g. ``🚀🔥``) — 1-15 fully-qualified emoji; ZWJ sequences, flags,
+    keycaps, and text-style symbols are rejected (they render or copy
+    inconsistently across platforms). Set ``alias_type: "emoji"`` to
+    auto-generate an emoji code instead of an alphanumeric one. Stored
+    and returned in canonical form (variation selectors stripped).
+
     **Authentication**: Optional — higher rate limits when authenticated.
     Required if ``domain`` is supplied.
 
@@ -131,8 +138,10 @@ async def check_alias(
 ) -> AliasCheckResponse:
     """Check whether a proposed alias would be accepted by POST /api/v1/shorten.
 
-    Reason codes on a negative result (``length``/``format``/``reserved``/``taken``) let the
-    UI render precise inline feedback without duplicating the validation rules.
+    Reason codes on a negative result (``length``/``format``/``reserved``/
+    ``taken``/``emoji_policy``) let the UI render precise inline feedback
+    without duplicating the validation rules. Emoji aliases are checked in
+    canonical form (variation selectors stripped).
 
     Pass ``domain`` to scope the check to a custom-domain tenant — required
     for the create modal's live availability indicator when the user has

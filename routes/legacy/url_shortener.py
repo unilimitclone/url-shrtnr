@@ -30,13 +30,13 @@ from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
 from routes.legacy.helpers import humanize_number, is_positive_integer
+from shared.emoji_policy import canonicalize_emoji_alias, check_emoji_alias
 from shared.generators import generate_emoji_alias, generate_short_code
 from shared.url_utils import split_destination
 from shared.validators import (
     is_emoji_alias,
     validate_alias,
     validate_blocked_url,
-    validate_emoji_alias,
     validate_safe_redirect,
     validate_url,
     validate_url_password,
@@ -252,13 +252,18 @@ async def shorten_url(
 @limiter.limit(Limits.SHORTEN_LEGACY)
 async def emoji(
     request: Request,
+    url_service: UrlSvc,
     settings: Settings,
     db=Depends(get_db),
 ) -> Response:
     """Emoji URL shortening — reads form/query params, validates, and creates emoji URL.
 
     Matches Flask behavior: both GET and POST fall through to the same validation
-    (no separate emoji page template exists).
+    (no separate emoji page template exists). Wire contract is frozen
+    (``emojies`` param, ``EmojiError`` shapes, raw-emoji ``short_url``), but
+    NEW creations are held to the v2 emoji policy (``shared.emoji_policy``)
+    and stored canonical — v1's accept-any-emoji behavior minted byte-fragile
+    codes that broke in browsers. Existing links resolve unchanged.
     """
     if request.method == "POST":
         form = await request.form()
@@ -282,11 +287,18 @@ async def emoji(
     emoji_repo = EmojiUrlRepository(db["emojis"])
 
     if emojies:
-        if not validate_emoji_alias(
-            emojies, max_emojis=settings.max_emoji_alias_length
-        ):
+        emojies = canonicalize_emoji_alias(emojies)
+        verdict = check_emoji_alias(
+            emojies,
+            max_graphemes=settings.max_emoji_alias_length,
+            max_version=settings.emoji_accept_max_version,
+        )
+        if verdict != "ok":
             return JSONResponse({"EmojiError": "Invalid emoji"}, status_code=400)
-        if await emoji_repo.check_exists(emojies):
+        # Cross-system uniqueness: urlsV2 (canonical) + legacy emojis
+        # (VS16-insensitive) — a new legacy doc must not be shadowed by the
+        # v2-first resolve order, and vice versa.
+        if not await url_service.check_alias_available(emojies):
             log.warning(
                 "url_creation_failed", reason="emoji_alias_exists", alias=emojies
             )
@@ -294,7 +306,7 @@ async def emoji(
     else:
         for _ in range(20):
             candidate = generate_emoji_alias()
-            if not await emoji_repo.check_exists(candidate):
+            if await url_service.check_alias_available(candidate):
                 emojies = candidate
                 break
         else:

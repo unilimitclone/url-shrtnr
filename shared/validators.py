@@ -73,9 +73,10 @@ def validate_alias(alias: str) -> bool:
 def is_emoji_alias(alias: str) -> bool:
     """Return True if *alias* consists entirely of emoji characters.
 
-    Unlike ``validate_emoji_alias``, this does NOT enforce a length cap.
-    Use for URL resolution/dispatch where any previously-created emoji
-    alias must be routable regardless of the current creation policy.
+    Deliberately lenient (no length cap, no policy): used for URL
+    resolution/dispatch where any previously-created emoji alias must
+    stay routable regardless of the current creation policy. Creation
+    validation lives in ``shared.emoji_policy``.
     """
     decoded = unquote(alias)
     if not decoded:
@@ -83,22 +84,6 @@ def is_emoji_alias(alias: str) -> bool:
     emoji_list = emoji.emoji_list(decoded)
     extracted = "".join([data["emoji"] for data in emoji_list])
     return extracted == decoded
-
-
-def validate_emoji_alias(alias: str, max_emojis: int = 15) -> bool:
-    """Return True if *alias* is a valid emoji-only alias.
-
-    Args:
-        alias:      The alias string (may be percent-encoded).
-        max_emojis: Maximum number of emojis allowed (default 15).
-
-    The alias is URL-decoded before validation so percent-encoded emojis are
-    handled correctly.
-    """
-    alias = unquote(alias)
-    emoji_list = emoji.emoji_list(alias)
-    extracted_emojis = "".join([data["emoji"] for data in emoji_list])
-    return not (len(extracted_emojis) != len(alias) or len(emoji_list) > max_emojis)
 
 
 def validate_account_password(
