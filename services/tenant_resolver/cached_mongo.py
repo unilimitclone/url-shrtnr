@@ -18,6 +18,7 @@ from repositories.custom_domain_repository import CustomDomainRepository
 from schemas.enums.domain_status import DomainStatus
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from services.tenant_resolver.protocol import TenantInfo, TenantResolver
+from shared.url_utils import is_system_default_host
 
 log = get_logger(__name__)
 
@@ -90,11 +91,9 @@ class CachedMongoTenantResolver(TenantResolver):
             return None
 
         # System default + its `www.` alias short-circuit. No Redis, no
-        # Mongo, no cache slot consumed.
-        if (
-            normalised == self._system_default_domain
-            or normalised == f"www.{self._system_default_domain}"
-        ):
+        # Mongo, no cache slot consumed. Shared predicate keeps this rule in
+        # lockstep with the read surfaces that fold onto the default domain.
+        if is_system_default_host(normalised, self._system_default_domain):
             return TenantInfo(
                 domain_id=None,
                 fqdn=self._system_default_domain,

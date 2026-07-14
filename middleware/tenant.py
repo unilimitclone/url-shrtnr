@@ -31,7 +31,6 @@ both signals.
 from __future__ import annotations
 
 import re
-from urllib.parse import urlsplit
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -45,6 +44,7 @@ from infrastructure.logging import get_logger
 from infrastructure.templates import templates
 from schemas.enums.domain_status import DomainStatus
 from services.tenant_resolver.protocol import TenantInfo, TenantResolver
+from shared.url_utils import normalise_host
 
 log = get_logger(__name__)
 
@@ -133,18 +133,6 @@ _ALIAS_PATTERN = re.compile(
 )
 
 
-def _normalise_host(raw: str) -> str:
-    """Lowercased, dot-stripped, port-stripped host. RFC 3986-safe for
-    bracketed IPv6 literals (urlsplit handles `[::1]:8000` correctly)."""
-    if not raw:
-        return ""
-    try:
-        parsed = urlsplit(f"//{raw.strip()}").hostname
-    except ValueError:
-        return ""
-    return (parsed or "").rstrip(".").lower()
-
-
 def _is_reserved_path(path: str) -> bool:
     for prefix in _RESERVED_PREFIXES:
         if path == prefix or path.startswith(prefix + "/"):
@@ -187,7 +175,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
         if resolver is None:
             return await call_next(request)
 
-        host = _normalise_host(request.headers.get("host", ""))
+        host = normalise_host(request.headers.get("host", ""))
         if not host or host in _LOOPBACK_HOSTS:
             request.state.tenant = None
             return await call_next(request)

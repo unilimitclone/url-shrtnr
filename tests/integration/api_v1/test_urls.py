@@ -120,19 +120,6 @@ class TestGetUrlById:
 
         assert resp.status_code == 404
 
-    def test_get_url_missing_id_returns_404(self):
-        user = _make_user()
-        mock_svc = AsyncMock()
-        mock_svc.get_owned = AsyncMock(side_effect=NotFoundError("URL not found"))
-
-        application = _build_test_app(
-            {require_auth: lambda: user, get_url_service: lambda: mock_svc}
-        )
-        with TestClient(application, raise_server_exceptions=False) as client:
-            resp = client.get(f"/api/v1/urls/{ObjectId()}")
-
-        assert resp.status_code == 404
-
     def test_get_url_requires_auth(self):
         application = _build_test_app(
             {get_current_user: lambda: None, get_url_service: lambda: AsyncMock()}
@@ -231,6 +218,26 @@ class TestGetUrlByAddress:
         assert resp.json()["alias"] == "\U0001f40d\U0001f525"
         call = mock_svc.get_owned_by_alias.call_args
         assert call.args == ("\U0001f40d\U0001f525", user.user_id)
+
+    def test_emoji_alias_vs16_variant_canonicalised(self):
+        """A pasted VS16 variant (``⭐️`` = star + U+FE0F) resolves to the
+        canonical stored bare-star link — v2 stores canonical aliases only,
+        so the endpoint must canonicalize before the exact-match lookup."""
+        user = _make_user()
+        url_doc = _make_url_doc(alias="⭐", owner_id=user.user_id)
+        mock_svc = AsyncMock()
+        mock_svc.get_owned_by_alias = AsyncMock(return_value=url_doc)
+
+        application = _build_test_app(self._overrides(user, mock_svc))
+        with TestClient(application, raise_server_exceptions=True) as client:
+            # %E2%AD%90%EF%B8%8F == "⭐️" (U+2B50 U+FE0F)
+            resp = client.get("/api/v1/urls/spoo.me/%E2%AD%90%EF%B8%8F")
+
+        assert resp.status_code == 200
+        assert resp.json()["alias"] == "⭐"
+        call = mock_svc.get_owned_by_alias.call_args
+        # Looked up under the canonical bare star, not the VS16 variant.
+        assert call.args == ("⭐", user.user_id)
 
     def test_foreign_link_returns_404(self):
         user = _make_user()

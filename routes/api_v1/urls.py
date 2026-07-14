@@ -15,6 +15,13 @@ single-resource GETs cannot shadow each other (different segment counts)
 nor the management routes on the same shapes (those are PATCH/DELETE —
 method filtering keeps them apart), and the literal ``/urls`` list/bulk
 routes never match a subpath.
+
+Namespace note: ``GET /urls/{domain}/{alias}`` claims the ENTIRE two-segment
+GET namespace under ``/urls``. Any future sibling GET of the shape
+``/urls/x/y`` (e.g. ``GET /urls/{url_id}/stats``) must be declared in this
+module ABOVE this route, or take a different shape — otherwise it is
+silently shadowed here (the first segment parses as ``domain``, the second
+as ``alias``).
 """
 
 from __future__ import annotations
@@ -36,15 +43,15 @@ from dependencies import (
 from errors import NotFoundError, ValidationError
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
-from middleware.tenant import _normalise_host
-from routes.api_v1.management import _parse_url_id
+from routes.api_v1._helpers import parse_url_id
 from schemas.dto.requests.url import ListUrlsQuery
 from schemas.dto.responses.url import (
     BulkDeleteUrlsResponse,
     UrlListItem,
     UrlListResponse,
 )
-from shared.url_utils import normalise_fqdn
+from shared.alias_dispatch import v2_lookup_code
+from shared.url_utils import is_system_default_host, normalise_fqdn, normalise_host
 
 router = APIRouter(tags=["Link Management"])
 
@@ -123,7 +130,7 @@ async def get_url_v1(
     - `404` — no URL with that id in your account. A URL owned by someone
       else answers identically; this endpoint never confirms foreign ids.
     """
-    oid = _parse_url_id(url_id)
+    oid = parse_url_id(url_id)
     doc = await url_service.get_owned(oid, user.user_id)
     return UrlListItem.from_doc(doc)
 
@@ -133,16 +140,16 @@ def _resolve_lookup_domain(raw: str, system_default_domain: str) -> str:
 
     Normalises the host (lowercase, port and trailing dot stripped — the
     same rules the tenant middleware applies to the Host header) and folds
-    the system domain's names onto the canonical default-domain key,
-    mirroring the tenant resolver's system-default short-circuit (which
-    also accepts the ``www.`` alias). Anything else scopes the lookup to
-    that custom domain.
+    the system domain's names onto the canonical default-domain key via the
+    shared ``is_system_default_host`` predicate — the same rule the tenant
+    resolver's system-default short-circuit uses (system domain plus its
+    ``www.`` alias). Anything else scopes the lookup to that custom domain.
     """
-    host = _normalise_host(raw)
+    host = normalise_host(raw)
     if not host:
         # Unparseable host — nothing can live there, same answer as unknown.
         raise NotFoundError("URL not found")
-    if host in (system_default_domain, f"www.{system_default_domain}"):
+    if is_system_default_host(host, system_default_domain):
         return system_default_domain
     return host
 
@@ -204,7 +211,11 @@ async def get_url_by_address_v1(
     **Note**: only current-generation links resolve here — that is all the
     managed collection holds.
     """
-    short_code = unquote(alias)
+    # Canonicalize before the exact-match lookup: v2 stores emoji aliases in
+    # canonical form (VS16 stripped), so a pasted VS16 variant must fold onto
+    # the stored bare form or it 404s here while the redirect serves it. A
+    # no-op for alphanumeric codes. Same seam every other read surface uses.
+    short_code = v2_lookup_code(unquote(alias))
     lookup_domain = _resolve_lookup_domain(domain, settings.system_default_domain)
     doc = await url_service.get_owned_by_alias(
         short_code, user.user_id, domain=lookup_domain
