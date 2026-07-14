@@ -127,3 +127,25 @@ class TestBulkResponseShape:
         payload = resp.model_dump()
         assert payload["summary"] == {"total": 1, "succeeded": 1, "failed": 0}
         assert len(payload["results"]) == 1
+
+
+class TestBulkMoveDomainRequest:
+    def test_domain_is_normalised(self):
+        from schemas.dto.requests.bulk import BulkMoveDomainRequest
+
+        req = BulkMoveDomainRequest(ids=[VALID_ID], domain="Links.ACME.com.")
+        assert req.domain == "links.acme.com"
+
+    def test_null_and_empty_mean_system_default(self):
+        from schemas.dto.requests.bulk import BulkMoveDomainRequest
+
+        assert BulkMoveDomainRequest(ids=[VALID_ID], domain=None).domain is None
+        assert BulkMoveDomainRequest(ids=[VALID_ID], domain="").domain is None
+
+    def test_domain_field_is_required(self):
+        # Omitting the target is a malformed request, not an implicit
+        # move-to-default — that must be an explicit null.
+        from schemas.dto.requests.bulk import BulkMoveDomainRequest
+
+        with pytest.raises(PydanticValidationError):
+            BulkMoveDomainRequest(ids=[VALID_ID])

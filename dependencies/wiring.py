@@ -221,6 +221,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     app.state.bulk_url_service = BulkUrlService(
         url_repo,
         url_cache,
+        url_service=app.state.url_service,
         kv=edge_kv_client,
         system_default_domain=settings.system_default_domain,
         og_ttl_seconds=edge.og_ttl_seconds,

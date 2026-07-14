@@ -55,6 +55,7 @@ def test_openapi_has_expected_paths(smoke_client: TestClient) -> None:
         "/api/v1/urls/bulk/delete",
         "/api/v1/urls/bulk/status",
         "/api/v1/urls/bulk/expiry",
+        "/api/v1/urls/bulk/domain",
         "/oauth/providers",
         "/oauth/providers/{provider_name}/unlink",
         "/oauth/{provider}",
