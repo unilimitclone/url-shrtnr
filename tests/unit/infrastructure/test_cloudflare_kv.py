@@ -17,7 +17,9 @@ def _http_with_response(
     response.is_success = 200 <= status_code < 300
     response.text = "body"
     response.headers = {}
-    response.json = MagicMock(return_value=json_body or {"success": True})
+    response.json = MagicMock(
+        return_value={"success": True} if json_body is None else json_body
+    )
     http = MagicMock()
     http.request = AsyncMock(return_value=response)
     return http, http.request

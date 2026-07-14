@@ -1058,9 +1058,21 @@ class UrlService:
         """
         if self._edge_kv is None or domain != self._system_default_domain:
             return
-        task = asyncio.create_task(self._edge_kv.delete(cache_key(domain, alias)))
+        task = asyncio.create_task(self._purge_edge_key_logged(domain, alias))
         self._edge_purge_tasks.add(task)
         task.add_done_callback(self._edge_purge_tasks.discard)
+
+    async def _purge_edge_key_logged(self, domain: str, alias: str) -> None:
+        """Body of the detached purge — failures are logged with takedown
+        context instead of dying as unretrieved-task noise. The KV client
+        itself never raises (bool contract), so the except arm only
+        catches genuine bugs."""
+        try:
+            ok = await self._edge_kv.delete(cache_key(domain, alias))
+            if not ok:
+                log.warning("edge_purge_failed", short_code=alias, domain=domain)
+        except Exception:
+            log.exception("edge_purge_failed", short_code=alias, domain=domain)
 
     def _auto_reactivate(
         self, existing: UrlV2Doc, update_ops: dict, now: datetime
