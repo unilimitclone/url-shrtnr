@@ -34,6 +34,17 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
+def build_og_entry(url: UrlCacheData) -> tuple[str, str]:
+    """``(key, value)`` for an ACTIVE og-link's KV entry.
+
+    The single source of the ``og_only`` entry shape — used by ``sync``
+    below and by the bulk ops' edge flush, so the two paths can never
+    drift on what an og entry looks like.
+    """
+    entry = EdgeCacheEntry(type="og_only", og_html=render_meta_preview(url))
+    return cache_key(url.domain, url.alias), entry.to_kv_json()
+
+
 class OgEdgeWritethrough:
     def __init__(
         self, kv: CloudflareKVClient, *, system_domain: str, ttl_seconds: int = 86_400
@@ -54,10 +65,8 @@ class OgEdgeWritethrough:
         key = cache_key(url.domain, url.alias)
         try:
             if url.meta_title is not None and url.url_status == UrlStatus.ACTIVE:
-                entry = EdgeCacheEntry(type="og_only", og_html=render_meta_preview(url))
-                ok = await self._kv.put(
-                    key, entry.to_kv_json(), expiration_ttl=self._ttl_seconds
-                )
+                _, value = build_og_entry(url)
+                ok = await self._kv.put(key, value, expiration_ttl=self._ttl_seconds)
                 log.info(
                     "og_writethrough_put",
                     short_code=url.alias,
