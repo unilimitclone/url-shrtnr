@@ -18,6 +18,7 @@ browser HTTP cache and a client memo carry it, no edge or server cache.
 from __future__ import annotations
 
 import hashlib
+from functools import lru_cache
 
 from fastapi import APIRouter, Request, Response
 
@@ -42,15 +43,24 @@ router = APIRouter(tags=["URL Shortening"])
 _CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=604800"
 
 
-def _build_set(settings) -> EmojiSetResponse:
-    gen = set(generation_pool(settings.emoji_generate_max_version))
+@lru_cache(maxsize=4)
+def _build_set(
+    accept_cap: int, generate_cap: int, max_graphemes: int
+) -> tuple[EmojiSetResponse, str]:
+    """Build the response payload and its ETag for one policy triple.
+
+    The whole response is a pure function of the three caps — the accept
+    version, the generate version, and the grapheme limit — so it is memoized
+    per triple. Building the ~1170 entries and hashing them is ~3ms; every
+    request after the first for a given triple is a dict lookup. Returns the
+    payload paired with its content-derived ETag so the 304 path is free too.
+    """
+    gen = set(generation_pool(generate_cap))
     # Accepted set stays policy-derived (the source of truth); grouping only
     # sorts it into canonical Unicode order and annotates each entry. Sorting
     # a set never changes membership, and every accepted char is emitted even
     # if the grouping data lacks it (fallback group, sorted last).
-    accepted = sorted(
-        accepted_singletons(settings.emoji_accept_max_version), key=emoji_sort_key
-    )
+    accepted = sorted(accepted_singletons(accept_cap), key=emoji_sort_key)
     emoji_list = []
     for char in accepted:
         keywords = emoji_keywords(char)
@@ -63,12 +73,13 @@ def _build_set(settings) -> EmojiSetResponse:
                 k=list(keywords) or None,
             )
         )
-    return EmojiSetResponse(
-        accept_max_version=settings.emoji_accept_max_version,
-        generate_max_version=settings.emoji_generate_max_version,
-        max_graphemes=settings.max_emoji_alias_length,
+    payload = EmojiSetResponse(
+        accept_max_version=accept_cap,
+        generate_max_version=generate_cap,
+        max_graphemes=max_graphemes,
         emoji=emoji_list,
     )
+    return payload, _etag(payload)
 
 
 def _etag(payload: EmojiSetResponse) -> str:
@@ -129,11 +140,19 @@ async def emoji_set(
 
     **Rate Limits**: 60/min, 2,000/day.
     """
-    payload = _build_set(settings)
-    etag = _etag(payload)
+    payload, etag = _build_set(
+        settings.emoji_accept_max_version,
+        settings.emoji_generate_max_version,
+        settings.max_emoji_alias_length,
+    )
 
+    # RFC 9110 §13.1.2: If-None-Match uses the weak comparison, so a strong
+    # ETag matches its weak (``W/``-prefixed) form. Cloudflare weakens strong
+    # ETags on compressed responses, so real clients echo back ``W/"..."``;
+    # strip the prefix before comparing, and honor the ``*`` wildcard.
     if_none_match = request.headers.get("if-none-match", "")
-    if etag in {tag.strip() for tag in if_none_match.split(",")}:
+    tags = {tag.strip().removeprefix("W/") for tag in if_none_match.split(",")}
+    if etag in tags or "*" in tags:
         return Response(
             status_code=304,
             headers={"ETag": etag, "Cache-Control": _CACHE_CONTROL},

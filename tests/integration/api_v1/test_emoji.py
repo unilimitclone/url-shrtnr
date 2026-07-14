@@ -182,3 +182,23 @@ def test_conditional_request_returns_304():
         resp = client.get("/api/v1/emoji-set", headers={"If-None-Match": etag})
     assert resp.status_code == 304
     assert not resp.content
+
+
+def test_weak_if_none_match_returns_304():
+    # Behind Cloudflare a strong ETag is weakened to ``W/"..."`` on compressed
+    # responses, so the browser echoes the weak form back. RFC 9110's weak
+    # comparison must still yield a 304.
+    etag = _get().headers["etag"]
+    application = _build_test_app({})
+    with TestClient(application, raise_server_exceptions=False) as client:
+        resp = client.get("/api/v1/emoji-set", headers={"If-None-Match": f"W/{etag}"})
+    assert resp.status_code == 304
+    assert not resp.content
+
+
+def test_wildcard_if_none_match_returns_304():
+    application = _build_test_app({})
+    with TestClient(application, raise_server_exceptions=False) as client:
+        resp = client.get("/api/v1/emoji-set", headers={"If-None-Match": "*"})
+    assert resp.status_code == 304
+    assert not resp.content
