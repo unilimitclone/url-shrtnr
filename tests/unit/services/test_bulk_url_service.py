@@ -458,7 +458,7 @@ class TestBulkSetExpiry:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def make_single_item_service(url_repo, url_cache, og_writethrough=None):
+def make_single_item_service(url_repo, url_cache, og_writethrough=None, edge_kv=None):
     from services.url_service import UrlService
 
     return UrlService(
@@ -470,6 +470,7 @@ def make_single_item_service(url_repo, url_cache, og_writethrough=None):
         blocked_self_domains=[SYSTEM_DEFAULT_DOMAIN],
         system_default_domain=SYSTEM_DEFAULT_DOMAIN,
         og_writethrough=og_writethrough,
+        edge_kv=edge_kv,
     )
 
 
@@ -483,8 +484,12 @@ class TestDeleteParity:
         single_repo, single_cache = AsyncMock(), AsyncMock()
         single_repo.find_by_id.return_value = doc
         og = MagicMock(remove=AsyncMock(), sync=AsyncMock())
-        single = make_single_item_service(single_repo, single_cache, og)
+        single_kv = MagicMock()
+        single_kv.delete = AsyncMock(return_value=True)
+        single = make_single_item_service(single_repo, single_cache, og, single_kv)
         await single.delete(_oid(1), USER_OID)
+        while single._edge_purge_tasks:
+            await asyncio.gather(*list(single._edge_purge_tasks))
 
         bulk_repo, bulk_cache = AsyncMock(), AsyncMock()
         bulk_repo.find_by_ids_and_owner.return_value = [doc]
@@ -502,11 +507,13 @@ class TestDeleteParity:
             ["promo"], SYSTEM_DEFAULT_DOMAIN
         )
         assert report.results[0].ok is True
-        # Plain link: single-item touches no KV (og.remove is og-only);
-        # bulk's purge is the DOCUMENTED superset (PRD §7.3 — takedown
-        # also drops a hot-promoted entry; delete-only, so plain-link
-        # untouchability holds).
+        # Plain link: BOTH paths drop the same edge key (takedown parity —
+        # a deleted hot link stops serving at the edge regardless of which
+        # route killed it). og.remove stays og-only on both sides.
         og.remove.assert_not_awaited()
+        single_kv.delete.assert_awaited_once_with(
+            f"cache:{SYSTEM_DEFAULT_DOMAIN}:promo"
+        )
         kv.bulk_delete.assert_awaited_once_with(
             [f"cache:{SYSTEM_DEFAULT_DOMAIN}:promo"]
         )

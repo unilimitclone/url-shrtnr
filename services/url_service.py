@@ -48,11 +48,13 @@ from schemas.dto.requests.url import (
     MetaTagsRequest,
     UpdateUrlRequest,
 )
+from services.edge_cache.contract import cache_key
 from services.edge_cache.og_writethrough import OgEdgeWritethrough
 from services.meta_tags.events import MetaImageValidateEvent
 from services.meta_tags.images import ingest_meta_image
 
 if TYPE_CHECKING:
+    from infrastructure.cloudflare_kv import CloudflareKVClient
     from infrastructure.storage.r2 import R2StorageClient
     from services.meta_tags.sinks import MetaImageValidationSink
 from schemas.models.base import ANONYMOUS_OWNER_ID
@@ -396,6 +398,7 @@ class UrlService:
         emoji_generated_alias_length: int = 3,
         geo_rules_max_countries: int = 50,
         og_writethrough: OgEdgeWritethrough | None = None,
+        edge_kv: CloudflareKVClient | None = None,
         r2_storage: R2StorageClient | None = None,
         meta_image_max_bytes: int = 512_000,
         meta_image_sink: MetaImageValidationSink | None = None,
@@ -419,6 +422,11 @@ class UrlService:
         # Edge KV write-through for og-links; None when edge cache is
         # unconfigured (self-host) — origin then serves all previews.
         self._og_writethrough = og_writethrough
+        # Direct KV handle for purging plain links' hot-promoted entries
+        # on takedown-shaped mutations (delete/deactivate/rename/move) —
+        # same instance the write-through wraps; None when edge is off.
+        self._edge_kv = edge_kv
+        self._edge_purge_tasks: set[asyncio.Task] = set()
         # R2 upload target for data-URI og:images; None ⇒ uploads rejected,
         # https image URLs unaffected (self-host degradation).
         self._r2_storage = r2_storage
@@ -993,14 +1001,23 @@ class UrlService:
         # had them before this write (plain links' promoted redirect entries
         # must never be touched). A key change (alias/domain move) drops the
         # old entry; sync() re-puts or deletes under the new key.
-        if self._og_writethrough and (
-            existing.meta_tags is not None or merged_doc.meta_tags is not None
-        ):
+        is_og = existing.meta_tags is not None or merged_doc.meta_tags is not None
+        if self._og_writethrough and is_og:
             relevant = {"meta_tags", "long_url", "status", "alias", "domain"}
             if relevant & update_ops.keys():
                 if (new_alias, new_domain) != (existing.alias, existing.domain):
                     await self._og_writethrough.remove(existing.domain, existing.alias)
                 await self._og_writethrough.sync(UrlCacheData.from_v2_doc(merged_doc))
+        elif not is_og and (
+            update_ops.get("status") == UrlStatus.INACTIVE
+            or (new_alias, new_domain) != (existing.alias, existing.domain)
+        ):
+            # Plain links: deactivation and key changes must drop any
+            # hot-promoted entry under the pre-change key (takedown parity
+            # with the bulk endpoints; og-links are handled above). The
+            # new key needs nothing — a link is never promoted under a
+            # key it hasn't served on.
+            self._purge_edge_key(existing.domain, existing.alias)
 
         if "meta_tags" in update_ops:
             await self._maybe_emit_image_validation(merged_doc)
@@ -1025,6 +1042,25 @@ class UrlService:
                 image_url=meta.image,
             )
         )
+
+    def _purge_edge_key(self, domain: str, alias: str) -> None:
+        """Fire-and-forget drop of a plain link's hot-promoted edge entry.
+
+        Takedown parity with the bulk endpoints: a deleted/deactivated/
+        renamed link must stop serving at the edge now, not when the
+        promotion TTL runs out — and a freed alias must not keep serving
+        the previous owner's destination. og-links are event-managed by
+        the write-through instead; callers gate on meta_tags so the two
+        mechanisms don't double-fire. Purge-only (a dropped entry just
+        re-promotes next hot window), best-effort, never awaited in the
+        request, and a no-op for tenant links (never edge-cached) or
+        when the edge cache is unconfigured.
+        """
+        if self._edge_kv is None or domain != self._system_default_domain:
+            return
+        task = asyncio.create_task(self._edge_kv.delete(cache_key(domain, alias)))
+        self._edge_purge_tasks.add(task)
+        task.add_done_callback(self._edge_purge_tasks.discard)
 
     def _auto_reactivate(
         self, existing: UrlV2Doc, update_ops: dict, now: datetime
@@ -1086,6 +1122,8 @@ class UrlService:
         await self._url_cache.invalidate(existing.alias, existing.domain)
         if existing.meta_tags is not None and self._og_writethrough:
             await self._og_writethrough.remove(existing.domain, existing.alias)
+        else:
+            self._purge_edge_key(existing.domain, existing.alias)
 
         log.info(
             "url_deleted",

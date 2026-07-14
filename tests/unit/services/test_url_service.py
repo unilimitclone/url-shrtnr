@@ -10,7 +10,7 @@ from __future__ import annotations
 import time as time_module
 import typing
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from bson import ObjectId
@@ -25,6 +25,7 @@ from errors import (
     ValidationError,
 )
 from infrastructure.cache.url_cache import UrlCacheData
+from schemas.dto.requests.url import UpdateUrlRequest
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import EmojiUrlDoc, LegacyUrlDoc, UrlStatus, UrlV2Doc
 
@@ -142,7 +143,15 @@ def make_repos():
     return url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
 
 
-def make_service(url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache):
+def make_service(
+    url_repo,
+    legacy_repo,
+    emoji_repo,
+    blocked_url_repo,
+    url_cache,
+    og_writethrough=None,
+    edge_kv=None,
+):
     from services.url_service import UrlService
 
     return UrlService(
@@ -153,6 +162,8 @@ def make_service(url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache)
         url_cache=url_cache,
         blocked_self_domains=[SYSTEM_DEFAULT_DOMAIN],
         system_default_domain=SYSTEM_DEFAULT_DOMAIN,
+        og_writethrough=og_writethrough,
+        edge_kv=edge_kv,
     )
 
 
@@ -3039,3 +3050,141 @@ class TestUrlServiceGetOwned:
 
         with pytest.raises(NotFoundError):
             await svc.get_owned_by_alias(ALIAS, USER_OID)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Single-item edge purge (takedown parity with the bulk endpoints)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSingleItemEdgePurge:
+    """Plain links' hot-promoted KV entries are purged on takedown-shaped
+    mutations, mirroring the bulk endpoints. og-links stay event-managed
+    by the write-through (no double-fire)."""
+
+    def _service_with_edge(self, url_repo, og=None):
+        edge_kv = MagicMock()
+        edge_kv.delete = AsyncMock(return_value=True)
+        svc = make_service(
+            url_repo,
+            AsyncMock(),
+            AsyncMock(),
+            AsyncMock(),
+            AsyncMock(),
+            og_writethrough=og,
+            edge_kv=edge_kv,
+        )
+        return svc, edge_kv
+
+    async def _drain(self, svc):
+        import asyncio
+
+        while svc._edge_purge_tasks:
+            await asyncio.gather(*list(svc._edge_purge_tasks))
+
+    @pytest.mark.asyncio
+    async def test_delete_plain_link_purges_edge_key(self):
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+        svc, edge_kv = self._service_with_edge(url_repo)
+
+        await svc.delete(URL_OID, USER_OID)
+        await self._drain(svc)
+
+        edge_kv.delete.assert_awaited_once_with(
+            f"cache:{SYSTEM_DEFAULT_DOMAIN}:{ALIAS}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_og_link_uses_writethrough_not_purge(self):
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc(meta_tags={"title": "T"})
+        og = MagicMock(remove=AsyncMock(), sync=AsyncMock())
+        svc, edge_kv = self._service_with_edge(url_repo, og=og)
+
+        await svc.delete(URL_OID, USER_OID)
+        await self._drain(svc)
+
+        og.remove.assert_awaited_once_with(SYSTEM_DEFAULT_DOMAIN, ALIAS)
+        edge_kv.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_tenant_link_never_purges(self):
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc(domain="links.acme.com")
+        svc, edge_kv = self._service_with_edge(url_repo)
+
+        await svc.delete(URL_OID, USER_OID)
+        await self._drain(svc)
+
+        edge_kv.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deactivate_plain_link_purges(self):
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+        svc, edge_kv = self._service_with_edge(url_repo)
+
+        await svc.update(URL_OID, UpdateUrlRequest(status=UrlStatus.INACTIVE), USER_OID)
+        await self._drain(svc)
+
+        edge_kv.delete.assert_awaited_once_with(
+            f"cache:{SYSTEM_DEFAULT_DOMAIN}:{ALIAS}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_activate_plain_link_does_not_purge(self):
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc(status="INACTIVE")
+        svc, edge_kv = self._service_with_edge(url_repo)
+
+        await svc.update(URL_OID, UpdateUrlRequest(status=UrlStatus.ACTIVE), USER_OID)
+        await self._drain(svc)
+
+        edge_kv.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rename_plain_link_purges_old_key(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+        url_repo.check_alias_exists.return_value = False  # new alias free
+        legacy_repo.check_exists.return_value = False
+        edge_kv = MagicMock()
+        edge_kv.delete = AsyncMock(return_value=True)
+        svc = make_service(
+            url_repo,
+            legacy_repo,
+            emoji_repo,
+            blocked_url_repo,
+            url_cache,
+            edge_kv=edge_kv,
+        )
+
+        await svc.update(URL_OID, UpdateUrlRequest(alias="newname"), USER_OID)
+        await self._drain(svc)
+
+        edge_kv.delete.assert_awaited_once_with(
+            f"cache:{SYSTEM_DEFAULT_DOMAIN}:{ALIAS}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_expiry_only_update_does_not_purge(self):
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+        svc, edge_kv = self._service_with_edge(url_repo)
+
+        future = datetime.now(timezone.utc) + timedelta(days=7)
+        await svc.update(URL_OID, UpdateUrlRequest(expire_after=future), USER_OID)
+        await self._drain(svc)
+
+        edge_kv.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_edge_kv_is_a_clean_noop(self):
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+        svc = make_service(url_repo, AsyncMock(), AsyncMock(), AsyncMock(), AsyncMock())
+
+        await svc.delete(URL_OID, USER_OID)  # must not raise
+
+        assert not svc._edge_purge_tasks
