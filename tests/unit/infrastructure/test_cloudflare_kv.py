@@ -186,6 +186,49 @@ class TestBulkDelete:
         assert request.await_count == 2  # max_retries
 
 
+class TestBulkFallback:
+    """wrangler dev's Explorer API mirrors only the single-key routes;
+    a 404 on the bulk path degrades to per-key calls so the zero-cloud
+    local loop still exercises edge writes."""
+
+    def _http_404_then_ok(self):
+        missing = MagicMock(
+            spec=httpx.Response,
+            status_code=404,
+            is_success=False,
+            text="404 Not Found",
+            headers={},
+        )
+        ok = MagicMock(
+            spec=httpx.Response, status_code=200, is_success=True, headers={}
+        )
+        http = MagicMock()
+        http.request = AsyncMock(side_effect=[missing, ok, ok])
+        return http, http.request
+
+    async def test_bulk_delete_route_404_falls_back_to_per_key(self):
+        http, request = self._http_404_then_ok()
+        keys = ["cache:spoo.local:a", "cache:spoo.local:b"]
+        assert await _client(http).bulk_delete(keys) is True
+        assert request.await_count == 3  # 1 bulk attempt + 2 single deletes
+        single_urls = [call.args[1] for call in request.await_args_list[1:]]
+        assert all("/values/" in url for url in single_urls)
+        assert [call.args[0] for call in request.await_args_list[1:]] == [
+            "DELETE",
+            "DELETE",
+        ]
+
+    async def test_bulk_put_route_404_falls_back_to_per_key_with_ttl(self):
+        http, request = self._http_404_then_ok()
+        pairs = [("cache:spoo.local:a", "v1"), ("cache:spoo.local:b", "v2")]
+        assert await _client(http).bulk_put(pairs, expiration_ttl=86_400) is True
+        assert request.await_count == 3
+        for call in request.await_args_list[1:]:
+            assert call.args[0] == "PUT"
+            assert "/values/" in call.args[1]
+            assert call.kwargs["params"] == {"expiration_ttl": 86_400}
+
+
 class TestApiBaseOverride:
     async def test_local_emulator_base_replaces_account_scoped_url(self):
         """api_base points the client at wrangler dev's Explorer API,

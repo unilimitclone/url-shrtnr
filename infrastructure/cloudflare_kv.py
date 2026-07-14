@@ -100,7 +100,7 @@ class CloudflareKVClient:
 
         ``expiration_ttl`` applies to every entry (matching ``put``'s
         semantics); ``None`` persists until an explicit delete. Returns
-        True only if every chunk succeeded.
+        True only if every write succeeded.
         """
         if not pairs:
             return True
@@ -111,7 +111,10 @@ class CloudflareKVClient:
                 | ({"expiration_ttl": expiration_ttl} if expiration_ttl else {})
                 for key, value in chunk
             ]
-            ok = await self._bulk_request("PUT", "bulk", body, count=len(chunk)) and ok
+            result = await self._bulk_request("PUT", "bulk", body, count=len(chunk))
+            if result is None:
+                return await self._put_one_by_one(pairs, expiration_ttl)
+            ok = result and ok
         return ok
 
     async def bulk_delete(self, keys: list[str]) -> bool:
@@ -119,23 +122,44 @@ class CloudflareKVClient:
 
         Like ``delete``, already-gone keys are not an error (the bulk
         endpoint doesn't 404 on missing keys). Returns True only if every
-        chunk succeeded.
+        delete succeeded.
         """
         if not keys:
             return True
         ok = True
         for chunk in _chunked(keys, _BULK_MAX_ITEMS):
-            ok = (
-                await self._bulk_request(
-                    "POST", "bulk/delete", list(chunk), count=len(chunk)
-                )
-                and ok
+            result = await self._bulk_request(
+                "POST", "bulk/delete", list(chunk), count=len(chunk)
             )
+            if result is None:
+                return await self._delete_one_by_one(keys)
+            ok = result and ok
+        return ok
+
+    async def _put_one_by_one(
+        self, pairs: list[tuple[str, str]], expiration_ttl: int | None
+    ) -> bool:
+        ok = True
+        for key, value in pairs:
+            ok = await self.put(key, value, expiration_ttl=expiration_ttl) and ok
+        return ok
+
+    async def _delete_one_by_one(self, keys: list[str]) -> bool:
+        ok = True
+        for key in keys:
+            ok = await self.delete(key) and ok
         return ok
 
     async def _bulk_request(
         self, method: str, subpath: str, body: list, *, count: int
-    ) -> bool:
+    ) -> bool | None:
+        """One bulk API call. ``None`` means the route itself is absent.
+
+        Real CF never 404s these paths (missing keys are still 200), but
+        wrangler dev's Explorer API mirrors only the single-key routes —
+        callers degrade to per-key calls so the zero-cloud local loop
+        exercises edge writes end-to-end instead of silently no-opping.
+        """
         if not self.is_configured:
             log.warning("cf_kv_not_configured", method=method)
             return False
@@ -151,6 +175,9 @@ class CloudflareKVClient:
                 error=str(exc),
             )
             return False
+        if response.status_code == 404:
+            log.info("cf_kv_bulk_unsupported", path=subpath, count=count)
+            return None
         return self._grade_response(response, method=method, key=f"<{subpath}:{count}>")
 
     async def _request(
