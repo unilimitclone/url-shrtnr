@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pymongo.errors import (
@@ -422,3 +422,19 @@ class TestUrlRepositoryBulkByIds:
             await repo.update_by_ids_and_owner([URL_OID], None, {"status": "ACTIVE"})
         with pytest.raises(ValueError):
             await repo.update_by_ids_and_owner([URL_OID], USER_OID, {})
+
+    @pytest.mark.asyncio
+    async def test_update_by_ids_duplicate_key_propagates_without_error_log(self):
+        """The alias-race DuplicateKeyError is an expected, caller-handled
+        outcome (bulk domain move maps it to a per-item conflict) — it must
+        not emit the repo-layer error event that genuine failures do."""
+        col = make_collection()
+        col.update_many = AsyncMock(side_effect=DuplicateKeyError("dup"))
+        with (
+            patch("repositories.url_repository.log") as log_mock,
+            pytest.raises(DuplicateKeyError),
+        ):
+            await self._repo(col).update_by_ids_and_owner(
+                [URL_OID], USER_OID, {"domain": "links.acme.com"}
+            )
+        log_mock.error.assert_not_called()

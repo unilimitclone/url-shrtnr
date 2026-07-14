@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import TypedDict
 
 from bson import ObjectId
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from infrastructure.logging import get_logger
 from repositories.base import BaseRepository
@@ -210,6 +210,12 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
                 {"_id": {"$in": url_ids}, "owner_id": owner_id}, {"$set": set_ops}
             )
             return int(result.modified_count or 0)
+        except DuplicateKeyError:
+            # Expected outcome, not a failure: the (domain, alias) unique
+            # index arbitrates alias races on domain moves and the caller
+            # maps the violation to a per-item conflict. Logging this at
+            # ERROR would page people for working-as-designed behavior.
+            raise
         except PyMongoError as exc:
             log.error(
                 "repo_update_many_failed",
