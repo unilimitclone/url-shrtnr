@@ -86,14 +86,19 @@ class Limits:
     # Bulk URL mutations (POST /api/v1/urls/bulk/*). Counted per REQUEST,
     # not per item — the reports-intake stance: one bulk call is one unit
     # of user intent, and per-item billing is what pushed the dashboard
-    # into 429s at trivially reachable selection sizes. The budget math is
-    # done on ITEMS instead: with the 100-id cap, status/expiry ceil at
-    # 10k items/day (5x the per-item PATCH daily budget — generous, these
-    # are reversible) and delete mirrors URL_BULK_DELETE's posture, ceiling
-    # 5k irreversible deletions/day.
-    URL_BULK_STATUS = "10 per minute; 100 per day"
-    URL_BULK_EXPIRY = "10 per minute; 100 per day"
-    URL_BULK_MUTATE_DELETE = "5 per minute; 50 per day"
+    # into 429s at trivially reachable selection sizes. Requests are what
+    # a management workflow actually spends (most real batches are small),
+    # so the request budget must never make bulk scarcer than looping the
+    # per-item routes — that would push clients back to the fan-out these
+    # endpoints exist to kill. Per-minute is kept high for bursts (a mass
+    # takedown chunks at 100 ids/request); the daily cap is a lid, not a
+    # ration. Blast radius per request is bounded by the 100-id cap and
+    # ownership scoping, and each batch is ~4 local calls plus at most
+    # one CF call, so these are cheap requests. Delete stays the tighter
+    # pair because it is irreversible.
+    URL_BULK_STATUS = "60 per minute; 200 per day"
+    URL_BULK_EXPIRY = "60 per minute; 200 per day"
+    URL_BULK_MUTATE_DELETE = "30 per minute; 100 per day"
 
     # Destination metadata fetch — outbound fetches on our dime; tight.
     METADATA_FETCH = "20 per minute; 500 per day"

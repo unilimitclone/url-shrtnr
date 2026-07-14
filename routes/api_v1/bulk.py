@@ -72,7 +72,7 @@ async def bulk_delete_urls_v1(
     already-deleted ids report `not_found`, which a client should treat
     as success-equivalent for delete.
 
-    **Rate Limits**: 5/min, 50/day — counted per request, not per id.
+    **Rate Limits**: 30/min, 100/day — counted per request, not per id.
     """
     return await bulk_service.bulk_delete(body.object_ids(), user.user_id)
 
@@ -101,7 +101,7 @@ async def bulk_update_url_status_v1(
     your account; `forbidden` — the URL is admin-blocked and cannot be
     modified.
 
-    **Rate Limits**: 10/min, 100/day — counted per request, not per id.
+    **Rate Limits**: 60/min, 200/day — counted per request, not per id.
     """
     return await bulk_service.bulk_set_status(
         body.object_ids(), body.status, user.user_id
@@ -133,7 +133,7 @@ async def bulk_update_url_expiry_v1(
     your account; `forbidden` — the URL is admin-blocked and cannot be
     modified.
 
-    **Rate Limits**: 10/min, 100/day — counted per request, not per id.
+    **Rate Limits**: 60/min, 200/day — counted per request, not per id.
     """
     return await bulk_service.bulk_set_expiry(
         body.object_ids(), body.expire_after, user.user_id
