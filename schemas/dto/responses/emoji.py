@@ -31,6 +31,12 @@ class EmojiEntry(ResponseBase):
         description="Human-readable name, lowercased with spaces (e.g. "
         '"rocket"). The primary search key.'
     )
+    g: str = Field(
+        description="Canonical Unicode category display name (e.g. "
+        '"Smileys & Emotion"), for the picker\'s category tabs. Entries in '
+        "the array are already sorted by canonical group and within-group "
+        "order, so a picker opens on Smileys rather than symbols."
+    )
     gen: bool = Field(
         description="Whether this emoji is in the auto-generation pool. "
         "Filter gen=true for the subset the server auto-generates."
@@ -46,9 +52,10 @@ class EmojiEntry(ResponseBase):
 class EmojiSetResponse(ResponseBase):
     """The accepted emoji catalogue and its policy caps.
 
-    Emoji values are RAW characters in canonical form (no ``U+FE0F``).
-    Categories/groups are not included: the pinned ``emoji`` package does
-    not expose them, so a picker relies on search and recents.
+    Emoji values are RAW characters in canonical form (no ``U+FE0F``). Each
+    carries its canonical Unicode category (``g``) and the array is ordered by
+    canonical group and within-group order, so a picker can render category
+    tabs and open on Smileys rather than symbols.
     """
 
     accept_max_version: float = Field(

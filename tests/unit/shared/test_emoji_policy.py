@@ -10,11 +10,14 @@ import regex
 from shared.emoji_policy import (
     DEFAULT_ACCEPT_MAX_VERSION,
     DEFAULT_GENERATE_MAX_VERSION,
+    FALLBACK_GROUP,
     accepted_singletons,
     canonicalize_emoji_alias,
     check_emoji_alias,
     emoji_display_name,
+    emoji_group,
     emoji_keywords,
+    emoji_sort_key,
     generation_pool,
     is_emoji_candidate,
     is_emoji_only_shape,
@@ -25,6 +28,8 @@ VS16 = "️"
 
 STAR = "⭐"  # ⭐ single cp, fully-qualified, E0.6
 PARTY = "\U0001f389"  # 🎉 single cp, E0.6
+GRINNING = "\U0001f600"  # 😀 first entry in canonical order (Smileys & Emotion)
+RED_CIRCLE = "\U0001f534"  # 🔴 accepted, in the Symbols group (sorts far after)
 THUMBS_MEDIUM = "\U0001f44d\U0001f3fd"  # 👍🏽 base + skin tone, E1.0
 SMILEY_TEXT_DEFAULT = "☺"  # ☺ unqualified without VS16
 WOMAN_TECHNOLOGIST = "\U0001f469‍\U0001f4bb"  # 👩‍💻 ZWJ sequence
@@ -254,6 +259,56 @@ class TestEmojiKeywords:
         # ⭐ / 🚀 carry no alias list in the pinned package.
         assert emoji_keywords(STAR) == ()
         assert emoji_keywords("\U0001f680") == ()
+
+
+CANONICAL_GROUPS = {
+    "Smileys & Emotion",
+    "People & Body",
+    "Component",
+    "Animals & Nature",
+    "Food & Drink",
+    "Travel & Places",
+    "Activities",
+    "Objects",
+    "Symbols",
+    "Flags",
+}
+
+
+class TestEmojiGrouping:
+    def test_known_chars_map_to_expected_group(self):
+        assert emoji_group(GRINNING) == "Smileys & Emotion"
+        assert emoji_group("\U0001f680") == "Travel & Places"  # 🚀 rocket
+        assert emoji_group(RED_CIRCLE) == "Symbols"
+
+    def test_every_accepted_char_has_a_canonical_group(self):
+        # PRESENTATION join is total over the accepted set: every entry gets a
+        # real canonical group (the pinned dataset has full coverage), never
+        # the fallback, and never a group outside the canonical ten.
+        for e in accepted_singletons():
+            assert emoji_group(e) in CANONICAL_GROUPS
+
+    def test_unknown_char_falls_back_and_sorts_last(self):
+        assert emoji_group("A") == FALLBACK_GROUP
+        assert emoji_group("A") in CANONICAL_GROUPS
+        assert emoji_sort_key("A") > emoji_sort_key(RED_CIRCLE)
+
+    def test_sort_key_opens_on_smileys_not_symbols(self):
+        # A smiley sorts before a symbol, so a picker opens on Smileys.
+        assert emoji_sort_key(GRINNING) < emoji_sort_key(RED_CIRCLE)
+        assert emoji_sort_key(GRINNING) == 0  # 😀 is first in canonical order
+
+    def test_first_accepted_in_canonical_order_is_a_smiley(self):
+        first = min(accepted_singletons(), key=emoji_sort_key)
+        assert emoji_group(first) == "Smileys & Emotion"
+
+    def test_grouping_does_not_change_accepted_set(self):
+        # THE invariant: sorting by the presentation key is a pure permutation
+        # of the policy-derived accepted set — same members, same count.
+        accepted = accepted_singletons()
+        ordered = sorted(accepted, key=emoji_sort_key)
+        assert len(ordered) == len(accepted)
+        assert set(ordered) == set(accepted)
 
 
 class TestVs16InsensitivePattern:

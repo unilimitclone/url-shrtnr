@@ -11,13 +11,30 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from config import AppSettings
-from shared.emoji_policy import check_emoji_alias
+from shared.emoji_policy import accepted_singletons, check_emoji_alias
 
 from .conftest import _build_test_app
+
+# The canonical Unicode emoji groups, in order — every emoji picker's tabs.
+CANONICAL_GROUPS = [
+    "Smileys & Emotion",
+    "People & Body",
+    "Component",
+    "Animals & Nature",
+    "Food & Drink",
+    "Travel & Places",
+    "Activities",
+    "Objects",
+    "Symbols",
+    "Flags",
+]
 
 # Known-safe single-codepoint emoji.
 STAR = "⭐"
 PARTY = "\U0001f389"  # 🎉
+GRINNING = "\U0001f600"  # 😀 first in canonical order (Smileys & Emotion)
+ROCKET = "\U0001f680"  # 🚀 Travel & Places
+RED_CIRCLE = "\U0001f534"  # 🔴 Symbols — sorts far after any smiley
 # Known-rejected forms.
 US_FLAG = "\U0001f1fa\U0001f1f8"  # 🇺🇸 regional-indicator flag
 WOMAN_TECHNOLOGIST = "\U0001f469‍\U0001f4bb"  # 👩‍💻 ZWJ family
@@ -47,12 +64,13 @@ def test_response_shape():
     emoji_list = body["emoji"]
     assert isinstance(emoji_list, list)
     assert len(emoji_list) > 0
-    # Every entry is a {c, n, gen} object (k is optional).
+    # Every entry is a {c, n, g, gen} object (k is optional).
     for entry in emoji_list:
-        assert set(entry) <= {"c", "n", "gen", "k"}
-        assert {"c", "n", "gen"} <= set(entry)
+        assert set(entry) <= {"c", "n", "g", "gen", "k"}
+        assert {"c", "n", "g", "gen"} <= set(entry)
         assert isinstance(entry["c"], str) and entry["c"]
         assert isinstance(entry["n"], str)
+        assert isinstance(entry["g"], str) and entry["g"]
         assert isinstance(entry["gen"], bool)
 
 
@@ -83,6 +101,41 @@ def test_contains_known_safe_emoji_with_expected_name():
     assert PARTY in by_char and by_char[PARTY]["n"] == "party popper"
     # 🚀 rocket resolves by name — the search use case.
     assert any(e["n"] == "rocket" and e["c"] == "\U0001f680" for e in by_char.values())
+
+
+def test_every_entry_has_a_canonical_group():
+    for entry in _get().json()["emoji"]:
+        assert entry["g"] in CANONICAL_GROUPS
+
+
+def test_known_emoji_map_to_expected_groups():
+    by_char = {e["c"]: e for e in _get().json()["emoji"]}
+    assert by_char[GRINNING]["g"] == "Smileys & Emotion"
+    assert by_char[ROCKET]["g"] == "Travel & Places"
+    assert by_char[RED_CIRCLE]["g"] == "Symbols"
+
+
+def test_array_is_in_canonical_group_order():
+    emoji_list = _get().json()["emoji"]
+    # Opens on Smileys, not medals/ATM/symbols: the first item is a smiley.
+    assert emoji_list[0]["g"] == "Smileys & Emotion"
+    # Groups appear as contiguous runs in canonical order — the run of group
+    # indices is non-decreasing across the whole array.
+    order = {name: i for i, name in enumerate(CANONICAL_GROUPS)}
+    indices = [order[e["g"]] for e in emoji_list]
+    assert indices == sorted(indices)
+    # A smiley sorts before a Symbols-group glyph (medals/AB/ATM live there).
+    chars = [e["c"] for e in emoji_list]
+    assert chars.index(GRINNING) < chars.index(RED_CIRCLE)
+
+
+def test_grouping_does_not_change_the_accepted_set():
+    # THE invariant: adding g + reordering is a pure permutation of the
+    # policy-derived accepted set — same chars, same count, no dupes.
+    chars = [e["c"] for e in _get().json()["emoji"]]
+    accepted = accepted_singletons(AppSettings().emoji_accept_max_version)
+    assert len(chars) == len(set(chars)) == len(accepted)
+    assert set(chars) == set(accepted)
 
 
 def test_gen_flagged_entries_are_within_the_safe_space():

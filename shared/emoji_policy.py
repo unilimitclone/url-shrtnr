@@ -23,6 +23,8 @@ parameter with a module-level default, enforced by the service layer.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import unicodedata
 from functools import lru_cache
@@ -48,6 +50,22 @@ _VS16 = "️"
 _SKIN_TONE_MIN = "\U0001f3fb"
 _SKIN_TONE_MAX = "\U0001f3ff"
 _REGIONAL_INDICATOR_RANGE = (0x1F1E6, 0x1F1FF)
+
+# Committed canonical Unicode grouping (see data/emoji_groups.json and
+# scripts/gen_emoji_groups.py). PRESENTATION metadata only: it is joined onto
+# the policy-derived accepted set by char to give the picker categories and a
+# sensible opening order. It never decides which emoji are accepted.
+_GROUP_DATA_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data",
+    "emoji_groups.json",
+)
+# Display group for an accepted emoji absent from the grouping data. Does not
+# occur for the pinned dataset (every accepted char is covered); a guard so a
+# future emoji pin outpacing the artifact annotates rather than drops.
+FALLBACK_GROUP: str = "Symbols"
+# Unknown chars sort last (stable), staying present but out of the way.
+_FALLBACK_ORDER: int = 1 << 30
 
 
 def is_emoji_candidate(alias: str) -> bool:
@@ -161,6 +179,44 @@ def emoji_keywords(char: str) -> tuple[str, ...]:
         if cleaned and cleaned != name:
             seen.setdefault(cleaned, None)
     return tuple(seen)
+
+
+@lru_cache(maxsize=1)
+def _emoji_group_index() -> dict[str, tuple[str, int]]:
+    """Load the committed canonical grouping: char -> (group name, order).
+
+    PRESENTATION metadata only (see :data:`_GROUP_DATA_PATH`). Joined onto the
+    policy-derived accepted set by char; it never decides membership. Loaded
+    and cached once per process — no import-time I/O, no runtime network.
+    """
+    with open(_GROUP_DATA_PATH, encoding="utf-8") as fh:
+        data = json.load(fh)
+    groups = data["groups"]
+    return {
+        char: (groups[gi], order) for order, (char, gi) in enumerate(data["entries"])
+    }
+
+
+def emoji_group(char: str) -> str:
+    """Canonical Unicode category display name for *char* (e.g. ``"Smileys &
+    Emotion"``), for a picker's category tabs.
+
+    Falls back to :data:`FALLBACK_GROUP` for an accepted emoji missing from the
+    grouping data, so the entry is annotated rather than dropped.
+    """
+    entry = _emoji_group_index().get(char)
+    return entry[0] if entry else FALLBACK_GROUP
+
+
+def emoji_sort_key(char: str) -> int:
+    """Canonical Unicode ordering position for *char* — group order, then
+    within-group order — so a picker opens on Smileys rather than symbols.
+
+    Unknown chars sort last (stably), staying present but out of the way. This
+    is presentation ordering only; it does not touch accepted-set membership.
+    """
+    entry = _emoji_group_index().get(char)
+    return entry[1] if entry else _FALLBACK_ORDER
 
 
 @lru_cache(maxsize=8)

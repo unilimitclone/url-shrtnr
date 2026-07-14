@@ -28,7 +28,9 @@ from schemas.dto.responses.emoji import EmojiEntry, EmojiSetResponse
 from shared.emoji_policy import (
     accepted_singletons,
     emoji_display_name,
+    emoji_group,
     emoji_keywords,
+    emoji_sort_key,
     generation_pool,
 )
 
@@ -42,13 +44,21 @@ _CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=604800"
 
 def _build_set(settings) -> EmojiSetResponse:
     gen = set(generation_pool(settings.emoji_generate_max_version))
+    # Accepted set stays policy-derived (the source of truth); grouping only
+    # sorts it into canonical Unicode order and annotates each entry. Sorting
+    # a set never changes membership, and every accepted char is emitted even
+    # if the grouping data lacks it (fallback group, sorted last).
+    accepted = sorted(
+        accepted_singletons(settings.emoji_accept_max_version), key=emoji_sort_key
+    )
     emoji_list = []
-    for char in accepted_singletons(settings.emoji_accept_max_version):
+    for char in accepted:
         keywords = emoji_keywords(char)
         emoji_list.append(
             EmojiEntry(
                 c=char,
                 n=emoji_display_name(char),
+                g=emoji_group(char),
                 gen=char in gen,
                 k=list(keywords) or None,
             )
@@ -64,9 +74,11 @@ def _build_set(settings) -> EmojiSetResponse:
 def _etag(payload: EmojiSetResponse) -> str:
     """A strong, quoted ETag derived from the set's content and caps.
 
-    Any change to the caps, the emoji list, or an entry's name/gen/aliases
-    (a deploy bumping the pinned ``emoji`` package, or a settings override)
-    changes the digest, so the ETag revalidates to fresh data for free.
+    Any change to the caps, the emoji list, its ORDER, or an entry's
+    name/group/gen/aliases (a deploy bumping the pinned ``emoji`` package or
+    the grouping artifact, or a settings override) changes the digest, so the
+    ETag revalidates to fresh data for free. Order is captured implicitly by
+    hashing entries in array order.
     """
     h = hashlib.sha256()
     h.update(
@@ -77,6 +89,7 @@ def _etag(payload: EmojiSetResponse) -> str:
         h.update(entry.c.encode())
         h.update(b"1" if entry.gen else b"0")
         h.update(entry.n.encode())
+        h.update(entry.g.encode())
         h.update(",".join(entry.k or ()).encode())
         h.update(b"\x00")
     return f'"{h.hexdigest()[:16]}"'
@@ -99,13 +112,14 @@ async def emoji_set(
     """Return the accepted emoji catalogue and its policy caps.
 
     ``emoji`` lists every single-codepoint emoji a custom alias may use
-    (the picker's list). Each entry carries ``c`` (the raw canonical
-    character), ``n`` (a searchable name like "rocket"), ``gen`` (whether
-    it is in the server's auto-generation pool), and an optional ``k``
-    (extra search aliases when the source lists any). Skin tone is a
-    client-side modifier appended to a base emoji, so skin-tone variants
-    are not enumerated. Categories are not exposed by the source data, so
-    a picker relies on search and recents.
+    (the picker's list), ordered by canonical Unicode group and within-group
+    order so a picker opens on Smileys rather than symbols. Each entry
+    carries ``c`` (the raw canonical character), ``n`` (a searchable name like
+    "rocket"), ``g`` (its canonical Unicode category, e.g. "Smileys &
+    Emotion", for category tabs), ``gen`` (whether it is in the server's
+    auto-generation pool), and an optional ``k`` (extra search aliases when
+    the source lists any). Skin tone is a client-side modifier appended to a
+    base emoji, so skin-tone variants are not enumerated.
 
     **Authentication**: None. The response is identical for everyone.
 
