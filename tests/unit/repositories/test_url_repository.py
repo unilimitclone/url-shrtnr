@@ -352,3 +352,73 @@ class TestUrlRepositoryBulkDelete:
             await repo.delete_many_by_owner_and_domain(None, "links.acme.com")
         with pytest.raises(ValueError):
             await repo.delete_many_by_owner_and_domain(USER_OID, "")
+
+
+class TestUrlRepositoryBulkByIds:
+    def _repo(self, col=None):
+        from repositories.url_repository import UrlRepository
+
+        return UrlRepository(col or make_collection())
+
+    @pytest.mark.asyncio
+    async def test_find_by_ids_scopes_ownership_in_query(self):
+        col = make_collection()
+        cursor = MagicMock()
+        cursor.to_list = AsyncMock(return_value=[_url_v2_doc()])
+        col.find = MagicMock(return_value=cursor)
+        ids = [URL_OID]
+        result = await self._repo(col).find_by_ids_and_owner(ids, USER_OID)
+        assert len(result) == 1
+        query = col.find.call_args[0][0]
+        # Ownership folded into the query — never a post-fetch compare.
+        assert query == {"_id": {"$in": ids}, "owner_id": USER_OID}
+
+    @pytest.mark.asyncio
+    async def test_find_by_ids_refuses_missing_filters(self):
+        repo = self._repo()
+        with pytest.raises(ValueError):
+            await repo.find_by_ids_and_owner([], USER_OID)
+        with pytest.raises(ValueError):
+            await repo.find_by_ids_and_owner([URL_OID], None)
+
+    @pytest.mark.asyncio
+    async def test_delete_by_ids_compound_filter_and_count(self):
+        col = make_collection()
+        col.delete_many = AsyncMock(return_value=MagicMock(deleted_count=2))
+        ids = [URL_OID]
+        count = await self._repo(col).delete_by_ids_and_owner(ids, USER_OID)
+        assert count == 2
+        query = col.delete_many.call_args[0][0]
+        assert query == {"_id": {"$in": ids}, "owner_id": USER_OID}
+
+    @pytest.mark.asyncio
+    async def test_delete_by_ids_refuses_missing_filters(self):
+        repo = self._repo()
+        with pytest.raises(ValueError):
+            await repo.delete_by_ids_and_owner([], USER_OID)
+        with pytest.raises(ValueError):
+            await repo.delete_by_ids_and_owner([URL_OID], None)
+
+    @pytest.mark.asyncio
+    async def test_update_by_ids_wraps_set_and_scopes_ownership(self):
+        col = make_collection()
+        col.update_many = AsyncMock(return_value=MagicMock(modified_count=3))
+        ids = [URL_OID]
+        now = datetime(2026, 7, 14, tzinfo=timezone.utc)
+        count = await self._repo(col).update_by_ids_and_owner(
+            ids, USER_OID, {"status": "INACTIVE", "updated_at": now}
+        )
+        assert count == 3
+        query, ops = col.update_many.call_args[0]
+        assert query == {"_id": {"$in": ids}, "owner_id": USER_OID}
+        assert ops == {"$set": {"status": "INACTIVE", "updated_at": now}}
+
+    @pytest.mark.asyncio
+    async def test_update_by_ids_refuses_missing_filters_or_empty_ops(self):
+        repo = self._repo()
+        with pytest.raises(ValueError):
+            await repo.update_by_ids_and_owner([], USER_OID, {"status": "ACTIVE"})
+        with pytest.raises(ValueError):
+            await repo.update_by_ids_and_owner([URL_OID], None, {"status": "ACTIVE"})
+        with pytest.raises(ValueError):
+            await repo.update_by_ids_and_owner([URL_OID], USER_OID, {})

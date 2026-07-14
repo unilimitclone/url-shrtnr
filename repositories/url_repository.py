@@ -143,6 +143,78 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             )
             raise
 
+    async def find_by_ids_and_owner(
+        self, url_ids: list[ObjectId], owner_id: ObjectId
+    ) -> list[UrlV2Doc]:
+        """Fetch the subset of *url_ids* owned by *owner_id*.
+
+        The ownership-scoped batch fetch behind /urls/bulk/*: ownership is
+        enforced IN the query so a foreign id simply doesn't come back —
+        never as a post-fetch compare (fail closed). Both filters required
+        defensively, mirroring the bulk-delete guard below.
+        """
+        if not url_ids or not owner_id:
+            raise ValueError("url_ids and owner_id are both required for bulk fetch")
+        try:
+            cursor = self._col.find({"_id": {"$in": url_ids}, "owner_id": owner_id})
+            docs = await cursor.to_list(length=None)
+            return [UrlV2Doc.from_mongo(doc) for doc in docs]
+        except PyMongoError as exc:
+            log.error(
+                "repo_find_by_ids_failed",
+                collection=self._collection_name,
+                error=str(exc),
+            )
+            raise
+
+    async def delete_by_ids_and_owner(
+        self, url_ids: list[ObjectId], owner_id: ObjectId
+    ) -> int:
+        """Bulk-delete exactly *url_ids* if owned by *owner_id*.
+
+        Both filters required defensively — the compound filter keeps the
+        write fail-closed even if a caller's pre-fetch went stale.
+        """
+        if not url_ids or not owner_id:
+            raise ValueError("url_ids and owner_id are both required for bulk delete")
+        try:
+            result = await self._col.delete_many(
+                {"_id": {"$in": url_ids}, "owner_id": owner_id}
+            )
+            return int(result.deleted_count or 0)
+        except PyMongoError as exc:
+            log.error(
+                "repo_delete_many_failed",
+                collection=self._collection_name,
+                error=str(exc),
+            )
+            raise
+
+    async def update_by_ids_and_owner(
+        self, url_ids: list[ObjectId], owner_id: ObjectId, set_ops: dict
+    ) -> int:
+        """Apply one ``$set`` to exactly *url_ids* if owned by *owner_id*.
+
+        Same defensive posture as the bulk delete above; *set_ops* is the
+        bare field map (the ``$set`` wrapper is applied here).
+        """
+        if not url_ids or not owner_id:
+            raise ValueError("url_ids and owner_id are both required for bulk update")
+        if not set_ops:
+            raise ValueError("set_ops must not be empty")
+        try:
+            result = await self._col.update_many(
+                {"_id": {"$in": url_ids}, "owner_id": owner_id}, {"$set": set_ops}
+            )
+            return int(result.modified_count or 0)
+        except PyMongoError as exc:
+            log.error(
+                "repo_update_many_failed",
+                collection=self._collection_name,
+                error=str(exc),
+            )
+            raise
+
     async def check_alias_exists(self, alias: str, domain: str) -> bool:
         """Return True if the alias is taken under the given domain namespace."""
         doc = await self._find_one_raw({"alias": alias, "domain": domain}, {"_id": 1})
