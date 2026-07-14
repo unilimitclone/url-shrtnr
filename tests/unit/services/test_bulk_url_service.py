@@ -81,7 +81,11 @@ class TestBulkBatch:
         report = batch.report(op="delete", user_id=USER_OID)
         assert (report.summary.total, report.summary.succeeded) == (3, 2)
         assert report.summary.failed == 1  # not_found counts as failed
-        assert [row.id for row in report.results] == [str(_oid(1)), str(_oid(2)), str(_oid(3))]
+        assert [row.id for row in report.results] == [
+            str(_oid(1)),
+            str(_oid(2)),
+            str(_oid(3)),
+        ]
         assert report.results[1].error_code == "not_found"
         assert report.results[1].alias is None
 
@@ -304,7 +308,9 @@ class TestBulkSetStatus:
         inactive_og = make_url_v2_doc(
             url_id=_oid(1), alias="og", status="INACTIVE", meta_tags={"title": "T"}
         )
-        inactive_plain = make_url_v2_doc(url_id=_oid(2), alias="plain", status="INACTIVE")
+        inactive_plain = make_url_v2_doc(
+            url_id=_oid(2), alias="plain", status="INACTIVE"
+        )
         expired = make_url_v2_doc(url_id=_oid(3), alias="exp", status="EXPIRED")
         url_repo = AsyncMock()
         url_repo.find_by_ids_and_owner.return_value = [
@@ -351,9 +357,7 @@ class TestBulkSetStatus:
         assert report.results[0].error_code == "internal"
         # update_many may have partially applied — stale cache entries
         # serve lies, a spurious miss re-reads truth.
-        url_cache.invalidate_many.assert_awaited_once_with(
-            ["a"], SYSTEM_DEFAULT_DOMAIN
-        )
+        url_cache.invalidate_many.assert_awaited_once_with(["a"], SYSTEM_DEFAULT_DOMAIN)
         kv.bulk_delete.assert_awaited_once()
 
 
@@ -598,7 +602,9 @@ class TestStatusParity:
         _, _, bulk_set = bulk_repo.update_by_ids_and_owner.call_args[0]
 
         # Identical $set shape: {status, updated_at} and nothing else.
-        assert set(single_set.keys()) == set(bulk_set.keys()) == {"status", "updated_at"}
+        assert (
+            set(single_set.keys()) == set(bulk_set.keys()) == {"status", "updated_at"}
+        )
         assert single_set["status"] == bulk_set["status"] == UrlStatus.INACTIVE
         single_cache.invalidate.assert_awaited_once_with("promo", SYSTEM_DEFAULT_DOMAIN)
         bulk_cache.invalidate_many.assert_awaited_once_with(
@@ -636,9 +642,7 @@ class TestExpiryParity:
         single_repo = AsyncMock()
         single_repo.find_by_id.return_value = doc
         single = make_single_item_service(single_repo, AsyncMock())
-        await single.update(
-            _oid(1), UpdateUrlRequest(expire_after=FUTURE), USER_OID
-        )
+        await single.update(_oid(1), UpdateUrlRequest(expire_after=FUTURE), USER_OID)
         single_set = single_repo.update.call_args[0][1]["$set"]
 
         bulk_repo = AsyncMock()
@@ -648,10 +652,14 @@ class TestExpiryParity:
         await bulk.bulk_set_expiry([_oid(1)], FUTURE, USER_OID)
         _, _, bulk_set = bulk_repo.update_by_ids_and_owner.call_args[0]
 
-        assert set(single_set.keys()) == set(bulk_set.keys()) == {
-            "expire_after",
-            "updated_at",
-        }
+        assert (
+            set(single_set.keys())
+            == set(bulk_set.keys())
+            == {
+                "expire_after",
+                "updated_at",
+            }
+        )
         assert single_set["expire_after"] == bulk_set["expire_after"] == FUTURE
 
     @pytest.mark.asyncio
@@ -663,9 +671,7 @@ class TestExpiryParity:
         single_repo.find_by_id.return_value = doc
         single = make_single_item_service(single_repo, AsyncMock())
         with pytest.raises(ValidationError, match="expire_after must be in the future"):
-            await single.update(
-                _oid(1), UpdateUrlRequest(expire_after=past), USER_OID
-            )
+            await single.update(_oid(1), UpdateUrlRequest(expire_after=past), USER_OID)
 
         bulk = make_bulk_service(AsyncMock())
         with pytest.raises(ValidationError, match="expire_after must be in the future"):
@@ -678,9 +684,7 @@ class TestExpiryParity:
         single_repo = AsyncMock()
         single_repo.find_by_id.return_value = doc
         single = make_single_item_service(single_repo, AsyncMock())
-        await single.update(
-            _oid(1), UpdateUrlRequest(expire_after=FUTURE), USER_OID
-        )
+        await single.update(_oid(1), UpdateUrlRequest(expire_after=FUTURE), USER_OID)
         single_set = single_repo.update.call_args[0][1]["$set"]
         assert single_set["status"] == UrlStatus.ACTIVE  # _auto_reactivate
 
@@ -699,9 +703,7 @@ class TestExpiryParity:
         single_repo = AsyncMock()
         single_repo.find_by_id.return_value = doc
         single = make_single_item_service(single_repo, AsyncMock())
-        await single.update(
-            _oid(1), UpdateUrlRequest(expire_after=None), USER_OID
-        )
+        await single.update(_oid(1), UpdateUrlRequest(expire_after=None), USER_OID)
         single_set = single_repo.update.call_args[0][1]["$set"]
         assert single_set["expire_after"] is None
         assert single_set["status"] == UrlStatus.ACTIVE

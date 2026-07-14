@@ -111,9 +111,7 @@ class CloudflareKVClient:
                 | ({"expiration_ttl": expiration_ttl} if expiration_ttl else {})
                 for key, value in chunk
             ]
-            ok = (
-                await self._bulk_request("PUT", "bulk", body, count=len(chunk)) and ok
-            )
+            ok = await self._bulk_request("PUT", "bulk", body, count=len(chunk)) and ok
         return ok
 
     async def bulk_delete(self, keys: list[str]) -> bool:

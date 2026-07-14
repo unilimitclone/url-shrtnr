@@ -89,7 +89,10 @@ class TestBulkOpRequests:
         assert req.expire_after.year == 2027
 
     def test_expiry_null_clears(self):
-        assert BulkUpdateExpiryRequest(ids=[VALID_ID], expire_after=None).expire_after is None
+        assert (
+            BulkUpdateExpiryRequest(ids=[VALID_ID], expire_after=None).expire_after
+            is None
+        )
 
     def test_expiry_field_is_required(self):
         # Omitting expire_after is a malformed request, not an implicit

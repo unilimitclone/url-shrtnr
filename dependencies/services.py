@@ -22,6 +22,7 @@ from services.auth.credentials import CredentialService
 from services.auth.device import DeviceAuthService
 from services.auth.password import PasswordService
 from services.auth.verification import EmailVerificationService
+from services.bulk_url_service import BulkUrlService
 from services.click import ClickService
 from services.click.sinks import ClickEventSink
 from services.contact_service import ContactService
@@ -35,7 +36,6 @@ from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
 from services.stats_service import StatsService
-from services.bulk_url_service import BulkUrlService
 from services.url_service import UrlService
 
 

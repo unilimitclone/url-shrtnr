@@ -53,7 +53,7 @@ async def bulk_delete_urls_v1(
     request: Request,
     body: BulkDeleteUrlsRequest,
     bulk_service: BulkUrlSvc,
-    user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),
+    user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
 ) -> BulkUrlOperationResponse:
     """Permanently delete up to 100 URLs you own, addressed by id.
 
@@ -88,7 +88,7 @@ async def bulk_update_url_status_v1(
     request: Request,
     body: BulkUpdateStatusRequest,
     bulk_service: BulkUrlSvc,
-    user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),
+    user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
 ) -> BulkUrlOperationResponse:
     """Activate or deactivate up to 100 URLs you own in one request.
 
@@ -119,7 +119,7 @@ async def bulk_update_url_expiry_v1(
     request: Request,
     body: BulkUpdateExpiryRequest,
     bulk_service: BulkUrlSvc,
-    user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),
+    user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
 ) -> BulkUrlOperationResponse:
     """Set or clear the expiration on up to 100 URLs you own.
 

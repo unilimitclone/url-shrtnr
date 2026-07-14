@@ -25,8 +25,9 @@ engine — composition, not inheritance.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING
 
 from bson import ObjectId
 from pymongo.errors import PyMongoError

@@ -49,8 +49,8 @@ from dependencies.infra import (
 )
 from dependencies.services import (
     ApiKeySvc,
-    BulkUrlSvc,
     AppGrantRepo,
+    BulkUrlSvc,
     ClickSink,
     ClickSvc,
     ContactSvc,
@@ -106,6 +106,7 @@ __all__ = [
     "AppRegistryDep",
     # auth
     "AuthUser",
+    "BulkUrlSvc",
     "ClickSink",
     "ClickSvc",
     "ContactSvc",
@@ -129,7 +130,6 @@ __all__ = [
     "ReportIntakeSvc",
     "Settings",
     "StatsSvc",
-    "BulkUrlSvc",
     "UrlSvc",
     "UserRepo",
     "VerificationSvc",
@@ -140,6 +140,7 @@ __all__ = [
     "get_api_key_service",
     "get_app_grant_repo",
     "get_app_registry",
+    "get_bulk_url_service",
     "get_click_service",
     "get_click_sink",
     "get_contact_service",
@@ -163,7 +164,6 @@ __all__ = [
     "get_report_intake_service",
     "get_settings",
     "get_stats_service",
-    "get_bulk_url_service",
     "get_url_service",
     "get_user_repo",
     "get_verification_service",
