@@ -22,6 +22,7 @@ from pydantic import Field, field_validator
 from schemas.dto.base import RequestBase
 from schemas.models.url import UrlStatus
 from shared.datetime_utils import parse_datetime
+from shared.url_utils import normalise_fqdn
 
 # Server cap per request. The frontend chunks larger selections and
 # merges the per-chunk reports. Bounded by report ergonomics and the
@@ -100,3 +101,27 @@ class BulkUpdateExpiryRequest(BulkIdsRequest):
         if result is None:
             raise ValueError("Invalid expire_after format")
         return result
+
+
+class BulkMoveDomainRequest(BulkIdsRequest):
+    """Request body for bulk domain move."""
+
+    domain: str | None = Field(
+        max_length=253,
+        description=(
+            "Target domain for every id — a custom domain you own (must be "
+            "ACTIVE), or `null` to move back to the system default. One "
+            "target for the whole batch."
+        ),
+        examples=["links.acme.com"],
+    )
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _norm_domain(cls, v: str | None) -> str | None:
+        # Same normalisation as UpdateUrlRequest.domain: null/"" mean the
+        # system default; anything else is canonicalised (lowercase, no
+        # trailing dot) before the route's ownership check sees it.
+        if v is None or v == "":
+            return None
+        return normalise_fqdn(v)

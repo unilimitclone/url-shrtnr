@@ -98,6 +98,7 @@ class Limits:
     # pair because it is irreversible.
     URL_BULK_STATUS = "60 per minute; 200 per day"
     URL_BULK_EXPIRY = "60 per minute; 200 per day"
+    URL_BULK_DOMAIN = "60 per minute; 200 per day"
     URL_BULK_MUTATE_DELETE = "30 per minute; 100 per day"
 
     # Destination metadata fetch — outbound fetches on our dime; tight.

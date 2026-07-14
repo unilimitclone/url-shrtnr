@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from bson import ObjectId
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from errors import ValidationError
 from infrastructure.cache.url_cache import UrlCacheData
@@ -43,11 +43,13 @@ from schemas.dto.responses.bulk import (
 from schemas.models.url import UrlStatus, UrlV2Doc
 from services.edge_cache.contract import cache_key
 from services.edge_cache.og_writethrough import build_og_entry
+from shared.reserved_aliases import is_reserved_alias
 
 if TYPE_CHECKING:
     from infrastructure.cache.url_cache import UrlCache
     from infrastructure.cloudflare_kv import CloudflareKVClient
     from repositories.url_repository import UrlRepository
+    from services.url_service import UrlService
 
 log = get_logger(__name__)
 
@@ -123,12 +125,17 @@ class BulkUrlService:
         url_repo: UrlRepository,
         url_cache: UrlCache,
         *,
+        url_service: UrlService,
         kv: CloudflareKVClient | None,
         system_default_domain: str,
         og_ttl_seconds: int = 86_400,
     ) -> None:
         self._url_repo = url_repo
         self._url_cache = url_cache
+        # Business rules that must never fork are borrowed, not re-derived:
+        # alias availability (v2 + legacy + emoji on the system default)
+        # comes from the same method the single-item domain handler calls.
+        self._url_service = url_service
         self._kv = kv
         self._system_default_domain = system_default_domain
         self._og_ttl_seconds = og_ttl_seconds
@@ -228,11 +235,21 @@ class BulkUrlService:
 
     def _og_put_entries(self, docs: list[UrlV2Doc], **updates) -> list[tuple[str, str]]:
         """Fresh ``og_only`` entries for the og-links in *docs*, rendered
-        from the post-write state (``updates`` is what the write set)."""
+        from the post-write state (``updates`` is what the write set).
+
+        Eligibility is judged on the MERGED doc: a domain move onto the
+        system default begins KV management for an og-link (single-item
+        parity — ``sync`` puts whenever the post-write domain is the
+        system default and the link is an ACTIVE og-link).
+        """
         entries = []
         for doc in docs:
-            if doc.domain == self._system_default_domain and doc.meta_tags is not None:
-                merged = doc.model_copy(update=updates)
+            merged = doc.model_copy(update=updates)
+            if (
+                merged.domain == self._system_default_domain
+                and merged.meta_tags is not None
+                and merged.status == UrlStatus.ACTIVE
+            ):
                 entries.append(build_og_entry(UrlCacheData.from_v2_doc(merged)))
         return entries
 
@@ -418,6 +435,138 @@ class BulkUrlService:
         if reactivate:
             self._log_updated(reactivate, react_ops, owner_id)
         return batch.report(op="set_expiry", user_id=owner_id)
+
+    async def bulk_move_domain(
+        self,
+        ids: list[ObjectId],
+        domain: str | None,
+        owner_id: ObjectId,
+    ) -> BulkUrlOperationResponse:
+        """Move exactly *ids* to *domain* (None = system default).
+
+        Mirrors the single-item domain handler per item: already-on-target
+        is a success no-op with no write, a reserved alias cannot smuggle
+        onto the system default (``validation_error``), and the alias must
+        be free on the target namespace (``conflict``) — availability is
+        the SAME check the single-item path runs (v2 + legacy + emoji on
+        the system default), not just the v2 unique index.
+
+        Unlike the other bulk ops this one writes per item, sequentially,
+        in request order: items interact (two links with the same alias
+        moving to one target — first wins, deterministically), and the
+        ``(domain, alias)`` unique index makes one update_many unable to
+        attribute a mid-flight collision. ``DuplicateKeyError`` is the
+        race backstop when a third party claims the alias between the
+        availability check and the write. Target ownership is the route's
+        envelope precondition; the service treats the value as opaque,
+        same as the single-item split.
+        """
+        now = datetime.now(timezone.utc)
+        target = domain or self._system_default_domain
+        batch = await self._load(
+            ids, owner_id, blocked_message="Cannot modify a blocked URL"
+        )
+        set_ops = {"domain": target, "updated_at": now}
+        moved: list[UrlV2Doc] = []
+        claimed: set[str] = set()  # aliases granted on the target this batch
+        for doc in batch.pending:
+            if doc.domain == target:
+                batch.ok(doc.id, alias=doc.alias)  # no-op, nothing written
+                continue
+            if target == self._system_default_domain and is_reserved_alias(doc.alias):
+                log.info(
+                    "url_domain_move_alias_reserved",
+                    short_code=doc.alias,
+                    from_domain=doc.domain,
+                )
+                batch.reject(
+                    doc.id,
+                    "validation_error",
+                    f"Alias '{doc.alias}' is reserved on {target}",
+                    alias=doc.alias,
+                )
+                continue
+            if (
+                doc.alias in claimed
+                or not await self._url_service.check_alias_available(
+                    doc.alias, domain=target
+                )
+            ):
+                self._log_move_conflict(doc, target)
+                batch.reject(
+                    doc.id,
+                    "conflict",
+                    f"Alias '{doc.alias}' is already in use on {target}",
+                    alias=doc.alias,
+                )
+                continue
+            try:
+                await self._url_repo.update_by_ids_and_owner(
+                    [doc.id], owner_id, set_ops
+                )
+            except DuplicateKeyError:
+                # Race backstop: the alias was claimed on the target between
+                # the availability check and the write — the unique index is
+                # the authoritative arbiter.
+                self._log_move_conflict(doc, target)
+                batch.reject(
+                    doc.id,
+                    "conflict",
+                    f"Alias '{doc.alias}' is already in use on {target}",
+                    alias=doc.alias,
+                )
+                continue
+            except PyMongoError:
+                log.exception(
+                    "urls_bulk_move_write_failed",
+                    user_id=str(owner_id),
+                    url_id=str(doc.id),
+                )
+                batch.reject(doc.id, "internal", _INTERNAL_MSG, alias=doc.alias)
+                # The write's outcome is unknown — clear both keys so a
+                # spurious miss re-reads truth rather than serving lies.
+                await self._invalidate([(doc.alias, doc.domain), (doc.alias, target)])
+                continue
+            claimed.add(doc.alias)
+            moved.append(doc)
+            batch.ok(doc.id, alias=doc.alias)
+
+        if moved:
+            # Both keys per item: the pre-move key must not serve stale and
+            # the post-move key must not have been populated by a racing
+            # read (single-item parity: update() clears old + new).
+            pairs: list[tuple[str, str]] = []
+            for doc in moved:
+                pairs.append((doc.alias, doc.domain))
+                pairs.append((doc.alias, target))
+            await self._invalidate(pairs)
+            # Old system-domain keys drop (og entries re-home; plain links'
+            # promoted entries must not serve an alias that moved away —
+            # same purge the single-item path fires on a domain change).
+            # og-links landing on the system default begin KV management.
+            self._edge_flush(
+                purge_keys=self._system_domain_keys(moved),
+                put_entries=self._og_put_entries(moved, domain=target),
+            )
+            self._log_updated(moved, set_ops, owner_id)
+            for doc in moved:
+                log.info(
+                    "url_domain_moved",
+                    url_id=str(doc.id),
+                    short_code=doc.alias,
+                    from_domain=doc.domain,
+                    to_domain=target,
+                    user_id=str(owner_id),
+                )
+        return batch.report(op="move_domain", user_id=owner_id)
+
+    def _log_move_conflict(self, doc: UrlV2Doc, target: str) -> None:
+        log.info(
+            "url_domain_move_alias_conflict",
+            short_code=doc.alias,
+            from_domain=doc.domain,
+            to_domain=target,
+        )
 
     # ── write helpers ────────────────────────────────────────────────────
 

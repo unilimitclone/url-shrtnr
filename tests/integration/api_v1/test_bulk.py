@@ -13,7 +13,7 @@ from bson import ObjectId
 from fastapi.testclient import TestClient
 
 from dependencies import get_bulk_url_service, require_auth
-from errors import ValidationError
+from errors import ForbiddenError, ValidationError
 from schemas.dto.responses.bulk import (
     BulkOperationSummary,
     BulkUrlOperationResponse,
@@ -188,3 +188,97 @@ class TestBulkExpiryRoute:
         body = resp.json()
         assert body["code"] == "validation_error"
         assert body["field"] == "expire_after"
+
+
+class TestBulkDomainRoute:
+    def test_custom_target_triggers_owner_check_and_passes_through(self):
+        user = _make_user()
+        mock_svc = AsyncMock()
+        mock_svc.bulk_move_domain = AsyncMock(return_value=_report())
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock(return_value=None)
+
+        from dependencies import get_custom_domain_service
+
+        application = _build_test_app(
+            {
+                require_auth: lambda: user,
+                get_bulk_url_service: lambda: mock_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.post(
+                "/api/v1/urls/bulk/domain",
+                json={"ids": [VALID_ID], "domain": "Links.ACME.com"},
+            )
+
+        assert resp.status_code == 200
+        # Ownership fired once, with the normalised fqdn.
+        own_args = custom_svc.assert_owned_and_active.call_args.args
+        assert own_args[0].user_id == user.user_id
+        assert own_args[1] == "links.acme.com"
+        args = mock_svc.bulk_move_domain.await_args.args
+        assert args[0] == [ObjectId(VALID_ID)]
+        assert args[1] == "links.acme.com"
+
+    def test_null_target_skips_owner_check(self):
+        user = _make_user()
+        mock_svc = AsyncMock()
+        mock_svc.bulk_move_domain = AsyncMock(return_value=_report())
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock()
+
+        from dependencies import get_custom_domain_service
+
+        application = _build_test_app(
+            {
+                require_auth: lambda: user,
+                get_bulk_url_service: lambda: mock_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.post(
+                "/api/v1/urls/bulk/domain",
+                json={"ids": [VALID_ID], "domain": None},
+            )
+
+        assert resp.status_code == 200
+        custom_svc.assert_owned_and_active.assert_not_awaited()
+        assert mock_svc.bulk_move_domain.await_args.args[1] is None
+
+    def test_unowned_target_rejects_envelope(self):
+        """A bad target fails the whole request before any item is
+        attempted — zero rows, standard AppError body."""
+        user = _make_user()
+        mock_svc = AsyncMock()
+        custom_svc = AsyncMock()
+        custom_svc.assert_owned_and_active = AsyncMock(
+            side_effect=ForbiddenError("You don't own this domain")
+        )
+
+        from dependencies import get_custom_domain_service
+
+        application = _build_test_app(
+            {
+                require_auth: lambda: user,
+                get_bulk_url_service: lambda: mock_svc,
+                get_custom_domain_service: lambda: custom_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.post(
+                "/api/v1/urls/bulk/domain",
+                json={"ids": [VALID_ID], "domain": "links.acme.com"},
+            )
+
+        assert resp.status_code == 403
+        assert resp.json()["code"] == "forbidden"
+        mock_svc.bulk_move_domain.assert_not_awaited()
+
+    def test_missing_domain_field_is_422(self):
+        user = _make_user()
+        with _client(AsyncMock(), user) as client:
+            resp = client.post("/api/v1/urls/bulk/domain", json={"ids": [VALID_ID]})
+        assert resp.status_code == 422

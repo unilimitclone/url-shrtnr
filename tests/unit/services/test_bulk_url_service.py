@@ -18,7 +18,7 @@ import pytest
 from bson import ObjectId
 from pymongo.errors import PyMongoError
 
-from errors import ForbiddenError, NotFoundError, ValidationError
+from errors import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from schemas.dto.requests.url import UpdateUrlRequest
 from schemas.models.url import UrlStatus
 from services.bulk_url_service import BulkBatch, BulkUrlService
@@ -37,10 +37,15 @@ def _oid(n: int) -> ObjectId:
     return ObjectId(f"{n:024x}")
 
 
-def make_bulk_service(url_repo=None, url_cache=None, kv=None) -> BulkUrlService:
+def make_bulk_service(
+    url_repo=None, url_cache=None, kv=None, url_service=None
+) -> BulkUrlService:
+    # The default url_service mock answers "available" for every alias
+    # (AsyncMock truthiness); move tests override check_alias_available.
     return BulkUrlService(
         url_repo or AsyncMock(),
         url_cache or AsyncMock(),
+        url_service=url_service or AsyncMock(),
         kv=kv,
         system_default_domain=SYSTEM_DEFAULT_DOMAIN,
         og_ttl_seconds=86_400,
@@ -724,3 +729,311 @@ class TestExpiryParity:
         _, _, bulk_set = bulk_repo.update_by_ids_and_owner.call_args[0]
         assert bulk_set["expire_after"] is None
         assert bulk_set["status"] == UrlStatus.ACTIVE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# bulk_move_domain
+# ─────────────────────────────────────────────────────────────────────────────
+
+TENANT = "links.acme.com"
+
+
+class TestBulkMoveDomain:
+    @pytest.mark.asyncio
+    async def test_mixed_batch_end_to_end(self):
+        movable = make_url_v2_doc(url_id=_oid(1), alias="promo")
+        on_target = make_url_v2_doc(url_id=_oid(2), alias="there", domain=TENANT)
+        taken = make_url_v2_doc(url_id=_oid(3), alias="taken")
+        blocked = make_url_v2_doc(url_id=_oid(4), alias="bad", status="BLOCKED")
+        url_repo = AsyncMock()
+        url_repo.find_by_ids_and_owner.return_value = [
+            movable,
+            on_target,
+            taken,
+            blocked,
+        ]
+        url_repo.update_by_ids_and_owner.return_value = 1
+        url_cache = AsyncMock()
+        url_service = AsyncMock()
+        url_service.check_alias_available.side_effect = lambda alias, domain: (
+            alias != "taken"
+        )
+        svc = make_bulk_service(url_repo, url_cache, url_service=url_service)
+
+        report = await svc.bulk_move_domain(
+            [_oid(1), _oid(2), _oid(3), _oid(4), _oid(5)], TENANT, USER_OID
+        )
+
+        by_id = {row.id: row for row in report.results}
+        assert by_id[str(_oid(1))].ok is True
+        assert by_id[str(_oid(2))].ok is True  # already on target: no-op
+        assert by_id[str(_oid(3))].error_code == "conflict"
+        assert (
+            by_id[str(_oid(3))].error == f"Alias 'taken' is already in use on {TENANT}"
+        )
+        assert by_id[str(_oid(4))].error_code == "forbidden"
+        assert by_id[str(_oid(5))].error_code == "not_found"
+        # Exactly one write: the movable item, ownership included.
+        url_repo.update_by_ids_and_owner.assert_awaited_once()
+        ids, owner, set_ops = url_repo.update_by_ids_and_owner.call_args[0]
+        assert ids == [_oid(1)] and owner == USER_OID
+        assert set_ops["domain"] == TENANT and "updated_at" in set_ops
+        # Both keys invalidated for the moved item, grouped per domain.
+        invalidated = {
+            (tuple(call.args[0]), call.args[1])
+            for call in url_cache.invalidate_many.await_args_list
+        }
+        assert invalidated == {
+            (("promo",), SYSTEM_DEFAULT_DOMAIN),
+            (("promo",), TENANT),
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_op_items_write_nothing(self):
+        doc = make_url_v2_doc(url_id=_oid(1), domain=TENANT)
+        url_repo = AsyncMock()
+        url_repo.find_by_ids_and_owner.return_value = [doc]
+        svc = make_bulk_service(url_repo)
+
+        report = await svc.bulk_move_domain([_oid(1)], TENANT, USER_OID)
+
+        assert report.results[0].ok is True
+        url_repo.update_by_ids_and_owner.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_null_target_means_system_default(self):
+        doc = make_url_v2_doc(url_id=_oid(1), alias="back", domain=TENANT)
+        url_repo = AsyncMock()
+        url_repo.find_by_ids_and_owner.return_value = [doc]
+        url_repo.update_by_ids_and_owner.return_value = 1
+        svc = make_bulk_service(url_repo)
+
+        report = await svc.bulk_move_domain([_oid(1)], None, USER_OID)
+
+        assert report.results[0].ok is True
+        _, _, set_ops = url_repo.update_by_ids_and_owner.call_args[0]
+        assert set_ops["domain"] == SYSTEM_DEFAULT_DOMAIN
+
+    @pytest.mark.asyncio
+    async def test_reserved_alias_cannot_move_onto_system_default(self):
+        doc = make_url_v2_doc(url_id=_oid(1), alias="login", domain=TENANT)
+        url_repo = AsyncMock()
+        url_repo.find_by_ids_and_owner.return_value = [doc]
+        svc = make_bulk_service(url_repo)
+
+        with patch("services.bulk_url_service.is_reserved_alias", return_value=True):
+            report = await svc.bulk_move_domain([_oid(1)], None, USER_OID)
+
+        row = report.results[0]
+        assert row.error_code == "validation_error"
+        assert row.error == f"Alias 'login' is reserved on {SYSTEM_DEFAULT_DOMAIN}"
+        url_repo.update_by_ids_and_owner.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_intra_batch_same_alias_first_wins(self):
+        first = make_url_v2_doc(url_id=_oid(1), alias="promo")
+        second = make_url_v2_doc(
+            url_id=_oid(2), alias="promo", domain="other.tenant.com"
+        )
+        url_repo = AsyncMock()
+        url_repo.find_by_ids_and_owner.return_value = [first, second]
+        url_repo.update_by_ids_and_owner.return_value = 1
+        svc = make_bulk_service(url_repo)
+
+        report = await svc.bulk_move_domain([_oid(1), _oid(2)], TENANT, USER_OID)
+
+        by_id = {row.id: row for row in report.results}
+        assert by_id[str(_oid(1))].ok is True
+        assert by_id[str(_oid(2))].error_code == "conflict"
+        # Only the winner was written.
+        assert url_repo.update_by_ids_and_owner.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_duplicate_key_race_reports_conflict(self):
+        """The unique (domain, alias) index is the authoritative arbiter
+        when the availability check races a third-party claim."""
+        from pymongo.errors import DuplicateKeyError
+
+        doc = make_url_v2_doc(url_id=_oid(1), alias="promo")
+        url_repo = AsyncMock()
+        url_repo.find_by_ids_and_owner.return_value = [doc]
+        url_repo.update_by_ids_and_owner.side_effect = DuplicateKeyError("dup")
+        svc = make_bulk_service(url_repo)
+
+        report = await svc.bulk_move_domain([_oid(1)], TENANT, USER_OID)
+
+        assert report.results[0].error_code == "conflict"
+
+    @pytest.mark.asyncio
+    async def test_write_failure_is_internal_and_invalidates_both_keys(self):
+        doc = make_url_v2_doc(url_id=_oid(1), alias="promo")
+        url_repo = AsyncMock()
+        url_repo.find_by_ids_and_owner.return_value = [doc]
+        url_repo.update_by_ids_and_owner.side_effect = PyMongoError("boom")
+        url_cache = AsyncMock()
+        svc = make_bulk_service(url_repo, url_cache)
+
+        report = await svc.bulk_move_domain([_oid(1)], TENANT, USER_OID)
+
+        assert report.results[0].error_code == "internal"
+        invalidated = {
+            (tuple(call.args[0]), call.args[1])
+            for call in url_cache.invalidate_many.await_args_list
+        }
+        assert invalidated == {
+            (("promo",), SYSTEM_DEFAULT_DOMAIN),
+            (("promo",), TENANT),
+        }
+
+    @pytest.mark.asyncio
+    async def test_edge_effects_off_and_onto_system_domain(self):
+        """Off-moves purge the old system key (og re-home + plain promoted
+        entries); onto-moves re-put og entries under the system key."""
+        off_plain = make_url_v2_doc(url_id=_oid(1), alias="hot")
+        off_og = make_url_v2_doc(url_id=_oid(2), alias="card", meta_tags={"title": "T"})
+        url_repo = AsyncMock()
+        url_repo.find_by_ids_and_owner.return_value = [off_plain, off_og]
+        url_repo.update_by_ids_and_owner.return_value = 1
+        kv = make_kv()
+        svc = make_bulk_service(url_repo, kv=kv)
+
+        await svc.bulk_move_domain([_oid(1), _oid(2)], TENANT, USER_OID)
+        await drain_edge_tasks(svc)
+
+        # Both old system keys purged; nothing re-put (target is a tenant).
+        assert sorted(kv.bulk_delete.call_args[0][0]) == [
+            f"cache:{SYSTEM_DEFAULT_DOMAIN}:card",
+            f"cache:{SYSTEM_DEFAULT_DOMAIN}:hot",
+        ]
+        kv.bulk_put.assert_not_awaited()
+
+        # Now the reverse: a tenant og-link moving ONTO the system default
+        # begins KV management (entry rendered from the merged doc).
+        onto_og = make_url_v2_doc(
+            url_id=_oid(3), alias="incoming", domain=TENANT, meta_tags={"title": "T"}
+        )
+        url_repo2 = AsyncMock()
+        url_repo2.find_by_ids_and_owner.return_value = [onto_og]
+        url_repo2.update_by_ids_and_owner.return_value = 1
+        kv2 = make_kv()
+        svc2 = make_bulk_service(url_repo2, kv=kv2)
+
+        with patch(
+            "services.bulk_url_service.build_og_entry",
+            return_value=(f"cache:{SYSTEM_DEFAULT_DOMAIN}:incoming", "{}"),
+        ) as build:
+            await svc2.bulk_move_domain([_oid(3)], None, USER_OID)
+            await drain_edge_tasks(svc2)
+
+        build.assert_called_once()
+        assert build.call_args[0][0].domain == SYSTEM_DEFAULT_DOMAIN
+        kv2.bulk_put.assert_awaited_once()
+        kv2.bulk_delete.assert_not_awaited()  # old key was a tenant key
+
+
+class TestMoveDomainParity:
+    """UrlService.update(domain-only) vs bulk_move_domain-of-one."""
+
+    @pytest.mark.asyncio
+    async def test_move_writes_same_fields_and_invalidates_both_keys(self):
+        doc = make_url_v2_doc(url_id=_oid(1), alias="promo")
+
+        single_repo, single_cache = AsyncMock(), AsyncMock()
+        single_repo.find_by_id.return_value = doc
+        single_repo.check_alias_exists.return_value = False
+        single = make_single_item_service(single_repo, single_cache)
+        await single.update(
+            _oid(1),
+            UpdateUrlRequest(domain=TENANT),
+            USER_OID,
+        )
+        single_set = single_repo.update.call_args[0][1]["$set"]
+
+        bulk_repo, bulk_cache = AsyncMock(), AsyncMock()
+        bulk_repo.find_by_ids_and_owner.return_value = [doc]
+        bulk_repo.update_by_ids_and_owner.return_value = 1
+        bulk = make_bulk_service(bulk_repo, bulk_cache)
+        await bulk.bulk_move_domain([_oid(1)], TENANT, USER_OID)
+        _, _, bulk_set = bulk_repo.update_by_ids_and_owner.call_args[0]
+
+        assert (
+            set(single_set.keys()) == set(bulk_set.keys()) == {"domain", "updated_at"}
+        )
+        assert single_set["domain"] == bulk_set["domain"] == TENANT
+        # Single-item clears old key then new key; bulk groups the same
+        # two keys per domain.
+        single_keys = {call.args for call in single_cache.invalidate.await_args_list}
+        assert single_keys == {
+            ("promo", SYSTEM_DEFAULT_DOMAIN),
+            ("promo", TENANT),
+        }
+        bulk_keys = {
+            (alias, call.args[1])
+            for call in bulk_cache.invalidate_many.await_args_list
+            for alias in call.args[0]
+        }
+        assert bulk_keys == single_keys
+
+    @pytest.mark.asyncio
+    async def test_conflict_and_reserved_messages_match_single_item(self):
+        doc = make_url_v2_doc(url_id=_oid(1), alias="promo")
+
+        single_repo = AsyncMock()
+        single_repo.find_by_id.return_value = doc
+        single_repo.check_alias_exists.return_value = True  # taken on target
+        single = make_single_item_service(single_repo, AsyncMock())
+        with pytest.raises(
+            ConflictError, match=f"Alias 'promo' is already in use on {TENANT}"
+        ):
+            await single.update(_oid(1), UpdateUrlRequest(domain=TENANT), USER_OID)
+
+        bulk_repo = AsyncMock()
+        bulk_repo.find_by_ids_and_owner.return_value = [doc]
+        url_service = AsyncMock()
+        url_service.check_alias_available.return_value = False
+        bulk = make_bulk_service(bulk_repo, url_service=url_service)
+        report = await bulk.bulk_move_domain([_oid(1)], TENANT, USER_OID)
+        row = report.results[0]
+        assert row.error_code == "conflict"
+        assert row.error == f"Alias 'promo' is already in use on {TENANT}"
+
+        # Reserved alias onto the system default: same message both paths.
+        tenant_doc = make_url_v2_doc(url_id=_oid(2), alias="login2", domain=TENANT)
+        single_repo2 = AsyncMock()
+        single_repo2.find_by_id.return_value = tenant_doc
+        single2 = make_single_item_service(single_repo2, AsyncMock())
+        with (
+            patch("services.url_service.is_reserved_alias", return_value=True),
+            pytest.raises(
+                ValidationError,
+                match=f"Alias 'login2' is reserved on {SYSTEM_DEFAULT_DOMAIN}",
+            ),
+        ):
+            await single2.update(_oid(2), UpdateUrlRequest(domain=None), USER_OID)
+
+        bulk_repo2 = AsyncMock()
+        bulk_repo2.find_by_ids_and_owner.return_value = [tenant_doc]
+        bulk2 = make_bulk_service(bulk_repo2)
+        with patch("services.bulk_url_service.is_reserved_alias", return_value=True):
+            report2 = await bulk2.bulk_move_domain([_oid(2)], None, USER_OID)
+        row2 = report2.results[0]
+        assert row2.error_code == "validation_error"
+        assert row2.error == f"Alias 'login2' is reserved on {SYSTEM_DEFAULT_DOMAIN}"
+
+    @pytest.mark.asyncio
+    async def test_already_on_target_is_noop_on_both_paths(self):
+        doc = make_url_v2_doc(url_id=_oid(1), domain=TENANT)
+
+        single_repo = AsyncMock()
+        single_repo.find_by_id.return_value = doc
+        single = make_single_item_service(single_repo, AsyncMock())
+        result = await single.update(_oid(1), UpdateUrlRequest(domain=TENANT), USER_OID)
+        assert result is doc
+        single_repo.update.assert_not_called()
+
+        bulk_repo = AsyncMock()
+        bulk_repo.find_by_ids_and_owner.return_value = [doc]
+        bulk = make_bulk_service(bulk_repo)
+        report = await bulk.bulk_move_domain([_oid(1)], TENANT, USER_OID)
+        assert report.results[0].ok is True
+        bulk_repo.update_by_ids_and_owner.assert_not_called()

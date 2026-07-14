@@ -2,6 +2,7 @@
 POST /api/v1/urls/bulk/delete — delete up to 100 URLs by id
 POST /api/v1/urls/bulk/status — activate/deactivate up to 100 URLs
 POST /api/v1/urls/bulk/expiry — set/clear expiry on up to 100 URLs
+POST /api/v1/urls/bulk/domain — move up to 100 URLs to another domain
 
 The backend counterpart to the dashboard's multi-select action bar: one
 request per user intent instead of a client-side fan-out over the
@@ -28,12 +29,15 @@ from dependencies import (
     URL_MANAGEMENT_SCOPES,
     BulkUrlSvc,
     CurrentUser,
+    CustomDomainSvc,
+    Settings,
     require_scopes,
 )
 from middleware.openapi import ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.dto.requests.bulk import (
     BulkDeleteUrlsRequest,
+    BulkMoveDomainRequest,
     BulkUpdateExpiryRequest,
     BulkUpdateStatusRequest,
 )
@@ -137,4 +141,50 @@ async def bulk_update_url_expiry_v1(
     """
     return await bulk_service.bulk_set_expiry(
         body.object_ids(), body.expire_after, user.user_id
+    )
+
+
+@router.post(
+    "/urls/bulk/domain",
+    responses=ERROR_RESPONSES,
+    operation_id="bulkUpdateUrlDomain",
+    summary="Bulk Move URL Domain",
+)
+@limiter.limit(Limits.URL_BULK_DOMAIN)
+async def bulk_move_url_domain_v1(
+    request: Request,
+    body: BulkMoveDomainRequest,
+    bulk_service: BulkUrlSvc,
+    custom_domain_service: CustomDomainSvc,
+    settings: Settings,
+    user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
+) -> BulkUrlOperationResponse:
+    """Move up to 100 URLs you own to a different domain in one request.
+
+    One target for the whole batch: a custom domain you own (it must be
+    verified and ACTIVE — an unusable target rejects the whole request,
+    since it could never be right for any item), or `null` to move back
+    to the system default.
+
+    Semantics match the single-item domain update exactly, per item:
+    already on the target is a success no-op, a reserved alias cannot
+    move onto the system default, and the alias must be free on the
+    target namespace. Within one batch, items are processed in request
+    order — two links with the same alias moving to one target means the
+    first wins and the second reports `conflict`, deterministically.
+
+    **Per-item verdicts** (`error_code`): `not_found` — no such URL in
+    your account; `forbidden` — the URL is admin-blocked; `conflict` —
+    alias already taken on the target; `validation_error` — reserved
+    alias on the system default.
+
+    **Retry semantics**: re-sending the batch is safe — items that
+    already moved report success no-ops.
+
+    **Rate Limits**: 60/min, 200/day — counted per request, not per id.
+    """
+    if body.domain and body.domain != settings.system_default_domain:
+        await custom_domain_service.assert_owned_and_active(user, body.domain)
+    return await bulk_service.bulk_move_domain(
+        body.object_ids(), body.domain, user.user_id
     )
