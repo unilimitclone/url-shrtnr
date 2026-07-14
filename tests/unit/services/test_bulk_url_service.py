@@ -561,9 +561,10 @@ class TestDeleteParity:
     @pytest.mark.asyncio
     async def test_foreign_id_divergence_is_the_documented_one(self):
         """Single-item answers forbidden for someone else's link; bulk
-        answers not_found (ownership in the query, no existence oracle).
-        PRD §8 accepts this divergence — this test pins that it stays
-        deliberate rather than drifting silently."""
+        answers not_found (ownership in the query, no existence oracle
+        over foreign ObjectIds). The divergence is deliberate — this test
+        pins it so it cannot drift silently; the rationale lives in the
+        BulkUrlService module docstring."""
         foreign = make_url_v2_doc(url_id=_oid(1), owner_id=OTHER_OID)
 
         single_repo = AsyncMock()

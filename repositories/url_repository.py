@@ -183,8 +183,11 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             )
             return int(result.deleted_count or 0)
         except PyMongoError as exc:
+            # Distinct from the domain-cascade's repo_delete_many_failed:
+            # a targeted by-ids delete failing is a different triage story
+            # than a domain-wide wipe failing.
             log.error(
-                "repo_delete_many_failed",
+                "repo_delete_by_ids_failed",
                 collection=self._collection_name,
                 error=str(exc),
             )

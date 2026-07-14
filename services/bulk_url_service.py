@@ -177,11 +177,13 @@ class BulkUrlService:
         purge_keys: list[str] | None = None,
         put_entries: list[tuple[str, str]] | None = None,
     ) -> None:
-        """At most one detached CF KV call-pair per batch.
+        """Detached, grouped edge reconciliation.
 
         Never awaited in-request — a remote API must not set a bulk
-        endpoint's latency. Best-effort like all edge writes: a missed
-        purge is bounded by the entries' own TTLs.
+        endpoint's latency — and grouped per flush rather than per item
+        (a batch normally produces one flush; a partially-failed expiry
+        batch can produce one per slice). Best-effort like all edge
+        writes: a missed purge is bounded by the entries' own TTLs.
         """
         if self._kv is None or not (purge_keys or put_entries):
             return

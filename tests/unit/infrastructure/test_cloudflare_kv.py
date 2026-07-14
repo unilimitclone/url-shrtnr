@@ -9,12 +9,15 @@ import httpx
 from infrastructure.cloudflare_kv import CloudflareKVClient
 
 
-def _http_with_response(status_code: int = 200) -> tuple[MagicMock, AsyncMock]:
+def _http_with_response(
+    status_code: int = 200, json_body: dict | None = None
+) -> tuple[MagicMock, AsyncMock]:
     response = MagicMock(spec=httpx.Response)
     response.status_code = status_code
     response.is_success = 200 <= status_code < 300
     response.text = "body"
     response.headers = {}
+    response.json = MagicMock(return_value=json_body or {"success": True})
     http = MagicMock()
     http.request = AsyncMock(return_value=response)
     return http, http.request
@@ -135,6 +138,26 @@ class TestBulkPut:
         assert await _client(http).bulk_put([("k", "v")]) is True
         assert request.await_args.kwargs["json"] == [{"key": "k", "value": "v"}]
 
+    async def test_bulk_put_ttl_zero_is_preserved(self):
+        # `is not None`, not truthiness — an explicit 0 must reach the wire
+        # (matches single-key put's semantics).
+        http, request = _http_with_response(200)
+        assert await _client(http).bulk_put([("k", "v")], expiration_ttl=0) is True
+        assert request.await_args.kwargs["json"] == [
+            {"key": "k", "value": "v", "expiration_ttl": 0}
+        ]
+
+    async def test_bulk_put_partial_failure_reports_false(self):
+        """CF can 200 with result.unsuccessful_keys — the bool must not lie."""
+        http, _ = _http_with_response(
+            200,
+            json_body={
+                "success": True,
+                "result": {"successful_key_count": 1, "unsuccessful_keys": ["k2"]},
+            },
+        )
+        assert await _client(http).bulk_put([("k1", "v"), ("k2", "v")]) is False
+
     async def test_empty_pairs_no_op_without_http_call(self):
         http, request = _http_with_response(200)
         assert await _client(http).bulk_put([]) is True
@@ -184,6 +207,22 @@ class TestBulkDelete:
         http, request = _http_with_response(503)
         assert await _client(http).bulk_delete(["k"]) is False
         assert request.await_count == 2  # max_retries
+
+    async def test_bulk_delete_partial_failure_reports_false(self):
+        http, _ = _http_with_response(
+            200,
+            json_body={
+                "success": True,
+                "result": {"successful_key_count": 1, "unsuccessful_keys": ["k2"]},
+            },
+        )
+        assert await _client(http).bulk_delete(["k1", "k2"]) is False
+
+    async def test_bulk_delete_non_json_2xx_trusts_status(self):
+        """The local emulator answers 2xx without CF's JSON envelope."""
+        http, _ = _http_with_response(200)
+        http.request.return_value.json = MagicMock(side_effect=ValueError("no json"))
+        assert await _client(http).bulk_delete(["k"]) is True
 
 
 class TestBulkFallback:

@@ -10,9 +10,25 @@ envelope rejection where zero items were attempted).
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from schemas.dto.base import ResponseBase
+
+BulkErrorCode = Literal[
+    "not_found",
+    "forbidden",
+    "conflict",
+    "validation_error",
+    "internal",
+    "not_attempted",
+]
+"""Closed per-item error vocabulary, typed so OpenAPI exposes the enum.
+
+Slugs reuse the API-wide error codes (errors.py) plus the two
+bulk-specific ones. Adding a code later is an additive schema bump.
+"""
 
 
 class BulkOperationSummary(ResponseBase):
@@ -42,7 +58,7 @@ class BulkUrlResultRow(ResponseBase):
         description="Echoed when the id resolved to a URL you own; null otherwise.",
     )
     ok: bool = Field(description="Whether the operation succeeded for this id.")
-    error_code: str | None = Field(
+    error_code: BulkErrorCode | None = Field(
         default=None, description="Machine-readable failure cause; null when ok."
     )
     error: str | None = Field(

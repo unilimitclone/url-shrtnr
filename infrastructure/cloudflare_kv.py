@@ -108,7 +108,11 @@ class CloudflareKVClient:
         for chunk in _chunked(pairs, _BULK_MAX_ITEMS):
             body = [
                 {"key": key, "value": value}
-                | ({"expiration_ttl": expiration_ttl} if expiration_ttl else {})
+                | (
+                    {"expiration_ttl": expiration_ttl}
+                    if expiration_ttl is not None
+                    else {}
+                )
                 for key, value in chunk
             ]
             result = await self._bulk_request("PUT", "bulk", body, count=len(chunk))
@@ -178,7 +182,31 @@ class CloudflareKVClient:
         if response.status_code == 404:
             log.info("cf_kv_bulk_unsupported", path=subpath, count=count)
             return None
-        return self._grade_response(response, method=method, key=f"<{subpath}:{count}>")
+        graded = self._grade_response(
+            response, method=method, key=f"<{subpath}:{count}>"
+        )
+        if not graded:
+            return False
+        # CF's bulk endpoints can 200 while individual keys failed —
+        # result.unsuccessful_keys lists them ("should be retried" per the
+        # API docs). We don't retry (best-effort contract, TTL backstops)
+        # but the return value must tell the truth.
+        try:
+            unsuccessful = (response.json().get("result") or {}).get(
+                "unsuccessful_keys"
+            ) or []
+        except ValueError:
+            unsuccessful = []  # non-JSON body (local emulator) — trust the 2xx
+        if unsuccessful:
+            log.error(
+                "cf_kv_bulk_partial_failure",
+                path=subpath,
+                count=count,
+                failed=len(unsuccessful),
+                keys_preview=unsuccessful[:5],
+            )
+            return False
+        return True
 
     async def _request(
         self,
