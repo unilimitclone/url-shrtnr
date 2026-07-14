@@ -27,6 +27,9 @@ from infrastructure.logging import get_logger
 
 log = get_logger(__name__)
 
+# CF's bulk write/delete endpoints accept at most 10,000 items per call.
+_BULK_MAX_ITEMS = 10_000
+
 
 class CloudflareKVClient:
     """Minimal Workers KV writer.
@@ -90,6 +93,121 @@ class CloudflareKVClient:
         """Idempotent delete — a 404 (already gone) counts as success."""
         return await self._request("DELETE", key, ok_statuses=(404,))
 
+    async def bulk_put(
+        self, pairs: list[tuple[str, str]], *, expiration_ttl: int | None = None
+    ) -> bool:
+        """Write many ``(key, value)`` pairs in one API call per 10k chunk.
+
+        ``expiration_ttl`` applies to every entry (matching ``put``'s
+        semantics); ``None`` persists until an explicit delete. Returns
+        True only if every write succeeded.
+        """
+        if not pairs:
+            return True
+        ok = True
+        for chunk in _chunked(pairs, _BULK_MAX_ITEMS):
+            body = [
+                {"key": key, "value": value}
+                | (
+                    {"expiration_ttl": expiration_ttl}
+                    if expiration_ttl is not None
+                    else {}
+                )
+                for key, value in chunk
+            ]
+            result = await self._bulk_request("PUT", "bulk", body, count=len(chunk))
+            if result is None:
+                return await self._put_one_by_one(pairs, expiration_ttl)
+            ok = result and ok
+        return ok
+
+    async def bulk_delete(self, keys: list[str]) -> bool:
+        """Delete many keys in one API call per 10k chunk.
+
+        Like ``delete``, already-gone keys are not an error (the bulk
+        endpoint doesn't 404 on missing keys). Returns True only if every
+        delete succeeded.
+        """
+        if not keys:
+            return True
+        ok = True
+        for chunk in _chunked(keys, _BULK_MAX_ITEMS):
+            result = await self._bulk_request(
+                "POST", "bulk/delete", list(chunk), count=len(chunk)
+            )
+            if result is None:
+                return await self._delete_one_by_one(keys)
+            ok = result and ok
+        return ok
+
+    async def _put_one_by_one(
+        self, pairs: list[tuple[str, str]], expiration_ttl: int | None
+    ) -> bool:
+        ok = True
+        for key, value in pairs:
+            ok = await self.put(key, value, expiration_ttl=expiration_ttl) and ok
+        return ok
+
+    async def _delete_one_by_one(self, keys: list[str]) -> bool:
+        ok = True
+        for key in keys:
+            ok = await self.delete(key) and ok
+        return ok
+
+    async def _bulk_request(
+        self, method: str, subpath: str, body: list, *, count: int
+    ) -> bool | None:
+        """One bulk API call. ``None`` means the route itself is absent.
+
+        Real CF never 404s these paths (missing keys are still 200), but
+        wrangler dev's Explorer API mirrors only the single-key routes —
+        callers degrade to per-key calls so the zero-cloud local loop
+        exercises edge writes end-to-end instead of silently no-opping.
+        """
+        if not self.is_configured:
+            log.warning("cf_kv_not_configured", method=method)
+            return False
+        path = f"/storage/kv/namespaces/{self._namespace_id}/{subpath}"
+        try:
+            response = await self._session.request(method, path, json=body)
+        except httpx.HTTPError as exc:
+            log.error(
+                "cf_kv_retries_exhausted",
+                method=method,
+                path=subpath,
+                count=count,
+                error=str(exc),
+            )
+            return False
+        if response.status_code == 404:
+            log.info("cf_kv_bulk_unsupported", path=subpath, count=count)
+            return None
+        graded = self._grade_response(
+            response, method=method, key=f"<{subpath}:{count}>"
+        )
+        if not graded:
+            return False
+        # CF's bulk endpoints can 200 while individual keys failed —
+        # result.unsuccessful_keys lists them ("should be retried" per the
+        # API docs). We don't retry (best-effort contract, TTL backstops)
+        # but the return value must tell the truth.
+        try:
+            unsuccessful = (response.json().get("result") or {}).get(
+                "unsuccessful_keys"
+            ) or []
+        except ValueError:
+            unsuccessful = []  # non-JSON body (local emulator) — trust the 2xx
+        if unsuccessful:
+            log.error(
+                "cf_kv_bulk_partial_failure",
+                path=subpath,
+                count=count,
+                failed=len(unsuccessful),
+                keys_preview=unsuccessful[:5],
+            )
+            return False
+        return True
+
     async def _request(
         self,
         method: str,
@@ -123,6 +241,18 @@ class CloudflareKVClient:
             )
             return False
 
+        return self._grade_response(
+            response, method=method, key=key, ok_statuses=ok_statuses
+        )
+
+    def _grade_response(
+        self,
+        response: httpx.Response,
+        *,
+        method: str,
+        key: str,
+        ok_statuses: tuple[int, ...] = (),
+    ) -> bool:
         if response.is_success or response.status_code in ok_statuses:
             return True
 
@@ -141,3 +271,8 @@ class CloudflareKVClient:
             cf_body_preview=response.text[:300],
         )
         return False
+
+
+def _chunked(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]

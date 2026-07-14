@@ -46,6 +46,7 @@ from services.auth.device import DeviceAuthService
 from services.auth.otp import OtpService
 from services.auth.password import PasswordService
 from services.auth.verification import EmailVerificationService
+from services.bulk_url_service import BulkUrlService
 from services.cf_saas_backend import CfSaasBackend
 from services.click import ClickService, LegacyClickHandler, V2ClickHandler
 from services.click.sinks import InlineSink, RedisStreamSink
@@ -129,21 +130,25 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     contact_webhook = DiscordWebhookProvider(settings.contact_webhook, http_client)
     report_webhook = DiscordWebhookProvider(settings.url_report_webhook, http_client)
 
-    # Edge KV write-through for custom meta-tags: preview bots get answered
-    # at the edge from the moment a link's tags are written. None when the
-    # edge cache isn't configured (self-host) — origin serves all previews.
+    # Edge KV client, shared by the og write-through and the bulk ops'
+    # edge flush. None when the edge cache isn't configured (self-host) —
+    # origin serves all previews and bulk ops skip edge purging entirely.
     og_writethrough = None
+    edge_kv_client = None
     edge = settings.edge_cache
     if edge.enabled:
+        edge_kv_client = CloudflareKVClient(
+            http_client=http_client,
+            api_token=edge.cf_api_token,
+            account_id=edge.cf_account_id,
+            namespace_id=edge.kv_namespace_id,
+            api_base=edge.api_base,
+            api_host_header=edge.api_host_header,
+        )
+        # Eager write-through for custom meta-tags: preview bots get
+        # answered at the edge from the moment a link's tags are written.
         og_writethrough = OgEdgeWritethrough(
-            CloudflareKVClient(
-                http_client=http_client,
-                api_token=edge.cf_api_token,
-                account_id=edge.cf_account_id,
-                namespace_id=edge.kv_namespace_id,
-                api_base=edge.api_base,
-                api_host_header=edge.api_host_header,
-            ),
+            edge_kv_client,
             system_domain=settings.system_default_domain,
             ttl_seconds=edge.og_ttl_seconds,
         )
@@ -207,10 +212,18 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         emoji_generated_alias_length=settings.emoji_generated_alias_length,
         geo_rules_max_countries=settings.geo_rules_max_countries,
         og_writethrough=og_writethrough,
+        edge_kv=edge_kv_client,
         r2_storage=r2_storage,
         meta_image_max_bytes=r2.upload_max_bytes,
         meta_image_sink=meta_image_sink,
         meta_key_secret=settings.secret_key,
+    )
+    app.state.bulk_url_service = BulkUrlService(
+        url_repo,
+        url_cache,
+        kv=edge_kv_client,
+        system_default_domain=settings.system_default_domain,
+        og_ttl_seconds=edge.og_ttl_seconds,
     )
     app.state.stats_service = StatsService(
         click_repo,

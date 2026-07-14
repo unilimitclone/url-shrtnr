@@ -22,6 +22,7 @@ from services.auth.credentials import CredentialService
 from services.auth.device import DeviceAuthService
 from services.auth.password import PasswordService
 from services.auth.verification import EmailVerificationService
+from services.bulk_url_service import BulkUrlService
 from services.click import ClickService
 from services.click.sinks import ClickEventSink
 from services.contact_service import ContactService
@@ -40,6 +41,10 @@ from services.url_service import UrlService
 
 def get_url_service(request: Request) -> UrlService:
     return request.app.state.url_service
+
+
+def get_bulk_url_service(request: Request) -> BulkUrlService:
+    return request.app.state.bulk_url_service
 
 
 def get_stats_service(request: Request) -> StatsService:
@@ -137,6 +142,7 @@ def get_report_intake_service(request: Request) -> ReportIntakeService:
 # ── Annotated type aliases — Depends shortcuts for route signatures ──────────
 
 UrlSvc = Annotated[UrlService, Depends(get_url_service)]
+BulkUrlSvc = Annotated[BulkUrlService, Depends(get_bulk_url_service)]
 StatsSvc = Annotated[StatsService, Depends(get_stats_service)]
 PublicStatsSvc = Annotated[PublicStatsService, Depends(get_public_stats_service)]
 ExportSvc = Annotated[ExportService, Depends(get_export_service)]
