@@ -16,6 +16,7 @@ import pytest
 from bson import ObjectId
 
 from errors import (
+    AppError,
     BlockedUrlError,
     ConflictError,
     ForbiddenError,
@@ -303,15 +304,75 @@ class TestUrlServiceResolve:
         )
 
         url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = None  # v2 is tried first now
         emoji_doc = make_emoji_doc("🐍🔥💎")
         emoji_repo.find_by_id.return_value = emoji_doc
 
         _result, schema = await svc.resolve("🐍🔥💎")
 
         assert schema == "emoji"
+        url_repo.find_by_alias.assert_called_once_with("🐍🔥💎", SYSTEM_DEFAULT_DOMAIN)
         emoji_repo.find_by_id.assert_called_once_with("🐍🔥💎")
-        url_repo.find_by_alias.assert_not_called()
         legacy_repo.find_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_emoji_v2_hit_wins_over_legacy(self):
+        # v2-first ordering: an emoji alias stored in urlsV2 must answer
+        # before the legacy emojis collection is even consulted.
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = make_url_v2_doc(alias="🐍🔥💎")
+
+        _result, schema = await svc.resolve("🐍🔥💎")
+
+        assert schema == "v2"
+        emoji_repo.find_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_emoji_vs16_variant_resolves_canonical_v2_doc(self):
+        # A pasted ⭐️-style variant (stray U+FE0F) must find the v2 doc
+        # stored under the canonical alias, and cache under the canonical key.
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        vs16 = "️"
+        url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = make_url_v2_doc(alias="⭐🎉")
+
+        _result, schema = await svc.resolve("⭐" + vs16 + "🎉")
+
+        assert schema == "v2"
+        url_cache.get.assert_called_once_with("⭐🎉", SYSTEM_DEFAULT_DOMAIN)
+        url_repo.find_by_alias.assert_called_once_with("⭐🎉", SYSTEM_DEFAULT_DOMAIN)
+
+    @pytest.mark.asyncio
+    async def test_emoji_legacy_lookup_tries_raw_then_canonical(self):
+        # Legacy emojis _ids keep their historical bytes: the raw request
+        # form is tried first (exact legacy semantics), canonical second.
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        vs16 = "️"
+        raw = "⭐" + vs16 + "🎉"
+        url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = None
+        emoji_repo.find_by_id.side_effect = [None, make_emoji_doc("⭐🎉")]
+
+        _result, schema = await svc.resolve(raw)
+
+        assert schema == "emoji"
+        assert [c.args[0] for c in emoji_repo.find_by_id.call_args_list] == [
+            raw,
+            "⭐🎉",
+        ]
 
     @pytest.mark.asyncio
     async def test_cache_miss_other_length_tries_v2_first(self):
@@ -717,6 +778,151 @@ class TestUrlServiceCreate:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class TestUrlServiceCreateEmojiAlias:
+    """Emoji aliases through the v2 create path — policy + canonical storage."""
+
+    def _svc(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        legacy_repo.check_exists.return_value = False
+        emoji_repo.check_exists_vs16_insensitive.return_value = False
+        url_repo.insert.return_value = URL_OID
+        return svc, url_repo, legacy_repo, emoji_repo
+
+    @pytest.mark.asyncio
+    async def test_custom_emoji_alias_stored_canonical(self):
+        svc, url_repo, _legacy_repo, _emoji_repo = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        vs16 = "️"
+        req = CreateUrlRequest(long_url="https://example.com", alias="⭐" + vs16 + "🎉")
+        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        assert result.alias == "⭐🎉"
+        inserted = url_repo.insert.call_args[0][0]
+        assert inserted["alias"] == "⭐🎉"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("alias", ["🇺🇸", "🏳️‍🌈", "1️⃣", "🏿"])
+    async def test_policy_rejected_emoji_raises_validation_error(self, alias):
+        svc, *_ = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com", alias=alias)
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "alias"
+
+    @pytest.mark.asyncio
+    async def test_emoji_alias_too_many_graphemes_raises_length_error(self):
+        svc, *_ = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com", alias="🎉" * 16)
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert "1-15" in exc.value.message
+
+    @pytest.mark.asyncio
+    async def test_emoji_alias_conflicts_with_legacy_vs16_variant(self):
+        # A legacy emojis doc stored as ⭐️🎉 must block canonical ⭐🎉 —
+        # otherwise the v2-first resolve order would shadow the live link.
+        svc, _url_repo, _legacy_repo, emoji_repo = self._svc()
+        emoji_repo.check_exists_vs16_insensitive.return_value = True
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com", alias="⭐🎉")
+        with pytest.raises(ConflictError):
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        emoji_repo.check_exists_vs16_insensitive.assert_called_once_with("⭐🎉")
+
+    @pytest.mark.asyncio
+    async def test_alias_type_emoji_generates_policy_valid_alias(self):
+        svc, url_repo, _legacy_repo, _emoji_repo = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+        from shared.emoji_policy import check_emoji_alias
+
+        req = CreateUrlRequest(long_url="https://example.com", alias_type="emoji")
+        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        assert check_emoji_alias(result.alias) == "ok"
+        inserted = url_repo.insert.call_args[0][0]
+        assert inserted["alias"] == result.alias
+
+    @pytest.mark.asyncio
+    async def test_alias_type_emoji_generation_exhaustion_raises(self):
+        svc, url_repo, *_ = self._svc()
+        url_repo.check_alias_exists.return_value = True  # every candidate taken
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com", alias_type="emoji")
+        with pytest.raises(AppError):
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+    @pytest.mark.asyncio
+    async def test_alias_type_ignored_when_alias_provided(self):
+        svc, _url_repo, *_ = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com", alias="mylink", alias_type="emoji"
+        )
+        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert result.alias == "mylink"
+
+
+class TestCheckAliasEmoji:
+    def _svc(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        url_repo.check_alias_exists.return_value = False
+        legacy_repo.check_exists.return_value = False
+        emoji_repo.check_exists_vs16_insensitive.return_value = False
+        return svc, url_repo, emoji_repo
+
+    @pytest.mark.asyncio
+    async def test_valid_emoji_available(self):
+        svc, *_ = self._svc()
+        assert await svc.check_alias("🚀🔥") == "available"
+
+    @pytest.mark.asyncio
+    async def test_mixed_returns_format(self):
+        svc, *_ = self._svc()
+        assert await svc.check_alias("abc🎉") == "format"
+
+    @pytest.mark.asyncio
+    async def test_too_long_returns_length(self):
+        svc, *_ = self._svc()
+        assert await svc.check_alias("🎉" * 16) == "length"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("alias", ["🇺🇸", "🏳️‍🌈", "1️⃣"])
+    async def test_rejected_sequences_return_emoji_policy(self, alias):
+        svc, *_ = self._svc()
+        assert await svc.check_alias(alias) == "emoji_policy"
+
+    @pytest.mark.asyncio
+    async def test_taken_in_v2_checked_canonically(self):
+        svc, url_repo, _emoji_repo = self._svc()
+        url_repo.check_alias_exists.return_value = True
+
+        vs16 = "️"
+        assert await svc.check_alias("⭐" + vs16 + "🎉") == "taken"
+        url_repo.check_alias_exists.assert_called_with("⭐🎉", SYSTEM_DEFAULT_DOMAIN)
+
+    @pytest.mark.asyncio
+    async def test_taken_in_legacy_emoji_collection(self):
+        svc, _url_repo, emoji_repo = self._svc()
+        emoji_repo.check_exists_vs16_insensitive.return_value = True
+        assert await svc.check_alias("🚀🔥") == "taken"
+
+
 class TestUrlServiceUpdate:
     @pytest.mark.asyncio
     async def test_update_changes_field_and_invalidates_cache(self):
@@ -779,6 +985,66 @@ class TestUrlServiceUpdate:
 
         url_repo.update.assert_not_called()
         url_cache.invalidate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_alias_to_emoji_stores_canonical(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+        url_repo.check_alias_exists.return_value = False
+        legacy_repo.check_exists.return_value = False
+        emoji_repo.check_exists_vs16_insensitive.return_value = False
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        vs16 = "️"
+        req = UpdateUrlRequest(alias="⭐" + vs16 + "🎉")
+        await svc.update(URL_OID, req, USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["alias"] == "⭐🎉"
+
+    @pytest.mark.asyncio
+    async def test_update_alias_vs16_echo_of_current_is_noop(self):
+        # PATCHing back a VS16 variant of the current alias must not
+        # self-collide or write — canonical comparison makes it a no-op.
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc(alias="⭐🎉")
+        url_repo.find_by_id.return_value = existing
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        vs16 = "️"
+        req = UpdateUrlRequest(alias="⭐" + vs16 + "🎉")
+        await svc.update(URL_OID, req, USER_OID)
+
+        url_repo.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_alias_policy_rejected_emoji_raises(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(alias="🇺🇸")
+        with pytest.raises(ValidationError) as exc:
+            await svc.update(URL_OID, req, USER_OID)
+        assert exc.value.field == "alias"
 
     @pytest.mark.asyncio
     async def test_update_wrong_owner_raises_forbidden(self):
@@ -2358,6 +2624,7 @@ class TestUrlServiceTimeExpiry:
     async def test_db_emoji_past_aware_expiry_raises_gone(self):
         svc, url_repo, url_cache, _legacy_repo, emoji_repo = self._svc()
         url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = None  # v2 is tried first now
         emoji_repo.find_by_id.return_value = EmojiUrlDoc.from_mongo(
             {
                 "_id": "🐍🔥💎",

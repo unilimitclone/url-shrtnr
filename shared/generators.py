@@ -7,25 +7,11 @@ the system PRNG where security is not required (alias generation).
 
 from __future__ import annotations
 
-import json
 import random
 import secrets
 import string
-from functools import lru_cache
-from pathlib import Path
 
-_EMOJIS_PATH = Path(__file__).resolve().parent.parent / "data" / "emojis.json"
-
-
-@lru_cache(maxsize=1)
-def _load_emojis() -> list[str]:
-    with open(_EMOJIS_PATH, encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list) or not data:
-        raise ValueError(
-            f"emojis.json must be a non-empty list, got {type(data).__name__}"
-        )
-    return data
+from shared.emoji_policy import DEFAULT_GENERATE_MAX_VERSION, generation_pool
 
 
 def generate_short_code() -> str:
@@ -49,9 +35,31 @@ def generate_short_code_v2(length: int = 7) -> str:
     return "".join(random.choice(letters) for _ in range(length))
 
 
+def generate_emoji_alias_v2(
+    length: int = 3,
+    *,
+    max_version: float = DEFAULT_GENERATE_MAX_VERSION,
+) -> str:
+    """Generate an emoji alias from the policy-derived safe pool.
+
+    Args:
+        length:      Number of emoji graphemes (default 3, must be 1-15).
+        max_version: Newest Unicode emoji version to draw from (default
+            pins to the Windows 10 rendering ceiling).
+
+    Returns:
+        Random emoji string of *length* graphemes, every one of which
+        passes ``shared.emoji_policy.check_emoji_alias``.
+    """
+    if length < 1 or length > 15:
+        raise ValueError("length must be between 1 and 15")
+    pool = generation_pool(max_version)
+    return "".join(random.choice(pool) for _ in range(length))
+
+
 def generate_emoji_alias() -> str:
-    """Generate a 3-emoji alias from the curated emoji list."""
-    return "".join(random.choice(_load_emojis()) for _ in range(3))
+    """Generate a 3-emoji alias (legacy entry point, safe pool)."""
+    return generate_emoji_alias_v2(3)
 
 
 def generate_otp_code(length: int = 6) -> str:

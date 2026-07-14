@@ -229,7 +229,12 @@ async def redirect_url(
         is_emoji = schema == SchemaVersion.EMOJI
         tracking_start = time.perf_counter()
         event = ClickEvent(
-            short_code=short_code,
+            # The RESOLVED identity, not the request-path form: emoji codes
+            # can resolve through a byte-variant (VS16) of the stored alias,
+            # and the click handlers key their writes — legacy _id updates,
+            # v2 max-clicks cache invalidation — off this field. The raw
+            # form would silently drop those writes.
+            short_code=url_data.alias,
             schema_key=schema,
             is_emoji=is_emoji,
             # ClickEvent strips url.password_hash on construction (v1 hashes

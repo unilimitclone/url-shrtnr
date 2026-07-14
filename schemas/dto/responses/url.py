@@ -65,8 +65,11 @@ class UrlResponse(ResponseBase):
     )
     alias: str = Field(description="Short code for the URL.", examples=["mylink"])
     short_url: str = Field(
-        description="Full shortened URL ready for sharing.",
-        examples=["https://spoo.me/mylink"],
+        description=(
+            "Full shortened URL ready for sharing. Emoji aliases appear "
+            "unencoded (clients/browsers percent-encode on use)."
+        ),
+        examples=["https://spoo.me/mylink", "https://spoo.me/🚀🔥"],
     )
     long_url: str = Field(
         description="Original destination URL.",
@@ -306,6 +309,10 @@ class AliasCheckResponse(ResponseBase):
     available: bool = Field(description="Whether the alias is free to use.")
     reason: str | None = Field(
         default=None,
-        description="When unavailable: 'length', 'format', 'reserved', or 'taken'.",
+        description=(
+            "When unavailable: 'length', 'format', 'reserved', 'taken', or "
+            "'emoji_policy' (emoji alias contains sequences outside the "
+            "accepted set — ZWJ, flags, keycaps, or too-new emoji)."
+        ),
         examples=["taken"],
     )

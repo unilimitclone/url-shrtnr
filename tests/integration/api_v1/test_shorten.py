@@ -185,6 +185,98 @@ class TestShorten:
         assert resp.status_code == 409
 
 
+class TestShortenEmojiAlias:
+    """Emoji aliases through the wire: DTO shape gate + raw-emoji short_url."""
+
+    def test_emoji_alias_returns_201_with_raw_emoji_short_url(self):
+        url_doc = _make_url_doc(alias="🚀🔥")
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(return_value=url_doc)
+
+        application = _build_test_app(
+            {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.post(
+                "/api/v1/shorten",
+                json={"long_url": "https://example.com", "alias": "🚀🔥"},
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["alias"] == "🚀🔥"
+        # Raw emoji, unencoded — clients percent-encode on use.
+        assert body["short_url"].endswith("/🚀🔥")
+        sent = mock_svc.create.call_args[0][0]
+        assert sent.alias == "🚀🔥"
+
+    def test_alias_type_emoji_passes_through_dto(self):
+        url_doc = _make_url_doc(alias="😀🎯🍕")
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(return_value=url_doc)
+
+        application = _build_test_app(
+            {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.post(
+                "/api/v1/shorten",
+                json={"long_url": "https://example.com", "alias_type": "emoji"},
+            )
+
+        assert resp.status_code == 201
+        sent = mock_svc.create.call_args[0][0]
+        assert sent.alias is None
+        assert sent.alias_type == "emoji"
+
+    def test_mixed_emoji_alias_returns_422(self):
+        mock_svc = AsyncMock()
+        application = _build_test_app(
+            {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/api/v1/shorten",
+                json={"long_url": "https://example.com", "alias": "abc🎉"},
+            )
+
+        assert resp.status_code == 422
+        mock_svc.create.assert_not_called()
+
+    def test_policy_rejected_emoji_returns_400(self):
+        # The service raises ValidationError for policy failures (flags,
+        # ZWJ, keycaps) — wire contract is 400, not 422.
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(
+            side_effect=ValidationError(
+                "alias contains unsupported emoji or characters", field="alias"
+            )
+        )
+        application = _build_test_app(
+            {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/api/v1/shorten",
+                json={"long_url": "https://example.com", "alias": "🇺🇸"},
+            )
+
+        assert resp.status_code == 400
+        assert resp.json()["field"] == "alias"
+
+    def test_check_alias_emoji_policy_reason(self):
+        mock_svc = AsyncMock()
+        mock_svc.check_alias = AsyncMock(return_value="emoji_policy")
+        application = _build_test_app(
+            {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.get("/api/v1/shorten/check-alias", params={"alias": "🇺🇸"})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"available": False, "reason": "emoji_policy"}
+
+
 class TestShortenWithCustomDomain:
     """``domain`` field on POST /shorten triggers owner+ACTIVE check."""
 

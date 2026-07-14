@@ -10,11 +10,9 @@ from routes.legacy.helpers import (
     top_four,
 )
 from shared.aggregation_strategies import convert_country_name
+from shared.emoji_policy import check_emoji_alias
 from shared.generators import generate_short_code
-from shared.validators import (
-    validate_alias,
-    validate_emoji_alias,
-)
+from shared.validators import validate_alias
 
 # Test humanize_number
 
@@ -436,28 +434,28 @@ def test_calculate_click_averages_empty_counter():
     assert avg_monthly_clicks == 0.0
 
 
-# Test validate emoji alias
+# Test emoji alias creation policy (shared.emoji_policy)
 
 
-def test_validate_emoji_alias_valid_single_emoji():
-    assert validate_emoji_alias("😊")
+def test_check_emoji_alias_valid_single_emoji():
+    assert check_emoji_alias("😊") == "ok"
 
 
-def test_validate_emoji_alias_valid_multiple_emojis():
-    assert validate_emoji_alias("😊👍🎉")
+def test_check_emoji_alias_valid_multiple_emojis():
+    assert check_emoji_alias("😊👍🎉") == "ok"
 
 
-def test_validate_emoji_alias_invalid_mixed_characters():
-    assert not validate_emoji_alias("😊abc")
+def test_check_emoji_alias_invalid_mixed_characters():
+    assert check_emoji_alias("😊abc") == "policy"
 
 
-def test_validate_emoji_alias_invalid_too_many_emojis():
-    assert not validate_emoji_alias("😊" * 16)
+def test_check_emoji_alias_invalid_too_many_emojis():
+    assert check_emoji_alias("😊" * 16) == "length"
 
 
-def test_validate_emoji_alias_empty_string():
-    assert validate_emoji_alias("")  # Assuming empty string is valid
+def test_check_emoji_alias_empty_string():
+    assert check_emoji_alias("") == "empty"
 
 
-def test_validate_emoji_alias_url_encoded():
-    assert validate_emoji_alias(unquote("%F0%9F%98%8A"))  # URL encoded 😊
+def test_check_emoji_alias_url_encoded():
+    assert check_emoji_alias(unquote("%F0%9F%98%8A")) == "ok"
