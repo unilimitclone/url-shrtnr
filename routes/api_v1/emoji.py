@@ -45,7 +45,7 @@ _CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=604800"
 
 @lru_cache(maxsize=4)
 def _build_set(
-    accept_cap: int, generate_cap: int, max_graphemes: int
+    accept_cap: float, generate_cap: float, max_graphemes: int
 ) -> tuple[EmojiSetResponse, str]:
     """Build the response payload and its ETag for one policy triple.
 
