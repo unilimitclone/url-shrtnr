@@ -117,6 +117,75 @@ class TestDelete:
         assert await _client(http).delete("k") is True
 
 
+class TestBulkPut:
+    async def test_bulk_put_success(self):
+        http, request = _http_with_response(200)
+        pairs = [("cache:spoo.me:a", "v1"), ("cache:spoo.me:b", "v2")]
+        assert await _client(http).bulk_put(pairs, expiration_ttl=86_400) is True
+        method, url = request.await_args.args
+        assert method == "PUT"
+        assert url.endswith("/storage/kv/namespaces/ns/bulk")
+        assert request.await_args.kwargs["json"] == [
+            {"key": "cache:spoo.me:a", "value": "v1", "expiration_ttl": 86_400},
+            {"key": "cache:spoo.me:b", "value": "v2", "expiration_ttl": 86_400},
+        ]
+
+    async def test_bulk_put_without_ttl_omits_field(self):
+        http, request = _http_with_response(200)
+        assert await _client(http).bulk_put([("k", "v")]) is True
+        assert request.await_args.kwargs["json"] == [{"key": "k", "value": "v"}]
+
+    async def test_empty_pairs_no_op_without_http_call(self):
+        http, request = _http_with_response(200)
+        assert await _client(http).bulk_put([]) is True
+        request.assert_not_awaited()
+
+    async def test_bulk_put_chunks_at_cf_limit(self):
+        http, request = _http_with_response(200)
+        pairs = [(f"k{i}", "v") for i in range(10_001)]
+        assert await _client(http).bulk_put(pairs) is True
+        assert request.await_count == 2
+        first, second = request.await_args_list
+        assert len(first.kwargs["json"]) == 10_000
+        assert len(second.kwargs["json"]) == 1
+
+    async def test_bulk_put_unconfigured_returns_false(self):
+        http, request = _http_with_response(200)
+        assert await _client(http, api_token=None).bulk_put([("k", "v")]) is False
+        request.assert_not_awaited()
+
+
+class TestBulkDelete:
+    async def test_bulk_delete_success(self):
+        http, request = _http_with_response(200)
+        keys = ["cache:spoo.me:a", "cache:spoo.me:b"]
+        assert await _client(http).bulk_delete(keys) is True
+        method, url = request.await_args.args
+        assert method == "POST"
+        assert url.endswith("/storage/kv/namespaces/ns/bulk/delete")
+        assert request.await_args.kwargs["json"] == keys
+
+    async def test_empty_keys_no_op_without_http_call(self):
+        http, request = _http_with_response(200)
+        assert await _client(http).bulk_delete([]) is True
+        request.assert_not_awaited()
+
+    async def test_bulk_delete_4xx_fails_without_retry(self):
+        http, request = _http_with_response(403)
+        assert await _client(http).bulk_delete(["k"]) is False
+        request.assert_awaited_once()
+
+    async def test_bulk_delete_transport_error_never_raises(self):
+        http = MagicMock()
+        http.request = AsyncMock(side_effect=httpx.ConnectError("down"))
+        assert await _client(http).bulk_delete(["k"]) is False
+
+    async def test_bulk_delete_gives_up_after_retries_on_5xx(self):
+        http, request = _http_with_response(503)
+        assert await _client(http).bulk_delete(["k"]) is False
+        assert request.await_count == 2  # max_retries
+
+
 class TestApiBaseOverride:
     async def test_local_emulator_base_replaces_account_scoped_url(self):
         """api_base points the client at wrangler dev's Explorer API,

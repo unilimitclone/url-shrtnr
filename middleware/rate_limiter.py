@@ -83,6 +83,18 @@ class Limits:
     URL_DELETE = "60 per minute; 1000 per day"
     URL_BULK_DELETE = "5 per minute; 50 per day"
 
+    # Bulk URL mutations (POST /api/v1/urls/bulk/*). Counted per REQUEST,
+    # not per item — the reports-intake stance: one bulk call is one unit
+    # of user intent, and per-item billing is what pushed the dashboard
+    # into 429s at trivially reachable selection sizes. The budget math is
+    # done on ITEMS instead: with the 100-id cap, status/expiry ceil at
+    # 10k items/day (5x the per-item PATCH daily budget — generous, these
+    # are reversible) and delete mirrors URL_BULK_DELETE's posture, ceiling
+    # 5k irreversible deletions/day.
+    URL_BULK_STATUS = "10 per minute; 100 per day"
+    URL_BULK_EXPIRY = "10 per minute; 100 per day"
+    URL_BULK_MUTATE_DELETE = "5 per minute; 50 per day"
+
     # Destination metadata fetch — outbound fetches on our dime; tight.
     METADATA_FETCH = "20 per minute; 500 per day"
 

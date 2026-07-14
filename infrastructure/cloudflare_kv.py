@@ -27,6 +27,9 @@ from infrastructure.logging import get_logger
 
 log = get_logger(__name__)
 
+# CF's bulk write/delete endpoints accept at most 10,000 items per call.
+_BULK_MAX_ITEMS = 10_000
+
 
 class CloudflareKVClient:
     """Minimal Workers KV writer.
@@ -90,6 +93,68 @@ class CloudflareKVClient:
         """Idempotent delete — a 404 (already gone) counts as success."""
         return await self._request("DELETE", key, ok_statuses=(404,))
 
+    async def bulk_put(
+        self, pairs: list[tuple[str, str]], *, expiration_ttl: int | None = None
+    ) -> bool:
+        """Write many ``(key, value)`` pairs in one API call per 10k chunk.
+
+        ``expiration_ttl`` applies to every entry (matching ``put``'s
+        semantics); ``None`` persists until an explicit delete. Returns
+        True only if every chunk succeeded.
+        """
+        if not pairs:
+            return True
+        ok = True
+        for chunk in _chunked(pairs, _BULK_MAX_ITEMS):
+            body = [
+                {"key": key, "value": value}
+                | ({"expiration_ttl": expiration_ttl} if expiration_ttl else {})
+                for key, value in chunk
+            ]
+            ok = (
+                await self._bulk_request("PUT", "bulk", body, count=len(chunk)) and ok
+            )
+        return ok
+
+    async def bulk_delete(self, keys: list[str]) -> bool:
+        """Delete many keys in one API call per 10k chunk.
+
+        Like ``delete``, already-gone keys are not an error (the bulk
+        endpoint doesn't 404 on missing keys). Returns True only if every
+        chunk succeeded.
+        """
+        if not keys:
+            return True
+        ok = True
+        for chunk in _chunked(keys, _BULK_MAX_ITEMS):
+            ok = (
+                await self._bulk_request(
+                    "POST", "bulk/delete", list(chunk), count=len(chunk)
+                )
+                and ok
+            )
+        return ok
+
+    async def _bulk_request(
+        self, method: str, subpath: str, body: list, *, count: int
+    ) -> bool:
+        if not self.is_configured:
+            log.warning("cf_kv_not_configured", method=method)
+            return False
+        path = f"/storage/kv/namespaces/{self._namespace_id}/{subpath}"
+        try:
+            response = await self._session.request(method, path, json=body)
+        except httpx.HTTPError as exc:
+            log.error(
+                "cf_kv_retries_exhausted",
+                method=method,
+                path=subpath,
+                count=count,
+                error=str(exc),
+            )
+            return False
+        return self._grade_response(response, method=method, key=f"<{subpath}:{count}>")
+
     async def _request(
         self,
         method: str,
@@ -123,6 +188,18 @@ class CloudflareKVClient:
             )
             return False
 
+        return self._grade_response(
+            response, method=method, key=key, ok_statuses=ok_statuses
+        )
+
+    def _grade_response(
+        self,
+        response: httpx.Response,
+        *,
+        method: str,
+        key: str,
+        ok_statuses: tuple[int, ...] = (),
+    ) -> bool:
         if response.is_success or response.status_code in ok_statuses:
             return True
 
@@ -141,3 +218,8 @@ class CloudflareKVClient:
             cf_body_preview=response.text[:300],
         )
         return False
+
+
+def _chunked(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
