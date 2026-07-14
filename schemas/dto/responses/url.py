@@ -56,6 +56,13 @@ class UrlResponse(ResponseBase):
     ``created_at`` is a Unix timestamp integer — matching the existing endpoint.
     """
 
+    id: str = Field(
+        description=(
+            "MongoDB ObjectId of the URL — the identifier the management "
+            "endpoints (`/urls/{url_id}`) address it by."
+        ),
+        examples=["507f1f77bcf86cd799439011"],
+    )
     alias: str = Field(description="Short code for the URL.", examples=["mylink"])
     short_url: str = Field(
         description=(
@@ -106,6 +113,7 @@ class UrlResponse(ResponseBase):
         ``https://<fqdn>`` for custom domains. Built at the route layer.
         """
         return cls(
+            id=str(doc.id),
             alias=doc.alias,
             short_url=f"{base_url.rstrip('/')}/{doc.alias}",
             long_url=doc.long_url,

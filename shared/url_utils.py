@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 # RFC 1035 hostname matcher used by the custom-domains code path.
 # Labels: 1-63 chars, [a-z0-9-], no leading/trailing hyphen.
@@ -80,6 +80,36 @@ def split_destination(url: str) -> dict:
         "path": path,
         "is_https": parsed.scheme == "https",
     }
+
+
+def normalise_host(raw: str) -> str:
+    """Lenient host-header host: lowercased, dot-stripped, port-stripped.
+
+    Sibling to ``normalise_fqdn``. This is the lenient parse for
+    Host-header-style input — it never raises and returns ``""`` for
+    unparseable input, whereas ``normalise_fqdn`` strictly validates and
+    raises. RFC 3986-safe for bracketed IPv6 literals (``urlsplit`` handles
+    ``[::1]:8000`` correctly).
+    """
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(f"//{raw.strip()}").hostname
+    except ValueError:
+        return ""
+    return (parsed or "").rstrip(".").lower()
+
+
+def is_system_default_host(host: str, system_default_domain: str) -> bool:
+    """Return True if *host* is the system-default domain or its ``www.``
+    alias.
+
+    Single source of truth for the system-default short-circuit rule,
+    shared with the tenant resolver so the two never drift on which host
+    forms fold onto the default namespace. *host* is expected to already
+    be normalised (see ``normalise_host``).
+    """
+    return host in (system_default_domain, f"www.{system_default_domain}")
 
 
 def normalise_fqdn(value: object) -> str:

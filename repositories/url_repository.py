@@ -38,6 +38,29 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         """Find a URL document by its ObjectId."""
         return await self._find_one({"_id": url_id})
 
+    async def find_by_id_and_owner(
+        self, url_id: ObjectId, owner_id: ObjectId
+    ) -> UrlV2Doc | None:
+        """Find a URL by ObjectId, scoped to its owner.
+
+        Ownership lives IN the query so a foreign id answers exactly like a
+        missing one — read surfaces must not confirm that someone else's
+        URL exists.
+        """
+        return await self._find_one({"_id": url_id, "owner_id": owner_id})
+
+    async def find_by_alias_and_owner(
+        self, alias: str, domain: str, owner_id: ObjectId
+    ) -> UrlV2Doc | None:
+        """Find a URL by ``(alias, domain)``, scoped to its owner.
+
+        Same no-existence-oracle shape as ``find_by_id_and_owner`` — a
+        foreign link is indistinguishable from a missing one.
+        """
+        return await self._find_one(
+            {"alias": alias, "domain": domain, "owner_id": owner_id}
+        )
+
     async def insert(self, doc: dict) -> ObjectId:
         """Insert a new URL document. Returns the inserted _id."""
         return await self._insert(doc)

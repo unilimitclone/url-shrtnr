@@ -65,6 +65,43 @@ class TestUrlRepository:
         assert await self._repo(col).find_by_id(URL_OID) is None
 
     @pytest.mark.asyncio
+    async def test_find_by_id_and_owner_scopes_query_to_owner(self):
+        # Ownership must live IN the query — a foreign id has to answer
+        # exactly like a missing one, so no unscoped read then check.
+        col = make_collection()
+        col.find_one = AsyncMock(return_value=_url_v2_doc())
+        result = await self._repo(col).find_by_id_and_owner(URL_OID, USER_OID)
+        col.find_one.assert_awaited_once_with({"_id": URL_OID, "owner_id": USER_OID})
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_find_by_id_and_owner_returns_none_on_miss(self):
+        col = make_collection()
+        col.find_one = AsyncMock(return_value=None)
+        assert await self._repo(col).find_by_id_and_owner(URL_OID, USER_OID) is None
+
+    @pytest.mark.asyncio
+    async def test_find_by_alias_and_owner_scopes_query(self):
+        col = make_collection()
+        col.find_one = AsyncMock(return_value=_url_v2_doc())
+        result = await self._repo(col).find_by_alias_and_owner(
+            "abc1234", DOMAIN, USER_OID
+        )
+        col.find_one.assert_awaited_once_with(
+            {"alias": "abc1234", "domain": DOMAIN, "owner_id": USER_OID}
+        )
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_find_by_alias_and_owner_returns_none_on_miss(self):
+        col = make_collection()
+        col.find_one = AsyncMock(return_value=None)
+        result = await self._repo(col).find_by_alias_and_owner(
+            "missing", DOMAIN, USER_OID
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_insert_returns_id(self):
         col = make_collection()
         result_mock = MagicMock()

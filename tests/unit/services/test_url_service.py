@@ -2940,3 +2940,102 @@ class TestAutoReactivateRequiresRequestedChange:
 
         update_doc = url_repo.update.call_args[0][1]
         assert update_doc["$set"]["status"] == "ACTIVE"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestUrlServiceGetOwned
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestUrlServiceGetOwned:
+    """Single-resource reads: ownership lives IN the repo query, misses and
+    foreign links both surface as NotFoundError, and reads are status-blind
+    for the owner."""
+
+    @pytest.mark.asyncio
+    async def test_get_owned_queries_id_and_owner_together(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        doc = make_url_v2_doc()
+        url_repo.find_by_id_and_owner.return_value = doc
+
+        result = await svc.get_owned(URL_OID, USER_OID)
+
+        assert result is doc
+        url_repo.find_by_id_and_owner.assert_awaited_once_with(URL_OID, USER_OID)
+        # Never the unscoped lookup — that shape would need a post-hoc
+        # ownership check and become an existence oracle.
+        url_repo.find_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_owned_miss_raises_not_found(self):
+        """Foreign and missing ids are the same repo answer (None) and the
+        same error — no existence oracle."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        url_repo.find_by_id_and_owner.return_value = None
+
+        with pytest.raises(NotFoundError):
+            await svc.get_owned(URL_OID, USER_OID)
+
+    @pytest.mark.asyncio
+    async def test_get_owned_is_status_blind(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        doc = make_url_v2_doc(status="INACTIVE")
+        url_repo.find_by_id_and_owner.return_value = doc
+
+        result = await svc.get_owned(URL_OID, USER_OID)
+
+        assert result.status == UrlStatus.INACTIVE
+
+    @pytest.mark.asyncio
+    async def test_get_owned_by_alias_defaults_to_system_domain(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        doc = make_url_v2_doc()
+        url_repo.find_by_alias_and_owner.return_value = doc
+
+        result = await svc.get_owned_by_alias(ALIAS, USER_OID)
+
+        assert result is doc
+        url_repo.find_by_alias_and_owner.assert_awaited_once_with(
+            ALIAS, SYSTEM_DEFAULT_DOMAIN, USER_OID
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_owned_by_alias_scopes_to_custom_domain(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        doc = make_url_v2_doc(domain="links.acme.com")
+        url_repo.find_by_alias_and_owner.return_value = doc
+
+        await svc.get_owned_by_alias(ALIAS, USER_OID, domain="links.acme.com")
+
+        url_repo.find_by_alias_and_owner.assert_awaited_once_with(
+            ALIAS, "links.acme.com", USER_OID
+        )
+        # v2-only: the legacy collections are never consulted.
+        legacy_repo.find_by_id.assert_not_called()
+        emoji_repo.find_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_owned_by_alias_miss_raises_not_found(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        url_repo.find_by_alias_and_owner.return_value = None
+
+        with pytest.raises(NotFoundError):
+            await svc.get_owned_by_alias(ALIAS, USER_OID)
