@@ -28,7 +28,12 @@ from dependencies import (
     UserRepo,
     fetch_user_profile,
 )
-from errors import AuthenticationError
+from errors import (
+    AuthenticationError,
+    ForbiddenError,
+    NotFoundError,
+    ValidationError,
+)
 from infrastructure.logging import get_logger
 from infrastructure.templates import templates
 from middleware.openapi import ERROR_RESPONSES, PUBLIC_SECURITY
@@ -330,15 +335,15 @@ async def revoke_app(
     which cannot be sent by cross-origin form submissions.
     """
     if request.headers.get(_CSRF_HEADER_NAME) != _CSRF_HEADER_VALUE:
-        return JSONResponse({"error": "invalid request"}, status_code=403)
+        raise ForbiddenError("invalid request")
 
     app_id = app_id.strip()
     if not app_id or len(app_id) > APP_ID_MAX_LEN:
-        return JSONResponse({"error": "app_id is required"}, status_code=400)
+        raise ValidationError("app_id is required")
 
     revoked = await grant_repo.revoke(user.user_id, app_id)
     if not revoked:
-        return JSONResponse({"error": "no active grant found"}, status_code=404)
+        raise NotFoundError("no active grant found")
 
     # Invalidate device auth tokens bound to this app via the public service method
     await device_auth_service.revoke_device_tokens(user.user_id, app_id=app_id)

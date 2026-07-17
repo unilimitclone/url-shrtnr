@@ -124,7 +124,8 @@ async def list_api_keys(
     authenticated user. The full token value is **never** returned in this
     endpoint for security reasons — only the `token_prefix` is shown.
 
-    **Authentication**: Required — JWT Bearer or API key with appropriate scope.
+    **Authentication**: Required — JWT Bearer only (API keys cannot be used to
+    manage API keys).
 
     **Rate Limits**: 60/min
     """
@@ -168,7 +169,8 @@ async def delete_api_key(
     revoked (soft delete). Revoked keys stop working immediately but remain
     visible in the key list for audit purposes.
 
-    **Authentication**: Required — JWT Bearer or API key.
+    **Authentication**: Required — JWT Bearer only (API keys cannot be used to
+    manage API keys).
 
     **Rate Limits**: 30/min
 
