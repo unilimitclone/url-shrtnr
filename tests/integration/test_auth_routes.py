@@ -229,6 +229,10 @@ def test_refresh_missing_cookie_clears_cookies_returns_401():
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.post("/auth/refresh")  # no refresh_token cookie
     assert resp.status_code == 401
+    assert resp.json() == {
+        "error": "missing refresh token",
+        "code": "authentication_error",
+    }
     # Both cookie clearing headers should be present
     set_cookie_headers = resp.headers.get_list("set-cookie")
     cookie_names = [h.split("=")[0] for h in set_cookie_headers]
@@ -249,6 +253,10 @@ def test_refresh_expired_token_clears_cookies_returns_401():
         client.cookies.set("refresh_token", "expired.jwt")
         resp = client.post("/auth/refresh")
     assert resp.status_code == 401
+    assert resp.json() == {
+        "error": "invalid or expired refresh token",
+        "code": "authentication_error",
+    }
     set_cookie_headers = resp.headers.get_list("set-cookie")
     cookie_names = [h.split("=")[0] for h in set_cookie_headers]
     assert "access_token" in cookie_names

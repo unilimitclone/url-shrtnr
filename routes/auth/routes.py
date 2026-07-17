@@ -191,7 +191,7 @@ async def refresh(
     refresh_token_str = request.cookies.get("refresh_token")
     if not refresh_token_str:
         resp = JSONResponse(
-            {"error": "missing refresh token", "code": "AUTHENTICATION_ERROR"},
+            AuthenticationError("missing refresh token").to_dict(),
             status_code=401,
         )
         clear_auth_cookies(resp, jwt_cfg)
@@ -202,10 +202,7 @@ async def refresh(
     except AuthenticationError as exc:
         log.info("token_refresh_failed", error=str(exc))
         resp = JSONResponse(
-            {
-                "error": "invalid or expired refresh token",
-                "code": "AUTHENTICATION_ERROR",
-            },
+            AuthenticationError("invalid or expired refresh token").to_dict(),
             status_code=401,
         )
         clear_auth_cookies(resp, jwt_cfg)

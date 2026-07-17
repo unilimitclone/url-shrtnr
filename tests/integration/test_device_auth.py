@@ -446,6 +446,7 @@ def test_revoke_without_csrf_header_rejected(
     )
     resp = c.post("/auth/device/revoke", data={"app_id": "spoo-snap"})
     assert resp.status_code == 403
+    assert resp.json() == {"error": "invalid request", "code": "forbidden"}
 
 
 def test_revoke_success(
@@ -491,6 +492,7 @@ def test_revoke_no_grant_returns_404(
         headers={"X-Requested-With": "fetch"},
     )
     assert resp.status_code == 404
+    assert resp.json() == {"error": "no active grant found", "code": "not_found"}
 
 
 # ── POST /auth/device/refresh ─────────────────────────────────────────────────
