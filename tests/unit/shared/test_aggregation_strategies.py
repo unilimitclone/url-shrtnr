@@ -55,6 +55,9 @@ def test_factory_get_available_strategies():
         "city",
         "referrer",
         "short_code",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
     }
 
 

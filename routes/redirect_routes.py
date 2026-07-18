@@ -246,6 +246,11 @@ async def redirect_url(
             cf_city=cf_city,
             resolved_country=resolved_country,
             geo_matched=geo_matched,
+            # Raw capture only — ClickEvent sanitises and bounds these
+            # structurally, same as the password-hash strip.
+            utm_source=request.query_params.get("utm_source"),
+            utm_medium=request.query_params.get("utm_medium"),
+            utm_campaign=request.query_params.get("utm_campaign"),
             redirect_ms=int((time.perf_counter() - start_time) * 1000),
         )
         try:

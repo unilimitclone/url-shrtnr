@@ -20,11 +20,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from bson import ObjectId
+from ua_parser import parse as ua_parse
 
 from errors import ForbiddenError, ValidationError
 from infrastructure.cache.url_cache import UrlCacheData
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from services.click import ClickService, LegacyClickHandler, V2ClickHandler
+from services.click.handlers import classify_device
 from services.click.protocol import ClickContext
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -150,6 +152,9 @@ def make_context(
     referrer: str | None = None,
     is_emoji: bool = False,
     cf_city: str | None = None,
+    utm_source: str | None = None,
+    utm_medium: str | None = None,
+    utm_campaign: str | None = None,
 ) -> ClickContext:
     return ClickContext(
         url_data=url_data,
@@ -160,7 +165,71 @@ def make_context(
         referrer=referrer,
         is_emoji=is_emoji,
         cf_city=cf_city,
+        utm_source=utm_source,
+        utm_medium=utm_medium,
+        utm_campaign=utm_campaign,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestClassifyDevice
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestClassifyDevice:
+    @pytest.mark.parametrize(
+        ("user_agent", "expected"),
+        [
+            # iPhone Safari
+            (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
+                "Mobile/15E148 Safari/604.1",
+                "mobile",
+            ),
+            # iPad with the pre-iPadOS-13 (non-desktop-mode) UA
+            (
+                "Mozilla/5.0 (iPad; CPU OS 12_2 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1 "
+                "Mobile/15E148 Safari/604.1",
+                "tablet",
+            ),
+            # Chrome on Android phone, post-UA-reduction (model frozen to "K")
+            (
+                "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
+                "mobile",
+            ),
+            # Chrome on Android tablet — no "Mobile" token
+            (
+                "Mozilla/5.0 (Linux; Android 13; SM-X906C) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "tablet",
+            ),
+            # Windows desktop
+            (NORMAL_UA, "desktop"),
+            # macOS desktop — also where iPad Safari lands since iPadOS 13
+            # (desktop-mode UA is byte-identical to a real Mac; accepted)
+            (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
+                "Safari/605.1.15",
+                "desktop",
+            ),
+            # Linux desktop
+            (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "desktop",
+            ),
+        ],
+    )
+    def test_buckets_representative_uas(self, user_agent: str, expected: str):
+        assert classify_device(ua_parse(user_agent), user_agent) == expected
+
+    def test_unrecognized_ua_is_unknown(self):
+        ua = "SomeExoticClient/1.0"
+        assert classify_device(ua_parse(ua), ua) == "unknown"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -194,6 +263,50 @@ class TestV2ClickHandler:
         assert doc["meta"]["short_code"] == ALIAS
         assert doc["ip_address"] == CLIENT_IP
         assert doc["country"] == "United States"
+
+    @pytest.mark.asyncio
+    async def test_device_recorded_in_click_doc(self):
+        d = make_deps()
+        handler = make_v2_handler(d.click_repo, d.url_repo, d.geoip, d.url_cache)
+        url_data = make_v2_cache()
+
+        await handler.handle(make_context(url_data))  # NORMAL_UA is Windows
+
+        doc = d.click_repo.insert.call_args[0][0]
+        assert doc["device"] == "desktop"
+
+    @pytest.mark.asyncio
+    async def test_utm_tags_recorded_in_click_doc(self):
+        d = make_deps()
+        handler = make_v2_handler(d.click_repo, d.url_repo, d.geoip, d.url_cache)
+        url_data = make_v2_cache()
+
+        await handler.handle(
+            make_context(
+                url_data,
+                utm_source="newsletter",
+                utm_medium="email",
+                utm_campaign="launch",
+            )
+        )
+
+        doc = d.click_repo.insert.call_args[0][0]
+        assert doc["utm_source"] == "newsletter"
+        assert doc["utm_medium"] == "email"
+        assert doc["utm_campaign"] == "launch"
+
+    @pytest.mark.asyncio
+    async def test_utm_tags_default_to_none(self):
+        d = make_deps()
+        handler = make_v2_handler(d.click_repo, d.url_repo, d.geoip, d.url_cache)
+        url_data = make_v2_cache()
+
+        await handler.handle(make_context(url_data))
+
+        doc = d.click_repo.insert.call_args[0][0]
+        assert doc["utm_source"] is None
+        assert doc["utm_medium"] is None
+        assert doc["utm_campaign"] is None
 
     @pytest.mark.asyncio
     async def test_meta_carries_domain_from_cache(self):

@@ -21,6 +21,11 @@ class ClickContext:
     referrer: str | None
     is_emoji: bool = False
     cf_city: str | None = None
+    # Campaign tags from the short link's query string (already sanitised
+    # by ClickEvent). Recorded by the v2 handler; legacy ignores them.
+    utm_source: str | None = None
+    utm_medium: str | None = None
+    utm_campaign: str | None = None
 
 
 class ClickHandler(Protocol):

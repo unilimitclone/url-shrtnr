@@ -269,6 +269,17 @@ class AggregationStrategyFactory:
         "short_code": lambda: FieldAggregationStrategy(
             "$meta.short_code", "short_code", 100
         ),
+        # "(none)" = untagged clicks (and clicks recorded before the utm
+        # fields existed) — the campaign analogue of referrer's "Direct".
+        "utm_source": lambda: FieldAggregationStrategy(
+            "$utm_source", "utm_source", 50, default="(none)"
+        ),
+        "utm_medium": lambda: FieldAggregationStrategy(
+            "$utm_medium", "utm_medium", 50, default="(none)"
+        ),
+        "utm_campaign": lambda: FieldAggregationStrategy(
+            "$utm_campaign", "utm_campaign", 50, default="(none)"
+        ),
     }
 
     @classmethod

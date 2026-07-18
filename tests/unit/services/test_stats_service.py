@@ -512,4 +512,62 @@ class TestClickQueryBuilding:
         )
         # meta.short_code must remain the locked value, not the filter value
         assert q["meta.short_code"] == "locked"
+
+    def test_plain_utm_filter_added(self):
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"utm_source": ["newsletter"]}
+        )
+        assert q["utm_source"] == {"$in": ["newsletter"]}
+
+    def test_utm_none_sentinel_matches_missing_field(self):
+        """ "(none)" must match null/missing utm values, like referrer's
+        "Direct"."""
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"utm_source": ["(none)"]}
+        )
+        assert q["$or"] == [
+            {"utm_source": {"$in": [None, ""]}},
+            {"utm_source": {"$exists": False}},
+        ]
+
+    def test_utm_sentinel_mixed_with_values(self):
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"utm_medium": ["(none)", "email"]}
+        )
+        assert q["$or"] == [
+            {"utm_medium": {"$in": ["email"]}},
+            {"utm_medium": {"$in": [None, ""]}},
+            {"utm_medium": {"$exists": False}},
+        ]
+
+    def test_two_null_sentinel_filters_nest_under_and(self):
+        """Two $or groups must combine under $and — a second bare "$or"
+        key would silently overwrite the first."""
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all",
+            OWNER_ID,
+            None,
+            START,
+            NOW,
+            {"referrer": ["Direct"], "utm_source": ["(none)"]},
+        )
+        assert "$or" not in q
+        assert len(q["$and"]) == 2
+        assert all("$or" in group for group in q["$and"])
+
+    def test_device_filter_added(self):
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"device": ["mobile", "tablet"]}
+        )
+        assert q["device"] == {"$in": ["mobile", "tablet"]}
         assert "$in" not in str(q.get("meta.short_code", ""))

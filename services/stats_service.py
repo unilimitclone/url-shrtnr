@@ -62,6 +62,16 @@ _TIMEZONE_ALIASES: dict[str, str] = {
 # this set instead.
 _KNOWN_TIMEZONES: frozenset[str] = frozenset(available_timezones())
 
+# Dimensions whose aggregation output maps null/missing to a sentinel value
+# ("Direct" referrers, "(none)" for untagged utm clicks). Filtering by the
+# sentinel must match those null/missing documents too.
+_NULL_SENTINEL_FILTERS: dict[StatsDimension, str] = {
+    StatsDimension.REFERRER: "Direct",
+    StatsDimension.UTM_SOURCE: "(none)",
+    StatsDimension.UTM_MEDIUM: "(none)",
+    StatsDimension.UTM_CAMPAIGN: "(none)",
+}
+
 
 class StatsService:
     """Analytics query service.
@@ -153,7 +163,10 @@ class StatsService:
         # Time range
         query["clicked_at"] = {"$gte": start_date, "$lte": end_date}
 
-        # Dimension filters
+        # Dimension filters. Null-sentinel dimensions build $or groups;
+        # multiple groups must nest under $and (a second bare "$or" key
+        # would overwrite the first).
+        or_groups: list[list[dict[str, Any]]] = []
         for dimension, values in filters.items():
             if not values:
                 continue
@@ -169,25 +182,25 @@ class StatsService:
                     )
                     continue
                 query["meta.short_code"] = {"$in": values}
-            elif dimension == StatsDimension.REFERRER:
-                # "Direct" means null/missing referrer
-                if "Direct" in values:
-                    non_direct = [v for v in values if v != "Direct"]
-                    if non_direct:
-                        query["$or"] = [
-                            {"referrer": {"$in": non_direct}},
-                            {"referrer": {"$in": [None, ""]}},
-                            {"referrer": {"$exists": False}},
-                        ]
-                    else:
-                        query["$or"] = [
-                            {"referrer": {"$in": [None, ""]}},
-                            {"referrer": {"$exists": False}},
-                        ]
+            elif dimension in _NULL_SENTINEL_FILTERS:
+                sentinel = _NULL_SENTINEL_FILTERS[dimension]
+                if sentinel in values:
+                    non_null = [v for v in values if v != sentinel]
+                    clauses: list[dict[str, Any]] = []
+                    if non_null:
+                        clauses.append({dimension: {"$in": non_null}})
+                    clauses.append({dimension: {"$in": [None, ""]}})
+                    clauses.append({dimension: {"$exists": False}})
+                    or_groups.append(clauses)
                 else:
-                    query["referrer"] = {"$in": values}
+                    query[dimension] = {"$in": values}
             else:
                 query[dimension] = {"$in": values}
+
+        if len(or_groups) == 1:
+            query["$or"] = or_groups[0]
+        elif or_groups:
+            query["$and"] = [{"$or": group} for group in or_groups]
 
         return query
 

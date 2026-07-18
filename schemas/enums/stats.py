@@ -24,10 +24,14 @@ class StatsDimension(str, Enum):
     TIME = "time"
     BROWSER = "browser"
     OS = "os"
+    DEVICE = "device"
     COUNTRY = "country"
     CITY = "city"
     REFERRER = "referrer"
     SHORT_CODE = "short_code"
+    UTM_SOURCE = "utm_source"
+    UTM_MEDIUM = "utm_medium"
+    UTM_CAMPAIGN = "utm_campaign"
 
 
 class StatsMetric(str, Enum):
@@ -53,10 +57,14 @@ ALLOWED_FILTERS = frozenset(
     {
         StatsDimension.BROWSER,
         StatsDimension.OS,
+        StatsDimension.DEVICE,
         StatsDimension.COUNTRY,
         StatsDimension.CITY,
         StatsDimension.REFERRER,
         StatsDimension.SHORT_CODE,
+        StatsDimension.UTM_SOURCE,
+        StatsDimension.UTM_MEDIUM,
+        StatsDimension.UTM_CAMPAIGN,
     }
 )
 ALLOWED_EXPORT_FORMATS = frozenset(ExportFormat)

@@ -56,9 +56,11 @@ log = get_logger(__name__)
 _PublicDoc = UrlV2Doc | LegacyUrlDoc
 
 # Dimensions are FIXED per generation (no group_by on the wire). v1 never
-# emits city (not stored); v2 never emits bots (tracked per-click, not as
-# a dimension the public page shows).
-_V2_GROUP_BY = ["time", "browser", "os", "country", "city", "referrer"]
+# emits city or device (not stored); v2 never emits bots (tracked
+# per-click, not as a dimension the public page shows). utm_* dimensions
+# are deliberately absent from BOTH: campaign tagging is the owner's
+# marketing data, never public.
+_V2_GROUP_BY = ["time", "browser", "os", "device", "country", "city", "referrer"]
 _V1_GROUP_BY = ["time", "browser", "os", "country", "referrer"]
 _METRICS = ["clicks", "unique_clicks"]
 

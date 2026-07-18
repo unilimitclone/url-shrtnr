@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import tldextract
 from bson import ObjectId
+from ua_parser import Result
 from ua_parser import parse as ua_parse
 
 from errors import ForbiddenError, ValidationError
@@ -30,6 +31,40 @@ from services.click.protocol import ClickContext
 log = get_logger(__name__)
 
 _tld_extractor = tldextract.TLDExtract(cache_dir=None)
+
+_DESKTOP_OS_FAMILIES = frozenset(
+    {"Windows", "Mac OS X", "Linux", "Chrome OS", "Ubuntu", "Fedora"}
+)
+_MOBILE_OS_FAMILIES = frozenset({"Windows Phone", "KaiOS", "Firefox OS"})
+
+
+def classify_device(ua: Result, user_agent: str) -> str:
+    """Bucket a parsed UA into ``mobile`` / ``tablet`` / ``desktop`` / ``unknown``.
+
+    ua-parser reports device family/brand/model but deliberately no type;
+    this is the token fallback chain Matomo's DeviceDetector itself uses
+    when its model regexes don't decide. The signals survive Chrome's UA
+    reduction (the "Mobile" token and OS family are preserved; the device
+    model is frozen to "K"). Known, accepted limit: iPad Safari sends a
+    Mac UA since iPadOS 13 and lands in ``desktop`` — indistinguishable
+    server-side, counted the same way by GA4/Adobe/Matomo.
+    """
+    os_family = ua.os.family if ua.os else ""
+    device_family = ua.device.family if ua.device else ""
+    if os_family == "iOS":
+        return "tablet" if "iPad" in device_family else "mobile"
+    if os_family == "Android":
+        # Chrome on Android carries "Mobile" on phones only; tablets omit it
+        return "mobile" if "Mobile" in user_agent else "tablet"
+    if os_family in _DESKTOP_OS_FAMILIES:
+        return "desktop"
+    if os_family in _MOBILE_OS_FAMILIES:
+        return "mobile"
+    if device_family == "Generic Smartphone":
+        return "mobile"
+    if device_family == "Generic Tablet":
+        return "tablet"
+    return "unknown"
 
 
 class V2ClickHandler:
@@ -85,6 +120,7 @@ class V2ClickHandler:
 
         os_name = ua.os.family
         browser = ua.user_agent.family
+        device = classify_device(ua, user_agent)
 
         # Referrer sanitization (v2 style)
         sanitized_referrer: str | None = None
@@ -139,6 +175,10 @@ class V2ClickHandler:
             redirect_ms=redirect_ms,
             referrer=sanitized_referrer,
             bot_name=bot_name,
+            device=device,
+            utm_source=context.utm_source,
+            utm_medium=context.utm_medium,
+            utm_campaign=context.utm_campaign,
         )
 
         await self._click_repo.insert(click_doc.to_mongo())
@@ -153,6 +193,7 @@ class V2ClickHandler:
                 city=city or "Unknown",
                 browser=browser,
                 os=os_name,
+                device=device,
                 is_bot=is_bot,
                 bot_name=bot_name,
                 referrer_domain=sanitized_referrer,

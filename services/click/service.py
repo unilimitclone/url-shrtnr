@@ -37,6 +37,9 @@ class ClickService:
         user_agent: str,
         referrer: str | None,
         cf_city: str | None = None,
+        utm_source: str | None = None,
+        utm_medium: str | None = None,
+        utm_campaign: str | None = None,
     ) -> None:
         """
         Dispatch click tracking to the appropriate handler.
@@ -58,5 +61,8 @@ class ClickService:
             referrer=referrer,
             is_emoji=is_emoji,
             cf_city=cf_city,
+            utm_source=utm_source,
+            utm_medium=utm_medium,
+            utm_campaign=utm_campaign,
         )
         await handler.handle(context)
