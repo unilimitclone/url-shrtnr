@@ -55,7 +55,9 @@ def _make_token(
     return pyjwt.encode(payload, _jwt_cfg.jwt_secret, algorithm="HS256")
 
 
-def _make_legacy_app_token(app_id: str = "spoo-cli", email_verified: bool = True) -> str:
+def _make_legacy_app_token(
+    app_id: str = "spoo-cli", email_verified: bool = True
+) -> str:
     """Legacy-grant app token: app_id present, no scp claim (unrestricted).
 
     Mints the shape a pre-scopes grant produces so tests can prove it is
