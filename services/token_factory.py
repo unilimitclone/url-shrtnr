@@ -48,7 +48,14 @@ class TokenFactory:
 
     # ── Token generation ──────────────────────────────────────────────────────
 
-    def generate_access_token(self, user: UserDoc, *, amr: str) -> str:
+    def generate_access_token(
+        self,
+        user: UserDoc,
+        *,
+        amr: str,
+        app_id: str | None = None,
+        scopes: list[str] | None = None,
+    ) -> str:
         """Issue a signed JWT access token for *user*.
 
         Claims:
@@ -61,6 +68,9 @@ class TokenFactory:
             email          — lowercased email from the user document (consumed
                              by feature-flag email allowlists via CurrentUser)
             email_verified — bool from the user document
+            app_id         — connected-app id (device auth flow only)
+            scp            — granted scope slugs (device auth flow only;
+                             omitted entirely for unrestricted tokens)
         """
         now = int(datetime.now(timezone.utc).timestamp())
         payload: dict[str, Any] = {
@@ -73,6 +83,10 @@ class TokenFactory:
             "email": user.email.lower(),
             "email_verified": user.email_verified,
         }
+        if app_id:
+            payload["app_id"] = app_id
+        if scopes is not None:
+            payload["scp"] = list(scopes)
         return pyjwt.encode(payload, self._signing_key(), algorithm=self._algorithm())
 
     def generate_refresh_token(
@@ -102,15 +116,24 @@ class TokenFactory:
         return pyjwt.encode(payload, self._signing_key(), algorithm=self._algorithm())
 
     def issue_tokens(
-        self, user: UserDoc, amr: str, *, app_id: str | None = None
+        self,
+        user: UserDoc,
+        amr: str,
+        *,
+        app_id: str | None = None,
+        scopes: list[str] | None = None,
     ) -> tuple[str, str]:
         """Issue an access + refresh token pair for *user*.
+
+        ``scopes`` land on the access token only — the refresh token carries
+        just ``app_id`` so scope changes on the grant propagate at the next
+        refresh instead of being frozen into the long-lived credential.
 
         Returns:
             (access_token, refresh_token)
         """
         return (
-            self.generate_access_token(user, amr=amr),
+            self.generate_access_token(user, amr=amr, app_id=app_id, scopes=scopes),
             self.generate_refresh_token(user, amr=amr, app_id=app_id),
         )
 

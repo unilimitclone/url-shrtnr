@@ -34,13 +34,19 @@ class CurrentUser:
 
     ``api_key_doc`` is set when the request was authenticated via API key
     (``Authorization: Bearer spoo_<raw>``).  It is ``None`` for JWT auth.
-    Scope checks inspect ``api_key_doc.scopes`` when present.
+    Scope checks inspect ``api_key_doc.scopes`` when present, otherwise
+    ``scopes`` (the JWT ``scp`` claim) when not None.
     """
 
     user_id: ObjectId
     email_verified: bool
     api_key_doc: ApiKeyDoc | None = field(default=None)
     amr: str = "pwd"
+    # Scope slugs from the JWT "scp" claim (device-auth app tokens).
+    # None = unrestricted interactive session; [] would mean "no scopes".
+    scopes: list[str] | None = field(default=None)
+    # Connected-app id from the JWT "app_id" claim (device auth flow).
+    app_id: str | None = field(default=None)
     # Lowercased user email — consumed by FeatureFlagService's ALLOWLIST
     # rollout (allowlist_emails). Populated from the "email" claim on the
     # JWT path and from the owning UserDoc on the API-key path. None for
@@ -149,6 +155,17 @@ async def get_current_user(
             if isinstance(raw_email, str) and raw_email.strip()
             else None
         )
+        # Device-auth app tokens carry scp + app_id; session tokens carry
+        # neither. A malformed scp claim fails closed (empty scope list)
+        # rather than falling back to unrestricted.
+        raw_scopes = claims.get("scp")
+        scopes: list[str] | None = None
+        if raw_scopes is not None:
+            scopes = (
+                [s for s in raw_scopes if isinstance(s, str)]
+                if isinstance(raw_scopes, list)
+                else []
+            )
         structlog.contextvars.bind_contextvars(user_id=str(user_id), auth_method="jwt")
         return CurrentUser(
             user_id=user_id,
@@ -158,6 +175,8 @@ async def get_current_user(
             # Not issued yet — the paid-plans launch adds the claim; TIER
             # flag rollouts become a pure data change at that point.
             tier=claims.get("plan"),
+            scopes=scopes,
+            app_id=claims.get("app_id"),
         )
     except Exception:
         return None
@@ -184,14 +203,18 @@ async def require_verified_email(
 async def require_jwt(
     user: CurrentUser = Depends(require_auth),
 ) -> CurrentUser:
-    """Raise 403 if the request was authenticated via API key.
+    """Raise 403 unless the request comes from an interactive session.
 
-    Use on endpoints where API key auth must be explicitly prohibited —
-    e.g. key management routes (an API key must not be able to create,
-    list, or delete other API keys).
+    Rejects API keys AND scoped device-app tokens (``scp`` claim). Use on
+    account-security surfaces — profile, app management, device revoke —
+    where a delegated credential must never act.
     """
     if user.api_key_doc is not None:
         raise ForbiddenError("API keys cannot be used to manage API keys")
+    # Delegation is marked by app_id, not scp: a legacy grant mints an
+    # app token with app_id but no scp, and it must be barred here too.
+    if user.app_id is not None:
+        raise ForbiddenError("This operation requires an interactive session")
     return user
 
 
@@ -204,17 +227,33 @@ async def require_jwt_verified(
     return user
 
 
-def check_api_key_scope(user: CurrentUser | None, required_scopes: set[str]) -> None:
-    """Raise ForbiddenError if an API-key-authenticated user lacks a required scope.
+def _granted_scopes(user: CurrentUser) -> set[str] | None:
+    """The scope set a credential holds, or None for unrestricted sessions."""
+    if user.api_key_doc is not None:
+        return set(user.api_key_doc.scopes)
+    if user.scopes is not None:
+        return set(user.scopes)
+    return None
 
-    JWT-authenticated and anonymous requests are not scope-restricted.
+
+def check_credential_scopes(
+    user: CurrentUser | None, required_scopes: set[str]
+) -> None:
+    """Raise ForbiddenError if a scoped credential lacks a required scope.
+
+    Fires for API keys (key scopes) and device-app tokens (``scp`` claim);
+    interactive sessions and anonymous requests are not scope-restricted.
+    A single match against ``required_scopes`` suffices (OR semantics).
     """
-    if (
-        user is not None
-        and user.api_key_doc is not None
-        and not set(user.api_key_doc.scopes) & required_scopes
-    ):
+    if user is None:
+        return
+    granted = _granted_scopes(user)
+    if granted is not None and not granted & required_scopes:
         raise ForbiddenError("Insufficient scope for this operation")
+
+
+# Back-compat alias — the check now covers app tokens too.
+check_api_key_scope = check_credential_scopes
 
 
 # ── Named scope sets ─────────────────────────────────────────────────────────
@@ -238,6 +277,9 @@ DOMAIN_READ_SCOPES: set[str] = {
     ApiKeyScope.DOMAINS_READ,
     ApiKeyScope.ADMIN_ALL,
 }
+# Deliberately NOT satisfied by admin:all: API keys can hold admin:all but
+# must never manage keys, and app tokens declare keys:manage explicitly.
+KEYS_MANAGE_SCOPES: set[str] = {ApiKeyScope.KEYS_MANAGE}
 
 
 # ── Parameterised scope dependency factories ─────────────────────────────────
@@ -255,7 +297,30 @@ def require_scopes(scopes: set[str]):
     """
 
     async def _dep(user: CurrentUser = Depends(require_auth)) -> CurrentUser:
-        check_api_key_scope(user, scopes)
+        check_credential_scopes(user, scopes)
+        return user
+
+    return _dep
+
+
+def require_session_or_scopes(scopes: set[str]):
+    """Dependency factory: interactive session OR a credential holding *scopes*.
+
+    Passes for an interactive session (no API key, no ``app_id``), or for a
+    delegated credential whose scope set intersects *scopes*. A delegated
+    credential is identified by ``api_key_doc``/``app_id``, not by ``scp``,
+    so a legacy app token (``app_id`` but no ``scp``) is treated as delegated
+    and denied — it predates ``keys:manage`` and never held it. API keys can
+    never be created with ``keys:manage`` (see ALLOWED_SCOPES), so the
+    anti-self-propagation guard holds.
+    """
+
+    async def _dep(user: CurrentUser = Depends(require_auth)) -> CurrentUser:
+        if user.api_key_doc is None and user.app_id is None:
+            return user  # interactive session — unrestricted
+        granted = _granted_scopes(user)
+        if not granted or not granted & scopes:
+            raise ForbiddenError("Insufficient scope for this operation")
         return user
 
     return _dep
@@ -275,7 +340,7 @@ def optional_scopes(scopes: set[str]):
     async def _dep(
         user: CurrentUser | None = Depends(get_current_user),
     ) -> CurrentUser | None:
-        check_api_key_scope(user, scopes)
+        check_credential_scopes(user, scopes)
         return user
 
     return _dep
@@ -321,6 +386,14 @@ def require_scopes_verified(scopes: set[str]):
     return _dep
 
 
+# ── Named dependency instances ────────────────────────────────────────────────
+
+# Key listing/deletion: interactive session OR a credential holding
+# keys:manage. Key *creation* is not here — minting a new credential is a
+# first-party act, so create uses JwtVerifiedUser (interactive session only).
+require_keys_access = require_session_or_scopes(KEYS_MANAGE_SCOPES)
+
+
 # ── Annotated type aliases — community-standard Depends shortcuts ─────────────
 
 AuthUser = Annotated[CurrentUser, Depends(require_auth)]
@@ -328,3 +401,4 @@ VerifiedUser = Annotated[CurrentUser, Depends(require_verified_email)]
 OptionalUser = Annotated[CurrentUser | None, Depends(get_current_user)]
 JwtUser = Annotated[CurrentUser, Depends(require_jwt)]
 JwtVerifiedUser = Annotated[CurrentUser, Depends(require_jwt_verified)]
+KeysAccessUser = Annotated[CurrentUser, Depends(require_keys_access)]

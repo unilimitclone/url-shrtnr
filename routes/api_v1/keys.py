@@ -3,8 +3,10 @@ POST   /api/v1/keys          — create an API key
 GET    /api/v1/keys          — list API keys for the current user
 DELETE /api/v1/keys/{key_id} — delete (?revoke=false) or revoke (?revoke=true) a key
 
-All endpoints require JWT authentication (API keys may NOT be used to manage
-other API keys — only JWT Bearer auth is accepted here, matching the original).
+All endpoints require an interactive session (JWT without app scopes) OR a
+device-app token whose grant holds `keys:manage` (e.g. spoo-cli). API keys
+may NOT be used to manage other API keys — keys:manage is excluded from
+ALLOWED_SCOPES at creation, so a key can never propagate itself.
 """
 
 from __future__ import annotations
@@ -17,8 +19,8 @@ from fastapi import APIRouter, Path, Query, Request
 
 from dependencies import (
     ApiKeySvc,
-    JwtUser,
     JwtVerifiedUser,
+    KeysAccessUser,
 )
 from errors import NotFoundError, ValidationError
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
@@ -55,8 +57,9 @@ async def create_api_key(
     (prefixed with `spoo_`) is returned **only in this response** and cannot be
     retrieved again.
 
-    **Authentication**: Required — JWT Bearer only (API keys cannot create other
-    API keys). Email must be verified.
+    **Authentication**: Required — interactive session only. Connected apps
+    and API keys cannot create keys; minting a credential is a first-party
+    action. Email must be verified.
 
     **Rate Limits**: 5/hour
 
@@ -115,7 +118,7 @@ async def create_api_key(
 @limiter.limit(Limits.API_KEY_READ)
 async def list_api_keys(
     request: Request,
-    user: JwtUser,
+    user: KeysAccessUser,
     api_key_service: ApiKeySvc,
 ) -> ApiKeysListResponse:
     """List all API keys for the authenticated user.
@@ -124,8 +127,8 @@ async def list_api_keys(
     authenticated user. The full token value is **never** returned in this
     endpoint for security reasons — only the `token_prefix` is shown.
 
-    **Authentication**: Required — JWT Bearer only (API keys cannot be used to
-    manage API keys).
+    **Authentication**: Required — interactive session or an app token with
+    the `keys:manage` scope (API keys cannot be used to manage API keys).
 
     **Rate Limits**: 60/min
     """
@@ -159,7 +162,7 @@ async def delete_api_key(
     key_id: Annotated[
         str, Path(min_length=24, max_length=24, pattern=r"^[0-9a-f]{24}$")
     ],
-    user: JwtUser,
+    user: KeysAccessUser,
     api_key_service: ApiKeySvc,
     revoke: bool = Query(default=False),
 ) -> ApiKeyActionResponse:
@@ -169,8 +172,8 @@ async def delete_api_key(
     revoked (soft delete). Revoked keys stop working immediately but remain
     visible in the key list for audit purposes.
 
-    **Authentication**: Required — JWT Bearer only (API keys cannot be used to
-    manage API keys).
+    **Authentication**: Required — interactive session or an app token with
+    the `keys:manage` scope (API keys cannot be used to manage API keys).
 
     **Rate Limits**: 30/min
 

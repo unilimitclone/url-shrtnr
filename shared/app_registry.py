@@ -61,6 +61,16 @@ def load_app_registry(config_path: Path | None = None) -> dict[str, AppEntry]:
             )
             continue
 
+        # Fail-safe: a live device app must declare the scopes it will be
+        # granted. Skipping (not defaulting) means a misconfigured entry
+        # can never mint an unrestricted grant.
+        if entry.is_live_device_app() and not entry.scopes:
+            log.warning(
+                "app_registry_live_app_missing_scopes",
+                app_id=app_id,
+            )
+            continue
+
         # Validate icon files exist for live apps
         if entry.status == AppStatus.LIVE and entry.icon:
             icon_path = _STATIC_APPS_DIR / entry.icon

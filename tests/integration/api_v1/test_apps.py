@@ -25,6 +25,7 @@ def _make_grant(
     app_id: str = "spoo-cli",
     granted_at: datetime | None = None,
     last_used_at: datetime | None = None,
+    scopes: list[str] | None = None,
 ) -> AppGrantDoc:
     return AppGrantDoc.from_mongo(
         {
@@ -36,6 +37,7 @@ def _make_grant(
             "granted_at": granted_at or datetime(2026, 6, 10, 12, 0, 0),
             "last_used_at": last_used_at,
             "revoked_at": None,
+            "scopes": scopes,
         }
     )
 
@@ -47,7 +49,7 @@ def _registry() -> dict[str, AppEntry]:
             icon="spoo-cli.svg",
             description="Shorten links from your terminal",
             status="live",
-            permissions=["Access your spoo.me account", "View your analytics"],
+            scopes=["shorten:create", "stats:read"],
         )
     }
 
@@ -88,9 +90,9 @@ class TestListAppGrants:
         assert resp.json() == {"items": []}
         mock_repo.find_active_for_user.assert_called_once_with(user.user_id)
 
-    def test_grant_maps_registry_entry(self):
+    def test_grant_scopes_snapshot_wins_over_registry(self):
         user = _make_user()
-        grant = _make_grant(user.user_id, last_used_at=None)
+        grant = _make_grant(user.user_id, scopes=["shorten:create"])
         mock_repo = AsyncMock()
         mock_repo.find_active_for_user = AsyncMock(return_value=[grant])
 
@@ -113,13 +115,33 @@ class TestListAppGrants:
             "app": "spoo-cli",
             "app_name": "Spoo CLI",
             "icon": "spoo-cli.svg",
-            "permissions": [
-                "Access your spoo.me account",
-                "View your analytics",
-            ],
+            "scopes": ["shorten:create"],
+            "permissions": ["Create short links"],
             "granted_at": "2026-06-10T12:00:00+00:00",
             "last_used_at": None,
         }
+
+    def test_legacy_grant_inherits_registry_scopes(self):
+        """Grant minted before scoped consent: registry scopes apply."""
+        user = _make_user()
+        grant = _make_grant(user.user_id, scopes=None)
+        mock_repo = AsyncMock()
+        mock_repo.find_active_for_user = AsyncMock(return_value=[grant])
+
+        application = _build_test_app(
+            {
+                require_jwt: lambda: user,
+                get_app_grant_repo: lambda: mock_repo,
+                get_app_registry: lambda: _registry(),
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.get("/api/v1/apps")
+
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert item["scopes"] == ["shorten:create", "stats:read"]
+        assert item["permissions"] == ["Create short links", "Read analytics data"]
 
     def test_grant_without_registry_entry_falls_back(self):
         user = _make_user()
@@ -143,7 +165,9 @@ class TestListAppGrants:
         assert item["app_name"] == "spoo-retired"
         assert item["icon"] is None
         # Never understate access: the grant is still full-account even
-        # when its catalogue entry is gone.
+        # when its catalogue entry is gone. Empty scopes = legacy
+        # unrestricted on the wire.
+        assert item["scopes"] == []
         assert item["permissions"] == ["Full access to your spoo.me account"]
 
     def test_grants_sorted_newest_granted_first(self):

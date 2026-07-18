@@ -23,8 +23,8 @@ from dependencies import (
     get_api_key_service,
     get_current_user,
     get_url_service,
-    require_jwt,
     require_jwt_verified,
+    require_keys_access,
 )
 from routes.api_v1 import router as api_v1_router
 from schemas.models.api_key import ApiKeyDoc
@@ -214,7 +214,7 @@ def test_list_api_keys_returns_without_token():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_jwt: lambda: verified_user,
+            require_keys_access: lambda: verified_user,
             get_api_key_service: lambda: mock_svc,
         },
     )
@@ -308,7 +308,7 @@ def test_revoke_api_key_soft():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_jwt: lambda: verified_user,
+            require_keys_access: lambda: verified_user,
             get_api_key_service: lambda: mock_svc,
         },
     )
@@ -330,7 +330,7 @@ def test_revoke_api_key_hard():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_jwt: lambda: verified_user,
+            require_keys_access: lambda: verified_user,
             get_api_key_service: lambda: mock_svc,
         },
     )
@@ -357,7 +357,7 @@ def test_revoked_api_key_rejected():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_jwt: _raise_unauth,
+            require_keys_access: _raise_unauth,
             get_api_key_service: lambda: mock_svc,
         },
     )
@@ -381,7 +381,7 @@ def test_expired_api_key_rejected():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_jwt: _raise_unauth,
+            require_keys_access: _raise_unauth,
             get_api_key_service: lambda: mock_svc,
         },
     )
@@ -400,7 +400,7 @@ def test_api_key_not_found_on_delete():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_jwt: lambda: verified_user,
+            require_keys_access: lambda: verified_user,
             get_api_key_service: lambda: mock_svc,
         },
     )

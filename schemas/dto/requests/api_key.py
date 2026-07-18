@@ -14,7 +14,7 @@ from schemas.dto.base import RequestBase
 
 
 class ApiKeyScope(str, Enum):
-    """Permission scopes for API keys."""
+    """Permission scopes for credentials (API keys and app-scoped tokens)."""
 
     SHORTEN_CREATE = "shorten:create"
     URLS_MANAGE = "urls:manage"
@@ -23,10 +23,16 @@ class ApiKeyScope(str, Enum):
     DOMAINS_MANAGE = "domains:manage"
     DOMAINS_READ = "domains:read"
     REPORTS_CREATE = "reports:create"
+    # Grantable only via app registry entries (device auth). API keys must
+    # never carry it — a key that can mint keys defeats revocation.
+    KEYS_MANAGE = "keys:manage"
     ADMIN_ALL = "admin:all"
 
 
-ALLOWED_SCOPES = frozenset(ApiKeyScope)
+# Scopes an API key may be created with. keys:manage is deliberately
+# excluded so an API key can never create/list/delete other API keys
+# (admin:all does not imply it either — see KEYS_MANAGE_SCOPES).
+ALLOWED_SCOPES = frozenset(ApiKeyScope) - {ApiKeyScope.KEYS_MANAGE}
 
 
 class CreateApiKeyRequest(RequestBase):

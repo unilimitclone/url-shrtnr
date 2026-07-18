@@ -54,3 +54,27 @@ def test_hash_token_known_value():
 
 def test_hash_token_distinct_inputs():
     assert hash_token("token_a") != hash_token("token_b")
+
+
+class TestPkceS256Challenge:
+    def test_rfc7636_appendix_b_vector(self):
+        from infrastructure.crypto import pkce_s256_challenge
+
+        assert (
+            pkce_s256_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+            == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        )
+
+    def test_challenge_is_43_chars_unpadded_base64url(self):
+        from infrastructure.crypto import pkce_s256_challenge
+
+        challenge = pkce_s256_challenge("a" * 43)
+        assert len(challenge) == 43
+        assert "=" not in challenge
+        assert "+" not in challenge
+        assert "/" not in challenge
+
+    def test_different_verifiers_differ(self):
+        from infrastructure.crypto import pkce_s256_challenge
+
+        assert pkce_s256_challenge("a" * 43) != pkce_s256_challenge("b" * 43)

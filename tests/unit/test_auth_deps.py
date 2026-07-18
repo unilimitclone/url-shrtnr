@@ -369,3 +369,197 @@ class TestCheckApiKeyScope:
 
     def test_anonymous_bypasses_scope_check(self):
         check_api_key_scope(None, {"url:write"})  # no raise
+
+
+# ── Scoped app tokens (device auth) ───────────────────────────────────────────
+
+
+def make_scoped_jwt(scopes=None, app_id="spoo-cli", ttl_seconds: int = 900):
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(USER_OID),
+        "email_verified": True,
+        "type": "access",
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+        "iat": now,
+        "exp": now + timedelta(seconds=ttl_seconds),
+        "amr": ["ext"],
+    }
+    if scopes is not None:
+        payload["scp"] = scopes
+    if app_id is not None:
+        payload["app_id"] = app_id
+    return pyjwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+
+class TestScopedTokenParsing:
+    @pytest.mark.asyncio
+    async def test_scp_and_app_id_populate_current_user(self):
+        token = make_scoped_jwt(scopes=["urls:read", "stats:read"])
+        req = make_request(auth_header=f"Bearer {token}")
+        with patch("dependencies.auth.get_settings", return_value=make_settings()):
+            user = await get_current_user(req, db=MagicMock())
+        assert user is not None
+        assert user.scopes == ["urls:read", "stats:read"]
+        assert user.app_id == "spoo-cli"
+
+    @pytest.mark.asyncio
+    async def test_session_token_has_no_scopes(self):
+        token = make_jwt_token()
+        req = make_request(auth_header=f"Bearer {token}")
+        with patch("dependencies.auth.get_settings", return_value=make_settings()):
+            user = await get_current_user(req, db=MagicMock())
+        assert user is not None
+        assert user.scopes is None
+        assert user.app_id is None
+
+    @pytest.mark.asyncio
+    async def test_malformed_scp_fails_closed(self):
+        """A non-list scp claim yields an empty scope set, not unrestricted."""
+        token = make_scoped_jwt(scopes="urls:read")  # string, not list
+        req = make_request(auth_header=f"Bearer {token}")
+        with patch("dependencies.auth.get_settings", return_value=make_settings()):
+            user = await get_current_user(req, db=MagicMock())
+        assert user is not None
+        assert user.scopes == []
+
+
+class TestCredentialScopeCheck:
+    def _scoped_user(self, scopes):
+        return CurrentUser(
+            user_id=USER_OID, email_verified=True, scopes=scopes, app_id="spoo-cli"
+        )
+
+    def test_token_scopes_pass_when_intersecting(self):
+        from dependencies.auth import URL_READ_SCOPES, check_credential_scopes
+
+        check_credential_scopes(self._scoped_user(["urls:read"]), URL_READ_SCOPES)
+
+    def test_token_scopes_403_when_disjoint(self):
+        from dependencies.auth import URL_READ_SCOPES, check_credential_scopes
+
+        with pytest.raises(ForbiddenError):
+            check_credential_scopes(
+                self._scoped_user(["shorten:create"]), URL_READ_SCOPES
+            )
+
+    def test_empty_token_scopes_403(self):
+        from dependencies.auth import URL_READ_SCOPES, check_credential_scopes
+
+        with pytest.raises(ForbiddenError):
+            check_credential_scopes(self._scoped_user([]), URL_READ_SCOPES)
+
+    def test_session_user_unrestricted(self):
+        from dependencies.auth import URL_READ_SCOPES, check_credential_scopes
+
+        check_credential_scopes(
+            CurrentUser(user_id=USER_OID, email_verified=True), URL_READ_SCOPES
+        )
+
+    def test_api_key_scopes_still_checked(self):
+        from dependencies.auth import URL_READ_SCOPES, check_credential_scopes
+
+        key_user = CurrentUser(
+            user_id=USER_OID,
+            email_verified=True,
+            api_key_doc=make_key_doc(scopes=["shorten:create"]),
+        )
+        with pytest.raises(ForbiddenError):
+            check_credential_scopes(key_user, URL_READ_SCOPES)
+
+    def test_check_api_key_scope_alias_preserved(self):
+        from dependencies.auth import check_api_key_scope, check_credential_scopes
+
+        assert check_api_key_scope is check_credential_scopes
+
+
+class TestRequireJwtRejectsScopedTokens:
+    @pytest.mark.asyncio
+    async def test_scoped_token_403(self):
+        from dependencies.auth import require_jwt
+
+        user = CurrentUser(
+            user_id=USER_OID,
+            email_verified=True,
+            scopes=["urls:read"],
+            app_id="spoo-cli",
+        )
+        with pytest.raises(ForbiddenError, match="interactive session"):
+            await require_jwt(user)
+
+    @pytest.mark.asyncio
+    async def test_legacy_app_token_403(self):
+        """Legacy grant token: app_id set, scopes None — still delegated."""
+        from dependencies.auth import require_jwt
+
+        user = CurrentUser(
+            user_id=USER_OID, email_verified=True, scopes=None, app_id="spoo-cli"
+        )
+        with pytest.raises(ForbiddenError, match="interactive session"):
+            await require_jwt(user)
+
+    @pytest.mark.asyncio
+    async def test_session_user_passes(self):
+        from dependencies.auth import require_jwt
+
+        user = CurrentUser(user_id=USER_OID, email_verified=True)
+        assert await require_jwt(user) is user
+
+
+class TestRequireKeysAccess:
+    @pytest.mark.asyncio
+    async def test_interactive_session_passes(self):
+        from dependencies.auth import require_keys_access
+
+        user = CurrentUser(user_id=USER_OID, email_verified=True)
+        assert await require_keys_access(user) is user
+
+    @pytest.mark.asyncio
+    async def test_app_token_with_keys_manage_passes(self):
+        from dependencies.auth import require_keys_access
+
+        user = CurrentUser(
+            user_id=USER_OID,
+            email_verified=True,
+            scopes=["keys:manage"],
+            app_id="spoo-cli",
+        )
+        assert await require_keys_access(user) is user
+
+    @pytest.mark.asyncio
+    async def test_app_token_without_keys_manage_403(self):
+        from dependencies.auth import require_keys_access
+
+        user = CurrentUser(
+            user_id=USER_OID,
+            email_verified=True,
+            scopes=["shorten:create", "admin:all"],
+            app_id="spoo-cli",
+        )
+        with pytest.raises(ForbiddenError):
+            await require_keys_access(user)
+
+    @pytest.mark.asyncio
+    async def test_api_key_403_even_with_admin_all(self):
+        """API keys can never manage keys — keys:manage is uncreatable on them."""
+        from dependencies.auth import require_keys_access
+
+        user = CurrentUser(
+            user_id=USER_OID,
+            email_verified=True,
+            api_key_doc=make_key_doc(scopes=["admin:all"]),
+        )
+        with pytest.raises(ForbiddenError):
+            await require_keys_access(user)
+
+    @pytest.mark.asyncio
+    async def test_legacy_app_token_403(self):
+        """Legacy grant token (app_id, no scp) predates keys:manage — denied."""
+        from dependencies.auth import require_keys_access
+
+        user = CurrentUser(
+            user_id=USER_OID, email_verified=True, scopes=None, app_id="spoo-cli"
+        )
+        with pytest.raises(ForbiddenError):
+            await require_keys_access(user)

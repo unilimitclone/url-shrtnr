@@ -1,11 +1,13 @@
 """
-Cryptographic helpers — password hashing and token hashing.
+Cryptographic helpers — password hashing, token hashing, and PKCE.
 
-Uses argon2 for passwords (via argon2-cffi) and SHA-256 for token hashing.
+Uses argon2 for passwords (via argon2-cffi) and SHA-256 for token hashing
+and PKCE code-challenge derivation (RFC 7636).
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 
 from argon2 import PasswordHasher
@@ -49,3 +51,16 @@ def hash_token(token: str) -> str:
         64-character lowercase hex string.
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def pkce_s256_challenge(code_verifier: str) -> str:
+    """Derive the S256 PKCE code challenge for *code_verifier* (RFC 7636 §4.2).
+
+    ``code_challenge = BASE64URL-ENCODE(SHA256(ASCII(code_verifier)))``
+    with no ``=`` padding.
+
+    Returns:
+        43-character base64url string.
+    """
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")

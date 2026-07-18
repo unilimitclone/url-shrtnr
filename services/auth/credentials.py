@@ -177,14 +177,20 @@ class CredentialService:
         )
 
     async def refresh_token(self, refresh_token_str: str) -> AuthResult:
-        """Perform stateless token rotation.
+        """Perform stateless token rotation for interactive sessions.
 
         Verifies the refresh JWT, re-fetches the user to get the latest
         ``email_verified`` status, and issues a new token pair.  The original
-        ``amr`` and ``app_id`` claims are preserved across rotations.
+        ``amr`` claim is preserved across rotations.
+
+        App-bound refresh tokens (``app_id`` claim) are rejected: they must
+        rotate via ``/auth/device/refresh``, which re-checks the grant and
+        re-applies its scopes. Accepting them here would trade a scoped
+        credential for an unrestricted session token.
 
         Raises:
-            AuthenticationError: Token invalid/expired, or user not found/inactive.
+            AuthenticationError: Token invalid/expired, app-bound, or user
+                not found/inactive.
         """
         svc_log = log.bind(op="auth.refresh")
 
@@ -192,6 +198,10 @@ class CredentialService:
             claims = self._tokens.verify_token(refresh_token_str, token_type="refresh")
         except AuthenticationError:
             raise
+
+        if claims.get("app_id"):
+            svc_log.info("token_refresh_failed", reason="app_token_on_session_flow")
+            raise AuthenticationError("invalid or expired refresh token")
 
         user_id = claims.get("sub")
         user = await self._user_repo.find_by_id(ObjectId(user_id))
@@ -204,13 +214,11 @@ class CredentialService:
             raise AuthenticationError("invalid or expired refresh token")
 
         amr = claims.get("amr", ["pwd"])[0]
-        app_id = claims.get("app_id")
 
-        svc_log.info("token_refreshed", user_id=user_id, amr=amr, app_id=app_id)
-        new_access, new_refresh = self._tokens.issue_tokens(user, amr, app_id=app_id)
+        svc_log.info("token_refreshed", user_id=user_id, amr=amr)
+        new_access, new_refresh = self._tokens.issue_tokens(user, amr)
         return AuthResult(
             user=user,
             access_token=new_access,
             refresh_token=new_refresh,
-            app_id=app_id,
         )

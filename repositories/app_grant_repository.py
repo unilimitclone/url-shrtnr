@@ -58,11 +58,26 @@ class AppGrantRepository(BaseRepository[AppGrantDoc]):
             )
             raise
 
-    async def create_or_reactivate(self, user_id: ObjectId, app_id: str) -> AppGrantDoc:
+    async def find_by_id_for_user(
+        self, user_id: ObjectId, grant_id: ObjectId
+    ) -> AppGrantDoc | None:
+        """Find a grant by document id, scoped to its owner."""
+        return await self._find_one({"_id": grant_id, "user_id": user_id})
+
+    async def create_or_reactivate(
+        self,
+        user_id: ObjectId,
+        app_id: str,
+        *,
+        scopes: list[str] | None,
+    ) -> AppGrantDoc:
         """Create a new grant or reactivate a revoked one.
 
         Uses upsert: if a document exists for (user_id, app_id), clears
         revoked_at and updates granted_at. Otherwise inserts a new document.
+
+        ``scopes`` snapshots the registry scopes at approval time; passing
+        None preserves a legacy (unrestricted) grant shape.
         """
         now = datetime.now(timezone.utc)
         try:
@@ -72,6 +87,7 @@ class AppGrantRepository(BaseRepository[AppGrantDoc]):
                     "$set": {
                         "granted_at": now,
                         "revoked_at": None,
+                        "scopes": scopes,
                     },
                     "$setOnInsert": {
                         "user_id": user_id,
