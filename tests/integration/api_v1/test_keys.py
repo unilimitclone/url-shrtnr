@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 from dependencies import (
     get_api_key_service,
     get_current_user,
-    require_keys_access,
     require_jwt_verified,
+    require_keys_access,
 )
 
 from .conftest import _build_test_app, _make_api_key_doc, _make_user

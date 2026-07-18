@@ -23,8 +23,8 @@ from dependencies import (
     get_api_key_service,
     get_current_user,
     get_url_service,
-    require_keys_access,
     require_jwt_verified,
+    require_keys_access,
 )
 from routes.api_v1 import router as api_v1_router
 from schemas.models.api_key import ApiKeyDoc
