@@ -512,4 +512,100 @@ class TestClickQueryBuilding:
         )
         # meta.short_code must remain the locked value, not the filter value
         assert q["meta.short_code"] == "locked"
+
+    def test_plain_utm_filter_added(self):
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"utm_source": ["newsletter"]}
+        )
+        assert q["utm_source"] == {"$in": ["newsletter"]}
+
+    def test_utm_none_sentinel_matches_missing_field(self):
+        """ "(none)" must match null/missing utm values, like referrer's
+        "Direct"."""
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"utm_source": ["(none)"]}
+        )
+        assert q["$or"] == [
+            {"utm_source": {"$in": ["(none)"]}},
+            {"utm_source": {"$in": [None, ""]}},
+            {"utm_source": {"$exists": False}},
+        ]
+
+    def test_utm_sentinel_mixed_with_values(self):
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"utm_medium": ["(none)", "email"]}
+        )
+        assert q["$or"] == [
+            {"utm_medium": {"$in": ["(none)", "email"]}},
+            {"utm_medium": {"$in": [None, ""]}},
+            {"utm_medium": {"$exists": False}},
+        ]
+
+    def test_two_null_sentinel_filters_nest_under_and(self):
+        """Two $or groups must combine under $and — a second bare "$or"
+        key would silently overwrite the first."""
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all",
+            OWNER_ID,
+            None,
+            START,
+            NOW,
+            {"referrer": ["Direct"], "utm_source": ["(none)"]},
+        )
+        assert "$or" not in q
+        assert len(q["$and"]) == 2
+        assert all("$or" in group for group in q["$and"])
+
+    def test_device_filter_added(self):
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"device": ["mobile", "tablet"]}
+        )
+        assert q["device"] == {"$in": ["mobile", "tablet"]}
         assert "$in" not in str(q.get("meta.short_code", ""))
+
+    def test_device_unknown_matches_stored_and_missing(self):
+        """ "unknown" is BOTH a stored value (classifier fallback) and the
+        sentinel for pre-device-tracking clicks — the filter must match
+        both, or it disagrees with what group-by shows."""
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"device": ["unknown"]}
+        )
+        assert q["$or"] == [
+            {"device": {"$in": ["unknown"]}},
+            {"device": {"$in": [None, ""]}},
+            {"device": {"$exists": False}},
+        ]
+
+    def test_device_groupby_and_filter_agree_on_missing_docs(self):
+        """The invariant: a click doc with no device field lands in the
+        same "unknown" bucket for group-by (aggregation $ifNull default),
+        for filtering (null-sentinel map), and for new writes (classifier
+        fallback). If any of the three drifts, widget counts and filter
+        counts stop agreeing."""
+        from services.click.handlers import classify_device
+        from services.stats_service import _NULL_SENTINEL_FILTERS
+        from shared.aggregation_strategies import AggregationStrategyFactory
+
+        pipeline = AggregationStrategyFactory.get("device").build_pipeline({})
+        group_expr = pipeline[1]["$group"]["_id"]
+        assert group_expr == {"$ifNull": ["$device", "unknown"]}
+
+        from ua_parser import parse as ua_parse
+
+        classifier_fallback = classify_device(
+            ua_parse("SomeExoticClient/1.0"), "SomeExoticClient/1.0"
+        )
+        assert classifier_fallback == "unknown"
+        assert _NULL_SENTINEL_FILTERS["device"] == "unknown"

@@ -258,7 +258,12 @@ class AggregationStrategyFactory:
     _FIELD_STRATEGIES: ClassVar[dict[str, Callable[[], AggregationStrategy]]] = {
         "browser": lambda: FieldAggregationStrategy("$browser", "browser", 20),
         "os": lambda: FieldAggregationStrategy("$os", "os", 20),
-        "device": lambda: FieldAggregationStrategy("$device", "device", 20),
+        # default matches the classifier's own fallback value so clicks
+        # recorded before device tracking existed merge into the same
+        # "unknown" bucket instead of a separate synthetic "Unknown".
+        "device": lambda: FieldAggregationStrategy(
+            "$device", "device", 20, default="unknown"
+        ),
         "country": lambda: FieldAggregationStrategy(
             "$country", "country", 50, transform_fn=convert_country_name
         ),
@@ -268,6 +273,17 @@ class AggregationStrategyFactory:
         ),
         "short_code": lambda: FieldAggregationStrategy(
             "$meta.short_code", "short_code", 100
+        ),
+        # "(none)" = untagged clicks (and clicks recorded before the utm
+        # fields existed) — the campaign analogue of referrer's "Direct".
+        "utm_source": lambda: FieldAggregationStrategy(
+            "$utm_source", "utm_source", 50, default="(none)"
+        ),
+        "utm_medium": lambda: FieldAggregationStrategy(
+            "$utm_medium", "utm_medium", 50, default="(none)"
+        ),
+        "utm_campaign": lambda: FieldAggregationStrategy(
+            "$utm_campaign", "utm_campaign", 50, default="(none)"
         ),
     }
 

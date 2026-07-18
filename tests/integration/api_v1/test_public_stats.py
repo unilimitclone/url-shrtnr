@@ -651,7 +651,15 @@ def test_v2_wire_scopes_match_by_url_id_not_short_code():
         {"country": "DE", "clicks": 10, "clicks_percentage": 100.0}
     ]
     assert stats["summary"]["total_clicks"] == 10
-    assert stats["group_by"] == ["time", "browser", "os", "country", "city", "referrer"]
+    assert stats["group_by"] == [
+        "time",
+        "browser",
+        "os",
+        "device",
+        "country",
+        "city",
+        "referrer",
+    ]
 
     # The $match is scoped by meta.url_id — never meta.short_code — so a
     # same-alias link on a custom domain can never bleed in.

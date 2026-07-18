@@ -25,6 +25,7 @@ from schemas.dto.requests._descriptions import (
     STATS_BROWSER_DESC,
     STATS_CITY_DESC,
     STATS_COUNTRY_DESC,
+    STATS_DEVICE_DESC,
     STATS_END_DATE_DESC,
     STATS_FILTERS_DESC,
     STATS_GROUP_BY_DESC,
@@ -35,6 +36,7 @@ from schemas.dto.requests._descriptions import (
     STATS_SHORT_CODE_DESC,
     STATS_START_DATE_DESC,
     STATS_TIMEZONE_DESC,
+    STATS_UTM_DESC,
 )
 from schemas.enums.stats import (
     ALLOWED_EXPORT_FORMATS,
@@ -128,6 +130,12 @@ class StatsQuery(RequestBase):
         description=STATS_OS_DESC,
         examples=["Windows,macOS"],
     )
+    device: str | None = Field(
+        default=None,
+        max_length=200,
+        description=STATS_DEVICE_DESC,
+        examples=["mobile,desktop"],
+    )
     country: str | None = Field(
         default=None,
         max_length=1000,
@@ -145,6 +153,24 @@ class StatsQuery(RequestBase):
         max_length=2000,
         description=STATS_REFERRER_DESC,
         examples=["https://google.com,https://twitter.com"],
+    )
+    utm_source: str | None = Field(
+        default=None,
+        max_length=1000,
+        description=STATS_UTM_DESC,
+        examples=["newsletter,twitter"],
+    )
+    utm_medium: str | None = Field(
+        default=None,
+        max_length=1000,
+        description=STATS_UTM_DESC,
+        examples=["email,social"],
+    )
+    utm_campaign: str | None = Field(
+        default=None,
+        max_length=1000,
+        description=STATS_UTM_DESC,
+        examples=["summer-launch"],
     )
 
     # --- Parsed/validated results (private — not exposed as query params) ---
@@ -201,7 +227,18 @@ class StatsQuery(RequestBase):
                         parsed_filters[key] = _parse_comma_separated(value)
 
         # Individual dimension filter params
-        for dim in ("browser", "os", "country", "city", "referrer", "short_code"):
+        for dim in (
+            "browser",
+            "os",
+            "device",
+            "country",
+            "city",
+            "referrer",
+            "short_code",
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+        ):
             raw = getattr(self, dim, None)
             if raw:
                 # short_code filter is blocked when scope=anon (bypass prevention)

@@ -51,3 +51,12 @@ class ClickDoc(MongoBaseModel):
     redirect_ms: int
     referrer: str | None = None  # sanitised referrer domain, nullable
     bot_name: str | None = None  # nullable
+    # Nullable like meta.domain: clicks recorded before these fields existed
+    # keep their original shape forever (time-series buckets can't be
+    # backfilled). device is "mobile" | "tablet" | "desktop" | "unknown".
+    device: str | None = None
+    # UTM tags captured from the short link's own query string, sanitised
+    # at event construction (services.click.events).
+    utm_source: str | None = None
+    utm_medium: str | None = None
+    utm_campaign: str | None = None

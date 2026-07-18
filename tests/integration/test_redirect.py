@@ -59,6 +59,57 @@ def test_redirect_v2_active_url():
     assert resp.headers["Location"] == url_data.long_url
 
 
+def test_redirect_captures_utm_params_on_click_event():
+    """utm_* query params on the short link ride the emitted ClickEvent
+    (sanitised at event construction)."""
+    url_data = _make_cache_data(schema_version="v2")
+    mock_url_svc = AsyncMock()
+    mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
+    mock_click_sink = AsyncMock()
+
+    app = build_test_app(
+        redirect_router,
+        overrides={
+            get_url_service: lambda: mock_url_svc,
+            get_click_sink: lambda: mock_click_sink,
+        },
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get(
+        "/abc123?utm_source=newsletter&utm_medium=email&utm_campaign=%20launch%20",
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 302
+    event = mock_click_sink.emit.call_args[0][0]
+    assert event.utm_source == "newsletter"
+    assert event.utm_medium == "email"
+    assert event.utm_campaign == "launch"  # whitespace stripped
+
+
+def test_redirect_without_utm_params_emits_none():
+    url_data = _make_cache_data(schema_version="v2")
+    mock_url_svc = AsyncMock()
+    mock_url_svc.resolve = AsyncMock(return_value=(url_data, "v2"))
+    mock_click_sink = AsyncMock()
+
+    app = build_test_app(
+        redirect_router,
+        overrides={
+            get_url_service: lambda: mock_url_svc,
+            get_click_sink: lambda: mock_click_sink,
+        },
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/abc123", follow_redirects=False)
+
+    assert resp.status_code == 302
+    event = mock_click_sink.emit.call_args[0][0]
+    assert event.utm_source is None
+    assert event.utm_medium is None
+    assert event.utm_campaign is None
+
+
 def test_redirect_v1_active_url():
     """GET /{code} for an active v1 URL -> 302."""
     url_data = _make_cache_data(schema_version="v1", alias="xYz789")

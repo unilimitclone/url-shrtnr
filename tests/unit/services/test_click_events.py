@@ -133,3 +133,53 @@ class TestGeoDecisionFields:
         restored = from_stream_fields(fields)
         assert restored.resolved_country is None
         assert restored.geo_matched is False
+
+
+class TestUtmSanitization:
+    """UTM values are visitor-controlled input — the bound is structural,
+    enforced at event construction like the password-hash strip."""
+
+    def test_defaults_when_not_stamped(self):
+        event = make_event()
+        assert event.utm_source is None
+        assert event.utm_medium is None
+        assert event.utm_campaign is None
+
+    def test_stamped_values_round_trip_through_stream(self):
+        event = make_event(
+            utm_source="newsletter", utm_medium="email", utm_campaign="launch"
+        )
+        restored = from_stream_fields(to_stream_fields(event))
+        assert restored.utm_source == "newsletter"
+        assert restored.utm_medium == "email"
+        assert restored.utm_campaign == "launch"
+
+    def test_control_characters_stripped(self):
+        event = make_event(utm_source="news\x00let\x1fter\x7f")
+        assert event.utm_source == "newsletter"
+
+    def test_value_truncated_to_bound(self):
+        event = make_event(utm_campaign="x" * 500)
+        assert len(event.utm_campaign) == 100
+
+    def test_whitespace_only_becomes_none(self):
+        event = make_event(utm_medium="   ")
+        assert event.utm_medium is None
+
+    def test_empty_string_becomes_none(self):
+        event = make_event(utm_source="")
+        assert event.utm_source is None
+
+    def test_pre_utm_stream_payload_still_parses(self):
+        import json as _json
+
+        fields = to_stream_fields(make_event())
+        data = _json.loads(fields[STREAM_FIELD_DATA])
+        for key in ("utm_source", "utm_medium", "utm_campaign"):
+            data.pop(key, None)
+        fields[STREAM_FIELD_DATA] = _json.dumps(data)
+
+        restored = from_stream_fields(fields)
+        assert restored.utm_source is None
+        assert restored.utm_medium is None
+        assert restored.utm_campaign is None

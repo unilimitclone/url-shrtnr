@@ -49,6 +49,6 @@ class PublicStatsResponse(ResponseBase):
             "The modern stats wire shape (same as GET /api/v1/stats): "
             "summary, metrics keyed '{metric}_by_{dimension}', time_range, "
             "time_bucket_info, computed_metrics. v1 links carry a "
-            "'clicks_by_bots' dimension and no 'city'; v2 the reverse."
+            "'clicks_by_bots' dimension and no 'city'/'device'; v2 the reverse."
         ),
     )

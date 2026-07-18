@@ -41,10 +41,15 @@ STATS_GROUP_BY_DESC = (
     "- `time` — group by time buckets (day/week/month, auto-selected based on range)\n"
     "- `browser` — group by browser name (e.g., Chrome, Firefox, Safari)\n"
     "- `os` — group by operating system (e.g., Windows, macOS, Linux)\n"
+    "- `device` — group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n"
     "- `country` — group by country\n"
     "- `city` — group by city\n"
     "- `referrer` — group by referrer URL\n"
-    "- `short_code` — group by URL alias (only with `scope=all`)\n\n"
+    "- `short_code` — group by URL alias (only with `scope=all`)\n"
+    "- `utm_source` — group by the `utm_source` tag on the short link "
+    "(untagged clicks appear as `(none)`)\n"
+    "- `utm_medium` — group by the `utm_medium` tag\n"
+    "- `utm_campaign` — group by the `utm_campaign` tag\n\n"
     "Multiple dimensions can be combined: `time,browser` returns time series "
     "broken down by browser."
 )
@@ -69,11 +74,14 @@ STATS_FILTERS_DESC = (
     "**Available filter dimensions:**\n\n"
     "- `browser` — Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n"
     "- `os` — Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n"
+    "- `device` — Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n"
     "- `country` — Filter by country name (e.g., United States, Canada, Germany)\n"
     "- `city` — Filter by city name (e.g., New York, London, Mumbai)\n"
     "- `referrer` — Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n"
     "- `short_code` — Filter by URL alias (e.g., mylink, promo2024) — "
-    "**not allowed** with `scope=anon`\n\n"
+    "**not allowed** with `scope=anon`\n"
+    "- `utm_source` / `utm_medium` / `utm_campaign` — Filter by campaign tags; "
+    "`(none)` matches untagged clicks\n\n"
     "**Value format:** Array of strings for each dimension.\n\n"
     "**Important:** Filter values are case-sensitive. Use exact capitalization "
     "as stored in the database.\n\n"
@@ -130,6 +138,24 @@ STATS_REFERRER_DESC = (
     "parameter.\n\n"
     "**Important:** Values are case-sensitive. Include the full URL including "
     "protocol.\n\n"
+    "**Note:** Both `filters` JSON and individual parameters can be combined."
+)
+
+STATS_DEVICE_DESC = (
+    "**Method 2: Individual Filter Parameter**\n\n"
+    "Comma-separated device types. Alternative to using the `filters` JSON "
+    "parameter.\n\n"
+    "**Values:** `mobile`, `tablet`, `desktop`, `unknown`. `unknown` also "
+    "matches clicks recorded before device tracking existed.\n\n"
+    "**Note:** Both `filters` JSON and individual parameters can be combined."
+)
+
+STATS_UTM_DESC = (
+    "**Method 2: Individual Filter Parameter**\n\n"
+    "Comma-separated campaign tag values. Alternative to using the `filters` "
+    "JSON parameter.\n\n"
+    "**Important:** Values are case-sensitive. `(none)` matches clicks with "
+    "no tag.\n\n"
     "**Note:** Both `filters` JSON and individual parameters can be combined."
 )
 

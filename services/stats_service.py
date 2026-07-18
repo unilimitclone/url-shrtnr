@@ -62,6 +62,20 @@ _TIMEZONE_ALIASES: dict[str, str] = {
 # this set instead.
 _KNOWN_TIMEZONES: frozenset[str] = frozenset(available_timezones())
 
+# Dimensions whose aggregation output maps null/missing to a sentinel value
+# ("Direct" referrers, "(none)" for untagged utm clicks, "unknown" for
+# clicks that predate device tracking). Filtering by the sentinel must
+# match those null/missing documents too. Note "unknown" is ALSO a real
+# stored value (the classifier's fallback) — the filter branch keeps the
+# sentinel in its stored-value $in for exactly that reason.
+_NULL_SENTINEL_FILTERS: dict[StatsDimension, str] = {
+    StatsDimension.REFERRER: "Direct",
+    StatsDimension.DEVICE: "unknown",
+    StatsDimension.UTM_SOURCE: "(none)",
+    StatsDimension.UTM_MEDIUM: "(none)",
+    StatsDimension.UTM_CAMPAIGN: "(none)",
+}
+
 
 class StatsService:
     """Analytics query service.
@@ -153,7 +167,10 @@ class StatsService:
         # Time range
         query["clicked_at"] = {"$gte": start_date, "$lte": end_date}
 
-        # Dimension filters
+        # Dimension filters. Null-sentinel dimensions build $or groups;
+        # multiple groups must nest under $and (a second bare "$or" key
+        # would overwrite the first).
+        or_groups: list[list[dict[str, Any]]] = []
         for dimension, values in filters.items():
             if not values:
                 continue
@@ -169,25 +186,28 @@ class StatsService:
                     )
                     continue
                 query["meta.short_code"] = {"$in": values}
-            elif dimension == StatsDimension.REFERRER:
-                # "Direct" means null/missing referrer
-                if "Direct" in values:
-                    non_direct = [v for v in values if v != "Direct"]
-                    if non_direct:
-                        query["$or"] = [
-                            {"referrer": {"$in": non_direct}},
-                            {"referrer": {"$in": [None, ""]}},
-                            {"referrer": {"$exists": False}},
-                        ]
-                    else:
-                        query["$or"] = [
-                            {"referrer": {"$in": [None, ""]}},
-                            {"referrer": {"$exists": False}},
-                        ]
-                else:
-                    query["referrer"] = {"$in": values}
+            elif (
+                dimension in _NULL_SENTINEL_FILTERS
+                and _NULL_SENTINEL_FILTERS[dimension] in values
+            ):
+                # The stored-value $in keeps the sentinel: for device,
+                # "unknown" is also a real stored value; for referrer/utm
+                # the extra literal matches nothing (and if a visitor ever
+                # sends the literal, group-by merges it with null anyway).
+                or_groups.append(
+                    [
+                        {dimension: {"$in": values}},
+                        {dimension: {"$in": [None, ""]}},
+                        {dimension: {"$exists": False}},
+                    ]
+                )
             else:
                 query[dimension] = {"$in": values}
+
+        if len(or_groups) == 1:
+            query["$or"] = or_groups[0]
+        elif or_groups:
+            query["$and"] = [{"$or": group} for group in or_groups]
 
         return query
 

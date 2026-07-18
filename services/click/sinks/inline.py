@@ -27,4 +27,7 @@ class InlineSink:
             user_agent=event.user_agent,
             referrer=event.referrer,
             cf_city=event.cf_city,
+            utm_source=event.utm_source,
+            utm_medium=event.utm_medium,
+            utm_campaign=event.utm_campaign,
         )

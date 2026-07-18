@@ -20,6 +20,7 @@ introspection and future multi-event streams.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,6 +37,12 @@ STREAM_FIELD_TYPE = "type"
 STREAM_FIELD_DATA = "__data__"
 EVENT_TYPE_CLICK = "click.recorded"
 _WIRE_VERSION = "1"
+
+# UTM values are visitor-controlled query-string input — bound their size so
+# a crafted link can't bloat stream payloads, and strip control characters
+# before they reach Mongo/logs.
+_UTM_MAX_LEN = 100
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 class ClickEvent(BaseModel):
@@ -59,8 +66,23 @@ class ClickEvent(BaseModel):
     # Defaults keep pre-existing stream payloads decodable.
     resolved_country: str | None = None
     geo_matched: bool = False
+    # Campaign tags from the short link's query string. Defaults keep
+    # pre-existing stream payloads decodable.
+    utm_source: str | None = None
+    utm_medium: str | None = None
+    utm_campaign: str | None = None
     redirect_ms: int
     enqueued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("utm_source", "utm_medium", "utm_campaign")
+    @classmethod
+    def _sanitize_utm(cls, value: str | None) -> str | None:
+        """Enforced structurally (like the password-hash strip below) so
+        every producer inherits the bound instead of remembering it."""
+        if value is None:
+            return None
+        value = _CONTROL_CHARS_RE.sub("", value).strip()[:_UTM_MAX_LEN]
+        return value or None
 
     @field_validator("url")
     @classmethod

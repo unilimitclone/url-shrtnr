@@ -36,7 +36,39 @@ class TestStatsQuery:
 
     def test_invalid_group_by_rejected(self):
         with pytest.raises(ValidationError):
-            StatsQuery.model_validate({"group_by": "time,device"})
+            StatsQuery.model_validate({"group_by": "time,language"})
+
+    def test_device_and_utm_dimensions_accepted_in_group_by(self):
+        q = StatsQuery.model_validate(
+            {"group_by": "device,utm_source,utm_medium,utm_campaign"}
+        )
+        assert q.parsed_group_by == [
+            "device",
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+        ]
+
+    def test_device_and_utm_filter_params_parsed(self):
+        q = StatsQuery.model_validate(
+            {
+                "device": "mobile,desktop",
+                "utm_source": "newsletter",
+                "utm_medium": "email,social",
+                "utm_campaign": "launch",
+            }
+        )
+        assert q.parsed_filters["device"] == ["mobile", "desktop"]
+        assert q.parsed_filters["utm_source"] == ["newsletter"]
+        assert q.parsed_filters["utm_medium"] == ["email", "social"]
+        assert q.parsed_filters["utm_campaign"] == ["launch"]
+
+    def test_device_and_utm_accepted_in_filters_json(self):
+        q = StatsQuery.model_validate(
+            {"filters": json.dumps({"device": ["mobile"], "utm_source": ["(none)"]})}
+        )
+        assert q.parsed_filters["device"] == ["mobile"]
+        assert q.parsed_filters["utm_source"] == ["(none)"]
 
     def test_comma_separated_metrics(self):
         assert StatsQuery.model_validate(
