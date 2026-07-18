@@ -11,6 +11,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from schemas.dto.requests.api_key import ApiKeyScope
+
 
 class AppStatus(str, Enum):
     """App availability status."""
@@ -36,6 +38,11 @@ class AppEntry(BaseModel):
     type: AppType = AppType.DEVICE_AUTH
     redirect_uris: list[str] = []
     links: dict[str, str] = {}
+    # Scopes granted to the app at consent time. Required (non-empty) for
+    # live device apps — the registry loader skips live entries without them.
+    scopes: list[ApiKeyScope] = []
+    # Legacy display strings. Consent and API responses now derive copy
+    # from `scopes`; kept for back-compat parsing of coming_soon entries.
     permissions: list[str] = []
 
     def is_live_device_app(self) -> bool:

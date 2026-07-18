@@ -22,3 +22,6 @@ class AppGrantDoc(MongoBaseModel):
     granted_at: datetime
     last_used_at: datetime | None = None
     revoked_at: datetime | None = None  # soft delete
+    # Scope slugs snapshotted from the registry at consent time.
+    # None = legacy grant from before scoped consent (unrestricted).
+    scopes: list[str] | None = None

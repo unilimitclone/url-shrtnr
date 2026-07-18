@@ -80,8 +80,18 @@ apps:
     icon: raycast.svg
     description: Shorten links from Raycast
     verified: true
-    status: coming_soon
+    status: live
     type: device_auth
+    redirect_uris:
+      - https://raycast.com/redirect?packageName=Extension
+      - https://raycast.com/redirect/extension
+    links:
+      store: https://www.raycast.com/zingzy/spoo
+    scopes:
+      - shorten:create
+      - urls:read
+      - urls:manage
+      - stats:read
 
   spoo-vscode:
     name: VS Code Extension
@@ -126,8 +136,11 @@ apps:
       - http://127.0.0.1:53682/callback
     links:
       github: https://github.com/spoo-me/spoo-cli
-    permissions:
-      - Access your spoo.me account
-      - Create and manage your short URLs
-      - View your analytics
-      - Manage your API keys
+    scopes:
+      - shorten:create
+      - urls:read
+      - urls:manage
+      - stats:read
+      - domains:read
+      - domains:manage
+      - keys:manage

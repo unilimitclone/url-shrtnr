@@ -14,6 +14,7 @@ from dependencies import AppGrantRepo, AppRegistryDep, JwtUser
 from middleware.openapi import AUTH_RESPONSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.dto.responses.app_grant import AppGrantResponse, AppGrantsListResponse
+from services.auth.device import effective_scopes_for
 
 router = APIRouter(tags=["Apps"])
 
@@ -48,6 +49,11 @@ async def list_app_grants(
     grants.sort(key=lambda g: g.granted_at, reverse=True)
     return AppGrantsListResponse(
         items=[
-            AppGrantResponse.from_grant(g, app_registry.get(g.app_id)) for g in grants
+            AppGrantResponse.from_grant(
+                g,
+                app_registry.get(g.app_id),
+                effective_scopes_for(g, app_registry.get(g.app_id)),
+            )
+            for g in grants
         ]
     )
