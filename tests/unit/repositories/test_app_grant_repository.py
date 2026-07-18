@@ -137,7 +137,7 @@ class TestCreateOrReactivate:
     async def test_upserts_and_returns_model(self):
         col = make_collection()
         col.find_one_and_update = AsyncMock(return_value=_grant_doc())
-        result = await _repo(col).create_or_reactivate(USER_OID, _APP_ID)
+        result = await _repo(col).create_or_reactivate(USER_OID, _APP_ID, scopes=None)
 
         call_args = col.find_one_and_update.await_args
         assert call_args[0][0] == {"user_id": USER_OID, "app_id": _APP_ID}
@@ -156,7 +156,7 @@ class TestCreateOrReactivate:
         col = make_collection()
         col.find_one_and_update = AsyncMock(side_effect=PyMongoError("dup"))
         with pytest.raises(PyMongoError):
-            await _repo(col).create_or_reactivate(USER_OID, _APP_ID)
+            await _repo(col).create_or_reactivate(USER_OID, _APP_ID, scopes=None)
 
 
 # ── revoke ────────────────────────────────────────────────────────────────────

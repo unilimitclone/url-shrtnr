@@ -211,7 +211,9 @@ async def require_jwt(
     """
     if user.api_key_doc is not None:
         raise ForbiddenError("API keys cannot be used to manage API keys")
-    if user.scopes is not None:
+    # Delegation is marked by app_id, not scp: a legacy grant mints an
+    # app token with app_id but no scp, and it must be barred here too.
+    if user.app_id is not None:
         raise ForbiddenError("This operation requires an interactive session")
     return user
 
@@ -304,18 +306,20 @@ def require_scopes(scopes: set[str]):
 def require_session_or_scopes(scopes: set[str]):
     """Dependency factory: interactive session OR a credential holding *scopes*.
 
-    Passes when the caller is an unrestricted session (JWT without ``scp``,
-    no API key), or when the credential's scope set intersects *scopes*.
-    Built for key management: API keys can never be created with
-    ``keys:manage`` (see ALLOWED_SCOPES), so the anti-self-propagation
-    guard holds while scoped app tokens that declare it get through.
+    Passes for an interactive session (no API key, no ``app_id``), or for a
+    delegated credential whose scope set intersects *scopes*. A delegated
+    credential is identified by ``api_key_doc``/``app_id``, not by ``scp``,
+    so a legacy app token (``app_id`` but no ``scp``) is treated as delegated
+    and denied — it predates ``keys:manage`` and never held it. API keys can
+    never be created with ``keys:manage`` (see ALLOWED_SCOPES), so the
+    anti-self-propagation guard holds.
     """
 
     async def _dep(user: CurrentUser = Depends(require_auth)) -> CurrentUser:
-        granted = _granted_scopes(user)
-        if granted is None:
+        if user.api_key_doc is None and user.app_id is None:
             return user  # interactive session — unrestricted
-        if not granted & scopes:
+        granted = _granted_scopes(user)
+        if not granted or not granted & scopes:
             raise ForbiddenError("Insufficient scope for this operation")
         return user
 
@@ -384,19 +388,10 @@ def require_scopes_verified(scopes: set[str]):
 
 # ── Named dependency instances ────────────────────────────────────────────────
 
-# Key management: interactive session OR a credential holding keys:manage.
-# Module-level singletons so routes share one dependency object and tests
-# can override it.
+# Key listing/deletion: interactive session OR a credential holding
+# keys:manage. Key *creation* is not here — minting a new credential is a
+# first-party act, so create uses JwtVerifiedUser (interactive session only).
 require_keys_access = require_session_or_scopes(KEYS_MANAGE_SCOPES)
-
-
-async def require_keys_access_verified(
-    user: CurrentUser = Depends(require_keys_access),
-) -> CurrentUser:
-    """Key-management access + verified email (for key creation)."""
-    if not user.email_verified:
-        raise EmailNotVerifiedError("Email verification required")
-    return user
 
 
 # ── Annotated type aliases — community-standard Depends shortcuts ─────────────
@@ -407,4 +402,3 @@ OptionalUser = Annotated[CurrentUser | None, Depends(get_current_user)]
 JwtUser = Annotated[CurrentUser, Depends(require_jwt)]
 JwtVerifiedUser = Annotated[CurrentUser, Depends(require_jwt_verified)]
 KeysAccessUser = Annotated[CurrentUser, Depends(require_keys_access)]
-KeysAccessVerifiedUser = Annotated[CurrentUser, Depends(require_keys_access_verified)]

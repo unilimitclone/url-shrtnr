@@ -55,6 +55,27 @@ def _make_token(
     return pyjwt.encode(payload, _jwt_cfg.jwt_secret, algorithm="HS256")
 
 
+def _make_legacy_app_token(app_id: str = "spoo-cli", email_verified: bool = True) -> str:
+    """Legacy-grant app token: app_id present, no scp claim (unrestricted).
+
+    Mints the shape a pre-scopes grant produces so tests can prove it is
+    still treated as a delegated credential, not an interactive session.
+    """
+    now = int(time.time())
+    payload = {
+        "sub": _USER_ID,
+        "iss": _jwt_cfg.jwt_issuer,
+        "aud": _jwt_cfg.jwt_audience,
+        "iat": now,
+        "exp": now + 900,
+        "email": "test@example.com",
+        "email_verified": email_verified,
+        "amr": ["ext"],
+        "app_id": app_id,
+    }
+    return pyjwt.encode(payload, _jwt_cfg.jwt_secret, algorithm="HS256")
+
+
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -167,6 +188,16 @@ class TestInteractiveOnlySurfaces:
             )
         assert resp.status_code == 403
 
+    def test_legacy_app_token_403_on_profile_update(self):
+        """A scp-less app token (legacy grant) must not pass as a session."""
+        app = build_test_app(auth_router)
+        token = _make_legacy_app_token()
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.patch(
+                "/auth/me", json={"user_name": "Evil"}, headers=_auth(token)
+            )
+        assert resp.status_code == 403
+
 
 # ── Key management via keys:manage ───────────────────────────────────────────
 
@@ -190,7 +221,12 @@ class TestKeysManageScope:
         assert resp.status_code == 200
         assert len(resp.json()["keys"]) == 1
 
-    def test_app_token_with_keys_manage_creates_key(self):
+    def test_app_token_cannot_create_key(self):
+        """Minting a credential is first-party only — app tokens get 403.
+
+        Even with keys:manage, an app token cannot create a key (that would
+        launder a revocable credential into one that survives grant revoke).
+        """
         app = build_test_app(
             api_v1_router, overrides={get_api_key_service: self._keys_service}
         )
@@ -201,8 +237,7 @@ class TestKeysManageScope:
                 json={"name": "CLI Key", "scopes": ["shorten:create"]},
                 headers=_auth(token),
             )
-        assert resp.status_code == 201
-        assert resp.json()["token"] == "spoo_rawtoken123"
+        assert resp.status_code == 403
 
     def test_app_token_with_keys_manage_deletes_key(self):
         app = build_test_app(
@@ -240,11 +275,11 @@ class TestKeysManageScope:
             resp = client.get("/api/v1/keys", headers=_auth(token))
         assert resp.status_code == 200
 
-    def test_unverified_email_cannot_create_key_via_app_token(self):
+    def test_unverified_session_cannot_create_key(self):
         app = build_test_app(
             api_v1_router, overrides={get_api_key_service: self._keys_service}
         )
-        token = _make_token(scopes=["keys:manage"], email_verified=False)
+        token = _make_token(scopes=None, email_verified=False)  # session
         with TestClient(app, raise_server_exceptions=False) as client:
             resp = client.post(
                 "/api/v1/keys",
@@ -253,6 +288,16 @@ class TestKeysManageScope:
             )
         assert resp.status_code == 403
         assert resp.json()["code"] == "EMAIL_NOT_VERIFIED"
+
+    def test_legacy_app_token_cannot_manage_keys(self):
+        """A pre-scopes app token (app_id, no scp) is delegated, not a session."""
+        app = build_test_app(
+            api_v1_router, overrides={get_api_key_service: self._keys_service}
+        )
+        token = _make_legacy_app_token()
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.get("/api/v1/keys", headers=_auth(token))
+        assert resp.status_code == 403
 
     def test_api_key_cannot_be_created_with_keys_manage(self):
         """keys:manage is not in ALLOWED_SCOPES — creation is a 422."""

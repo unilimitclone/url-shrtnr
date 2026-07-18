@@ -11,7 +11,7 @@ from dependencies import (
     get_api_key_service,
     get_current_user,
     require_keys_access,
-    require_keys_access_verified,
+    require_jwt_verified,
 )
 
 from .conftest import _build_test_app, _make_api_key_doc, _make_user
@@ -27,7 +27,7 @@ class TestApiKeys:
 
         application = _build_test_app(
             {
-                require_keys_access_verified: lambda: user,
+                require_jwt_verified: lambda: user,
                 get_api_key_service: lambda: mock_svc,
             }
         )

@@ -22,7 +22,7 @@ class TestScopeDescriptions:
     def test_keys_manage_copy(self):
         assert (
             SCOPE_DESCRIPTIONS[ApiKeyScope.KEYS_MANAGE]
-            == "Create, list, and delete your API keys"
+            == "List and revoke your API keys"
         )
 
     def test_legacy_sentence_reads_as_full_access(self):

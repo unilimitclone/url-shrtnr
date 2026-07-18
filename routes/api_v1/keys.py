@@ -19,8 +19,8 @@ from fastapi import APIRouter, Path, Query, Request
 
 from dependencies import (
     ApiKeySvc,
+    JwtVerifiedUser,
     KeysAccessUser,
-    KeysAccessVerifiedUser,
 )
 from errors import NotFoundError, ValidationError
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
@@ -48,7 +48,7 @@ router = APIRouter(tags=["API Keys"])
 async def create_api_key(
     request: Request,
     body: CreateApiKeyRequest,
-    user: KeysAccessVerifiedUser,
+    user: JwtVerifiedUser,
     api_key_service: ApiKeySvc,
 ) -> ApiKeyCreatedResponse:
     """Create a new API key for programmatic access.
@@ -57,9 +57,9 @@ async def create_api_key(
     (prefixed with `spoo_`) is returned **only in this response** and cannot be
     retrieved again.
 
-    **Authentication**: Required — interactive session or an app token with
-    the `keys:manage` scope (API keys cannot create other API keys). Email
-    must be verified.
+    **Authentication**: Required — interactive session only. Connected apps
+    and API keys cannot create keys; minting a credential is a first-party
+    action. Email must be verified.
 
     **Rate Limits**: 5/hour
 

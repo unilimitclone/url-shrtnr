@@ -68,7 +68,8 @@ class AppGrantRepository(BaseRepository[AppGrantDoc]):
         self,
         user_id: ObjectId,
         app_id: str,
-        scopes: list[str] | None = None,
+        *,
+        scopes: list[str] | None,
     ) -> AppGrantDoc:
         """Create a new grant or reactivate a revoked one.
 

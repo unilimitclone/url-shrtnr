@@ -18,7 +18,7 @@ SCOPE_DESCRIPTIONS: dict[ApiKeyScope, str] = {
     ApiKeyScope.DOMAINS_READ: "List custom domains",
     ApiKeyScope.DOMAINS_MANAGE: "Add and remove domains",
     ApiKeyScope.REPORTS_CREATE: "Submit abuse reports",
-    ApiKeyScope.KEYS_MANAGE: "Create, list, and delete your API keys",
+    ApiKeyScope.KEYS_MANAGE: "List and revoke your API keys",
     ApiKeyScope.ADMIN_ALL: "Full access, overrides all scopes",
 }
 

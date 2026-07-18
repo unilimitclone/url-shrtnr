@@ -83,10 +83,10 @@ class AppGrantResponse(ResponseBase):
             app=doc.app_id,
             app_name=entry.name if entry else doc.app_id,
             icon=entry.icon if entry else None,
-            scopes=effective_scopes or [],
+            scopes=[] if effective_scopes is None else effective_scopes,
             permissions=(
                 describe_scopes(effective_scopes)
-                if effective_scopes
+                if effective_scopes is not None
                 else [LEGACY_FULL_ACCESS_DESCRIPTION]
             ),
             granted_at=doc.granted_at,

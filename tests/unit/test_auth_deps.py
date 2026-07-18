@@ -489,6 +489,17 @@ class TestRequireJwtRejectsScopedTokens:
             await require_jwt(user)
 
     @pytest.mark.asyncio
+    async def test_legacy_app_token_403(self):
+        """Legacy grant token: app_id set, scopes None — still delegated."""
+        from dependencies.auth import require_jwt
+
+        user = CurrentUser(
+            user_id=USER_OID, email_verified=True, scopes=None, app_id="spoo-cli"
+        )
+        with pytest.raises(ForbiddenError, match="interactive session"):
+            await require_jwt(user)
+
+    @pytest.mark.asyncio
     async def test_session_user_passes(self):
         from dependencies.auth import require_jwt
 
@@ -538,6 +549,17 @@ class TestRequireKeysAccess:
             user_id=USER_OID,
             email_verified=True,
             api_key_doc=make_key_doc(scopes=["admin:all"]),
+        )
+        with pytest.raises(ForbiddenError):
+            await require_keys_access(user)
+
+    @pytest.mark.asyncio
+    async def test_legacy_app_token_403(self):
+        """Legacy grant token (app_id, no scp) predates keys:manage — denied."""
+        from dependencies.auth import require_keys_access
+
+        user = CurrentUser(
+            user_id=USER_OID, email_verified=True, scopes=None, app_id="spoo-cli"
         )
         with pytest.raises(ForbiddenError):
             await require_keys_access(user)

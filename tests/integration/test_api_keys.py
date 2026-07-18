@@ -24,7 +24,7 @@ from dependencies import (
     get_current_user,
     get_url_service,
     require_keys_access,
-    require_keys_access_verified,
+    require_jwt_verified,
 )
 from routes.api_v1 import router as api_v1_router
 from schemas.models.api_key import ApiKeyDoc
@@ -104,7 +104,7 @@ def test_create_api_key_returns_token_once():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_keys_access_verified: lambda: verified_user,
+            require_jwt_verified: lambda: verified_user,
             get_api_key_service: lambda: mock_svc,
         },
     )
@@ -136,7 +136,7 @@ def test_create_api_key_requires_verified_email():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_keys_access_verified: _raise_unverified,
+            require_jwt_verified: _raise_unverified,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -160,7 +160,7 @@ def test_create_api_key_requires_auth():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_keys_access_verified: _raise_unauth,
+            require_jwt_verified: _raise_unauth,
         },
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -185,7 +185,7 @@ def test_create_api_key_with_scopes():
     app = build_test_app(
         api_v1_router,
         overrides={
-            require_keys_access_verified: lambda: verified_user,
+            require_jwt_verified: lambda: verified_user,
             get_api_key_service: lambda: mock_svc,
         },
     )
