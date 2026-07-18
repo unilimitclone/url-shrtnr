@@ -80,7 +80,7 @@ apps:
     icon: raycast.svg
     description: Shorten links from Raycast
     verified: true
-    status: live
+    status: coming_soon
     type: device_auth
     redirect_uris:
       - https://raycast.com/redirect?packageName=Extension
