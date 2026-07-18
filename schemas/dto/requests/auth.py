@@ -134,6 +134,15 @@ class DeviceTokenRequest(RequestBase):
         max_length=128,
         description="One-time auth code from the device callback page",
     )
+    code_verifier: str = Field(
+        min_length=43,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9\-._~]+$",
+        description=(
+            "PKCE code verifier (RFC 7636). Must hash (S256) to the "
+            "code_challenge sent at /auth/device/login."
+        ),
+    )
 
 
 class DeviceRefreshRequest(RequestBase):

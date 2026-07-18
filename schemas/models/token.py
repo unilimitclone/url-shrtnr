@@ -45,3 +45,6 @@ class VerificationTokenDoc(MongoBaseModel):
     used_at: datetime | None = None
     attempts: int = Field(default=0, ge=0)
     app_id: str | None = None  # set for device_auth tokens (consent flow)
+    # PKCE S256 code challenge (already a hash — stored verbatim).
+    # Set for device_auth tokens; None for OTP-style tokens.
+    code_challenge: str | None = None

@@ -298,6 +298,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         user_repo,
         token_repo,
         token_factory,
+        app_grant_repo,
         app_registry=getattr(app.state, "app_registry", None),
     )
     app.state.oauth_service = OAuthService(
