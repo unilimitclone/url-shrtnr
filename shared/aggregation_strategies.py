@@ -258,7 +258,12 @@ class AggregationStrategyFactory:
     _FIELD_STRATEGIES: ClassVar[dict[str, Callable[[], AggregationStrategy]]] = {
         "browser": lambda: FieldAggregationStrategy("$browser", "browser", 20),
         "os": lambda: FieldAggregationStrategy("$os", "os", 20),
-        "device": lambda: FieldAggregationStrategy("$device", "device", 20),
+        # default matches the classifier's own fallback value so clicks
+        # recorded before device tracking existed merge into the same
+        # "unknown" bucket instead of a separate synthetic "Unknown".
+        "device": lambda: FieldAggregationStrategy(
+            "$device", "device", 20, default="unknown"
+        ),
         "country": lambda: FieldAggregationStrategy(
             "$country", "country", 50, transform_fn=convert_country_name
         ),

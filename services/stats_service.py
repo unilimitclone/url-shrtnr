@@ -63,10 +63,14 @@ _TIMEZONE_ALIASES: dict[str, str] = {
 _KNOWN_TIMEZONES: frozenset[str] = frozenset(available_timezones())
 
 # Dimensions whose aggregation output maps null/missing to a sentinel value
-# ("Direct" referrers, "(none)" for untagged utm clicks). Filtering by the
-# sentinel must match those null/missing documents too.
+# ("Direct" referrers, "(none)" for untagged utm clicks, "unknown" for
+# clicks that predate device tracking). Filtering by the sentinel must
+# match those null/missing documents too. Note "unknown" is ALSO a real
+# stored value (the classifier's fallback) — the filter branch keeps the
+# sentinel in its stored-value $in for exactly that reason.
 _NULL_SENTINEL_FILTERS: dict[StatsDimension, str] = {
     StatsDimension.REFERRER: "Direct",
+    StatsDimension.DEVICE: "unknown",
     StatsDimension.UTM_SOURCE: "(none)",
     StatsDimension.UTM_MEDIUM: "(none)",
     StatsDimension.UTM_CAMPAIGN: "(none)",
@@ -182,18 +186,21 @@ class StatsService:
                     )
                     continue
                 query["meta.short_code"] = {"$in": values}
-            elif dimension in _NULL_SENTINEL_FILTERS:
-                sentinel = _NULL_SENTINEL_FILTERS[dimension]
-                if sentinel in values:
-                    non_null = [v for v in values if v != sentinel]
-                    clauses: list[dict[str, Any]] = []
-                    if non_null:
-                        clauses.append({dimension: {"$in": non_null}})
-                    clauses.append({dimension: {"$in": [None, ""]}})
-                    clauses.append({dimension: {"$exists": False}})
-                    or_groups.append(clauses)
-                else:
-                    query[dimension] = {"$in": values}
+            elif (
+                dimension in _NULL_SENTINEL_FILTERS
+                and _NULL_SENTINEL_FILTERS[dimension] in values
+            ):
+                # The stored-value $in keeps the sentinel: for device,
+                # "unknown" is also a real stored value; for referrer/utm
+                # the extra literal matches nothing (and if a visitor ever
+                # sends the literal, group-by merges it with null anyway).
+                or_groups.append(
+                    [
+                        {dimension: {"$in": values}},
+                        {dimension: {"$in": [None, ""]}},
+                        {dimension: {"$exists": False}},
+                    ]
+                )
             else:
                 query[dimension] = {"$in": values}
 

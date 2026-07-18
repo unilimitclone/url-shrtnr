@@ -143,9 +143,14 @@ def test_referrer_pipeline_uses_direct_as_null_fallback():
     [
         ("browser", "Unknown"),
         ("os", "Unknown"),
-        ("device", "Unknown"),
+        # lowercase: must equal the classifier's own fallback so missing
+        # docs and classified-unknown docs share one bucket
+        ("device", "unknown"),
         ("country", "Unknown"),
         ("city", "Unknown"),
+        ("utm_source", "(none)"),
+        ("utm_medium", "(none)"),
+        ("utm_campaign", "(none)"),
     ],
 )
 def test_pipeline_uses_unknown_as_null_fallback(strategy_name, expected_null_fallback):

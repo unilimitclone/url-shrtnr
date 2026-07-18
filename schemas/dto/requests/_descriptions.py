@@ -145,7 +145,8 @@ STATS_DEVICE_DESC = (
     "**Method 2: Individual Filter Parameter**\n\n"
     "Comma-separated device types. Alternative to using the `filters` JSON "
     "parameter.\n\n"
-    "**Values:** `mobile`, `tablet`, `desktop`, `unknown`.\n\n"
+    "**Values:** `mobile`, `tablet`, `desktop`, `unknown`. `unknown` also "
+    "matches clicks recorded before device tracking existed.\n\n"
     "**Note:** Both `filters` JSON and individual parameters can be combined."
 )
 
