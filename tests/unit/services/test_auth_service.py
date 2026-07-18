@@ -112,13 +112,15 @@ def make_password_service():
     )
 
 
-def make_device_auth_service():
+def make_device_auth_service(app_registry=None):
     from services.auth.device import DeviceAuthService
 
     return DeviceAuthService(
         user_repo=AsyncMock(),
         token_repo=AsyncMock(),
         token_factory=make_token_factory(),
+        grant_repo=AsyncMock(),
+        app_registry=app_registry,
     )
 
 
@@ -906,6 +908,54 @@ class TestGetUserProfile:
 # ── Extension auth flow tests ────────────────────────────────────────────────
 
 
+# PKCE pair used across device auth tests (verifier → S256 challenge).
+PKCE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+PKCE_CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+
+
+def _make_device_token_doc(
+    raw_code: str,
+    *,
+    code_challenge: str | None = PKCE_CHALLENGE,
+    app_id: str | None = None,
+):
+    from infrastructure.crypto import hash_token
+    from schemas.models.token import TOKEN_TYPE_DEVICE_AUTH, VerificationTokenDoc
+
+    now = datetime.now(timezone.utc)
+    return VerificationTokenDoc.from_mongo(
+        {
+            "_id": ObjectId(),
+            "user_id": USER_OID,
+            "email": "test@example.com",
+            "token_hash": hash_token(raw_code),
+            "token_type": TOKEN_TYPE_DEVICE_AUTH,
+            "expires_at": now + timedelta(minutes=5),
+            "created_at": now,
+            "used_at": None,
+            "attempts": 0,
+            "app_id": app_id,
+            "code_challenge": code_challenge,
+        }
+    )
+
+
+def _make_grant_doc(app_id: str = "spoo-cli", scopes=None):
+    from schemas.models.app_grant import AppGrantDoc
+
+    return AppGrantDoc.from_mongo(
+        {
+            "_id": ObjectId(),
+            "user_id": USER_OID,
+            "app_id": app_id,
+            "granted_at": datetime.now(timezone.utc),
+            "last_used_at": None,
+            "revoked_at": None,
+            "scopes": scopes,
+        }
+    )
+
+
 class TestExtensionAuth:
     @pytest.mark.asyncio
     async def test_create_device_auth_code(self):
@@ -913,42 +963,57 @@ class TestExtensionAuth:
         svc._token_repo.delete_by_user.return_value = 0
         svc._token_repo.create.return_value = ObjectId()
 
-        code = await svc.create_device_auth_code(USER_OID, "test@example.com")
+        code = await svc.create_device_auth_code(
+            USER_OID, "test@example.com", code_challenge=PKCE_CHALLENGE
+        )
         assert isinstance(code, str)
         assert len(code) > 30  # secure token is long
         svc._token_repo.create.assert_awaited_once()
+        stored = svc._token_repo.create.await_args.args[0]
+        assert stored["code_challenge"] == PKCE_CHALLENGE
 
     @pytest.mark.asyncio
     async def test_exchange_device_code_success(self):
-        from datetime import timedelta
-
-        from infrastructure.crypto import hash_token
-        from schemas.models.token import TOKEN_TYPE_DEVICE_AUTH, VerificationTokenDoc
-
         svc = make_device_auth_service()
         raw_code = "test-code-123"
-        now = datetime.now(timezone.utc)
-        token_doc = VerificationTokenDoc.from_mongo(
-            {
-                "_id": ObjectId(),
-                "user_id": USER_OID,
-                "email": "test@example.com",
-                "token_hash": hash_token(raw_code),
-                "token_type": TOKEN_TYPE_DEVICE_AUTH,
-                "expires_at": now + timedelta(minutes=5),
-                "created_at": now,
-                "used_at": None,
-                "attempts": 0,
-            }
-        )
-        svc._token_repo.consume_by_hash.return_value = token_doc
+        svc._token_repo.consume_by_hash.return_value = _make_device_token_doc(raw_code)
         svc._user_repo.find_by_id.return_value = make_user_doc(email_verified=True)
 
-        result = await svc.exchange_device_code(raw_code)
+        result = await svc.exchange_device_code(raw_code, PKCE_VERIFIER)
         assert isinstance(result.access_token, str)
         assert isinstance(result.refresh_token, str)
         assert result.app_id is None  # no app_id set on this token
         svc._token_repo.consume_by_hash.assert_awaited_once()
+        # No app grant → no scp claim (unrestricted)
+        claims = pyjwt.decode(
+            result.access_token,
+            "test-secret-key-at-least-32-chars!!",
+            algorithms=["HS256"],
+            audience="spoo.me.api",
+        )
+        assert "scp" not in claims
+        assert "app_id" not in claims
+
+    @pytest.mark.asyncio
+    async def test_exchange_device_code_wrong_verifier(self):
+        svc = make_device_auth_service()
+        raw_code = "test-code-123"
+        svc._token_repo.consume_by_hash.return_value = _make_device_token_doc(raw_code)
+
+        with pytest.raises(AuthenticationError, match="invalid or expired"):
+            await svc.exchange_device_code(raw_code, "wrong-verifier" + "x" * 30)
+
+    @pytest.mark.asyncio
+    async def test_exchange_device_code_without_stored_challenge_rejected(self):
+        """Codes minted without a challenge (pre-PKCE) are dead on arrival."""
+        svc = make_device_auth_service()
+        raw_code = "test-code-123"
+        svc._token_repo.consume_by_hash.return_value = _make_device_token_doc(
+            raw_code, code_challenge=None
+        )
+
+        with pytest.raises(AuthenticationError, match="invalid or expired"):
+            await svc.exchange_device_code(raw_code, PKCE_VERIFIER)
 
     @pytest.mark.asyncio
     async def test_exchange_device_code_invalid(self):
@@ -956,7 +1021,7 @@ class TestExtensionAuth:
         svc._token_repo.consume_by_hash.return_value = None
 
         with pytest.raises(AuthenticationError, match="invalid or expired"):
-            await svc.exchange_device_code("bad-code")
+            await svc.exchange_device_code("bad-code", PKCE_VERIFIER)
 
     @pytest.mark.asyncio
     async def test_exchange_device_code_expired(self):
@@ -965,4 +1030,151 @@ class TestExtensionAuth:
         svc._token_repo.consume_by_hash.return_value = None
 
         with pytest.raises(AuthenticationError, match="invalid or expired"):
-            await svc.exchange_device_code("expired-code")
+            await svc.exchange_device_code("expired-code", PKCE_VERIFIER)
+
+    @pytest.mark.asyncio
+    async def test_exchange_mints_scoped_token_from_grant(self):
+        svc = make_device_auth_service()
+        raw_code = "test-code-123"
+        svc._token_repo.consume_by_hash.return_value = _make_device_token_doc(
+            raw_code, app_id="spoo-cli"
+        )
+        svc._user_repo.find_by_id.return_value = make_user_doc(email_verified=True)
+        svc._grant_repo.find_active_grant.return_value = _make_grant_doc(
+            scopes=["shorten:create", "urls:read"]
+        )
+
+        result = await svc.exchange_device_code(raw_code, PKCE_VERIFIER)
+        claims = pyjwt.decode(
+            result.access_token,
+            "test-secret-key-at-least-32-chars!!",
+            algorithms=["HS256"],
+            audience="spoo.me.api",
+        )
+        assert claims["scp"] == ["shorten:create", "urls:read"]
+        assert claims["app_id"] == "spoo-cli"
+        # Refresh token carries app_id but never scp
+        refresh_claims = pyjwt.decode(
+            result.refresh_token,
+            "test-secret-key-at-least-32-chars!!",
+            algorithms=["HS256"],
+            audience="spoo.me.api",
+        )
+        assert refresh_claims["app_id"] == "spoo-cli"
+        assert "scp" not in refresh_claims
+        svc._grant_repo.touch_last_used.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_exchange_revoked_grant_rejected(self):
+        svc = make_device_auth_service()
+        raw_code = "test-code-123"
+        svc._token_repo.consume_by_hash.return_value = _make_device_token_doc(
+            raw_code, app_id="spoo-cli"
+        )
+        svc._user_repo.find_by_id.return_value = make_user_doc(email_verified=True)
+        svc._grant_repo.find_active_grant.return_value = None
+
+        with pytest.raises(AuthenticationError, match="revoked"):
+            await svc.exchange_device_code(raw_code, PKCE_VERIFIER)
+
+    @pytest.mark.asyncio
+    async def test_exchange_legacy_grant_falls_back_to_registry_scopes(self):
+        from schemas.models.app import AppEntry, AppStatus, AppType
+
+        registry = {
+            "spoo-cli": AppEntry(
+                name="Spoo CLI",
+                description="Terminal tool",
+                status=AppStatus.LIVE,
+                type=AppType.DEVICE_AUTH,
+                scopes=["shorten:create"],
+            )
+        }
+        svc = make_device_auth_service(app_registry=registry)
+        raw_code = "test-code-123"
+        svc._token_repo.consume_by_hash.return_value = _make_device_token_doc(
+            raw_code, app_id="spoo-cli"
+        )
+        svc._user_repo.find_by_id.return_value = make_user_doc(email_verified=True)
+        svc._grant_repo.find_active_grant.return_value = _make_grant_doc(scopes=None)
+
+        result = await svc.exchange_device_code(raw_code, PKCE_VERIFIER)
+        claims = pyjwt.decode(
+            result.access_token,
+            "test-secret-key-at-least-32-chars!!",
+            algorithms=["HS256"],
+            audience="spoo.me.api",
+        )
+        assert claims["scp"] == ["shorten:create"]
+
+    @pytest.mark.asyncio
+    async def test_exchange_legacy_grant_without_registry_stays_unrestricted(self):
+        svc = make_device_auth_service()  # empty registry — app vanished
+        raw_code = "test-code-123"
+        svc._token_repo.consume_by_hash.return_value = _make_device_token_doc(
+            raw_code, app_id="spoo-gone"
+        )
+        svc._user_repo.find_by_id.return_value = make_user_doc(email_verified=True)
+        svc._grant_repo.find_active_grant.return_value = _make_grant_doc(
+            app_id="spoo-gone", scopes=None
+        )
+
+        result = await svc.exchange_device_code(raw_code, PKCE_VERIFIER)
+        claims = pyjwt.decode(
+            result.access_token,
+            "test-secret-key-at-least-32-chars!!",
+            algorithms=["HS256"],
+            audience="spoo.me.api",
+        )
+        assert "scp" not in claims
+        assert claims["app_id"] == "spoo-gone"
+
+
+class TestDeviceRefresh:
+    def _refresh_token_for(self, app_id=None):
+        tf = make_token_factory()
+        return tf.generate_refresh_token(make_user_doc(), amr="ext", app_id=app_id)
+
+    @pytest.mark.asyncio
+    async def test_refresh_reminted_scopes_follow_grant(self):
+        """scp is re-read from the grant at every refresh — updates propagate."""
+        svc = make_device_auth_service()
+        svc._user_repo.find_by_id.return_value = make_user_doc(email_verified=True)
+        svc._grant_repo.find_active_grant.return_value = _make_grant_doc(
+            scopes=["urls:read"]
+        )
+
+        result = await svc.refresh_device_tokens(self._refresh_token_for("spoo-cli"))
+        claims = pyjwt.decode(
+            result.access_token,
+            "test-secret-key-at-least-32-chars!!",
+            algorithms=["HS256"],
+            audience="spoo.me.api",
+        )
+        assert claims["scp"] == ["urls:read"]
+        assert claims["app_id"] == "spoo-cli"
+
+    @pytest.mark.asyncio
+    async def test_refresh_revoked_grant_rejected(self):
+        svc = make_device_auth_service()
+        svc._user_repo.find_by_id.return_value = make_user_doc(email_verified=True)
+        svc._grant_repo.find_active_grant.return_value = None
+
+        with pytest.raises(AuthenticationError, match="revoked"):
+            await svc.refresh_device_tokens(self._refresh_token_for("spoo-cli"))
+
+    @pytest.mark.asyncio
+    async def test_refresh_without_app_id_skips_grant_check(self):
+        svc = make_device_auth_service()
+        svc._user_repo.find_by_id.return_value = make_user_doc(email_verified=True)
+
+        result = await svc.refresh_device_tokens(self._refresh_token_for(None))
+        assert isinstance(result.access_token, str)
+        svc._grant_repo.find_active_grant.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refresh_invalid_token_rejected(self):
+        svc = make_device_auth_service()
+
+        with pytest.raises(AuthenticationError):
+            await svc.refresh_device_tokens("not-a-jwt")

@@ -33,6 +33,8 @@ class TestLoadAppRegistry:
                 verified: true
                 status: live
                 type: device_auth
+                scopes:
+                  - shorten:create
               spoo-cli:
                 name: Spoo CLI
                 description: Terminal tool
@@ -95,11 +97,53 @@ class TestLoadAppRegistry:
                 icon: my-icon.svg
                 status: live
                 type: device_auth
+                scopes:
+                  - shorten:create
             """,
         )
         # Icon doesn't exist — should still load (just warns)
         registry = load_app_registry(yaml_file)
         assert "my-app" in registry
+
+    def test_skips_live_app_without_scopes(self, yaml_file: Path):
+        """Fail-safe: a live device app must declare scopes or it is dropped."""
+        _write(
+            yaml_file,
+            """
+            apps:
+              scopeless-live:
+                name: Scopeless
+                description: Live but undeclared
+                status: live
+                type: device_auth
+              scopeless-soon:
+                name: Coming Soon
+                description: Not live yet
+                status: coming_soon
+                type: device_auth
+            """,
+        )
+        registry = load_app_registry(yaml_file)
+        assert "scopeless-live" not in registry
+        assert "scopeless-soon" in registry
+
+    def test_skips_live_app_with_invalid_scope(self, yaml_file: Path):
+        """Unknown scope slugs fail Pydantic validation → entry skipped."""
+        _write(
+            yaml_file,
+            """
+            apps:
+              bad-scopes:
+                name: Bad Scopes
+                description: Typo in scope
+                status: live
+                type: device_auth
+                scopes:
+                  - urls:everything
+            """,
+        )
+        registry = load_app_registry(yaml_file)
+        assert registry == {}
 
     def test_preserves_all_fields(self, yaml_file: Path):
         _write(
@@ -116,6 +160,9 @@ class TestLoadAppRegistry:
                   - http://localhost:9000/cb
                 links:
                   chrome: https://chrome.google.com
+                scopes:
+                  - shorten:create
+                  - urls:read
                 permissions:
                   - Access your account
                   - Create short URLs
@@ -126,7 +173,8 @@ class TestLoadAppRegistry:
         assert app.verified is True
         assert app.redirect_uris == ["http://localhost:9000/cb"]
         assert app.links == {"chrome": "https://chrome.google.com"}
-        assert len(app.permissions) == 2
+        assert [s.value for s in app.scopes] == ["shorten:create", "urls:read"]
+        assert len(app.permissions) == 2  # legacy field still parsed
 
     def test_returns_empty_dict_for_non_dict_file(self, yaml_file: Path):
         _write(yaml_file, "- just\n- a\n- list\n")
