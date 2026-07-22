@@ -1,27 +1,25 @@
 """
 ContactService — contact form and URL report handling.
 
-Validates captcha via CaptchaProvider, then dispatches to the appropriate
-Discord webhook via WebhookProvider.  Framework-agnostic: no FastAPI imports.
+Validates captcha via CaptchaProvider, then notifies the operator via
+OpsNotifier.  Framework-agnostic: no FastAPI imports.
 
 The route layer is responsible for:
     - Parsing form data (email, message, short_code, reason, captcha token)
     - Checking that the reported short_code exists (via UrlService)
     - HTTP response construction (redirect or render template)
 
-Discord embed payloads are built here to keep webhook formatting logic in
-one place.  The WebhookProvider only handles the actual HTTP transport.
+The OpsNotifier owns all delivery formatting; this service owns the
+gate order (captcha first) and the failure policy (a failed send is a
+user-visible error — the notification IS the deliverable here).
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
-
 from errors import AppError, ForbiddenError, ValidationError
 from infrastructure.captcha.protocol import CaptchaProvider
 from infrastructure.logging import get_logger
-from infrastructure.webhook.protocol import WebhookProvider
+from infrastructure.ops_notify import OpsNotifier
 
 log = get_logger(__name__)
 
@@ -30,77 +28,17 @@ class ContactService:
     """Contact and report form service.
 
     Args:
-        contact_webhook: WebhookProvider wired to the contact Discord webhook URL.
-        report_webhook:  WebhookProvider wired to the URL-report Discord webhook URL.
-        captcha:         CaptchaProvider used to verify hCaptcha tokens.
+        notifier: OpsNotifier that delivers to the operator's channels.
+        captcha:  CaptchaProvider used to verify hCaptcha tokens.
     """
 
     def __init__(
         self,
-        contact_webhook: WebhookProvider,
-        report_webhook: WebhookProvider,
+        notifier: OpsNotifier,
         captcha: CaptchaProvider,
     ) -> None:
-        self._contact_webhook = contact_webhook
-        self._report_webhook = report_webhook
+        self._notify = notifier
         self._captcha = captcha
-
-    # ── Private: embed builders ───────────────────────────────────────────────
-
-    @staticmethod
-    def _contact_embed(email: str, message: str) -> dict[str, Any]:
-        """Build the Discord embed payload for a contact message.
-
-        Preserves the exact embed structure from utils/contact_utils.send_contact_message().
-        """
-        return {
-            "embeds": [
-                {
-                    "title": "New Contact Message ✉️",
-                    "color": 9103397,
-                    "fields": [
-                        {"name": "Email", "value": f"```{email}```"},
-                        {"name": "Message", "value": f"```{message}```"},
-                    ],
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "footer": {
-                        "text": "spoo-me",
-                        "icon_url": "https://spoo.me/static/images/favicon.png",
-                    },
-                }
-            ]
-        }
-
-    @staticmethod
-    def _report_embed(
-        short_code: str,
-        reason: str,
-        ip_address: str,
-        app_url: str,
-    ) -> dict[str, Any]:
-        """Build the Discord embed payload for a URL report.
-
-        Preserves the exact embed structure from utils/contact_utils.send_report().
-        """
-        return {
-            "embeds": [
-                {
-                    "title": f"URL Report for `{short_code}`",
-                    "color": 14177041,
-                    "url": f"{app_url}stats/{short_code}",
-                    "fields": [
-                        {"name": "Short Code", "value": f"```{short_code}```"},
-                        {"name": "Reason", "value": f"```{reason}```"},
-                        {"name": "IP Address", "value": f"```{ip_address}```"},
-                    ],
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "footer": {
-                        "text": "spoo-me",
-                        "icon_url": "https://spoo.me/static/images/favicon.png",
-                    },
-                }
-            ]
-        }
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -110,7 +48,7 @@ class ContactService:
         message: str,
         captcha_token: str,
     ) -> None:
-        """Send a contact form message to the Discord contact webhook.
+        """Send a contact form message to the operator.
 
         Args:
             email:         Sender's email address.
@@ -119,17 +57,16 @@ class ContactService:
 
         Raises:
             ForbiddenError: Captcha verification failed.
-            AppError:       Webhook send failed.
+            AppError:       Notification send failed.
         """
         if not await self._captcha.verify(captcha_token):
             log.info("contact_captcha_failed")
             raise ForbiddenError("Invalid captcha, please try again")
 
-        payload = self._contact_embed(email, message)
-        sent = await self._contact_webhook.send(payload)
+        sent = await self._notify.contact_message(email, message)
         if not sent:
             log.error(
-                "contact_webhook_send_failed",
+                "contact_notify_failed",
                 email_domain=email.split("@")[1] if "@" in email else "unknown",
             )
             raise AppError("Error sending message, please try again later")
@@ -149,7 +86,7 @@ class ContactService:
         captcha_token: str,
         url_exists: bool,
     ) -> None:
-        """Send a URL report to the Discord report webhook.
+        """Send a URL report to the operator.
 
         Args:
             short_code:    The reported short code (already stripped to base code).
@@ -163,7 +100,7 @@ class ContactService:
         Raises:
             ForbiddenError:  Captcha verification failed.
             ValidationError: short_code does not exist.
-            AppError:        Webhook send failed.
+            AppError:        Notification send failed.
         """
         if not await self._captcha.verify(captcha_token):
             log.info("report_captcha_failed", short_code=short_code)
@@ -172,11 +109,10 @@ class ContactService:
         if not url_exists:
             raise ValidationError("Invalid short code, short code does not exist")
 
-        payload = self._report_embed(short_code, reason, ip_address, app_url)
-        sent = await self._report_webhook.send(payload)
+        sent = await self._notify.url_report(short_code, reason, ip_address, app_url)
         if not sent:
             log.error(
-                "report_webhook_send_failed",
+                "report_notify_failed",
                 short_code=short_code,
             )
             raise AppError("Error sending report, please try again later")

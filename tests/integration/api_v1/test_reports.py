@@ -5,7 +5,8 @@ real Report/ReportSubmission repositories over capturing fake
 collections (so the $inc/$addToSet upsert shape is pinned at the Mongo
 boundary), and the real PublicLinkResolver over dict-backed repo fakes
 (so generation dispatch + emoji decoding run for real). Only the
-captcha, the webhook, and settings are injected.
+captcha, the notifier's HTTP client, and settings are injected — summary
+embeds asserted here are the exact bodies Discord would receive.
 
 Wire shapes here are FROZEN — the Next report page builds against the
 exact bodies asserted in this file.
@@ -24,6 +25,7 @@ from fastapi.testclient import TestClient
 from config import AppSettings
 from dependencies import get_current_user
 from dependencies.services import get_report_intake_service
+from infrastructure.ops_notify import DiscordOpsNotifier
 from middleware.rate_limiter import limiter
 from repositories.report_repository import (
     ReportRepository,
@@ -83,14 +85,27 @@ class _FakeSubmissionsCollection:
         return SimpleNamespace(inserted_id=_SUBMISSION_OID)
 
 
-class _FakeWebhook:
+class _CapturingHttp:
     def __init__(self, ok: bool = True) -> None:
         self.ok = ok
         self.payloads: list[dict[str, Any]] = []
 
-    async def send(self, payload: dict[str, Any]) -> bool:
-        self.payloads.append(payload)
-        return self.ok
+    async def post(self, url: str, json: dict[str, Any]):
+        self.payloads.append(json)
+        return SimpleNamespace(status_code=204 if self.ok else 500, text="boom")
+
+
+class _FakeNotifier(DiscordOpsNotifier):
+    """The REAL DiscordOpsNotifier over a capturing HTTP fake, so the
+    summary embed shape is pinned end to end."""
+
+    def __init__(self, ok: bool = True) -> None:
+        self._captured = _CapturingHttp(ok)
+        super().__init__("", "https://hooks.test/report", self._captured)
+
+    @property
+    def payloads(self) -> list[dict[str, Any]]:
+        return self._captured.payloads
 
 
 class _FakeCaptcha:
@@ -149,7 +164,7 @@ def _build_service(
     v1_docs: dict[str, dict[str, Any]] | None = None,
     emoji_docs: dict[str, dict[str, Any]] | None = None,
     captcha: _FakeCaptcha | None = None,
-    webhook: _FakeWebhook | None = None,
+    notifier: _FakeNotifier | None = None,
 ) -> tuple[ReportIntakeService, _FakeReportsCollection, _FakeSubmissionsCollection]:
     reports_col = _FakeReportsCollection()
     submissions_col = _FakeSubmissionsCollection()
@@ -166,7 +181,7 @@ def _build_service(
         resolver,
         url_repo,
         captcha if captcha is not None else _FakeCaptcha(),
-        webhook if webhook is not None else _FakeWebhook(),
+        notifier if notifier is not None else _FakeNotifier(),
         system_default_domain=_DOMAIN,
     )
     return service, reports_col, submissions_col
@@ -235,10 +250,10 @@ class TestNormalizeReportTarget:
 # ── Single item happy path ────────────────────────────────────────────────────
 
 
-def test_single_item_wire_shape_storage_and_summary_webhook():
-    webhook = _FakeWebhook()
+def test_single_item_wire_shape_storage_and_summary_notification():
+    notifier = _FakeNotifier()
     service, reports_col, submissions_col = _build_service(
-        v2_docs=[_make_v2_doc("abc1234")], webhook=webhook
+        v2_docs=[_make_v2_doc("abc1234")], notifier=notifier
     )
     with _client(service) as c:
         resp = c.post(_URL, json={"items": _items("abc1234")})
@@ -279,9 +294,9 @@ def test_single_item_wire_shape_storage_and_summary_webhook():
     assert sub["accepted"] == 1
     assert sub["rejected_count"] == 0
 
-    # Webhook demoted to ONE summary embed per submission.
-    assert len(webhook.payloads) == 1
-    embed = webhook.payloads[0]["embeds"][0]
+    # Notification demoted to ONE summary embed per submission.
+    assert len(notifier.payloads) == 1
+    embed = notifier.payloads[0]["embeds"][0]
     assert embed["title"] == "New URL Report Submission"
     assert embed["color"] == 14177041
     field_names = [f["name"] for f in embed["fields"]]
@@ -328,13 +343,13 @@ def test_details_and_vector_stored():
 
 
 def test_bulk_mixed_batch_per_item_breakdown():
-    webhook = _FakeWebhook()
+    notifier = _FakeNotifier()
     service, reports_col, submissions_col = _build_service(
         v2_docs=[
             _make_v2_doc("abc1234"),
             _make_v2_doc("deal", domain="go.customer.com"),
         ],
-        webhook=webhook,
+        notifier=notifier,
     )
     items = [
         {"code_or_url": "abc1234", "reason": "phishing"},
@@ -380,7 +395,7 @@ def test_bulk_mixed_batch_per_item_breakdown():
     assert sub["rejected_count"] == 3
 
     # One summary embed for the whole batch, never per item.
-    assert len(webhook.payloads) == 1
+    assert len(notifier.payloads) == 1
 
 
 def test_custom_domain_code_missing_is_not_found():
@@ -432,9 +447,9 @@ def test_summary_embed_clips_long_lines_and_reports_overflow():
     # the 11th spills past the 10-code listing cap (overflow branch).
     long_code = "x" * 100
     codes = [long_code] + [f"bulk{i}" for i in range(10)]
-    webhook = _FakeWebhook()
+    notifier = _FakeNotifier()
     service, _, _ = _build_service(
-        v2_docs=[_make_v2_doc(code) for code in codes], webhook=webhook
+        v2_docs=[_make_v2_doc(code) for code in codes], notifier=notifier
     )
     with _client(service) as c:
         resp = c.post(_URL, json={"items": _items(*codes)})
@@ -442,7 +457,7 @@ def test_summary_embed_clips_long_lines_and_reports_overflow():
     assert resp.status_code == 200
     assert resp.json()["accepted"] == 11
 
-    embed = webhook.payloads[0]["embeds"][0]
+    embed = notifier.payloads[0]["embeds"][0]
     links_field = next(f for f in embed["fields"] if f["name"] == "Reported Links")
     lines = links_field["value"].strip("`").split("\n")
     # 10 listed codes + the overflow line.
@@ -470,8 +485,8 @@ def test_empty_items_400():
 
 
 def test_anonymous_over_25_items_400():
-    webhook = _FakeWebhook()
-    service, reports_col, _ = _build_service(webhook=webhook)
+    notifier = _FakeNotifier()
+    service, reports_col, _ = _build_service(notifier=notifier)
     with _client(service) as c:
         resp = c.post(_URL, json={"items": _items(*[f"code{i}" for i in range(26)])})
 
@@ -481,7 +496,7 @@ def test_anonymous_over_25_items_400():
     assert "25" in body["error"]
     # Whole request fails — nothing stored, nothing notified.
     assert reports_col.update_calls == []
-    assert webhook.payloads == []
+    assert notifier.payloads == []
 
 
 def test_authenticated_100_ok_101_400():
@@ -618,10 +633,10 @@ def test_report_webhook_unset_503():
     assert reports_col.update_calls == []
 
 
-def test_webhook_send_failure_does_not_fail_the_submission():
-    # Storage is the system of record; the webhook is only a notification.
+def test_notify_send_failure_does_not_fail_the_submission():
+    # Storage is the system of record; the notifier is only a notification.
     service, reports_col, _ = _build_service(
-        v2_docs=[_make_v2_doc("abc1234")], webhook=_FakeWebhook(ok=False)
+        v2_docs=[_make_v2_doc("abc1234")], notifier=_FakeNotifier(ok=False)
     )
     with _client(service) as c:
         resp = c.post(_URL, json={"items": _items("abc1234")})
