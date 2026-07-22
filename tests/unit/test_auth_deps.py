@@ -574,7 +574,7 @@ class TestRequireKeysAccess:
 class TestApiKeyHygiene:
     """last_used_at stamping (debounced, best-effort) and failed-auth logging."""
 
-    def _mocks(self, key_doc):
+    def _mocks(self):
         settings_patch = patch(
             "dependencies.auth.get_settings", return_value=make_settings()
         )
@@ -594,7 +594,7 @@ class TestApiKeyHygiene:
     @pytest.mark.asyncio
     async def test_touch_called_when_never_used(self):
         key_doc = make_key_doc(last_used_at=None)
-        sp, kp, up = self._mocks(key_doc)
+        sp, kp, up = self._mocks()
         with sp, kp as MockKeyRepo, up as MockUserRepo:
             result = await self._auth(key_doc, MockKeyRepo, MockUserRepo)
             MockKeyRepo.return_value.touch_last_used.assert_awaited_once_with(KEY_OID)
@@ -604,7 +604,7 @@ class TestApiKeyHygiene:
     async def test_touch_debounced_when_recently_used(self):
         recent = datetime.now(timezone.utc) - timedelta(minutes=5)
         key_doc = make_key_doc(last_used_at=recent)
-        sp, kp, up = self._mocks(key_doc)
+        sp, kp, up = self._mocks()
         with sp, kp as MockKeyRepo, up as MockUserRepo:
             result = await self._auth(key_doc, MockKeyRepo, MockUserRepo)
             MockKeyRepo.return_value.touch_last_used.assert_not_awaited()
@@ -614,7 +614,7 @@ class TestApiKeyHygiene:
     async def test_touch_called_when_stale(self):
         stale = datetime.now(timezone.utc) - timedelta(hours=2)
         key_doc = make_key_doc(last_used_at=stale)
-        sp, kp, up = self._mocks(key_doc)
+        sp, kp, up = self._mocks()
         with sp, kp as MockKeyRepo, up as MockUserRepo:
             result = await self._auth(key_doc, MockKeyRepo, MockUserRepo)
             MockKeyRepo.return_value.touch_last_used.assert_awaited_once_with(KEY_OID)
@@ -626,7 +626,7 @@ class TestApiKeyHygiene:
         # must still debounce instead of raising on aware/naive subtraction.
         recent_naive = datetime.now(timezone.utc).replace(tzinfo=None)
         key_doc = make_key_doc(last_used_at=recent_naive)
-        sp, kp, up = self._mocks(key_doc)
+        sp, kp, up = self._mocks()
         with sp, kp as MockKeyRepo, up as MockUserRepo:
             result = await self._auth(key_doc, MockKeyRepo, MockUserRepo)
             MockKeyRepo.return_value.touch_last_used.assert_not_awaited()
@@ -635,7 +635,7 @@ class TestApiKeyHygiene:
     @pytest.mark.asyncio
     async def test_touch_failure_does_not_fail_auth(self):
         key_doc = make_key_doc(last_used_at=None)
-        sp, kp, up = self._mocks(key_doc)
+        sp, kp, up = self._mocks()
         with sp, kp as MockKeyRepo, up as MockUserRepo:
             MockKeyRepo.return_value.find_by_hash = AsyncMock(return_value=key_doc)
             MockKeyRepo.return_value.touch_last_used = AsyncMock(
