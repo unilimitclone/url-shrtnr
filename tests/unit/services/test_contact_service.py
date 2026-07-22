@@ -1,4 +1,10 @@
-"""Unit tests for Phase 9 — ContactService."""
+"""Unit tests for Phase 9 — ContactService.
+
+Embed formatting lives in DiscordOpsNotifier (tested in
+tests/unit/infrastructure/test_ops_notify.py); these tests cover the
+service's own concerns: gate order, failure policy, and what facts it
+hands the notifier.
+"""
 
 from __future__ import annotations
 
@@ -14,20 +20,18 @@ from errors import AppError, ForbiddenError, ValidationError
 def make_service(captcha_ok=True, contact_sent=True, report_sent=True):
     from services.contact_service import ContactService
 
-    contact_webhook = AsyncMock()
-    report_webhook = AsyncMock()
+    notifier = AsyncMock()
     captcha = AsyncMock()
 
     captcha.verify = AsyncMock(return_value=captcha_ok)
-    contact_webhook.send = AsyncMock(return_value=contact_sent)
-    report_webhook.send = AsyncMock(return_value=report_sent)
+    notifier.contact_message = AsyncMock(return_value=contact_sent)
+    notifier.url_report = AsyncMock(return_value=report_sent)
 
     svc = ContactService(
-        contact_webhook=contact_webhook,
-        report_webhook=report_webhook,
+        notifier=notifier,
         captcha=captcha,
     )
-    return svc, contact_webhook, report_webhook, captcha
+    return svc, notifier, captcha
 
 
 # ── Tests: send_contact_message ───────────────────────────────────────────────
@@ -36,7 +40,7 @@ def make_service(captcha_ok=True, contact_sent=True, report_sent=True):
 class TestSendContactMessage:
     @pytest.mark.asyncio
     async def test_success_does_not_raise(self):
-        svc, _, _, _ = make_service(captcha_ok=True, contact_sent=True)
+        svc, _, _ = make_service(captcha_ok=True, contact_sent=True)
         await svc.send_contact_message(
             email="user@example.com",
             message="Hello",
@@ -45,7 +49,7 @@ class TestSendContactMessage:
 
     @pytest.mark.asyncio
     async def test_captcha_failure_raises_forbidden(self):
-        svc, _, _, _ = make_service(captcha_ok=False)
+        svc, _, _ = make_service(captcha_ok=False)
 
         with pytest.raises(ForbiddenError, match="Invalid captcha"):
             await svc.send_contact_message(
@@ -55,8 +59,8 @@ class TestSendContactMessage:
             )
 
     @pytest.mark.asyncio
-    async def test_webhook_failure_raises_app_error(self):
-        svc, _, _, _ = make_service(captcha_ok=True, contact_sent=False)
+    async def test_notify_failure_raises_app_error(self):
+        svc, _, _ = make_service(captcha_ok=True, contact_sent=False)
 
         with pytest.raises(AppError, match="Error sending message"):
             await svc.send_contact_message(
@@ -66,9 +70,9 @@ class TestSendContactMessage:
             )
 
     @pytest.mark.asyncio
-    async def test_captcha_verified_before_webhook(self):
-        """Captcha must be checked before the webhook is called."""
-        svc, contact_webhook, _, _captcha = make_service(captcha_ok=False)
+    async def test_captcha_verified_before_notify(self):
+        """Captcha must be checked before the notifier is called."""
+        svc, notifier, _captcha = make_service(captcha_ok=False)
 
         with pytest.raises(ForbiddenError):
             await svc.send_contact_message(
@@ -77,54 +81,29 @@ class TestSendContactMessage:
                 captcha_token="bad-token",
             )
 
-        contact_webhook.send.assert_not_awaited()
+        notifier.contact_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_webhook_called_with_embed_payload(self):
-        svc, contact_webhook, _, _ = make_service()
+    async def test_notifier_receives_email_and_message(self):
+        svc, notifier, _ = make_service()
         await svc.send_contact_message(
             email="user@example.com",
             message="Test message",
             captcha_token="valid-token",
         )
-        contact_webhook.send.assert_awaited_once()
-        payload = contact_webhook.send.call_args[0][0]
-        assert "embeds" in payload
-        assert len(payload["embeds"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_embed_contains_email_and_message(self):
-        svc, contact_webhook, _, _ = make_service()
-        await svc.send_contact_message(
-            email="user@example.com",
-            message="My message",
-            captcha_token="valid-token",
+        notifier.contact_message.assert_awaited_once_with(
+            "user@example.com", "Test message"
         )
-        embed = contact_webhook.send.call_args[0][0]["embeds"][0]
-        field_names = [f["name"] for f in embed["fields"]]
-        assert "Email" in field_names
-        assert "Message" in field_names
 
     @pytest.mark.asyncio
-    async def test_embed_title_is_new_contact_message(self):
-        svc, contact_webhook, _, _ = make_service()
+    async def test_report_channel_not_used_for_contact(self):
+        svc, notifier, _ = make_service()
         await svc.send_contact_message(
             email="user@example.com",
             message="Hello",
             captcha_token="valid-token",
         )
-        embed = contact_webhook.send.call_args[0][0]["embeds"][0]
-        assert "Contact" in embed["title"]
-
-    @pytest.mark.asyncio
-    async def test_report_webhook_not_called_for_contact(self):
-        svc, _, report_webhook, _ = make_service()
-        await svc.send_contact_message(
-            email="user@example.com",
-            message="Hello",
-            captcha_token="valid-token",
-        )
-        report_webhook.send.assert_not_awaited()
+        notifier.url_report.assert_not_awaited()
 
 
 # ── Tests: send_report ────────────────────────────────────────────────────────
@@ -133,7 +112,7 @@ class TestSendContactMessage:
 class TestSendReport:
     @pytest.mark.asyncio
     async def test_success_does_not_raise(self):
-        svc, _, _, _ = make_service(captcha_ok=True, report_sent=True)
+        svc, _, _ = make_service(captcha_ok=True, report_sent=True)
         await svc.send_report(
             short_code="abc123",
             reason="spam",
@@ -145,7 +124,7 @@ class TestSendReport:
 
     @pytest.mark.asyncio
     async def test_captcha_failure_raises_forbidden(self):
-        svc, _, _, _ = make_service(captcha_ok=False)
+        svc, _, _ = make_service(captcha_ok=False)
 
         with pytest.raises(ForbiddenError, match="Invalid captcha"):
             await svc.send_report(
@@ -159,7 +138,7 @@ class TestSendReport:
 
     @pytest.mark.asyncio
     async def test_url_not_found_raises_validation_error(self):
-        svc, _, _, _ = make_service(captcha_ok=True)
+        svc, _, _ = make_service(captcha_ok=True)
 
         with pytest.raises(ValidationError, match="Invalid short code"):
             await svc.send_report(
@@ -172,8 +151,8 @@ class TestSendReport:
             )
 
     @pytest.mark.asyncio
-    async def test_webhook_failure_raises_app_error(self):
-        svc, _, _, _ = make_service(captcha_ok=True, report_sent=False)
+    async def test_notify_failure_raises_app_error(self):
+        svc, _, _ = make_service(captcha_ok=True, report_sent=False)
 
         with pytest.raises(AppError, match="Error sending report"):
             await svc.send_report(
@@ -188,7 +167,7 @@ class TestSendReport:
     @pytest.mark.asyncio
     async def test_captcha_checked_before_existence(self):
         """Captcha must fail fast before the url_exists check matters."""
-        svc, _, report_webhook, _captcha = make_service(captcha_ok=False)
+        svc, notifier, _captcha = make_service(captcha_ok=False)
 
         with pytest.raises(ForbiddenError):
             await svc.send_report(
@@ -200,11 +179,11 @@ class TestSendReport:
                 url_exists=True,
             )
 
-        report_webhook.send.assert_not_awaited()
+        notifier.url_report.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_webhook_called_with_embed_payload(self):
-        svc, _, report_webhook, _ = make_service()
+    async def test_notifier_receives_report_facts(self):
+        svc, notifier, _ = make_service()
         await svc.send_report(
             short_code="abc123",
             reason="phishing",
@@ -213,30 +192,13 @@ class TestSendReport:
             captcha_token="valid-token",
             url_exists=True,
         )
-        report_webhook.send.assert_awaited_once()
-        payload = report_webhook.send.call_args[0][0]
-        assert "embeds" in payload
-
-    @pytest.mark.asyncio
-    async def test_embed_contains_short_code_reason_ip(self):
-        svc, _, report_webhook, _ = make_service()
-        await svc.send_report(
-            short_code="abc123",
-            reason="phishing",
-            ip_address="1.2.3.4",
-            app_url="https://spoo.me/",
-            captcha_token="valid-token",
-            url_exists=True,
+        notifier.url_report.assert_awaited_once_with(
+            "abc123", "phishing", "1.2.3.4", "https://spoo.me/"
         )
-        embed = report_webhook.send.call_args[0][0]["embeds"][0]
-        field_names = [f["name"] for f in embed["fields"]]
-        assert "Short Code" in field_names
-        assert "Reason" in field_names
-        assert "IP Address" in field_names
 
     @pytest.mark.asyncio
-    async def test_embed_title_contains_short_code(self):
-        svc, _, report_webhook, _ = make_service()
+    async def test_contact_channel_not_used_for_report(self):
+        svc, notifier, _ = make_service()
         await svc.send_report(
             short_code="abc123",
             reason="spam",
@@ -245,32 +207,4 @@ class TestSendReport:
             captcha_token="valid-token",
             url_exists=True,
         )
-        embed = report_webhook.send.call_args[0][0]["embeds"][0]
-        assert "abc123" in embed["title"]
-
-    @pytest.mark.asyncio
-    async def test_embed_url_points_to_stats_page(self):
-        svc, _, report_webhook, _ = make_service()
-        await svc.send_report(
-            short_code="abc123",
-            reason="spam",
-            ip_address="1.2.3.4",
-            app_url="https://spoo.me/",
-            captcha_token="valid-token",
-            url_exists=True,
-        )
-        embed = report_webhook.send.call_args[0][0]["embeds"][0]
-        assert embed["url"] == "https://spoo.me/stats/abc123"
-
-    @pytest.mark.asyncio
-    async def test_contact_webhook_not_called_for_report(self):
-        svc, contact_webhook, _, _ = make_service()
-        await svc.send_report(
-            short_code="abc123",
-            reason="spam",
-            ip_address="1.2.3.4",
-            app_url="https://spoo.me/",
-            captcha_token="valid-token",
-            url_exists=True,
-        )
-        contact_webhook.send.assert_not_awaited()
+        notifier.contact_message.assert_not_awaited()

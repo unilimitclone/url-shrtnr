@@ -4,9 +4,9 @@ ReportIntakeService — bulk-first abuse-report intake.
 Owns the whole INTAKE half of the url-safety funnel: normalization
 (bare code / full URL / custom domain → ``(domain, code)``),
 domain-scoped existence checks, within-batch dedupe, dedupe+velocity
-storage, the per-POST submission audit record, and the demoted summary
-webhook (ONE Discord embed per submission, never per item — storage is
-the system of record now, the webhook is a notification).
+storage, the per-POST submission audit record, and the demoted operator
+notification (ONE summary per submission, never per item — storage is
+the system of record now, the ping is a notification).
 
 Reporter-claimed ``reason``/``vector`` are stored verbatim as triage
 hints; assessed harm tiers live in the url-safety architecture, not
@@ -14,7 +14,7 @@ here. Resolution / triage / status transitions are explicitly out of
 scope — this service ends at the DB record and the notification.
 
 Framework-agnostic: no FastAPI imports. The route layer owns HTTP
-concerns (client IP, the webhook-unset 503 gate, and the
+concerns (client IP, the webhook-URL-unset 503 gate, and the
 missing-captcha-token 400 that mirrors the Jinja form).
 """
 
@@ -23,7 +23,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 from urllib.parse import unquote, urlparse
 
 from bson import ObjectId
@@ -31,7 +30,7 @@ from bson import ObjectId
 from errors import ForbiddenError, ValidationError
 from infrastructure.captcha.protocol import CaptchaProvider
 from infrastructure.logging import get_logger
-from infrastructure.webhook.protocol import WebhookProvider
+from infrastructure.ops_notify import OpsNotifier
 from repositories.report_repository import ReportRepository, ReportSubmissionRepository
 from repositories.url_repository import UrlRepository
 from schemas.dto.requests.reports import ReportItemRequest
@@ -45,10 +44,6 @@ log = get_logger(__name__)
 # tighter — give researchers a reason to get a key.
 ANON_MAX_ITEMS = 25
 AUTHED_MAX_ITEMS = 100
-
-# Summary embed: list at most this many codes, then "… and N more".
-_SUMMARY_MAX_LISTED = 10
-_SUMMARY_LINE_MAX = 80
 
 
 def normalize_report_target(
@@ -116,7 +111,7 @@ class SubmissionOutcome:
 
 class ReportIntakeService:
     """Bulk report intake — normalization, resolution, dedupe, storage,
-    summary webhook.
+    operator summary notification.
 
     Args:
         report_repo:     Write side of the per-code ``reports`` docs.
@@ -127,8 +122,8 @@ class ReportIntakeService:
         url_repo:        Domain-scoped v2 lookups for custom-domain codes
                          (custom domains exist only in v2).
         captcha:         Verifies anonymous submissions.
-        report_webhook:  WebhookProvider wired to the URL-report Discord
-                         webhook (shared with the legacy Jinja path).
+        notifier:        OpsNotifier for the summary ping (delivers to the
+                         same channel as the legacy Jinja report path).
     """
 
     def __init__(
@@ -138,7 +133,7 @@ class ReportIntakeService:
         resolver: PublicLinkResolver,
         url_repo: UrlRepository,
         captcha: CaptchaProvider,
-        report_webhook: WebhookProvider,
+        notifier: OpsNotifier,
         *,
         system_default_domain: str,
     ) -> None:
@@ -147,7 +142,7 @@ class ReportIntakeService:
         self._resolver = resolver
         self._url_repo = url_repo
         self._captcha = captcha
-        self._report_webhook = report_webhook
+        self._notify = notifier
         self._system_default_domain = system_default_domain
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -228,19 +223,24 @@ class ReportIntakeService:
 
         # Demoted to a notification: storage above is the system of record,
         # so a failed send is logged, never surfaced — the reports ARE filed.
-        payload = self._summary_embed(
+        # The notifier owns formatting; the domain fact passed down is which
+        # display target each accepted item resolves to.
+        sent = await self._notify.report_summary(
             submission_id=submission_id,
             source=source,
             authenticated=reporter_id is not None,
-            accepted=accepted,
+            accepted=[
+                (f"{domain or self._system_default_domain}/{code}", item.reason.value)
+                for domain, code, item in accepted
+            ],
             rejected_count=len(rejected),
             reporter_email=reporter_email,
             reporter_org=reporter_org,
             ip=ip,
             now=now,
         )
-        if not await self._report_webhook.send(payload):
-            log.error("report_summary_webhook_failed", submission_id=submission_id)
+        if not sent:
+            log.error("report_summary_notify_failed", submission_id=submission_id)
 
         log.info(
             "report_submission_stored",
@@ -307,82 +307,3 @@ class ReportIntakeService:
         if domain is None:
             return await self._resolver.resolve(code) is not None
         return await self._url_repo.find_by_alias(code, domain) is not None
-
-    # ── Private: summary embed ────────────────────────────────────────────────
-
-    def _summary_embed(
-        self,
-        *,
-        submission_id: str,
-        source: str,
-        authenticated: bool,
-        accepted: list[tuple[str | None, str, ReportItemRequest]],
-        rejected_count: int,
-        reporter_email: str | None,
-        reporter_org: str | None,
-        ip: str,
-        now: datetime,
-    ) -> dict[str, Any]:
-        """ONE Discord embed per submission — counts, source, up to
-        {_SUMMARY_MAX_LISTED} codes with reasons, submission id.
-
-        Same visual family as ContactService._report_embed (color,
-        code-block fields, footer) but built here: ContactService stays
-        contact-only + the legacy per-code Jinja path. ``now`` is the
-        submission timestamp already stamped on the audit record, so the
-        embed and the record can never disagree.
-        """
-        fields: list[dict[str, Any]] = [
-            {"name": "Submission ID", "value": f"```{submission_id}```"},
-            {
-                "name": "Source",
-                "value": (
-                    f"```{source} · "
-                    f"{'authenticated' if authenticated else 'anonymous'}```"
-                ),
-            },
-            {
-                "name": "Accepted / Rejected",
-                "value": f"```{len(accepted)} / {rejected_count}```",
-            },
-        ]
-
-        if accepted:
-            lines = []
-            for domain, code, item in accepted[:_SUMMARY_MAX_LISTED]:
-                display = f"{domain or self._system_default_domain}/{code}"
-                line = f"{display} — {item.reason.value}"
-                if len(line) > _SUMMARY_LINE_MAX:
-                    line = line[: _SUMMARY_LINE_MAX - 1] + "…"
-                lines.append(line)
-            overflow = len(accepted) - _SUMMARY_MAX_LISTED
-            if overflow > 0:
-                lines.append(f"… and {overflow} more")
-            fields.append(
-                {"name": "Reported Links", "value": "```" + "\n".join(lines) + "```"}
-            )
-
-        if reporter_email or reporter_org:
-            fields.append(
-                {
-                    "name": "Reporter",
-                    "value": f"```{reporter_email or '—'} · {reporter_org or '—'}```",
-                }
-            )
-
-        fields.append({"name": "IP Address", "value": f"```{ip}```"})
-
-        return {
-            "embeds": [
-                {
-                    "title": "New URL Report Submission",
-                    "color": 14177041,
-                    "fields": fields,
-                    "timestamp": now.isoformat(),
-                    "footer": {
-                        "text": "spoo-me",
-                        "icon_url": "https://spoo.me/static/images/favicon.png",
-                    },
-                }
-            ]
-        }

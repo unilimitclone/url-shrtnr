@@ -20,8 +20,8 @@ from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.cloudflare_client import CloudflareClient
 from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.logging import get_logger
+from infrastructure.ops_notify import DiscordOpsNotifier
 from infrastructure.storage.r2 import R2StorageClient
-from infrastructure.webhook.discord import DiscordWebhookProvider
 from repositories.api_key_repository import ApiKeyRepository
 from repositories.app_grant_repository import AppGrantRepository
 from repositories.blocked_domain_repository import BlockedDomainRepository
@@ -127,8 +127,11 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         negative_ttl_seconds=settings.redis.feature_flag_negative_ttl_seconds,
     )
     captcha = HCaptchaProvider(settings.hcaptcha_secret, http_client)
-    contact_webhook = DiscordWebhookProvider(settings.contact_webhook, http_client)
-    report_webhook = DiscordWebhookProvider(settings.url_report_webhook, http_client)
+    # One notifier, two channels — env vars keep their shipped names
+    # (CONTACT_WEBHOOK / URL_REPORT_WEBHOOK, they ARE Discord webhook URLs).
+    ops_notifier = DiscordOpsNotifier(
+        settings.contact_webhook, settings.url_report_webhook, http_client
+    )
 
     # Edge KV client, shared by the og write-through and the bulk ops'
     # edge flush. None when the edge cache isn't configured (self-host) —
@@ -247,7 +250,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         max_date_range_days=settings.max_date_range_days,
     )
     # Report intake shares the resolver (existence checks answer from the
-    # same generation the redirect serves) and the report webhook + captcha
+    # same generation the redirect serves) and the ops notifier + captcha
     # already built above for ContactService.
     app.state.report_intake_service = ReportIntakeService(
         ReportRepository(db["reports"]),
@@ -255,7 +258,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         public_link_resolver,
         url_repo,
         captcha,
-        report_webhook,
+        ops_notifier,
         system_default_domain=settings.system_default_domain,
     )
     app.state.export_service = ExportService(
@@ -313,8 +316,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         key_secret=settings.secret_key,
     )
     app.state.contact_service = ContactService(
-        contact_webhook,
-        report_webhook,
+        ops_notifier,
         captcha,
     )
 

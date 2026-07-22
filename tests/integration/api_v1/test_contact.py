@@ -1,9 +1,10 @@
 """Tests for POST /api/v1/contact — the JSON twin of the Jinja form.
 
 ContactService is REAL (the endpoint reuses ``send_contact_message``
-verbatim); the webhook and captcha are capturing fakes so the legacy
-Discord embed shape is pinned exactly. Settings are injected per test to
-drive the configured/unconfigured branches.
+verbatim) and so is DiscordOpsNotifier — only its HTTP client and the
+captcha are capturing fakes, so the legacy Discord embed shape is pinned
+exactly. Settings are injected per test to drive the
+configured/unconfigured branches.
 
 Note on validation statuses: DTO shape failures (invalid email, empty
 message) return 422 with ``code: validation_error`` via the global
@@ -15,6 +16,7 @@ token when captcha is configured) stay 400.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from config import AppSettings
 from dependencies import get_contact_service
+from infrastructure.ops_notify import DiscordOpsNotifier
 from middleware.rate_limiter import limiter
 from routes.api_v1 import router as api_v1_router
 from services.contact_service import ContactService
@@ -42,14 +45,27 @@ def _reset_limiter_between_tests():
 # ── Fakes ─────────────────────────────────────────────────────────────────────
 
 
-class _FakeWebhook:
+class _CapturingHttp:
     def __init__(self, ok: bool = True) -> None:
         self.ok = ok
         self.payloads: list[dict[str, Any]] = []
 
-    async def send(self, payload: dict[str, Any]) -> bool:
-        self.payloads.append(payload)
-        return self.ok
+    async def post(self, url: str, json: dict[str, Any]):
+        self.payloads.append(json)
+        return SimpleNamespace(status_code=204 if self.ok else 500, text="boom")
+
+
+class _FakeNotifier(DiscordOpsNotifier):
+    """The REAL DiscordOpsNotifier over a capturing HTTP fake, so the
+    contact embed shape is pinned end to end."""
+
+    def __init__(self, ok: bool = True) -> None:
+        self._captured = _CapturingHttp(ok)
+        super().__init__("https://hooks.test/contact", "", self._captured)
+
+    @property
+    def payloads(self) -> list[dict[str, Any]]:
+        return self._captured.payloads
 
 
 class _FakeCaptcha:
@@ -69,12 +85,12 @@ def _client(
     *,
     contact_webhook: str = "https://hooks.test/contact",
     sitekey: str = "test-sitekey",
-    webhook: _FakeWebhook | None = None,
+    notifier: _FakeNotifier | None = None,
     captcha: _FakeCaptcha | None = None,
 ) -> TestClient:
-    webhook = webhook if webhook is not None else _FakeWebhook()
+    notifier = notifier if notifier is not None else _FakeNotifier()
     captcha = captcha if captcha is not None else _FakeCaptcha()
-    service = ContactService(webhook, _FakeWebhook(), captcha)
+    service = ContactService(notifier, captcha)
     settings = AppSettings(
         contact_webhook=contact_webhook,
         hcaptcha_sitekey=sitekey,
@@ -101,17 +117,17 @@ def _body(**overrides: Any) -> dict[str, Any]:
 
 
 def test_contact_happy_path_sends_exact_legacy_embed():
-    webhook = _FakeWebhook()
+    notifier = _FakeNotifier()
     captcha = _FakeCaptcha()
-    with _client(webhook=webhook, captcha=captcha) as c:
+    with _client(notifier=notifier, captcha=captcha) as c:
         resp = c.post(_URL, json=_body())
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
 
     assert captcha.tokens == ["tok"]
-    assert len(webhook.payloads) == 1
-    embed = webhook.payloads[0]["embeds"][0]
+    assert len(notifier.payloads) == 1
+    embed = notifier.payloads[0]["embeds"][0]
     assert embed["title"] == "New Contact Message ✉️"
     assert embed["color"] == 9103397
     assert embed["fields"] == [
@@ -129,9 +145,9 @@ def test_contact_happy_path_sends_exact_legacy_embed():
 
 
 def test_contact_missing_captcha_when_configured_400():
-    webhook = _FakeWebhook()
+    notifier = _FakeNotifier()
     captcha = _FakeCaptcha()
-    with _client(webhook=webhook, captcha=captcha) as c:
+    with _client(notifier=notifier, captcha=captcha) as c:
         resp = c.post(_URL, json=_body(captcha_token=None))
 
     assert resp.status_code == 400
@@ -140,22 +156,22 @@ def test_contact_missing_captcha_when_configured_400():
     assert "captcha" in body["error"].lower()
     # Rejected before any service work.
     assert captcha.tokens == []
-    assert webhook.payloads == []
+    assert notifier.payloads == []
 
 
 def test_contact_captcha_not_required_when_unconfigured():
-    webhook = _FakeWebhook()
-    with _client(sitekey="", webhook=webhook) as c:
+    notifier = _FakeNotifier()
+    with _client(sitekey="", notifier=notifier) as c:
         resp = c.post(_URL, json=_body(captcha_token=None))
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
-    assert len(webhook.payloads) == 1
+    assert len(notifier.payloads) == 1
 
 
 def test_contact_captcha_failure_403():
-    webhook = _FakeWebhook()
-    with _client(captcha=_FakeCaptcha(ok=False), webhook=webhook) as c:
+    notifier = _FakeNotifier()
+    with _client(captcha=_FakeCaptcha(ok=False), notifier=notifier) as c:
         resp = c.post(_URL, json=_body())
 
     assert resp.status_code == 403
@@ -163,7 +179,7 @@ def test_contact_captcha_failure_403():
         "error": "Invalid captcha, please try again",
         "code": "forbidden",
     }
-    assert webhook.payloads == []
+    assert notifier.payloads == []
 
 
 # ── Not configured / failure branches ─────────────────────────────────────────
@@ -179,8 +195,8 @@ def test_contact_webhook_unset_503():
     assert body["error"]
 
 
-def test_contact_webhook_send_failure_500():
-    with _client(webhook=_FakeWebhook(ok=False)) as c:
+def test_contact_notify_send_failure_500():
+    with _client(notifier=_FakeNotifier(ok=False)) as c:
         resp = c.post(_URL, json=_body())
 
     assert resp.status_code == 500
