@@ -7,6 +7,7 @@ request_id without explicit parameter passing.
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 
@@ -23,6 +24,19 @@ log = get_logger("spoo.request")
 # Paths to skip detailed logging (high-volume, low-value)
 _SKIP_PATHS = frozenset({"/health", "/favicon.ico"})
 
+# X-Spoo-Client value: "<slug>" or "<slug>/<version>", e.g. "snap/2.1.0".
+# First-party clients send dashboard/landing/snap/raycast/cli/bot; anything
+# not matching the shape is treated as absent rather than rejected.
+_CLIENT_TAG_RE = re.compile(r"^([a-z0-9_-]{1,32})(?:/([A-Za-z0-9._-]{1,16}))?$")
+
+
+def _client_tag(request: Request) -> tuple[str | None, str | None]:
+    """Parse the X-Spoo-Client header into (client, client_version)."""
+    match = _CLIENT_TAG_RE.match(request.headers.get("x-spoo-client", "").strip())
+    if match is None:
+        return None, None
+    return match.group(1), match.group(2)
+
 
 def _auth_kind(request: Request) -> str:
     """Coarse "who is calling" tag without leaking creds."""
@@ -34,6 +48,8 @@ def _auth_kind(request: Request) -> str:
         if token.count(".") == 2:
             return "jwt"
         return "bearer_other"
+    if request.cookies.get("access_token"):
+        return "jwt_cookie"
     if request.cookies.get("session"):
         return "session_cookie"
     return "anonymous"
@@ -76,6 +92,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         referrer = request.headers.get("referer")
         ip_hash = hash_ip(get_client_ip(request))
         auth_kind = _auth_kind(request)
+        client, client_version = _client_tag(request)
 
         cf_ray = request.headers.get("cf-ray", "")
         # cf-ray format: <12-hex-id>-<3-letter-pop>, e.g. "9f80a96e7a07f934-SIN"
@@ -101,6 +118,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             referrer=referrer,
             user_agent=ua[:200] if ua else None,
             auth_kind=auth_kind,
+            client=client,
+            client_version=client_version,
             cf_ray=cf_ray or None,
             cf_pop=cf_pop,
             query_keys=query_keys,

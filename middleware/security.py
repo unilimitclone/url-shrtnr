@@ -18,7 +18,7 @@ _PRIVATE_PREFIXES = ("/auth", "/oauth", "/dashboard")
 _PUBLIC_PREFIXES = ("/api/v1", "/auth/device", "/stats", "/export", "/metric")
 
 _ALLOWED_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-_ALLOWED_HEADERS = "Authorization, Content-Type, Accept, X-Request-ID"
+_ALLOWED_HEADERS = "Authorization, Content-Type, Accept, X-Request-ID, X-Spoo-Client"
 
 
 def _classify_path(path: str) -> str:
