@@ -8,7 +8,7 @@ Resolves the current user from JWT or API key, and provides guards
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import jwt as pyjwt
@@ -24,8 +24,13 @@ from repositories.api_key_repository import ApiKeyRepository
 from repositories.user_repository import UserRepository
 from schemas.dto.requests.api_key import ApiKeyScope
 from schemas.models.api_key import ApiKeyDoc
+from shared.datetime_utils import as_aware_utc
 
 log = get_logger(__name__)
+
+# last_used_at is stamped at most once per key per debounce window, keeping
+# the hot auth path effectively read-only.
+_LAST_USED_DEBOUNCE = timedelta(hours=1)
 
 
 @dataclass
@@ -86,28 +91,52 @@ async def get_current_user(
         if token.startswith("spoo_"):
             raw = token[len("spoo_") :]
             token_hash = hash_token(raw)
+            key_repo = ApiKeyRepository(db["api-keys"])
             try:
-                key = await ApiKeyRepository(db["api-keys"]).find_by_hash(token_hash)
+                key = await key_repo.find_by_hash(token_hash)
             except Exception:
                 return None
 
-            if key is None or key.revoked:
+            # Failure logs carry the display prefix only — never hashes or
+            # raw key material.
+            if key is None:
+                log.warning("api_key_auth_failed", reason="unknown", key_prefix=raw[:8])
+                return None
+            if key.revoked:
+                log.warning(
+                    "api_key_auth_failed",
+                    reason="revoked",
+                    key_prefix=key.token_prefix,
+                    key_id=str(key.id),
+                    user_id=str(key.user_id),
+                )
                 return None
 
             now = datetime.now(timezone.utc)
-            if key.expires_at:
-                exp = (
-                    key.expires_at.replace(tzinfo=timezone.utc)
-                    if key.expires_at.tzinfo is None
-                    else key.expires_at
+            exp = as_aware_utc(key.expires_at)
+            if exp is not None and exp <= now:
+                log.warning(
+                    "api_key_auth_failed",
+                    reason="expired",
+                    key_prefix=key.token_prefix,
+                    key_id=str(key.id),
+                    user_id=str(key.user_id),
                 )
-                if exp <= now:
-                    return None
+                return None
 
             try:
                 user = await UserRepository(db["users"]).find_by_id(key.user_id)
             except Exception:
                 return None
+
+            # Best-effort last-used stamp — debounced so a busy key costs at
+            # most one extra write per hour, and never fails the request.
+            last_used = as_aware_utc(key.last_used_at)
+            if last_used is None or now - last_used > _LAST_USED_DEBOUNCE:
+                try:
+                    await key_repo.touch_last_used(key.id)
+                except Exception:
+                    log.warning("api_key_touch_last_used_failed", key_id=str(key.id))
 
             email_verified = user.email_verified if user else False
             structlog.contextvars.bind_contextvars(

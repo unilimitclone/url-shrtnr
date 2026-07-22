@@ -144,6 +144,7 @@ async def list_api_keys(
                 expires_at=to_unix_timestamp(k.expires_at),
                 revoked=k.revoked,
                 token_prefix=k.token_prefix,
+                last_used_at=to_unix_timestamp(k.last_used_at),
             )
             for k in keys
         ]
