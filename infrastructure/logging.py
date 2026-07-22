@@ -54,6 +54,18 @@ REDACTED_FIELDS = {
     "key",
 }
 
+# Field names that trip the substring heuristic in redact_sensitive_fields
+# but carry no secret material: derived booleans, display prefixes, and
+# identifiers. These pass through unredacted.
+SAFE_FIELDS = {
+    "has_password",
+    "password_protected",
+    "key_id",
+    "key_prefix",
+    "token_prefix",
+    "query_keys",
+}
+
 
 # ---------------------------------------------------------------------------
 # IP hashing
@@ -99,6 +111,8 @@ def redact_sensitive_fields(
 ) -> EventDict:
     """Redact sensitive fields from logs."""
     for key in list(event_dict.keys()):
+        if key.lower() in SAFE_FIELDS:
+            continue
         if (
             key.lower() in REDACTED_FIELDS
             or any(

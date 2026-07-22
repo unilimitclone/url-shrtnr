@@ -111,7 +111,10 @@ async def get_current_user(
 
             email_verified = user.email_verified if user else False
             structlog.contextvars.bind_contextvars(
-                user_id=str(key.user_id), auth_method="api_key"
+                user_id=str(key.user_id),
+                auth_method="api_key",
+                key_id=str(key.id),
+                key_prefix=key.token_prefix,
             )
             return CurrentUser(
                 user_id=key.user_id,
