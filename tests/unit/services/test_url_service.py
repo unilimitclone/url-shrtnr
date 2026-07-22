@@ -522,6 +522,46 @@ class TestUrlServiceCreate:
         url_repo.insert.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_create_persists_created_via(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com")
+        result = await svc.create(
+            req, owner_id=USER_OID, client_ip="1.2.3.4", created_via="snap"
+        )
+
+        assert result.created_via == "snap"
+        inserted = url_repo.insert.call_args.args[0]
+        assert inserted["created_via"] == "snap"
+
+    @pytest.mark.asyncio
+    async def test_create_defaults_created_via_to_none(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com")
+        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        assert result.created_via is None
+
+    @pytest.mark.asyncio
     async def test_create_with_custom_alias_checks_v2_uniqueness(self):
         url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
         svc = make_service(

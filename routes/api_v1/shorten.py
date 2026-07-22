@@ -30,6 +30,7 @@ from middleware.rate_limiter import Limits, dynamic_limit, limiter
 from schemas.dto.requests.url import AliasCheckQuery, CreateUrlRequest
 from schemas.dto.responses.url import AliasCheckResponse, UrlResponse
 from services.feature_flag_service import GEO_TARGETING_FLAG, META_TAGS_FLAG
+from shared.client_tag import CLIENT_TAG_HEADER, parse_client_tag
 from shared.ip_utils import get_client_ip
 
 router = APIRouter(tags=["URL Shortening"])
@@ -116,7 +117,10 @@ async def shorten_v1(
         base_url = settings.app_url
         scoped_domain = None
 
-    doc = await url_service.create(body, owner_id, client_ip, domain=scoped_domain)
+    created_via, _ = parse_client_tag(request.headers.get(CLIENT_TAG_HEADER))
+    doc = await url_service.create(
+        body, owner_id, client_ip, domain=scoped_domain, created_via=created_via
+    )
     return UrlResponse.from_doc(doc, base_url)
 
 
