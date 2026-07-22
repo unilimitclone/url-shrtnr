@@ -106,3 +106,13 @@ def test_auth_kind_bearer_beats_cookie():
 
 def test_auth_kind_anonymous():
     assert _auth_kind(_request()) == "anonymous"
+
+
+def test_auth_kind_lowercase_bearer_scheme():
+    # Must match dependencies/auth.py, which accepts the scheme
+    # case-insensitively; a lowercase bearer API key with a session
+    # cookie present must not be classified as jwt_cookie.
+    req = _request(
+        {"Authorization": "bearer spoo_abc123", "Cookie": "access_token=a.b.c"}
+    )
+    assert _auth_kind(req) == "api_key"
