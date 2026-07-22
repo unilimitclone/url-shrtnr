@@ -24,6 +24,7 @@ from repositories.api_key_repository import ApiKeyRepository
 from repositories.user_repository import UserRepository
 from schemas.dto.requests.api_key import ApiKeyScope
 from schemas.models.api_key import ApiKeyDoc
+from shared.datetime_utils import as_aware_utc
 
 log = get_logger(__name__)
 
@@ -96,9 +97,8 @@ async def get_current_user(
             except Exception:
                 return None
 
-            # Failed attempts log the display prefix only (same 8 chars the
-            # dashboard shows) — enough to identify the credential, useless
-            # for recovering it. Volume is bounded by the rate limiter.
+            # Failure logs carry the display prefix only — never hashes or
+            # raw key material.
             if key is None:
                 log.warning("api_key_auth_failed", reason="unknown", key_prefix=raw[:8])
                 return None
@@ -113,21 +113,16 @@ async def get_current_user(
                 return None
 
             now = datetime.now(timezone.utc)
-            if key.expires_at:
-                exp = (
-                    key.expires_at.replace(tzinfo=timezone.utc)
-                    if key.expires_at.tzinfo is None
-                    else key.expires_at
+            exp = as_aware_utc(key.expires_at)
+            if exp is not None and exp <= now:
+                log.warning(
+                    "api_key_auth_failed",
+                    reason="expired",
+                    key_prefix=key.token_prefix,
+                    key_id=str(key.id),
+                    user_id=str(key.user_id),
                 )
-                if exp <= now:
-                    log.warning(
-                        "api_key_auth_failed",
-                        reason="expired",
-                        key_prefix=key.token_prefix,
-                        key_id=str(key.id),
-                        user_id=str(key.user_id),
-                    )
-                    return None
+                return None
 
             try:
                 user = await UserRepository(db["users"]).find_by_id(key.user_id)
@@ -136,9 +131,7 @@ async def get_current_user(
 
             # Best-effort last-used stamp — debounced so a busy key costs at
             # most one extra write per hour, and never fails the request.
-            last_used = key.last_used_at
-            if last_used is not None and last_used.tzinfo is None:
-                last_used = last_used.replace(tzinfo=timezone.utc)
+            last_used = as_aware_utc(key.last_used_at)
             if last_used is None or now - last_used > _LAST_USED_DEBOUNCE:
                 try:
                     await key_repo.touch_last_used(key.id)
