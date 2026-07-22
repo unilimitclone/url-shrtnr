@@ -739,6 +739,7 @@ class UrlService:
         client_ip: str,
         *,
         domain: str | None = None,
+        created_via: str | None = None,
     ) -> UrlV2Doc:
         """
         Create a new shortened URL.
@@ -746,6 +747,10 @@ class UrlService:
         ``domain`` scopes the new URL to a tenant. None or omitted defaults to
         the system default. Callers MUST validate domain ownership + ACTIVE
         status before calling — service treats the value as opaque.
+
+        ``created_via`` is the parsed X-Spoo-Client slug (see
+        shared.client_tag) — callers pass the validated value, never the
+        raw header.
 
         Raises:
             ValidationError: URL is invalid, blocked, or field validation fails.
@@ -842,6 +847,7 @@ class UrlService:
             domain=target_domain,
             created_at=now,
             creation_ip=client_ip,
+            created_via=created_via,
             long_url=request.long_url,
             password=password_hash,
             block_bots=request.block_bots,

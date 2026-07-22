@@ -7,7 +7,6 @@ request_id without explicit parameter passing.
 
 from __future__ import annotations
 
-import re
 import time
 import uuid
 
@@ -17,6 +16,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from infrastructure.logging import get_logger, hash_ip
+from shared.client_tag import parse_client_tag
 from shared.ip_utils import get_client_ip
 
 log = get_logger("spoo.request")
@@ -24,18 +24,10 @@ log = get_logger("spoo.request")
 # Paths to skip detailed logging (high-volume, low-value)
 _SKIP_PATHS = frozenset({"/health", "/favicon.ico"})
 
-# X-Spoo-Client value: "<slug>" or "<slug>/<version>", e.g. "snap/2.1.0".
-# First-party clients send dashboard/landing/snap/raycast/cli/bot; anything
-# not matching the shape is treated as absent rather than rejected.
-_CLIENT_TAG_RE = re.compile(r"^([a-z0-9_-]{1,32})(?:/([A-Za-z0-9._-]{1,16}))?$")
-
 
 def _client_tag(request: Request) -> tuple[str | None, str | None]:
     """Parse the X-Spoo-Client header into (client, client_version)."""
-    match = _CLIENT_TAG_RE.match(request.headers.get("x-spoo-client", "").strip())
-    if match is None:
-        return None, None
-    return match.group(1), match.group(2)
+    return parse_client_tag(request.headers.get("x-spoo-client"))
 
 
 def _auth_kind(request: Request) -> str:

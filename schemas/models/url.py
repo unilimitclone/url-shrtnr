@@ -166,6 +166,10 @@ class UrlV2Doc(MongoBaseModel):
 
     created_at: datetime
     creation_ip: str | None = None
+    # First-party client that created the link (X-Spoo-Client slug from
+    # FIRST_PARTY_CLIENTS, e.g. "dashboard", "snap"). None for untagged,
+    # unknown-client, and legacy creations.
+    created_via: str | None = None
     long_url: str
     password: str | None = None
     block_bots: bool | None = None
