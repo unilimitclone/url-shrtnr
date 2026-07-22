@@ -58,7 +58,9 @@ def make_request(auth_header: str = "", cookies: dict | None = None):
     return req
 
 
-def make_key_doc(revoked: bool = False, expires_at=None, scopes=None):
+def make_key_doc(
+    revoked: bool = False, expires_at=None, scopes=None, last_used_at=None
+):
     return ApiKeyDoc.from_mongo(
         {
             "_id": KEY_OID,
@@ -70,6 +72,7 @@ def make_key_doc(revoked: bool = False, expires_at=None, scopes=None):
             "revoked": revoked,
             "expires_at": expires_at,
             "created_at": datetime.now(timezone.utc),
+            "last_used_at": last_used_at,
         }
     )
 
@@ -563,3 +566,144 @@ class TestRequireKeysAccess:
         )
         with pytest.raises(ForbiddenError):
             await require_keys_access(user)
+
+
+# ── TestApiKeyHygiene ────────────────────────────────────────────────────────
+
+
+class TestApiKeyHygiene:
+    """last_used_at stamping (debounced, best-effort) and failed-auth logging."""
+
+    def _mocks(self, key_doc):
+        settings_patch = patch(
+            "dependencies.auth.get_settings", return_value=make_settings()
+        )
+        key_repo_patch = patch("dependencies.auth.ApiKeyRepository")
+        user_repo_patch = patch("dependencies.auth.UserRepository")
+        return settings_patch, key_repo_patch, user_repo_patch
+
+    async def _auth(self, key_doc, MockKeyRepo, MockUserRepo):
+        MockKeyRepo.return_value.find_by_hash = AsyncMock(return_value=key_doc)
+        MockKeyRepo.return_value.touch_last_used = AsyncMock()
+        MockUserRepo.return_value.find_by_id = AsyncMock(
+            return_value=MagicMock(email_verified=True, email="o@e.com")
+        )
+        req = make_request(auth_header="Bearer spoo_testrawtoken123")
+        return await get_current_user(req, db=MagicMock())
+
+    @pytest.mark.asyncio
+    async def test_touch_called_when_never_used(self):
+        key_doc = make_key_doc(last_used_at=None)
+        sp, kp, up = self._mocks(key_doc)
+        with sp, kp as MockKeyRepo, up as MockUserRepo:
+            result = await self._auth(key_doc, MockKeyRepo, MockUserRepo)
+            MockKeyRepo.return_value.touch_last_used.assert_awaited_once_with(KEY_OID)
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_touch_debounced_when_recently_used(self):
+        recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+        key_doc = make_key_doc(last_used_at=recent)
+        sp, kp, up = self._mocks(key_doc)
+        with sp, kp as MockKeyRepo, up as MockUserRepo:
+            result = await self._auth(key_doc, MockKeyRepo, MockUserRepo)
+            MockKeyRepo.return_value.touch_last_used.assert_not_awaited()
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_touch_called_when_stale(self):
+        stale = datetime.now(timezone.utc) - timedelta(hours=2)
+        key_doc = make_key_doc(last_used_at=stale)
+        sp, kp, up = self._mocks(key_doc)
+        with sp, kp as MockKeyRepo, up as MockUserRepo:
+            result = await self._auth(key_doc, MockKeyRepo, MockUserRepo)
+            MockKeyRepo.return_value.touch_last_used.assert_awaited_once_with(KEY_OID)
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_naive_last_used_treated_as_utc(self):
+        # Mongo round-trips datetimes as naive UTC; a recent naive stamp
+        # must still debounce instead of raising on aware/naive subtraction.
+        recent_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        key_doc = make_key_doc(last_used_at=recent_naive)
+        sp, kp, up = self._mocks(key_doc)
+        with sp, kp as MockKeyRepo, up as MockUserRepo:
+            result = await self._auth(key_doc, MockKeyRepo, MockUserRepo)
+            MockKeyRepo.return_value.touch_last_used.assert_not_awaited()
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_touch_failure_does_not_fail_auth(self):
+        key_doc = make_key_doc(last_used_at=None)
+        sp, kp, up = self._mocks(key_doc)
+        with sp, kp as MockKeyRepo, up as MockUserRepo:
+            MockKeyRepo.return_value.find_by_hash = AsyncMock(return_value=key_doc)
+            MockKeyRepo.return_value.touch_last_used = AsyncMock(
+                side_effect=RuntimeError("mongo down")
+            )
+            MockUserRepo.return_value.find_by_id = AsyncMock(
+                return_value=MagicMock(email_verified=True, email="o@e.com")
+            )
+            req = make_request(auth_header="Bearer spoo_testrawtoken123")
+            result = await get_current_user(req, db=MagicMock())
+        assert result is not None
+        assert result.user_id == USER_OID
+
+    @pytest.mark.asyncio
+    async def test_unknown_key_logs_prefix_only(self):
+        with (
+            patch("dependencies.auth.get_settings", return_value=make_settings()),
+            patch("dependencies.auth.ApiKeyRepository") as MockKeyRepo,
+            patch("dependencies.auth.log") as mock_log,
+        ):
+            MockKeyRepo.return_value.find_by_hash = AsyncMock(return_value=None)
+            req = make_request(auth_header="Bearer spoo_notfoundtoken99")
+            result = await get_current_user(req, db=MagicMock())
+
+        assert result is None
+        mock_log.warning.assert_called_once_with(
+            "api_key_auth_failed", reason="unknown", key_prefix="notfound"
+        )
+
+    @pytest.mark.asyncio
+    async def test_revoked_key_logs_reason(self):
+        key_doc = make_key_doc(revoked=True)
+        with (
+            patch("dependencies.auth.get_settings", return_value=make_settings()),
+            patch("dependencies.auth.ApiKeyRepository") as MockKeyRepo,
+            patch("dependencies.auth.log") as mock_log,
+        ):
+            MockKeyRepo.return_value.find_by_hash = AsyncMock(return_value=key_doc)
+            req = make_request(auth_header="Bearer spoo_testrawtoken123")
+            result = await get_current_user(req, db=MagicMock())
+
+        assert result is None
+        mock_log.warning.assert_called_once_with(
+            "api_key_auth_failed",
+            reason="revoked",
+            key_prefix="abcd1234",
+            key_id=str(KEY_OID),
+            user_id=str(USER_OID),
+        )
+
+    @pytest.mark.asyncio
+    async def test_expired_key_logs_reason(self):
+        expired = datetime.now(timezone.utc) - timedelta(days=1)
+        key_doc = make_key_doc(expires_at=expired)
+        with (
+            patch("dependencies.auth.get_settings", return_value=make_settings()),
+            patch("dependencies.auth.ApiKeyRepository") as MockKeyRepo,
+            patch("dependencies.auth.log") as mock_log,
+        ):
+            MockKeyRepo.return_value.find_by_hash = AsyncMock(return_value=key_doc)
+            req = make_request(auth_header="Bearer spoo_testrawtoken123")
+            result = await get_current_user(req, db=MagicMock())
+
+        assert result is None
+        mock_log.warning.assert_called_once_with(
+            "api_key_auth_failed",
+            reason="expired",
+            key_prefix="abcd1234",
+            key_id=str(KEY_OID),
+            user_id=str(USER_OID),
+        )

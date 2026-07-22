@@ -27,3 +27,6 @@ class ApiKeyDoc(MongoBaseModel):
     expires_at: datetime | None = None
     created_at: datetime | None = None
     revoked: bool = False
+    # Stamped on successful auth, debounced to at most one write per hour —
+    # accurate enough for "is this key still in use", cheap on the hot path.
+    last_used_at: datetime | None = None

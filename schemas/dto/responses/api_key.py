@@ -52,6 +52,14 @@ class ApiKeyResponse(ResponseBase):
         description="First characters of the token for identification",
         examples=["spoo_abc1"],
     )
+    last_used_at: int | None = Field(
+        default=None,
+        description=(
+            "Last time this key authenticated a request, as Unix timestamp. "
+            "Null if the key has never been used. Updated at most once per hour."
+        ),
+        examples=[1704067200],
+    )
 
 
 class ApiKeyCreatedResponse(ApiKeyResponse):

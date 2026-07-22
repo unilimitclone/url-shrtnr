@@ -7,6 +7,8 @@ Errors are handled by BaseRepository.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from bson import ObjectId
 from pymongo.errors import PyMongoError
 
@@ -55,6 +57,13 @@ class ApiKeyRepository(BaseRepository[ApiKeyDoc]):
         return await self._update(
             {"_id": key_id, "user_id": user_id},
             {"$set": {"revoked": True}},
+        )
+
+    async def touch_last_used(self, key_id: ObjectId) -> None:
+        """Stamp last_used_at on a key. Callers debounce and treat as best-effort."""
+        await self._update(
+            {"_id": key_id},
+            {"$set": {"last_used_at": datetime.now(timezone.utc)}},
         )
 
     async def count_by_user(self, user_id: ObjectId) -> int:
