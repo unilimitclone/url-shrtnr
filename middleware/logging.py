@@ -138,6 +138,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 if status >= 500
                 else (log.warning if status >= 400 else log.info)
             )
+            # Identity resolved by the auth dependency. It arrives via
+            # request.state because contextvars bound inside the handler's
+            # task don't propagate back to this dispatch context. Absent
+            # for anonymous requests and for requests rejected before auth
+            # runs (e.g. rate-limited 429s).
+            auth_ctx = getattr(request.state, "auth_ctx", None) or {}
             log_fn(
                 "request_completed",
                 status_code=status,
@@ -146,6 +152,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 content_type=response.headers.get("content-type"),
                 cache_status=response.headers.get("cf-cache-status"),
                 slow=duration_ms > 500,
+                **auth_ctx,
             )
 
         return response

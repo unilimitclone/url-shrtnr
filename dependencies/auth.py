@@ -152,6 +152,16 @@ async def get_current_user(
                 key_id=str(key.id),
                 key_prefix=key.token_prefix,
             )
+            # Contextvars bound here don't reach the middleware's own
+            # request_completed log call (BaseHTTPMiddleware runs the
+            # handler in a child task), so the identity is also stashed
+            # on request.state, which is shared via the ASGI scope.
+            request.state.auth_ctx = {
+                "user_id": str(key.user_id),
+                "auth_method": "api_key",
+                "key_id": str(key.id),
+                "key_prefix": key.token_prefix,
+            }
             return CurrentUser(
                 user_id=key.user_id,
                 email_verified=email_verified,
@@ -206,6 +216,11 @@ async def get_current_user(
                 else []
             )
         structlog.contextvars.bind_contextvars(user_id=str(user_id), auth_method="jwt")
+        # Same request.state stash as the API-key path — see comment there.
+        auth_ctx = {"user_id": str(user_id), "auth_method": "jwt"}
+        if claims.get("app_id") is not None:
+            auth_ctx["app_id"] = claims["app_id"]
+        request.state.auth_ctx = auth_ctx
         return CurrentUser(
             user_id=user_id,
             email_verified=email_verified,
