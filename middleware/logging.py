@@ -39,10 +39,15 @@ def _client_tag(request: Request) -> tuple[str | None, str | None]:
 
 
 def _auth_kind(request: Request) -> str:
-    """Coarse "who is calling" tag without leaking creds."""
+    """Coarse "who is calling" tag without leaking creds.
+
+    Mirrors the token extraction in dependencies/auth.py (case-insensitive
+    scheme, stripped token) so the tag can't disagree with how the request
+    actually authenticates.
+    """
     auth = request.headers.get("authorization", "")
-    if auth.startswith("Bearer "):
-        token = auth[7:]
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
         if token.startswith("spoo_"):
             return "api_key"
         if token.count(".") == 2:
