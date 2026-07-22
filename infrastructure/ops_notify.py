@@ -60,8 +60,9 @@ class DiscordOpsNotifier:
     """Discord implementation — routes each notification to its channel
     (contact vs reports) and builds the embeds.
 
-    Embed structures are preserved exactly from the previous per-service
-    builders (originally ``utils/contact_utils.py``).
+    Embed shapes are pinned by the integration tests (test_contact /
+    test_reports run this class over a capturing HTTP fake): change a
+    field here and a test breaks.
     """
 
     def __init__(
