@@ -116,3 +116,57 @@ def test_auth_kind_lowercase_bearer_scheme():
         {"Authorization": "bearer spoo_abc123", "Cookie": "access_token=a.b.c"}
     )
     assert _auth_kind(req) == "api_key"
+
+
+# ── request_completed identity via request.state.auth_ctx ───────────────────
+
+
+def _logged_kwargs(mock_log) -> dict:
+    for name in ("info", "warning", "error"):
+        calls = getattr(mock_log, name).call_args_list
+        for call in calls:
+            if call.args and call.args[0] == "request_completed":
+                return call.kwargs
+    raise AssertionError("request_completed was not logged")
+
+
+def _run_app(set_auth_ctx: bool):
+    from unittest.mock import patch
+
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from middleware.logging import RequestLoggingMiddleware
+
+    async def endpoint(request):
+        if set_auth_ctx:
+            request.state.auth_ctx = {
+                "user_id": "u1",
+                "auth_method": "api_key",
+                "key_id": "k1",
+                "key_prefix": "abcd1234",
+            }
+        return PlainTextResponse("ok")
+
+    app = Starlette(routes=[Route("/x", endpoint)])
+    app.add_middleware(RequestLoggingMiddleware)
+
+    with patch("middleware.logging.log") as mock_log:
+        TestClient(app).get("/x")
+        return _logged_kwargs(mock_log)
+
+
+def test_request_completed_includes_auth_ctx():
+    kwargs = _run_app(set_auth_ctx=True)
+    assert kwargs["user_id"] == "u1"
+    assert kwargs["auth_method"] == "api_key"
+    assert kwargs["key_id"] == "k1"
+    assert kwargs["key_prefix"] == "abcd1234"
+
+
+def test_request_completed_anonymous_has_no_identity_fields():
+    kwargs = _run_app(set_auth_ctx=False)
+    assert "user_id" not in kwargs
+    assert "auth_method" not in kwargs
