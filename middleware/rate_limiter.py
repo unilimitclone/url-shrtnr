@@ -206,12 +206,59 @@ def rate_limit_key(request: Request) -> str:
 _redis_uri = os.environ.get("REDIS_URI")
 _storage_uri = _redis_uri if _redis_uri else "memory://"
 
-limiter = Limiter(
+
+class _HeaderSafeLimiter(Limiter):
+    """Limiter whose decorator tolerates endpoints that return plain data.
+
+    With ``headers_enabled`` slowapi's decorator raises unless the endpoint
+    returns a Response or declares a ``response`` parameter. Header injection
+    happens in ``RateLimitHeadersMiddleware`` at the ASGI layer instead, so
+    the decorator-side injection can safely no-op when there is nothing to
+    mutate.
+    """
+
+    def _inject_headers(self, response, current_limit):
+        if response is None:
+            return None
+        return super()._inject_headers(response, current_limit)
+
+
+limiter = _HeaderSafeLimiter(
     key_func=rate_limit_key,
     default_limits=[Limits.DEFAULT_MINUTE, Limits.DEFAULT_HOUR, Limits.DEFAULT_DAY],
     storage_uri=_storage_uri,
     strategy="fixed-window",
+    headers_enabled=True,
 )
+
+
+class RateLimitHeadersMiddleware:
+    """Inject X-RateLimit-* and Retry-After headers at the ASGI layer.
+
+    The rate-limit decorator records the evaluated window on
+    ``request.state.view_rate_limit`` for every limited route. Reading it
+    from the scope state here covers all response shapes, including plain
+    dict returns and 429s produced by the exception handler.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                view_limit = scope.get("state", {}).get("view_rate_limit")
+                if view_limit is not None:
+                    from starlette.datastructures import MutableHeaders
+
+                    headers = MutableHeaders(raw=message["headers"])
+                    limiter._inject_asgi_headers(headers, view_limit)
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 # ── Dynamic limits ───────────────────────────────────────────────────────────
