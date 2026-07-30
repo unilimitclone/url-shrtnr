@@ -325,6 +325,7 @@ def test_429_carries_rate_limit_and_retry_after_headers():
         assert resp.status_code == 429
         assert resp.json()["code"] == "rate_limit_exceeded"
         assert "Retry-After" in resp.headers
+        assert resp.headers.get("X-RateLimit-Limit") == "1"
         assert resp.headers.get("X-RateLimit-Remaining") == "0"
         assert resp.headers["X-RateLimit-Reset"].isdigit()
 
