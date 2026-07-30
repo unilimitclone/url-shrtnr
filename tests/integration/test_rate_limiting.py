@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
@@ -301,7 +302,10 @@ def test_successful_response_carries_rate_limit_headers():
         assert resp.status_code == 200
         assert resp.headers.get("X-RateLimit-Limit") == "5"
         assert resp.headers.get("X-RateLimit-Remaining") == "4"
-        assert "X-RateLimit-Reset" in resp.headers
+        # Integer epoch seconds — slowapi emits a float, the middleware casts
+        assert resp.headers["X-RateLimit-Reset"].isdigit()
+        # Retry-After on a success would trip generic client backoff layers
+        assert "Retry-After" not in resp.headers
 
 
 def test_429_carries_rate_limit_and_retry_after_headers():
@@ -322,3 +326,27 @@ def test_429_carries_rate_limit_and_retry_after_headers():
         assert resp.json()["code"] == "rate_limit_exceeded"
         assert "Retry-After" in resp.headers
         assert resp.headers.get("X-RateLimit-Remaining") == "0"
+        assert resp.headers["X-RateLimit-Reset"].isdigit()
+
+
+def test_response_endpoints_get_single_header_set():
+    """Endpoints returning a Response object must not get duplicate headers.
+
+    The middleware is the single injection point; the decorator-side
+    injection is a no-op even when a Response is available to mutate.
+    """
+    _reset_limiter()
+    r = APIRouter()
+
+    @r.get("/test-headers-response")
+    @limiter.limit("5/minute")
+    async def _headers_response_probe(request: Request):
+        return JSONResponse({"ok": True})
+
+    app = _build_test_app(extra_routers=[r])
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/test-headers-response")
+        assert resp.status_code == 200
+        assert resp.headers.get_list("X-RateLimit-Limit") == ["5"]
+        assert resp.headers.get_list("X-RateLimit-Remaining") == ["4"]
+        assert "Retry-After" not in resp.headers

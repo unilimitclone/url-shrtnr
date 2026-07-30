@@ -276,8 +276,9 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     app.add_middleware(TenantMiddleware)
     # 6. Request logging — logs all requests with request_id
     app.add_middleware(RequestLoggingMiddleware)
-    # 7. Rate limit headers — innermost so view_rate_limit is populated by
-    #    the route decorator before the response passes back through it
+    # 7. Rate limit headers — placement is order-independent: the decorator
+    #    writes view_rate_limit into shared scope state during endpoint
+    #    execution, before any response starts flowing outward
     app.add_middleware(RateLimitHeadersMiddleware)
 
     # ── Error handlers + rate limiter ────────────────────────────────────

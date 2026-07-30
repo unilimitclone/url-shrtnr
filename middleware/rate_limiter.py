@@ -12,8 +12,12 @@ import os
 
 from fastapi import Request
 from slowapi import Limiter
+from starlette.datastructures import MutableHeaders
 
+from infrastructure.logging import get_logger
 from shared.ip_utils import get_client_ip
+
+log = get_logger(__name__)
 
 # ── Limits ───────────────────────────────────────────────────────────────────
 
@@ -24,11 +28,6 @@ class Limits:
     Ported from blueprints/limits.py. All values use slowapi's "N per period"
     format. Semicolons combine multiple limits into one decorator.
     """
-
-    # Global defaults (applied to every route unless overridden)
-    DEFAULT_MINUTE = "10 per minute"
-    DEFAULT_HOUR = "100 per hour"
-    DEFAULT_DAY = "500 per day"
 
     # API v1 — authenticated vs anonymous tiers
     API_AUTHED = "60 per minute; 5000 per day"
@@ -208,24 +207,21 @@ _storage_uri = _redis_uri if _redis_uri else "memory://"
 
 
 class _HeaderSafeLimiter(Limiter):
-    """Limiter whose decorator tolerates endpoints that return plain data.
+    """Limiter whose decorator never injects headers itself.
 
-    With ``headers_enabled`` slowapi's decorator raises unless the endpoint
-    returns a Response or declares a ``response`` parameter. Header injection
-    happens in ``RateLimitHeadersMiddleware`` at the ASGI layer instead, so
-    the decorator-side injection can safely no-op when there is nothing to
-    mutate.
+    ``RateLimitHeadersMiddleware`` is the single injection point. Disabling
+    the decorator side entirely (rather than only when there is no Response
+    to mutate) avoids a second ``get_window_stats`` storage read on endpoints
+    that return a Response object, and keeps slowapi's decorator from raising
+    on endpoints that return plain data.
     """
 
     def _inject_headers(self, response, current_limit):
-        if response is None:
-            return None
-        return super()._inject_headers(response, current_limit)
+        return response
 
 
 limiter = _HeaderSafeLimiter(
     key_func=rate_limit_key,
-    default_limits=[Limits.DEFAULT_MINUTE, Limits.DEFAULT_HOUR, Limits.DEFAULT_DAY],
     storage_uri=_storage_uri,
     strategy="fixed-window",
     headers_enabled=True,
@@ -239,6 +235,12 @@ class RateLimitHeadersMiddleware:
     ``request.state.view_rate_limit`` for every limited route. Reading it
     from the scope state here covers all response shapes, including plain
     dict returns and 429s produced by the exception handler.
+
+    slowapi's injection is post-processed: Retry-After only means something
+    on a 429, and the reset timestamp must be integer epoch seconds (slowapi
+    emits a float, which strict header parsers reject). Injection failures
+    are swallowed — headers are cosmetic and must never fail a response
+    whose work already completed.
     """
 
     def __init__(self, app):
@@ -252,10 +254,18 @@ class RateLimitHeadersMiddleware:
             if message["type"] == "http.response.start":
                 view_limit = scope.get("state", {}).get("view_rate_limit")
                 if view_limit is not None:
-                    from starlette.datastructures import MutableHeaders
-
                     headers = MutableHeaders(raw=message["headers"])
-                    limiter._inject_asgi_headers(headers, view_limit)
+                    had_retry_after = "Retry-After" in headers
+                    try:
+                        limiter._inject_asgi_headers(headers, view_limit)
+                    except Exception:
+                        log.warning("rate_limit_header_injection_failed", exc_info=True)
+                    else:
+                        reset = headers.get("X-RateLimit-Reset")
+                        if reset is not None:
+                            headers["X-RateLimit-Reset"] = str(int(float(reset)))
+                        if message["status"] != 429 and not had_retry_after:
+                            del headers["Retry-After"]
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
