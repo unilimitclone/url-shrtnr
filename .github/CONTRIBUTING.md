@@ -113,6 +113,19 @@ spoo/
 - Update documentation if your change affects public behavior
 - Follow [conventional commit](https://www.conventionalcommits.org/) messages
 
+## Developer Certificate of Origin
+
+Every commit must carry a sign-off certifying the
+[Developer Certificate of Origin 1.1](https://developercertificate.org/):
+that you wrote the change, or otherwise have the right to submit it under
+the project license.
+
+```bash
+git commit -s
+```
+
+This adds a `Signed-off-by` line to the commit message.
+
 ## Getting Help
 
 - [Discord](https://spoo.me/discord) for real-time help
@@ -121,6 +134,9 @@ spoo/
 
 ## License
 
-This project is licensed under the APACHE 2.0 License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the AGPL-3.0 License - see the [LICENSE](LICENSE) file for details.
+Versions released before the switch remain available under Apache 2.0.
+
+The spoo.me name and logo are not covered by the code license - see [TRADEMARK.md](../TRADEMARK.md).
 
 ![Contribution Charts](https://repobeats.axiom.co/api/embed/48a40934896cbcaff2812e80478ebb701ee49dd4.svg)
