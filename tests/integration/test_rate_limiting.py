@@ -324,7 +324,7 @@ def test_429_carries_rate_limit_and_retry_after_headers():
         resp = c.get("/test-headers-429", headers={"Accept": "application/json"})
         assert resp.status_code == 429
         assert resp.json()["code"] == "rate_limit_exceeded"
-        assert "Retry-After" in resp.headers
+        assert resp.headers["Retry-After"].isdigit()
         assert resp.headers.get("X-RateLimit-Limit") == "1"
         assert resp.headers.get("X-RateLimit-Remaining") == "0"
         assert resp.headers["X-RateLimit-Reset"].isdigit()
@@ -350,4 +350,6 @@ def test_response_endpoints_get_single_header_set():
         assert resp.status_code == 200
         assert resp.headers.get_list("X-RateLimit-Limit") == ["5"]
         assert resp.headers.get_list("X-RateLimit-Remaining") == ["4"]
+        reset_values = resp.headers.get_list("X-RateLimit-Reset")
+        assert len(reset_values) == 1 and reset_values[0].isdigit()
         assert "Retry-After" not in resp.headers

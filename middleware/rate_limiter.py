@@ -8,6 +8,7 @@ Key resolution: API key hash → JWT token hash → client IP.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 
 from fastapi import Request
@@ -263,7 +264,7 @@ class RateLimitHeadersMiddleware:
                     else:
                         reset = headers.get("X-RateLimit-Reset")
                         if reset is not None:
-                            headers["X-RateLimit-Reset"] = str(int(float(reset)))
+                            headers["X-RateLimit-Reset"] = str(math.ceil(float(reset)))
                         if message["status"] != 429 and not had_retry_after:
                             del headers["Retry-After"]
             await send(message)
