@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
@@ -25,7 +26,11 @@ import pytest
 
 from config import AppSettings
 from middleware.error_handler import register_error_handlers
-from middleware.rate_limiter import limiter, rate_limit_key
+from middleware.rate_limiter import (
+    RateLimitHeadersMiddleware,
+    limiter,
+    rate_limit_key,
+)
 from routes.health_routes import router as health_router
 
 _STATIC_DIR = os.path.join(
@@ -64,6 +69,7 @@ def _build_test_app(extra_routers: list | None = None) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.limiter = limiter
+    app.add_middleware(RateLimitHeadersMiddleware)
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     register_error_handlers(app)
     if os.path.isdir(_STATIC_DIR):
@@ -219,6 +225,7 @@ def test_health_endpoint_not_rate_limited():
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.limiter = limiter
+    app.add_middleware(RateLimitHeadersMiddleware)
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     register_error_handlers(app)
     if os.path.isdir(_STATIC_DIR):
@@ -269,3 +276,80 @@ def test_rate_limit_different_ips_have_separate_buckets():
     assert resp1b.status_code == 200
     assert resp2.status_code == 200  # separate bucket
     assert resp1c.status_code == 429  # exceeded for first IP
+
+
+# ── Rate limit headers ───────────────────────────────────────────────────────
+
+
+def test_successful_response_carries_rate_limit_headers():
+    """Decorated endpoints should expose X-RateLimit-* headers on 200s.
+
+    Uses a uniquely named endpoint: the shared limiter registers limits by
+    function name, so reusing the helper's endpoint would accumulate limits
+    from other tests in this module.
+    """
+    _reset_limiter()
+    r = APIRouter()
+
+    @r.get("/test-headers-ok")
+    @limiter.limit("5/minute")
+    async def _headers_ok_probe(request: Request):
+        return {"ok": True}
+
+    app = _build_test_app(extra_routers=[r])
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/test-headers-ok")
+        assert resp.status_code == 200
+        assert resp.headers.get("X-RateLimit-Limit") == "5"
+        assert resp.headers.get("X-RateLimit-Remaining") == "4"
+        # Integer epoch seconds — slowapi emits a float, the middleware casts
+        assert resp.headers["X-RateLimit-Reset"].isdigit()
+        # Retry-After on a success would trip generic client backoff layers
+        assert "Retry-After" not in resp.headers
+
+
+def test_429_carries_rate_limit_and_retry_after_headers():
+    """The custom 429 handler should carry Retry-After and X-RateLimit-*."""
+    _reset_limiter()
+    r = APIRouter()
+
+    @r.get("/test-headers-429")
+    @limiter.limit("1/minute")
+    async def _headers_429_probe(request: Request):
+        return {"ok": True}
+
+    app = _build_test_app(extra_routers=[r])
+    with TestClient(app, raise_server_exceptions=False) as c:
+        c.get("/test-headers-429")
+        resp = c.get("/test-headers-429", headers={"Accept": "application/json"})
+        assert resp.status_code == 429
+        assert resp.json()["code"] == "rate_limit_exceeded"
+        assert resp.headers["Retry-After"].isdigit()
+        assert resp.headers.get("X-RateLimit-Limit") == "1"
+        assert resp.headers.get("X-RateLimit-Remaining") == "0"
+        assert resp.headers["X-RateLimit-Reset"].isdigit()
+
+
+def test_response_endpoints_get_single_header_set():
+    """Endpoints returning a Response object must not get duplicate headers.
+
+    The middleware is the single injection point; the decorator-side
+    injection is a no-op even when a Response is available to mutate.
+    """
+    _reset_limiter()
+    r = APIRouter()
+
+    @r.get("/test-headers-response")
+    @limiter.limit("5/minute")
+    async def _headers_response_probe(request: Request):
+        return JSONResponse({"ok": True})
+
+    app = _build_test_app(extra_routers=[r])
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/test-headers-response")
+        assert resp.status_code == 200
+        assert resp.headers.get_list("X-RateLimit-Limit") == ["5"]
+        assert resp.headers.get_list("X-RateLimit-Remaining") == ["4"]
+        reset_values = resp.headers.get_list("X-RateLimit-Reset")
+        assert len(reset_values) == 1 and reset_values[0].isdigit()
+        assert "Retry-After" not in resp.headers

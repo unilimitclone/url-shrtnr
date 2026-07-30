@@ -39,7 +39,7 @@ from middleware.openapi import (
     OPENAPI_TAGS,
     configure_openapi,
 )
-from middleware.rate_limiter import limiter
+from middleware.rate_limiter import RateLimitHeadersMiddleware, limiter
 from middleware.security import (
     MaxContentLengthMiddleware,
     SecurityHeadersMiddleware,
@@ -274,8 +274,12 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     )
     # 5. Tenant resolution — populates request.state.tenant from Host
     app.add_middleware(TenantMiddleware)
-    # 6. Request logging — innermost, logs all requests with request_id
+    # 6. Request logging — logs all requests with request_id
     app.add_middleware(RequestLoggingMiddleware)
+    # 7. Rate limit headers — placement is order-independent: the decorator
+    #    writes view_rate_limit into shared scope state during endpoint
+    #    execution, before any response starts flowing outward
+    app.add_middleware(RateLimitHeadersMiddleware)
 
     # ── Error handlers + rate limiter ────────────────────────────────────
     app.state.limiter = limiter
