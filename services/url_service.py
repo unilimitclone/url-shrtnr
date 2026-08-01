@@ -976,8 +976,7 @@ class UrlService:
         owners, wrong tokens, and unclaimable links all collapse into the
         same ``invalid`` — no existence oracle. A successful claim is one
         CAS write (owner + claimed_at stamped, hash burned) plus a
-        redirect-cache eviction and a ``link.claimed`` event; clicks are
-        never touched.
+        redirect-cache eviction; clicks are never touched.
 
         Raises:
             ForbiddenError: the batch would push the account past the
@@ -1033,11 +1032,10 @@ class UrlService:
                 domain=existing.domain,
                 user_id=str(owner_id),
             )
-            # First sight of this link for the account's subscribers —
-            # stamp the new owner on the doc so the event routes to them.
-            existing.owner_id = owner_id
-            existing.claimed_at = now
-            await self._emit_link_event("link.claimed", existing)
+            # Deliberately no webhook: a claim is actor-caused but has no
+            # honest expression in the event contract (ownership is not a
+            # payload field), and the catalog is forever. Revisit only if
+            # an integration proves the need.
             results.append(ClaimResult(item.url_id, "claimed"))
         return results
 

@@ -150,18 +150,6 @@ EVENT_REGISTRY: dict[str, EventTypeSpec] = {
             sample=lambda: {"link": _sample_link()},
         ),
         EventTypeSpec(
-            name="link.claimed",
-            category="link",
-            description=(
-                "An anonymously created link was claimed into an account "
-                "with its one-time claim token. First sight of the link "
-                "for the account's subscribers."
-            ),
-            frequency="low",
-            payload_model=LinkLifecyclePayload,
-            sample=lambda: {"link": _sample_link()},
-        ),
-        EventTypeSpec(
             name="link.updated",
             category="link",
             description=(

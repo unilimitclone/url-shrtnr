@@ -17,7 +17,6 @@ from services.webhooks.registry import (
 
 EXPECTED_EVENTS = {
     "link.created",
-    "link.claimed",
     "link.updated",
     "link.deleted",
     "link.clicked",

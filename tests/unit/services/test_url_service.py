@@ -2593,7 +2593,6 @@ class TestUrlServiceTimeExpiry:
             url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
         )
         url_repo.count_claimed.return_value = 0
-        svc._emit_link_event = AsyncMock()
         return svc, url_repo, url_cache, legacy_repo, emoji_repo
 
     @pytest.mark.asyncio
@@ -3313,7 +3312,6 @@ class TestUrlServiceClaim:
             url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
         )
         url_repo.count_claimed.return_value = 0
-        svc._emit_link_event = AsyncMock()
         return svc, url_repo, url_cache
 
     def _anon_doc(self, token: str | None = None):
@@ -3399,26 +3397,6 @@ class TestUrlServiceClaim:
 
         assert [r.status for r in results] == ["invalid"]
         url_cache.invalidate.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_claim_emits_link_claimed_with_new_owner(self):
-        svc, url_repo, _ = self._svc()
-        url_repo.find_by_id.return_value = self._anon_doc()
-        url_repo.claim_by_token_hash.return_value = True
-
-        await svc.claim([make_claim_item(token=self.TOKEN)], USER_OID)
-
-        event_type, doc = svc._emit_link_event.call_args.args
-        assert event_type == "link.claimed"
-        assert doc.owner_id == USER_OID
-
-    @pytest.mark.asyncio
-    async def test_invalid_claim_emits_nothing(self):
-        svc, url_repo, _ = self._svc()
-        url_repo.find_by_id.return_value = self._anon_doc()
-
-        await svc.claim([make_claim_item(token="w" * 43)], USER_OID)
-        svc._emit_link_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ceiling_rejects_batch_before_any_lookup(self):
