@@ -29,6 +29,7 @@ def make_service():
 
     click_repo = AsyncMock()
     url_repo = AsyncMock()
+    url_repo.list_claimed_ids.return_value = []
     # Default: aggregate returns empty (no clicks)
     click_repo.aggregate.return_value = []
     return StatsService(click_repo=click_repo, url_repo=url_repo), click_repo, url_repo
@@ -609,3 +610,74 @@ class TestClickQueryBuilding:
         )
         assert classifier_fallback == "unknown"
         assert _NULL_SENTINEL_FILTERS["device"] == "unknown"
+
+
+class TestClaimedLinksArm:
+    """scope=ALL carries claimed links' pre-claim history via a url_id arm."""
+
+    @pytest.mark.asyncio
+    async def test_empty_claimed_set_keeps_pure_stamp_query(self):
+        from bson import ObjectId
+
+        svc, click_repo, url_repo = make_service()
+        click_repo.aggregate.return_value = facet_response()
+        url_repo.list_claimed_ids.return_value = []
+
+        await svc.query(query=_q(scope="all", short_code=None), owner_id=OWNER_ID)
+
+        match = click_repo.aggregate.call_args[0][0][0]["$match"]
+        assert match["meta.owner_id"] == ObjectId(OWNER_ID)
+        assert "$or" not in match
+
+    @pytest.mark.asyncio
+    async def test_claimed_set_builds_or_arm(self):
+        from bson import ObjectId
+
+        svc, click_repo, url_repo = make_service()
+        click_repo.aggregate.return_value = facet_response()
+        claimed = [ObjectId("f" * 24)]
+        url_repo.list_claimed_ids.return_value = claimed
+
+        await svc.query(query=_q(scope="all", short_code=None), owner_id=OWNER_ID)
+
+        url_repo.list_claimed_ids.assert_awaited_once_with(ObjectId(OWNER_ID))
+        match = click_repo.aggregate.call_args[0][0][0]["$match"]
+        assert "meta.owner_id" not in match
+        assert match["$or"] == [
+            {"meta.owner_id": ObjectId(OWNER_ID)},
+            {"meta.url_id": {"$in": claimed}},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_claimed_arm_nests_under_and_with_sentinel_filters(self):
+        from bson import ObjectId
+
+        from schemas.dto.requests.stats import StatsScope
+        from services.stats_service import StatsService
+
+        claimed = [ObjectId("f" * 24)]
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        query = StatsService._build_click_query(
+            StatsScope.ALL,
+            OWNER_ID,
+            None,
+            start,
+            end,
+            {"referrer": ["Direct"]},
+            claimed_url_ids=claimed,
+        )
+        # Two $or groups (ownership + null-sentinel referrer) → $and nesting.
+        assert "$or" not in query
+        assert len(query["$and"]) == 2
+        assert query["$and"][0]["$or"][0] == {"meta.owner_id": ObjectId(OWNER_ID)}
+
+    @pytest.mark.asyncio
+    async def test_scope_anon_never_consults_claimed_set(self):
+        svc, click_repo, url_repo = make_service()
+        url_repo.check_stats_privacy.return_value = privacy_info()
+        click_repo.aggregate.return_value = facet_response()
+
+        await svc.query(query=_q(scope="anon", short_code="abc1234"), owner_id=None)
+
+        url_repo.list_claimed_ids.assert_not_awaited()

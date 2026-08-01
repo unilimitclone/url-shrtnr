@@ -518,3 +518,33 @@ class AliasCheckQuery(RequestBase):
         if v is None or v == "":
             return None
         return normalise_fqdn(v)
+
+
+class ClaimItemRequest(RequestBase):
+    """One (url_id, token) pair in a claim batch."""
+
+    url_id: str = Field(
+        description="ObjectId of the URL to claim (from the shorten response).",
+        min_length=24,
+        max_length=24,
+        pattern=r"^[0-9a-f]{24}$",
+        examples=["507f1f77bcf86cd799439011"],
+    )
+    token: str = Field(
+        description=(
+            "The one-time claim_token returned by the anonymous shorten "
+            "call — the bearer proof of creation."
+        ),
+        min_length=16,
+        max_length=256,
+    )
+
+
+class ClaimUrlsRequest(RequestBase):
+    """Request body for POST /api/v1/urls/claim (bulk-first, like reports)."""
+
+    claims: list[ClaimItemRequest] = Field(
+        description="URLs to claim. Each item resolves independently.",
+        min_length=1,
+        max_length=16,
+    )

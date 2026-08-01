@@ -17,9 +17,11 @@ Dispatch heuristic (get_url_by_length_and_type) is preserved exactly:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
@@ -36,13 +38,14 @@ from errors import (
     ValidationError,
 )
 from infrastructure.cache.url_cache import UrlCache, UrlCacheData
-from infrastructure.crypto import hash_password
+from infrastructure.crypto import hash_password, hash_token
 from infrastructure.logging import get_logger, should_sample
 from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
 from schemas.dto.requests.url import (
+    ClaimItemRequest,
     CreateUrlRequest,
     ListUrlsQuery,
     MetaTagsRequest,
@@ -61,6 +64,7 @@ from services.webhooks.payloads import (
     link_owner_id,
     link_snapshot,
 )
+from shared.generators import generate_secure_token
 
 if TYPE_CHECKING:
     from infrastructure.cloudflare_kv import CloudflareKVClient
@@ -388,6 +392,14 @@ FIELD_HANDLERS: dict[str, Callable[..., Awaitable[None]]] = {
     # when the destination changes in the same request.
     "meta_tags": _handle_meta_tags,
 }
+
+
+@dataclass(frozen=True)
+class ClaimResult:
+    """Per-item outcome of a claim batch (never a batch-level failure)."""
+
+    url_id: str
+    status: Literal["claimed", "already_yours", "invalid"]
 
 
 class UrlService:
@@ -761,7 +773,7 @@ class UrlService:
         *,
         domain: str | None = None,
         created_via: str | None = None,
-    ) -> UrlV2Doc:
+    ) -> tuple[UrlV2Doc, str | None]:
         """
         Create a new shortened URL.
 
@@ -772,6 +784,10 @@ class UrlService:
         ``created_via`` is the parsed X-Spoo-Client slug (see
         shared.client_tag) — callers pass the validated value, never the
         raw header.
+
+        Returns:
+            ``(doc, claim_token)`` — claim_token only for anonymous creates
+            (None otherwise); the plaintext exists only in this return.
 
         Raises:
             ValidationError: URL is invalid, blocked, or field validation fails.
@@ -862,9 +878,15 @@ class UrlService:
 
         # 7. Build document model (validates fields via Pydantic)
         owner_oid = owner_id if owner_id is not None else ANONYMOUS_OWNER_ID
+        # Anonymous creates mint a one-time claim token; only the hash is
+        # stored, the raw value is returned once and never logged.
+        claim_token: str | None = None
+        if owner_oid == ANONYMOUS_OWNER_ID:
+            claim_token = generate_secure_token()
         url_doc = UrlV2Doc(
             alias=alias,
             owner_id=owner_oid,
+            claim_token_hash=hash_token(claim_token) if claim_token else None,
             domain=target_domain,
             created_at=now,
             creation_ip=client_ip,
@@ -894,6 +916,11 @@ class UrlService:
             ),
         )
         doc = url_doc.model_dump(by_alias=True, exclude={"id"})
+        # Claim fields must be ABSENT (not null) when unset: the claimed-set
+        # partial index filters on $exists, and $exists matches nulls.
+        for _claim_field in ("claim_token_hash", "claimed_at"):
+            if doc.get(_claim_field) is None:
+                doc.pop(_claim_field, None)
 
         # 8. Insert
         inserted_id = await self._url_repo.insert(doc)
@@ -931,7 +958,57 @@ class UrlService:
 
         await self._emit_link_event("link.created", url_doc)
 
-        return url_doc
+        return url_doc, claim_token
+
+    async def claim(
+        self, claims: Sequence[ClaimItemRequest], owner_id: ObjectId
+    ) -> list[ClaimResult]:
+        """Claim anonymously-created URLs into *owner_id*'s account.
+
+        Per-item forgiving, never a batch failure. Unknown ids, foreign
+        owners, wrong tokens, and unclaimable links all collapse into the
+        same ``invalid`` — no existence oracle. A successful claim is one
+        CAS write (owner + claimed_at stamped, hash burned) plus a
+        redirect-cache eviction; clicks are never touched.
+        """
+        now = datetime.now(timezone.utc)
+        results: list[ClaimResult] = []
+        for item in claims:
+            url_id = ObjectId(item.url_id)
+            existing = await self._url_repo.find_by_id(url_id)
+            if existing is None:
+                results.append(ClaimResult(item.url_id, "invalid"))
+                continue
+            if existing.owner_id == owner_id:
+                # Idempotent repeat; token deliberately not re-checked.
+                results.append(ClaimResult(item.url_id, "already_yours"))
+                continue
+            if existing.owner_id != ANONYMOUS_OWNER_ID or not existing.claim_token_hash:
+                # Foreign-owned, pre-feature, or already-burned link.
+                results.append(ClaimResult(item.url_id, "invalid"))
+                continue
+            token_hash = hash_token(item.token)
+            if not hmac.compare_digest(token_hash, existing.claim_token_hash):
+                results.append(ClaimResult(item.url_id, "invalid"))
+                continue
+            swapped = await self._url_repo.claim_by_token_hash(
+                url_id, token_hash, owner_id, now
+            )
+            if not swapped:
+                # Lost a concurrent race — whoever won owns it now.
+                results.append(ClaimResult(item.url_id, "invalid"))
+                continue
+            # Evict so the next click stamps the new owner.
+            await self._url_cache.invalidate(existing.alias, existing.domain)
+            log.info(
+                "url_claimed",
+                url_id=item.url_id,
+                short_code=existing.alias,
+                domain=existing.domain,
+                user_id=str(owner_id),
+            )
+            results.append(ClaimResult(item.url_id, "claimed"))
+        return results
 
     async def update(
         self,

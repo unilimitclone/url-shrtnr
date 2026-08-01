@@ -118,10 +118,10 @@ async def shorten_v1(
         scoped_domain = None
 
     created_via = first_party_client(request.headers.get(CLIENT_TAG_HEADER))
-    doc = await url_service.create(
+    doc, claim_token = await url_service.create(
         body, owner_id, client_ip, domain=scoped_domain, created_via=created_via
     )
-    return UrlResponse.from_doc(doc, base_url)
+    return UrlResponse.from_doc(doc, base_url, claim_token=claim_token)
 
 
 @router.get(

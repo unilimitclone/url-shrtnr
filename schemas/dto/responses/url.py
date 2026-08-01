@@ -14,6 +14,7 @@ endpoints exactly, including the camelCase keys in UrlListResponse
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import Field
 
@@ -103,14 +104,27 @@ class UrlResponse(ResponseBase):
     meta_tags: MetaTagsResponse | None = Field(
         default=None, description="Custom social preview, if configured."
     )
+    claim_token: str | None = Field(
+        default=None,
+        description=(
+            "One-time bearer proof of creation — your deed to this link. "
+            "Present only on anonymous creates, shown exactly once (only "
+            "its hash is retained server-side). Store it to later attach "
+            "the link to an account via POST /api/v1/urls/claim; null for "
+            "authenticated creates."
+        ),
+    )
 
     @classmethod
-    def from_doc(cls, doc: UrlV2Doc, base_url: str) -> UrlResponse:
+    def from_doc(
+        cls, doc: UrlV2Doc, base_url: str, *, claim_token: str | None = None
+    ) -> UrlResponse:
         """Build from a UrlV2Doc and the canonical base URL.
 
         ``base_url`` is the public origin under which the short link will be
         served — ``settings.app_url`` for system-default URLs and
         ``https://<fqdn>`` for custom domains. Built at the route layer.
+        ``claim_token`` passes through verbatim — the doc only holds the hash.
         """
         return cls(
             id=str(doc.id),
@@ -125,6 +139,7 @@ class UrlResponse(ResponseBase):
             private_stats=doc.private_stats,
             geo_rules=doc.geo_rules,
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
+            claim_token=claim_token,
         )
 
 
@@ -316,3 +331,30 @@ class AliasCheckResponse(ResponseBase):
         ),
         examples=["taken"],
     )
+
+
+class ClaimResultItem(ResponseBase):
+    """Per-item outcome of a claim batch."""
+
+    url_id: str = Field(description="The url_id from the request item.")
+    status: Literal["claimed", "already_yours", "invalid"] = Field(
+        description=(
+            "`claimed` — ownership transferred and the token burned; "
+            "`already_yours` — you already own this URL (idempotent "
+            "repeat); `invalid` — unknown id, wrong token, or a link that "
+            "is not claimable (deliberately indistinguishable)."
+        ),
+    )
+
+
+class ClaimUrlsResponse(ResponseBase):
+    """Response body for POST /api/v1/urls/claim.
+
+    The batch never hard-fails: every submitted item gets a result, in
+    request order.
+    """
+
+    results: list[ClaimResultItem] = Field(
+        description="One outcome per submitted item, in request order."
+    )
+    claimed: int = Field(description="Convenience count of `claimed` results.")

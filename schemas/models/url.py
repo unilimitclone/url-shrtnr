@@ -184,6 +184,11 @@ class UrlV2Doc(MongoBaseModel):
     total_clicks: int = Field(default=0, ge=0)
     last_click: datetime | None = None
     updated_at: datetime | None = None
+    # Claim tokens: sha256 of the one-time bearer token minted on anonymous
+    # creates; unset once claimed. Both fields are stripped when None at
+    # insert so the owner_claimed partial index can filter on $exists.
+    claim_token_hash: str | None = None
+    claimed_at: datetime | None = None
 
     @property
     def effective_status(self) -> UrlStatus:

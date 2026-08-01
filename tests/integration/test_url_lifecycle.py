@@ -103,7 +103,7 @@ def test_create_url_then_redirect():
     cache = _make_cache_data()
 
     url_svc = AsyncMock()
-    url_svc.create.return_value = doc
+    url_svc.create.return_value = (doc, None)
     url_svc.resolve.return_value = (cache, "v2")
 
     click_svc = AsyncMock()
@@ -137,7 +137,7 @@ def test_create_url_with_custom_alias_then_redirect():
     cache = _make_cache_data(alias=custom_alias)
 
     url_svc = AsyncMock()
-    url_svc.create.return_value = doc
+    url_svc.create.return_value = (doc, None)
     url_svc.resolve.return_value = (cache, "v2")
 
     click_svc = AsyncMock()
@@ -168,7 +168,7 @@ def test_create_url_then_check_stats():
     doc = _make_url_doc()
 
     url_svc = AsyncMock()
-    url_svc.create.return_value = doc
+    url_svc.create.return_value = (doc, None)
 
     stats_result = {
         "scope": "anon",
@@ -216,7 +216,7 @@ def test_create_url_then_update_long_url():
     updated_doc = _make_url_doc(long_url=new_long)
 
     url_svc = AsyncMock()
-    url_svc.create.return_value = doc
+    url_svc.create.return_value = (doc, None)
     url_svc.update.return_value = updated_doc
 
     user = _mock_user()
@@ -251,7 +251,7 @@ def test_create_url_then_deactivate():
     deactivated_doc = _make_url_doc(status="INACTIVE")
 
     url_svc = AsyncMock()
-    url_svc.create.return_value = doc
+    url_svc.create.return_value = (doc, None)
     url_svc.update.return_value = deactivated_doc
     # After deactivation, resolve raises GoneError
     url_svc.resolve.side_effect = GoneError("URL expired or inactive")
@@ -292,7 +292,7 @@ def test_create_url_then_delete():
     doc = _make_url_doc()
 
     url_svc = AsyncMock()
-    url_svc.create.return_value = doc
+    url_svc.create.return_value = (doc, None)
     url_svc.delete.return_value = None
 
     user = _mock_user()
@@ -326,7 +326,7 @@ def test_create_password_protected_then_redirect():
     cache_no_pw = _make_cache_data(password_hash=pw_hash)
 
     url_svc = AsyncMock()
-    url_svc.create.return_value = doc
+    url_svc.create.return_value = (doc, None)
     url_svc.resolve.return_value = (cache_no_pw, "v2")
 
     click_svc = AsyncMock()
@@ -366,7 +366,7 @@ def test_create_url_with_max_clicks_expires():
     cache = _make_cache_data(max_clicks=1)
 
     url_svc = AsyncMock()
-    url_svc.create.return_value = doc
+    url_svc.create.return_value = (doc, None)
     # First resolve: ACTIVE; second resolve: GoneError
     url_svc.resolve.side_effect = [
         (cache, "v2"),
@@ -421,7 +421,7 @@ def test_create_url_then_export_stats():
     doc = _make_url_doc()
 
     url_svc = AsyncMock()
-    url_svc.create.return_value = doc
+    url_svc.create.return_value = (doc, None)
 
     from schemas.results import ExportResult
 

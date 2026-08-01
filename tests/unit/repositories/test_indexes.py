@@ -55,6 +55,11 @@ class TestEnsureIndexes:
 
         # Check a few critical indexes
         users_col.create_index.assert_any_await([("email", 1)], unique=True)
+        urls_v2_col.create_index.assert_any_await(
+            [("owner_id", 1)],
+            name="owner_claimed",
+            partialFilterExpression={"claimed_at": {"$exists": True}},
+        )
         page_layouts_col.create_index.assert_any_await(
             [("user_id", 1), ("page", 1)], unique=True
         )

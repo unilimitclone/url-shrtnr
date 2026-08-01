@@ -101,6 +101,10 @@ class Limits:
     URL_BULK_DOMAIN = "60 per minute; 200 per day"
     URL_BULK_MUTATE_DELETE = "30 per minute; 100 per day"
 
+    # Claim intake (POST /api/v1/urls/claim). Per submission, 16-item cap;
+    # guessing is theater at 256 bits — this is belt-and-suspenders.
+    URL_CLAIM = "30 per minute; 500 per day"
+
     # Destination metadata fetch — outbound fetches on our dime; tight.
     METADATA_FETCH = "20 per minute; 500 per day"
 

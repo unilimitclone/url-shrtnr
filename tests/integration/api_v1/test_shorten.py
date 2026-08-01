@@ -37,7 +37,7 @@ class TestShortenEmailVerification:
         user = _make_user(email_verified=True)
         url_doc = _make_url_doc(owner_id=user.user_id)
         mock_svc = AsyncMock()
-        mock_svc.create = AsyncMock(return_value=url_doc)
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
 
         application = _build_test_app(
             {get_current_user: lambda: user, get_url_service: lambda: mock_svc}
@@ -55,7 +55,7 @@ class TestShorten:
     def test_shorten_anon_returns_201(self):
         url_doc = _make_url_doc()
         mock_svc = AsyncMock()
-        mock_svc.create = AsyncMock(return_value=url_doc)
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
 
         application = _build_test_app(
             {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
@@ -79,7 +79,7 @@ class TestShorten:
         user = _make_user()
         url_doc = _make_url_doc(owner_id=user.user_id)
         mock_svc = AsyncMock()
-        mock_svc.create = AsyncMock(return_value=url_doc)
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
 
         application = _build_test_app(
             {get_current_user: lambda: user, get_url_service: lambda: mock_svc}
@@ -98,7 +98,7 @@ class TestShorten:
     def test_shorten_with_alias(self):
         url_doc = _make_url_doc(alias="myalias")
         mock_svc = AsyncMock()
-        mock_svc.create = AsyncMock(return_value=url_doc)
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
 
         application = _build_test_app(
             {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
@@ -133,7 +133,7 @@ class TestShorten:
         user = _make_user(user_id=user_id, api_key_doc=key_doc)
 
         mock_svc = AsyncMock()
-        mock_svc.create = AsyncMock(return_value=url_doc)
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
 
         application = _build_test_app(
             {get_current_user: lambda: user, get_url_service: lambda: mock_svc}
@@ -191,7 +191,7 @@ class TestShortenEmojiAlias:
     def test_emoji_alias_returns_201_with_raw_emoji_short_url(self):
         url_doc = _make_url_doc(alias="🚀🔥")
         mock_svc = AsyncMock()
-        mock_svc.create = AsyncMock(return_value=url_doc)
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
 
         application = _build_test_app(
             {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
@@ -213,7 +213,7 @@ class TestShortenEmojiAlias:
     def test_alias_type_emoji_passes_through_dto(self):
         url_doc = _make_url_doc(alias="😀🎯🍕")
         mock_svc = AsyncMock()
-        mock_svc.create = AsyncMock(return_value=url_doc)
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
 
         application = _build_test_app(
             {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
@@ -312,7 +312,7 @@ class TestShortenWithCustomDomain:
         url_doc = _make_url_doc(owner_id=user.user_id)
         url_doc.domain = "links.acme.com"
         url_svc = AsyncMock()
-        url_svc.create = AsyncMock(return_value=url_doc)
+        url_svc.create = AsyncMock(return_value=(url_doc, None))
 
         custom_svc = AsyncMock()
         custom_svc.assert_owned_and_active = AsyncMock(return_value=None)
@@ -493,7 +493,7 @@ class TestShortenGeoRules:
         url_doc = _make_url_doc(owner_id=user.user_id)
         url_doc.geo_rules = {"IN": "https://example.in/"}
         mock_svc = AsyncMock()
-        mock_svc.create = AsyncMock(return_value=url_doc)
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
 
         application = _build_test_app(
             {
@@ -514,7 +514,7 @@ class TestShortenGeoRules:
         user = _make_user()
         url_doc = _make_url_doc(owner_id=user.user_id)
         mock_svc = AsyncMock()
-        mock_svc.create = AsyncMock(return_value=url_doc)
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
         flag_svc = self._flag_svc(False)
 
         application = _build_test_app(
@@ -531,3 +531,34 @@ class TestShortenGeoRules:
 
         assert resp.status_code == 201
         flag_svc.require.assert_not_awaited()
+
+
+class TestShortenClaimToken:
+    def test_anonymous_shorten_returns_claim_token(self):
+        url_doc = _make_url_doc()
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(return_value=(url_doc, "deed-token-123"))
+        application = _build_test_app(
+            {get_current_user: lambda: None, get_url_service: lambda: mock_svc}
+        )
+        with TestClient(application) as client:
+            resp = client.post(
+                "/api/v1/shorten", json={"url": "https://example.com/long"}
+            )
+        assert resp.status_code == 201
+        assert resp.json()["claim_token"] == "deed-token-123"
+
+    def test_authed_shorten_claim_token_is_null(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
+        application = _build_test_app(
+            {get_current_user: lambda: user, get_url_service: lambda: mock_svc}
+        )
+        with TestClient(application) as client:
+            resp = client.post(
+                "/api/v1/shorten", json={"url": "https://example.com/long"}
+            )
+        assert resp.status_code == 201
+        assert resp.json()["claim_token"] is None

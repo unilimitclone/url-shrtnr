@@ -144,6 +144,7 @@ class StatsService:
         start_date: datetime,
         end_date: datetime,
         filters: dict[str, list[str]],
+        claimed_url_ids: list[ObjectId] | None = None,
     ) -> dict[str, Any]:
         """Build the MongoDB $match query for the clicks collection.
 
@@ -153,24 +154,37 @@ class StatsService:
         - meta.short_code scoping for scope=anon
         - Time range on clicked_at
         - Dimension filters with special handling for short_code and referrer/Direct
+
+        ``claimed_url_ids`` (scope=all only): claimed links' pre-claim
+        clicks are stamped with the anonymous owner, so they need a url_id
+        arm to carry their history. Empty set (almost every account) →
+        query byte-identical to the stamp-only one.
         """
         query: dict[str, Any] = {}
 
+        # Ownership scope and null-sentinel filters both build $or groups;
+        # multiple groups must nest under $and.
+        or_groups: list[list[dict[str, Any]]] = []
+
         # Scope filter
         if scope == StatsScope.ALL and owner_id:
-            query["meta.owner_id"] = (
-                ObjectId(owner_id) if isinstance(owner_id, str) else owner_id
-            )
+            owner_oid = ObjectId(owner_id) if isinstance(owner_id, str) else owner_id
+            if claimed_url_ids:
+                or_groups.append(
+                    [
+                        {"meta.owner_id": owner_oid},
+                        {"meta.url_id": {"$in": claimed_url_ids}},
+                    ]
+                )
+            else:
+                query["meta.owner_id"] = owner_oid
         elif scope == StatsScope.ANON and short_code:
             query["meta.short_code"] = short_code
 
         # Time range
         query["clicked_at"] = {"$gte": start_date, "$lte": end_date}
 
-        # Dimension filters. Null-sentinel dimensions build $or groups;
-        # multiple groups must nest under $and (a second bare "$or" key
-        # would overwrite the first).
-        or_groups: list[list[dict[str, Any]]] = []
+        # Dimension filters (null-sentinel dimensions add $or groups too).
         for dimension, values in filters.items():
             if not values:
                 continue
@@ -595,8 +609,22 @@ class StatsService:
                 raise AuthenticationError("authentication required for scope=all")
 
         # ── Execute + format ──────────────────────────────────────────────────
+        # Claimed links carry pre-claim history under the anonymous stamp;
+        # sub-ms partial-index lookup, empty for almost every account.
+        claimed_url_ids: list[ObjectId] = []
+        if scope == StatsScope.ALL and owner_id:
+            claimed_url_ids = await self._url_repo.list_claimed_ids(
+                ObjectId(owner_id) if isinstance(owner_id, str) else owner_id
+            )
+
         click_query = self._build_click_query(
-            scope, owner_id, short_code, start_date, end_date, filters
+            scope,
+            owner_id,
+            short_code,
+            start_date,
+            end_date,
+            filters,
+            claimed_url_ids=claimed_url_ids,
         )
         response = await self.compute(
             click_query,

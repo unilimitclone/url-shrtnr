@@ -253,7 +253,7 @@ def test_use_api_key_for_shorten():
             "domain": "spoo.me",
         }
     )
-    mock_url_svc.create = AsyncMock(return_value=created_doc)
+    mock_url_svc.create = AsyncMock(return_value=(created_doc, None))
 
     app = build_test_app(
         api_v1_router,
