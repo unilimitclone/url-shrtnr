@@ -25,12 +25,60 @@ from dependencies import (
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES
 from middleware.rate_limiter import Limits, limiter
 from routes.api_v1._helpers import parse_url_id
-from schemas.dto.requests.url import UpdateUrlRequest, UpdateUrlStatusRequest
-from schemas.dto.responses.url import DeleteUrlResponse, UpdateUrlResponse
+from schemas.dto.requests.url import (
+    ClaimUrlsRequest,
+    UpdateUrlRequest,
+    UpdateUrlStatusRequest,
+)
+from schemas.dto.responses.url import (
+    ClaimResultItem,
+    ClaimUrlsResponse,
+    DeleteUrlResponse,
+    UpdateUrlResponse,
+)
 from services.feature_flag_service import GEO_TARGETING_FLAG, META_TAGS_FLAG
 from shared.ip_utils import get_client_ip
 
 router = APIRouter(tags=["Link Management"])
+
+
+@router.post(
+    "/urls/claim",
+    responses=AUTH_RESPONSES,
+    operation_id="claimUrls",
+    summary="Claim anonymous URLs",
+)
+@limiter.limit(Limits.URL_CLAIM)
+async def claim_urls_v1(
+    request: Request,
+    body: ClaimUrlsRequest,
+    url_service: UrlSvc,
+    user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
+) -> ClaimUrlsResponse:
+    """Claim anonymously-created URLs into your account.
+
+    Each item pairs a URL id with the one-time `claim_token` returned by
+    the anonymous shorten call — the bearer proof of creation. Items
+    resolve independently and the batch never hard-fails: `claimed`
+    (ownership transferred, token burned), `already_yours` (idempotent
+    repeat), or `invalid` (unknown id, wrong token, or a link that is not
+    claimable — deliberately indistinguishable).
+
+    The claim_token is single-use and is invalidated immediately on
+    success. Claimed links join the account like any owned link:
+    dashboard, management, and full stats history included.
+
+    **Authentication**: Required.
+
+    **API Key Scope**: `urls:manage` or `admin:all`
+
+    **Rate Limits**: 30/min, 500/day
+    """
+    results = await url_service.claim(body.claims, user.user_id)
+    return ClaimUrlsResponse(
+        results=[ClaimResultItem(url_id=r.url_id, status=r.status) for r in results],
+        claimed=sum(1 for r in results if r.status == "claimed"),
+    )
 
 
 @router.patch(

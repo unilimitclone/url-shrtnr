@@ -79,7 +79,7 @@ def test_shorten_with_meta_tags_flag_on_returns_meta_in_response():
     doc = _make_url_doc(owner_id=user.user_id)
     doc.meta_tags = LinkMetaTags(**META_BODY)
     mock_svc = AsyncMock()
-    mock_svc.create = AsyncMock(return_value=doc)
+    mock_svc.create = AsyncMock(return_value=(doc, None))
     app = _app(user, mock_svc, flag_enabled=True)
     with TestClient(app, raise_server_exceptions=True) as client:
         resp = client.post(
@@ -98,7 +98,7 @@ def test_shorten_with_meta_tags_flag_on_returns_meta_in_response():
 def test_plain_anonymous_shorten_unaffected():
     doc = _make_url_doc()
     mock_svc = AsyncMock()
-    mock_svc.create = AsyncMock(return_value=doc)
+    mock_svc.create = AsyncMock(return_value=(doc, None))
     app = _app(None, mock_svc, flag_enabled=False)
     with TestClient(app, raise_server_exceptions=True) as client:
         resp = client.post("/api/v1/shorten", json={"long_url": "https://example.com"})

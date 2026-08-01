@@ -31,6 +31,7 @@ def _redact(event_dict: dict) -> dict:
         "client_secret",
         "device_token",
         "raw_password",
+        "claim_token",  # claim-links bearer deed must never reach logs
     ],
 )
 def test_secret_fields_redacted(field: str):

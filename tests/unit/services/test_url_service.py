@@ -516,7 +516,9 @@ class TestUrlServiceCreate:
         from schemas.dto.requests.url import CreateUrlRequest
 
         req = CreateUrlRequest(long_url="https://example.com")
-        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        result, _claim_token = await svc.create(
+            req, owner_id=USER_OID, client_ip="1.2.3.4"
+        )
 
         assert result.long_url == "https://example.com"
         url_repo.insert.assert_called_once()
@@ -535,7 +537,7 @@ class TestUrlServiceCreate:
         from schemas.dto.requests.url import CreateUrlRequest
 
         req = CreateUrlRequest(long_url="https://example.com")
-        result = await svc.create(
+        result, _claim_token = await svc.create(
             req, owner_id=USER_OID, client_ip="1.2.3.4", created_via="snap"
         )
 
@@ -557,7 +559,9 @@ class TestUrlServiceCreate:
         from schemas.dto.requests.url import CreateUrlRequest
 
         req = CreateUrlRequest(long_url="https://example.com")
-        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        result, _claim_token = await svc.create(
+            req, owner_id=USER_OID, client_ip="1.2.3.4"
+        )
 
         assert result.created_via is None
 
@@ -851,7 +855,9 @@ class TestUrlServiceCreateEmojiAlias:
 
         vs16 = "️"
         req = CreateUrlRequest(long_url="https://example.com", alias="⭐" + vs16 + "🎉")
-        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        result, _claim_token = await svc.create(
+            req, owner_id=USER_OID, client_ip="1.2.3.4"
+        )
 
         assert result.alias == "⭐🎉"
         inserted = url_repo.insert.call_args[0][0]
@@ -898,7 +904,9 @@ class TestUrlServiceCreateEmojiAlias:
         from shared.emoji_policy import check_emoji_alias
 
         req = CreateUrlRequest(long_url="https://example.com", alias_type="emoji")
-        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        result, _claim_token = await svc.create(
+            req, owner_id=USER_OID, client_ip="1.2.3.4"
+        )
 
         assert check_emoji_alias(result.alias) == "ok"
         inserted = url_repo.insert.call_args[0][0]
@@ -922,7 +930,9 @@ class TestUrlServiceCreateEmojiAlias:
         req = CreateUrlRequest(
             long_url="https://example.com", alias="mylink", alias_type="emoji"
         )
-        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        result, _claim_token = await svc.create(
+            req, owner_id=USER_OID, client_ip="1.2.3.4"
+        )
         assert result.alias == "mylink"
 
 
@@ -2084,7 +2094,9 @@ class TestUrlServiceGeoRules:
         from schemas.dto.requests.url import CreateUrlRequest
 
         req = CreateUrlRequest(long_url="https://example.com", geo_rules=self.GEO)
-        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        result, _claim_token = await svc.create(
+            req, owner_id=USER_OID, client_ip="1.2.3.4"
+        )
 
         assert result.geo_rules == self.GEO
         inserted = url_repo.insert.call_args[0][0]
@@ -2106,7 +2118,9 @@ class TestUrlServiceGeoRules:
             long_url="https://example.com",
             geo_rules={" in ": "https://example.in/"},
         )
-        result = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        result, _claim_token = await svc.create(
+            req, owner_id=USER_OID, client_ip="1.2.3.4"
+        )
         assert result.geo_rules == {"IN": "https://example.in/"}
 
     @pytest.mark.asyncio
@@ -2578,6 +2592,7 @@ class TestUrlServiceTimeExpiry:
         svc = make_service(
             url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
         )
+        url_repo.count_claimed.return_value = 0
         return svc, url_repo, url_cache, legacy_repo, emoji_repo
 
     @pytest.mark.asyncio
@@ -3228,3 +3243,208 @@ class TestSingleItemEdgePurge:
         await svc.delete(URL_OID, USER_OID)  # must not raise
 
         assert not svc._edge_purge_tasks
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Claim Links
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def make_claim_item(url_id: ObjectId | None = None, token: str = "t" * 43):
+    from schemas.dto.requests.url import ClaimItemRequest
+
+    return ClaimItemRequest(url_id=str(url_id or URL_OID), token=token)
+
+
+class TestUrlServiceCreateClaimToken:
+    async def _create(self, owner_id):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com")
+        doc, token = await svc.create(req, owner_id=owner_id, client_ip="1.2.3.4")
+        return doc, token, url_repo.insert.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_anonymous_create_mints_token_and_stores_only_hash(self):
+        from infrastructure.crypto import hash_token
+
+        _doc, token, inserted = await self._create(None)
+        assert token is not None
+        assert len(token) >= 43  # 32 urlsafe bytes
+        assert inserted["claim_token_hash"] == hash_token(token)
+        assert token not in str(inserted)  # plaintext never persisted
+
+    @pytest.mark.asyncio
+    async def test_anonymous_create_strips_unset_claimed_at(self):
+        # The owner_claimed partial index filters on $exists, which matches
+        # nulls — the field must be absent, not null.
+        _, _, inserted = await self._create(None)
+        assert "claimed_at" not in inserted
+
+    @pytest.mark.asyncio
+    async def test_authed_create_mints_nothing(self):
+        _, token, inserted = await self._create(USER_OID)
+        assert token is None
+        assert "claim_token_hash" not in inserted
+        assert "claimed_at" not in inserted
+
+    @pytest.mark.asyncio
+    async def test_tokens_unique_per_create(self):
+        _, t1, _ = await self._create(None)
+        _, t2, _ = await self._create(None)
+        assert t1 != t2
+
+
+class TestUrlServiceClaim:
+    TOKEN = "correct-token-" + "a" * 29  # 43 chars, the issued size
+
+    def _svc(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        url_repo.count_claimed.return_value = 0
+        return svc, url_repo, url_cache
+
+    def _anon_doc(self, token: str | None = None):
+        from infrastructure.crypto import hash_token
+
+        doc = make_url_v2_doc(owner_id=ANONYMOUS_OWNER_ID)
+        doc.claim_token_hash = hash_token(token or self.TOKEN)
+        return doc
+
+    @pytest.mark.asyncio
+    async def test_happy_path_claims_and_evicts_cache(self):
+        from infrastructure.crypto import hash_token
+
+        svc, url_repo, url_cache = self._svc()
+        url_repo.find_by_id.return_value = self._anon_doc()
+        url_repo.claim_by_token_hash.return_value = True
+
+        results = await svc.claim([make_claim_item(token=self.TOKEN)], USER_OID)
+
+        assert [r.status for r in results] == ["claimed"]
+        args = url_repo.claim_by_token_hash.call_args.args
+        assert args[0] == URL_OID
+        assert args[1] == hash_token(self.TOKEN)
+        assert args[2] == USER_OID
+        url_cache.invalidate.assert_awaited_once_with(ALIAS, SYSTEM_DEFAULT_DOMAIN)
+
+    @pytest.mark.asyncio
+    async def test_wrong_token_is_invalid_and_never_writes(self):
+        svc, url_repo, url_cache = self._svc()
+        url_repo.find_by_id.return_value = self._anon_doc()
+
+        results = await svc.claim([make_claim_item(token="w" * 43)], USER_OID)
+
+        assert [r.status for r in results] == ["invalid"]
+        url_repo.claim_by_token_hash.assert_not_awaited()
+        url_cache.invalidate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_url_is_invalid(self):
+        svc, url_repo, _ = self._svc()
+        url_repo.find_by_id.return_value = None
+
+        results = await svc.claim([make_claim_item()], USER_OID)
+        assert [r.status for r in results] == ["invalid"]
+
+    @pytest.mark.asyncio
+    async def test_own_link_is_already_yours_without_token_check(self):
+        svc, url_repo, _ = self._svc()
+        url_repo.find_by_id.return_value = make_url_v2_doc(owner_id=USER_OID)
+
+        results = await svc.claim([make_claim_item(token="garbage" * 8)], USER_OID)
+
+        assert [r.status for r in results] == ["already_yours"]
+        url_repo.claim_by_token_hash.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_foreign_owned_link_indistinguishable_from_unknown(self):
+        svc, url_repo, _ = self._svc()
+        other = ObjectId("cccccccccccccccccccccccc")
+        doc = make_url_v2_doc(owner_id=other)
+        doc.claim_token_hash = "somehash"
+        url_repo.find_by_id.return_value = doc
+
+        results = await svc.claim([make_claim_item(token=self.TOKEN)], USER_OID)
+        assert [r.status for r in results] == ["invalid"]
+        url_repo.claim_by_token_hash.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pre_feature_link_without_hash_is_invalid(self):
+        svc, url_repo, _ = self._svc()
+        url_repo.find_by_id.return_value = make_url_v2_doc(owner_id=ANONYMOUS_OWNER_ID)
+
+        results = await svc.claim([make_claim_item(token=self.TOKEN)], USER_OID)
+        assert [r.status for r in results] == ["invalid"]
+
+    @pytest.mark.asyncio
+    async def test_lost_cas_race_is_invalid_and_no_eviction(self):
+        svc, url_repo, url_cache = self._svc()
+        url_repo.find_by_id.return_value = self._anon_doc()
+        url_repo.claim_by_token_hash.return_value = False
+
+        results = await svc.claim([make_claim_item(token=self.TOKEN)], USER_OID)
+
+        assert [r.status for r in results] == ["invalid"]
+        url_cache.invalidate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ceiling_rejects_batch_before_any_lookup(self):
+        from errors import ForbiddenError
+        from services.url_service import CLAIM_LIMIT_PER_ACCOUNT
+
+        svc, url_repo, _ = self._svc()
+        url_repo.count_claimed.return_value = CLAIM_LIMIT_PER_ACCOUNT
+
+        with pytest.raises(ForbiddenError):
+            await svc.claim([make_claim_item(token=self.TOKEN)], USER_OID)
+        url_repo.find_by_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ceiling_allows_batch_that_exactly_fills(self):
+        from services.url_service import CLAIM_LIMIT_PER_ACCOUNT
+
+        svc, url_repo, _ = self._svc()
+        url_repo.count_claimed.return_value = CLAIM_LIMIT_PER_ACCOUNT - 1
+        url_repo.find_by_id.return_value = self._anon_doc()
+        url_repo.claim_by_token_hash.return_value = True
+
+        results = await svc.claim([make_claim_item(token=self.TOKEN)], USER_OID)
+        assert [r.status for r in results] == ["claimed"]
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_preserves_order(self):
+        svc, url_repo, _ = self._svc()
+        unknown_id = ObjectId("dddddddddddddddddddddddd")
+        mine_id = ObjectId("eeeeeeeeeeeeeeeeeeeeeeee")
+        mine = make_url_v2_doc(url_id=mine_id, owner_id=USER_OID)
+
+        def lookup(url_id):
+            return {URL_OID: self._anon_doc(), mine_id: mine}.get(url_id)
+
+        url_repo.find_by_id.side_effect = lookup
+        url_repo.claim_by_token_hash.return_value = True
+
+        results = await svc.claim(
+            [
+                make_claim_item(unknown_id),
+                make_claim_item(mine_id),
+                make_claim_item(URL_OID, token=self.TOKEN),
+            ],
+            USER_OID,
+        )
+        assert [(r.url_id, r.status) for r in results] == [
+            (str(unknown_id), "invalid"),
+            (str(mine_id), "already_yours"),
+            (str(URL_OID), "claimed"),
+        ]

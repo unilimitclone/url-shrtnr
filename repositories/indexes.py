@@ -54,6 +54,14 @@ async def ensure_indexes(
     await urls_v2_col.create_index([("owner_id", 1), ("created_at", -1)])
     await urls_v2_col.create_index([("total_clicks", -1)])
     await urls_v2_col.create_index([("last_click", -1)])
+    # Claimed-set lookup for scope=ALL stats. Partial — holds only claimed
+    # links, so it stays sub-ms at any account size. Relies on claimed_at
+    # being ABSENT (not null) on unclaimed docs; the create path strips it.
+    await urls_v2_col.create_index(
+        [("owner_id", 1)],
+        name="owner_claimed",
+        partialFilterExpression={"claimed_at": {"$exists": True}},
+    )
 
     # ── clicks (time-series) ───────────────────────────────────────────────
     # Create the time-series collection if it doesn't exist yet.

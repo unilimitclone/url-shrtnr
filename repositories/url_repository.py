@@ -16,6 +16,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from infrastructure.logging import get_logger
 from repositories.base import BaseRepository
+from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import UrlStatus, UrlV2Doc
 
 log = get_logger(__name__)
@@ -75,6 +76,77 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
     async def delete(self, url_id: ObjectId) -> bool:
         """Hard-delete a URL document. Returns True if a document was deleted."""
         return await self._delete({"_id": url_id})
+
+    async def claim_by_token_hash(
+        self,
+        url_id: ObjectId,
+        token_hash: str,
+        new_owner_id: ObjectId,
+        claimed_at: datetime,
+    ) -> bool:
+        """CAS-transfer an anonymous URL to *new_owner_id*.
+
+        Hash + anonymous owner live in the filter, so races and burned
+        tokens match nothing. Hash unset on success — single use.
+        """
+        return await self._update(
+            {
+                "_id": url_id,
+                "claim_token_hash": token_hash,
+                "owner_id": ANONYMOUS_OWNER_ID,
+            },
+            {
+                "$set": {
+                    "owner_id": new_owner_id,
+                    "claimed_at": claimed_at,
+                    "updated_at": claimed_at,
+                },
+                "$unset": {"claim_token_hash": ""},
+            },
+        )
+
+    async def count_claimed(self, owner_id: ObjectId) -> int:
+        """How many links the owner has claimed in (``claimed_at`` present).
+
+        Backs the per-account claim ceiling; served by the owner_claimed
+        partial index.
+        """
+        return await self._count(
+            {"owner_id": owner_id, "claimed_at": {"$exists": True}}
+        )
+
+    async def list_claimed_ids(
+        self, owner_id: ObjectId, *, limit: int = 1024
+    ) -> list[ObjectId]:
+        """ids of the owner's claimed-in links (``claimed_at`` present).
+
+        Served by the owner_claimed partial index (holds only claimed
+        links platform-wide — sub-ms). The cap is a backstop above the
+        write-side claim ceiling: unreachable by construction, so a full
+        cursor means something bypassed the ceiling and scope=all stats
+        are silently undercounting — exactly what the warning is for.
+        """
+        try:
+            cursor = self._col.find(
+                {"owner_id": owner_id, "claimed_at": {"$exists": True}},
+                {"_id": 1},
+            ).limit(limit)
+            ids = [d["_id"] async for d in cursor]
+        except PyMongoError as exc:
+            log.error(
+                "repo_list_claimed_ids_failed",
+                collection=self._collection_name,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise
+        if len(ids) >= limit:
+            log.warning(
+                "claimed_ids_truncated",
+                owner_id=str(owner_id),
+                limit=limit,
+            )
+        return ids
 
     async def record_meta_image_validation(
         self, url_id: ObjectId, image_url: str, meta: dict
