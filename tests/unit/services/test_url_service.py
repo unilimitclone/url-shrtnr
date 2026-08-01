@@ -2592,6 +2592,8 @@ class TestUrlServiceTimeExpiry:
         svc = make_service(
             url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
         )
+        url_repo.count_claimed.return_value = 0
+        svc._emit_link_event = AsyncMock()
         return svc, url_repo, url_cache, legacy_repo, emoji_repo
 
     @pytest.mark.asyncio
@@ -3303,13 +3305,15 @@ class TestUrlServiceCreateClaimToken:
 
 
 class TestUrlServiceClaim:
-    TOKEN = "correct-token-abcdefghijklmnop"
+    TOKEN = "correct-token-" + "a" * 29  # 43 chars, the issued size
 
     def _svc(self):
         url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
         svc = make_service(
             url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
         )
+        url_repo.count_claimed.return_value = 0
+        svc._emit_link_event = AsyncMock()
         return svc, url_repo, url_cache
 
     def _anon_doc(self, token: str | None = None):
@@ -3395,6 +3399,50 @@ class TestUrlServiceClaim:
 
         assert [r.status for r in results] == ["invalid"]
         url_cache.invalidate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_claim_emits_link_claimed_with_new_owner(self):
+        svc, url_repo, _ = self._svc()
+        url_repo.find_by_id.return_value = self._anon_doc()
+        url_repo.claim_by_token_hash.return_value = True
+
+        await svc.claim([make_claim_item(token=self.TOKEN)], USER_OID)
+
+        event_type, doc = svc._emit_link_event.call_args.args
+        assert event_type == "link.claimed"
+        assert doc.owner_id == USER_OID
+
+    @pytest.mark.asyncio
+    async def test_invalid_claim_emits_nothing(self):
+        svc, url_repo, _ = self._svc()
+        url_repo.find_by_id.return_value = self._anon_doc()
+
+        await svc.claim([make_claim_item(token="w" * 43)], USER_OID)
+        svc._emit_link_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ceiling_rejects_batch_before_any_lookup(self):
+        from errors import ForbiddenError
+        from services.url_service import CLAIM_LIMIT_PER_ACCOUNT
+
+        svc, url_repo, _ = self._svc()
+        url_repo.count_claimed.return_value = CLAIM_LIMIT_PER_ACCOUNT
+
+        with pytest.raises(ForbiddenError):
+            await svc.claim([make_claim_item(token=self.TOKEN)], USER_OID)
+        url_repo.find_by_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ceiling_allows_batch_that_exactly_fills(self):
+        from services.url_service import CLAIM_LIMIT_PER_ACCOUNT
+
+        svc, url_repo, _ = self._svc()
+        url_repo.count_claimed.return_value = CLAIM_LIMIT_PER_ACCOUNT - 1
+        url_repo.find_by_id.return_value = self._anon_doc()
+        url_repo.claim_by_token_hash.return_value = True
+
+        results = await svc.claim([make_claim_item(token=self.TOKEN)], USER_OID)
+        assert [r.status for r in results] == ["claimed"]
 
     @pytest.mark.asyncio
     async def test_mixed_batch_preserves_order(self):

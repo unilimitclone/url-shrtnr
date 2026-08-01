@@ -535,7 +535,9 @@ class ClaimItemRequest(RequestBase):
             "The one-time claim_token returned by the anonymous shorten "
             "call — the bearer proof of creation."
         ),
-        min_length=16,
+        # Issued tokens are 43 chars (32 urlsafe bytes); anything shorter
+        # is garbage worth rejecting before it costs a lookup.
+        min_length=43,
         max_length=256,
     )
 

@@ -394,6 +394,13 @@ FIELD_HANDLERS: dict[str, Callable[..., Awaitable[None]]] = {
 }
 
 
+# Per-account ceiling on claimed-in links, enforced at claim time: refusing
+# loudly beats the read side silently undercounting stats past its backstop
+# cap. ~10x any organic wizard user; becomes the free-tier quota number once
+# plan quotas exist.
+CLAIM_LIMIT_PER_ACCOUNT = 500
+
+
 @dataclass(frozen=True)
 class ClaimResult:
     """Per-item outcome of a claim batch (never a batch-level failure)."""
@@ -969,8 +976,27 @@ class UrlService:
         owners, wrong tokens, and unclaimable links all collapse into the
         same ``invalid`` — no existence oracle. A successful claim is one
         CAS write (owner + claimed_at stamped, hash burned) plus a
-        redirect-cache eviction; clicks are never touched.
+        redirect-cache eviction and a ``link.claimed`` event; clicks are
+        never touched.
+
+        Raises:
+            ForbiddenError: the batch would push the account past the
+                per-account claim ceiling (conservative: counts the whole
+                batch before per-item outcomes are known).
         """
+        already_claimed = await self._url_repo.count_claimed(owner_id)
+        if already_claimed + len(claims) > CLAIM_LIMIT_PER_ACCOUNT:
+            log.info(
+                "url_claim_ceiling_hit",
+                user_id=str(owner_id),
+                claimed=already_claimed,
+                batch=len(claims),
+            )
+            raise ForbiddenError(
+                f"Claim limit reached: an account can claim up to "
+                f"{CLAIM_LIMIT_PER_ACCOUNT} links"
+            )
+
         now = datetime.now(timezone.utc)
         results: list[ClaimResult] = []
         for item in claims:
@@ -1007,6 +1033,11 @@ class UrlService:
                 domain=existing.domain,
                 user_id=str(owner_id),
             )
+            # First sight of this link for the account's subscribers —
+            # stamp the new owner on the doc so the event routes to them.
+            existing.owner_id = owner_id
+            existing.claimed_at = now
+            await self._emit_link_event("link.claimed", existing)
             results.append(ClaimResult(item.url_id, "claimed"))
         return results
 

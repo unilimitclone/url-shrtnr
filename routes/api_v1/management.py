@@ -70,6 +70,8 @@ async def claim_urls_v1(
     **Authentication**: Required.
 
     **API Key Scope**: `urls:manage` or `admin:all`
+
+    **Rate Limits**: 30/min, 500/day
     """
     results = await url_service.claim(body.claims, user.user_id)
     return ClaimUrlsResponse(
