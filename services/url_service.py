@@ -1009,7 +1009,8 @@ class UrlService:
                 results.append(ClaimResult(item.url_id, "already_yours"))
                 continue
             if existing.owner_id != ANONYMOUS_OWNER_ID or not existing.claim_token_hash:
-                # Foreign-owned, pre-feature, or already-burned link.
+                # Don't distinguish between wrong token / already claimed /
+                # not found to avoid oracle attacks.
                 results.append(ClaimResult(item.url_id, "invalid"))
                 continue
             token_hash = hash_token(item.token)

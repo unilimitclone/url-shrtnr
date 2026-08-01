@@ -64,8 +64,9 @@ async def claim_urls_v1(
     repeat), or `invalid` (unknown id, wrong token, or a link that is not
     claimable — deliberately indistinguishable).
 
-    Claimed links join the account like any owned link: dashboard,
-    management, and full stats history included.
+    The claim_token is single-use and is invalidated immediately on
+    success. Claimed links join the account like any owned link:
+    dashboard, management, and full stats history included.
 
     **Authentication**: Required.
 
