@@ -157,7 +157,9 @@ class DeviceRefreshRequest(RequestBase):
 class OnboardingStateRequest(RequestBase):
     """Request body for PUT /auth/onboarding."""
 
-    step: Literal["welcome", "path", "link", "api", "domain", "apps", "recap"] = Field(
+    step: Literal[
+        "welcome", "path", "link", "api", "domain", "claim", "apps", "recap"
+    ] = Field(
         description="Wizard step the user is currently on",
         examples=["domain"],
     )
