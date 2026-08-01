@@ -981,7 +981,10 @@ class UrlService:
         Raises:
             ForbiddenError: the batch would push the account past the
                 per-account claim ceiling (conservative: counts the whole
-                batch before per-item outcomes are known).
+                batch before per-item outcomes are known). The check is
+                read-then-act by design: concurrent batches can overshoot
+                by at most a batch each, acceptable for a soft product
+                bound sitting far under the read-side backstop.
         """
         already_claimed = await self._url_repo.count_claimed(owner_id)
         if already_claimed + len(claims) > CLAIM_LIMIT_PER_ACCOUNT:
