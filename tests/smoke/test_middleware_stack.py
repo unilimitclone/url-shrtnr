@@ -7,6 +7,15 @@ import os
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017/")
 
 from fastapi.testclient import TestClient
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.sessions import SessionMiddleware
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse, Response
+from starlette.routing import Route
+
+from config import AppSettings
+from infrastructure.oauth_clients import OAUTH_STATE_TTL_SECONDS
 
 
 def test_x_request_id_header_present(smoke_client: TestClient) -> None:
@@ -75,6 +84,83 @@ def test_session_middleware_present(smoke_client: TestClient) -> None:
     # If SessionMiddleware were missing, OAuth state writes would crash.
     # A healthy response proves the middleware stack is functional.
     assert resp.status_code in (200, 503)
+
+
+# ── OAuth state cookie ────────────────────────────────────────────────────────
+#
+# The session cookie is where Authlib keeps its half of the OAuth state, so a
+# missing or dropped cookie fails every callback. Assert the flags the real
+# create_app() configures rather than the ones a test app happens to pass.
+
+
+def _oauth_state_cookie_attrs(*, production: bool) -> set[str]:
+    """Set-Cookie attributes create_app() emits for the session cookie.
+
+    Lifts the registered SessionMiddleware (class plus its keyword arguments)
+    out of the real application and replays it over a route that writes to the
+    session, so the assertions below read the header a browser would receive.
+    """
+    from app import create_app
+
+    settings = AppSettings()
+    settings.env = "production" if production else "development"
+    # A DSN in a developer's local .env would otherwise re-initialise Sentry
+    # with environment="production" as a side effect of this test.
+    settings.sentry.sentry_dsn = ""
+
+    entry = next(
+        mw for mw in create_app(settings).user_middleware if mw.cls is SessionMiddleware
+    )
+
+    async def write_state(request: Request) -> Response:
+        request.session["_state_google_test"] = {"data": {}}
+        return PlainTextResponse("ok")
+
+    probe = Starlette(
+        routes=[Route("/probe", write_state)],
+        middleware=[Middleware(entry.cls, *entry.args, **entry.kwargs)],
+    )
+    header = TestClient(probe).get("/probe").headers["set-cookie"]
+    # Attribute names only — the cookie value is base64 and could contain any
+    # substring we might otherwise search the raw header for.
+    return {part.strip().lower() for part in header.split(";")[1:]}
+
+
+def test_oauth_state_cookie_is_secure_in_production() -> None:
+    """The state cookie must carry Secure on an HTTPS-only origin.
+
+    Without it the cookie travels on plain-http requests to spoo.me and is
+    eligible for the eviction rules browsers apply to insecure cookies across
+    the redirect out to the provider and back, which loses the flow's state.
+    """
+    assert "secure" in _oauth_state_cookie_attrs(production=True)
+
+
+def test_oauth_state_cookie_is_not_secure_in_development() -> None:
+    """Secure is gated on production so plain-http local development works."""
+    assert "secure" not in _oauth_state_cookie_attrs(production=False)
+
+
+def test_oauth_state_cookie_is_httponly_and_lax() -> None:
+    """HttpOnly keeps the state out of scripts; lax survives the callback.
+
+    The provider returns the user with a top-level cross-site GET, which lax
+    allows and strict would not.
+    """
+    attrs = _oauth_state_cookie_attrs(production=True)
+    assert "httponly" in attrs
+    assert "samesite=lax" in attrs
+
+
+def test_oauth_state_cookie_expires_with_the_state_it_holds() -> None:
+    """Cookie lifetime matches the ceiling verify_oauth_state() enforces.
+
+    Starlette uses max_age for both the Max-Age attribute and the signature
+    lifetime, so the default of 14 days would leave the cookie valid long
+    after the state string inside it had expired.
+    """
+    attrs = _oauth_state_cookie_attrs(production=True)
+    assert f"max-age={OAUTH_STATE_TTL_SECONDS}" in attrs
 
 
 def test_middleware_ordering_correct(smoke_app) -> None:

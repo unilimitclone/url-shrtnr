@@ -27,7 +27,7 @@ from infrastructure.email.zeptomail import ZeptoMailProvider
 from infrastructure.geoip import GeoIPService
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
-from infrastructure.oauth_clients import init_oauth
+from infrastructure.oauth_clients import OAUTH_STATE_TTL_SECONDS, init_oauth
 from infrastructure.queue_redis import connect_queue_redis
 from infrastructure.templates import configure_template_globals, templates
 from middleware.error_handler import register_error_handlers
@@ -259,8 +259,21 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         )
 
     # ── Middleware (registered in reverse execution order) ────────────────
-    # 1. Session — outermost, needed by Authlib OAuth for state storage
-    app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
+    # 1. Session — Authlib OAuth state is the only reader/writer; nothing
+    #    else touches request.session. max_age doubles as the itsdangerous
+    #    signature lifetime, so it tracks OAUTH_STATE_TTL_SECONDS and both
+    #    halves of the flow expire together. same_site must stay lax: the
+    #    provider returns the user with a top-level cross-site GET, and
+    #    strict would drop the cookie on exactly that navigation. Secure is
+    #    gated on is_production, the same gate HSTS uses, so plain-http
+    #    local dev still works.
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.secret_key,
+        max_age=OAUTH_STATE_TTL_SECONDS,
+        same_site="lax",
+        https_only=settings.is_production,
+    )
     # 2. Security headers — must be outer so HSTS/CSP/nosniff apply to
     #    all responses including CORS preflights (204) and body-limit (413)
     app.add_middleware(SecurityHeadersMiddleware, hsts_enabled=settings.is_production)
