@@ -27,7 +27,7 @@ from infrastructure.email.zeptomail import ZeptoMailProvider
 from infrastructure.geoip import GeoIPService
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
-from infrastructure.oauth_clients import init_oauth
+from infrastructure.oauth_clients import OAUTH_STATE_TTL_SECONDS, init_oauth
 from infrastructure.queue_redis import connect_queue_redis
 from infrastructure.templates import configure_template_globals, templates
 from middleware.error_handler import register_error_handlers
@@ -259,8 +259,37 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         )
 
     # ── Middleware (registered in reverse execution order) ────────────────
-    # 1. Session — outermost, needed by Authlib OAuth for state storage
-    app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
+    # 1. Session — needed by Authlib OAuth for state storage.
+    #    Authlib is the only reader/writer: authorize_redirect() stores
+    #    _state_{provider}_{state} in the session and the callback reads it
+    #    back, so this cookie is the whole OAuth flow's memory. Nothing else
+    #    in the app touches request.session.
+    #
+    #    Every option is spelled out rather than defaulted, because two of
+    #    the Starlette defaults are wrong for a cookie with that job:
+    #
+    #    https_only — defaults to False, which ships the cookie without the
+    #      Secure flag. On an HTTPS-only origin that is simply wrong: it
+    #      leaves the flow's CSRF state readable on any plain-http request to
+    #      spoo.me, and it makes the cookie eligible for the eviction rules
+    #      browsers reserve for insecure cookies during the cross-site
+    #      redirect out to the provider and back. Gated on is_production, the
+    #      same gate HSTS uses, so plain-http local development still works.
+    #    max_age — defaults to 14 days, and doubles as the signature lifetime.
+    #      A consent screen takes minutes; OAUTH_STATE_TTL_SECONDS is the
+    #      ceiling verify_oauth_state() already enforces on the state string,
+    #      so both halves of the flow now expire together instead of the
+    #      cookie outliving its own state by two weeks.
+    #    same_site — lax, matching the auth cookies. It has to stay lax: the
+    #      provider sends the user back with a top-level cross-site GET, and
+    #      strict would withhold the cookie on exactly that navigation.
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.secret_key,
+        max_age=OAUTH_STATE_TTL_SECONDS,
+        same_site="lax",
+        https_only=settings.is_production,
+    )
     # 2. Security headers — must be outer so HSTS/CSP/nosniff apply to
     #    all responses including CORS preflights (204) and body-limit (413)
     app.add_middleware(SecurityHeadersMiddleware, hsts_enabled=settings.is_production)

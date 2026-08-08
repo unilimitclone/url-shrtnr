@@ -147,6 +147,13 @@ def init_oauth(settings: Any) -> tuple[OAuth | None, dict[str, Any]]:
 
 # ── State utilities ───────────────────────────────────────────────────────────
 
+# How long a login/link flow may stay in flight. Long enough for a provider
+# consent screen (account picker, password, 2FA), short enough that the CSRF
+# state is not a durable credential. app.py reuses this as the lifetime of the
+# session cookie Authlib keeps its half of the state in, so the two halves of
+# the flow expire together.
+OAUTH_STATE_TTL_SECONDS = 600
+
 
 def generate_oauth_state(
     provider: str,
@@ -194,7 +201,7 @@ def verify_oauth_state(
 
         timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
         age = (datetime.now(timezone.utc) - timestamp).total_seconds()
-        if age > 600:
+        if age > OAUTH_STATE_TTL_SECONDS:
             return False, {}, "expired"
 
         return True, state_data, None
