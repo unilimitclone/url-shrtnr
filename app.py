@@ -259,30 +259,14 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         )
 
     # ── Middleware (registered in reverse execution order) ────────────────
-    # 1. Session — needed by Authlib OAuth for state storage.
-    #    Authlib is the only reader/writer: authorize_redirect() stores
-    #    _state_{provider}_{state} in the session and the callback reads it
-    #    back, so this cookie is the whole OAuth flow's memory. Nothing else
-    #    in the app touches request.session.
-    #
-    #    Every option is spelled out rather than defaulted, because two of
-    #    the Starlette defaults are wrong for a cookie with that job:
-    #
-    #    https_only — defaults to False, which ships the cookie without the
-    #      Secure flag. On an HTTPS-only origin that is simply wrong: it
-    #      leaves the flow's CSRF state readable on any plain-http request to
-    #      spoo.me, and it makes the cookie eligible for the eviction rules
-    #      browsers reserve for insecure cookies during the cross-site
-    #      redirect out to the provider and back. Gated on is_production, the
-    #      same gate HSTS uses, so plain-http local development still works.
-    #    max_age — defaults to 14 days, and doubles as the signature lifetime.
-    #      A consent screen takes minutes; OAUTH_STATE_TTL_SECONDS is the
-    #      ceiling verify_oauth_state() already enforces on the state string,
-    #      so both halves of the flow now expire together instead of the
-    #      cookie outliving its own state by two weeks.
-    #    same_site — lax, matching the auth cookies. It has to stay lax: the
-    #      provider sends the user back with a top-level cross-site GET, and
-    #      strict would withhold the cookie on exactly that navigation.
+    # 1. Session — Authlib OAuth state is the only reader/writer; nothing
+    #    else touches request.session. max_age doubles as the itsdangerous
+    #    signature lifetime, so it tracks OAUTH_STATE_TTL_SECONDS and both
+    #    halves of the flow expire together. same_site must stay lax: the
+    #    provider returns the user with a top-level cross-site GET, and
+    #    strict would drop the cookie on exactly that navigation. Secure is
+    #    gated on is_production, the same gate HSTS uses, so plain-http
+    #    local dev still works.
     app.add_middleware(
         SessionMiddleware,
         secret_key=settings.secret_key,
