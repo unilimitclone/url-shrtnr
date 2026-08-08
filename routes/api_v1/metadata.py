@@ -3,7 +3,8 @@
 The prefill companion to custom meta-tags (Dub precedent: api.dub.co/
 metatags): clients call this to pre-populate title/description/image from
 the destination before customizing. Auth-required — an anonymous version
-would be a free fetch-proxy for the whole internet — with its own tight
+would be a free fetch-proxy for the whole internet — and gated on the same
+``custom_meta_tags`` flag as the write paths it feeds, with its own tight
 rate limit, SSRF-guarded fetching, and Redis caching (1h / 5m negative).
 """
 
@@ -14,7 +15,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from dependencies import URL_READ_SCOPES, CurrentUser, Settings, require_scopes
+from dependencies import (
+    URL_READ_SCOPES,
+    CurrentUser,
+    FeatureFlagSvc,
+    Settings,
+    require_scopes,
+)
 from errors import AppError, ValidationError
 from infrastructure.logging import get_logger
 from infrastructure.safe_fetch import (
@@ -25,6 +32,7 @@ from infrastructure.safe_fetch import (
 from middleware.openapi import AUTH_RESPONSES
 from middleware.rate_limiter import Limits, limiter
 from schemas.dto.responses.metadata import MetadataResponse
+from services.feature_flag_service import META_TAGS_FLAG
 from services.meta_tags.parse_html import parse_meta_tags
 
 log = get_logger(__name__)
@@ -65,6 +73,7 @@ async def get_metadata(
         ),
     ],
     settings: Settings,
+    flag_svc: FeatureFlagSvc,
     user: CurrentUser = Depends(require_scopes(URL_READ_SCOPES)),  # noqa: B008
 ) -> MetadataResponse:
     """Fetch a destination page and return its existing meta tags.
@@ -76,9 +85,18 @@ async def get_metadata(
     **Authentication**: Required. **API Key Scope**: `urls:read`,
     `urls:manage`, or `admin:all`.
 
+    **Feature gate**: `custom_meta_tags` must be enabled for the calling
+    account — this endpoint only exists to feed that feature.
+
     **Rate Limits**: 20/min, 500/day — results are cached ~1h server-side,
     so repeat calls for the same URL are cheap and don't refetch.
     """
+    # Same gate as the write paths that consume this prefill (POST /shorten,
+    # PATCH /urls/{id}). 403 rather than a hiding 404: those siblings already
+    # answer 403 for the same flag and the endpoint is in the public OpenAPI
+    # spec, so there is no existence left to conceal.
+    await flag_svc.require(META_TAGS_FLAG, user)
+
     if not url.startswith("https://"):
         raise ValidationError("url must be https", field="url")
 
