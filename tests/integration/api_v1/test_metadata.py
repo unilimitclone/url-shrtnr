@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-from dependencies import get_current_user
+from dependencies import get_current_user, get_feature_flag_service
+from errors import ForbiddenError
 from infrastructure.cache.meta_fetch_cache import MetaFetchCache
 from infrastructure.safe_fetch import FetchedBody, FetchHardError, FetchTransientError
 
@@ -18,8 +19,27 @@ HTML = b"""<html><head>
 </head><body></body></html>"""
 
 
-def _app(user=None):
-    app = _build_test_app({get_current_user: lambda: user or _make_user()})
+def _flag_svc(enabled: bool) -> AsyncMock:
+    svc = AsyncMock()
+    svc.is_enabled = AsyncMock(return_value=enabled)
+
+    async def _require(name: str, user, **_kw) -> None:
+        # Mirrors FeatureFlagService.require: raise 403 when disabled.
+        if not enabled:
+            feature = name.replace("_", " ").capitalize()
+            raise ForbiddenError(f"{feature} is not enabled for this account")
+
+    svc.require = AsyncMock(side_effect=_require)
+    return svc
+
+
+def _app(user=None, flag_enabled: bool = True):
+    app = _build_test_app(
+        {
+            get_current_user: lambda: user or _make_user(),
+            get_feature_flag_service: lambda: _flag_svc(flag_enabled),
+        }
+    )
     app.state.meta_fetch_cache = MetaFetchCache(None)  # no-op cache
     return app
 
@@ -30,6 +50,18 @@ def test_metadata_requires_auth():
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/api/v1/metadata", params={"url": "https://dest.example"})
     assert resp.status_code == 401
+
+
+def test_metadata_requires_flag():
+    # Same gate as the write paths this prefill feeds: no flag, no fetch.
+    fetch = AsyncMock()
+    with (
+        patch("routes.api_v1.metadata.fetch_public", new=fetch),
+        TestClient(_app(flag_enabled=False), raise_server_exceptions=False) as client,
+    ):
+        resp = client.get("/api/v1/metadata", params={"url": "https://dest.example"})
+    assert resp.status_code == 403
+    fetch.assert_not_called()
 
 
 def test_metadata_parses_destination():
