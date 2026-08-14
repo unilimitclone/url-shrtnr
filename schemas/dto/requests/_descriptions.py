@@ -26,7 +26,7 @@ STATS_URL_ID_DESC = (
 STATS_START_DATE_DESC = (
     "Start of time range. Accepts ISO 8601 datetime string "
     "(e.g., `2025-01-01T00:00:00Z`) or Unix timestamp in seconds "
-    "(e.g., `1735689600`). If omitted, defaults to the URL creation date."
+    "(e.g., `1735689600`). If omitted, defaults to 7 days before `end_date`."
 )
 
 STATS_END_DATE_DESC = (
