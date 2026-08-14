@@ -70,6 +70,24 @@ def _wants_json(request: Request) -> bool:
     )
 
 
+def _rate_limit_hint(request: Request) -> str | None:
+    # Mirrors rate_limit_key on purpose: the hint must match the tier the
+    # limiter actually applied, validated or not.
+    if request.url.path.startswith("/api/v1"):
+        if rate_limit_key(request).startswith(("apikey:", "jwt:")):
+            return None
+        return (
+            "Anonymous requests get the lowest limits. Authenticate with "
+            "a free account or an API key for 60 per minute and 5000 per day."
+        )
+    if request.method == "POST" and request.url.path in ("/", "/emoji"):
+        return (
+            "The legacy API is strictly rate limited. Use POST /api/v1/shorten "
+            "for higher limits: https://docs.spoo.me/rate-limits"
+        )
+    return None
+
+
 # Statuses that return EMPTY bodies under EDGE_COMPOSED_ERRORS — must stay
 # a subset of what Caddy's handle_response matcher composes, or visitors
 # get blank pages (verify at cutover; redirect ⊆ app-level is test-pinned).
@@ -147,29 +165,22 @@ def register_error_handlers(app: FastAPI) -> None:
             content=_validation_error_response(exc.errors()),
         )
 
-    def _rate_limit_hint(request: Request) -> str | None:
-        if request.url.path.startswith("/api/v1"):
-            if rate_limit_key(request).startswith(("apikey:", "jwt:")):
-                return None
-            return (
-                "Anonymous requests get the lowest limits. Authenticate with "
-                "a free account or an API key for 60 per minute and 5000 per day."
-            )
-        if request.method == "POST" and request.url.path in ("/", "/emoji"):
-            return (
-                "The legacy API is strictly rate limited. Use POST /api/v1/shorten "
-                "for higher limits: https://docs.spoo.me/rate-limits"
-            )
-        return None
-
     @app.exception_handler(RateLimitExceeded)
     async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
+        hint = _rate_limit_hint(request)
         if _wants_json(request):
             content = {"error": "Too many requests", "code": "rate_limit_exceeded"}
-            if hint := _rate_limit_hint(request):
+            if hint:
                 content["hint"] = hint
-            return JSONResponse(status_code=429, content=content)
-        return _error_html(request, 429, "TOO MANY REQUESTS", "rate_limit_exceeded")
+            return JSONResponse(
+                status_code=429,
+                content=content,
+                headers={"X-Spoo-Hint": hint} if hint else None,
+            )
+        response = _error_html(request, 429, "TOO MANY REQUESTS", "rate_limit_exceeded")
+        if hint:
+            response.headers["X-Spoo-Hint"] = hint
+        return response
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(

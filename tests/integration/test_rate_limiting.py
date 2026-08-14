@@ -27,6 +27,7 @@ import pytest
 from config import AppSettings
 from middleware.error_handler import register_error_handlers
 from middleware.rate_limiter import (
+    Limits,
     RateLimitHeadersMiddleware,
     limiter,
     rate_limit_key,
@@ -204,6 +205,33 @@ def test_rate_limit_hint_on_legacy_shorten():
         resp = c.post("/emoji", headers=headers)
     assert resp.status_code == 429
     assert "/api/v1/shorten" in resp.json()["hint"]
+    assert "/api/v1/shorten" in resp.headers["X-Spoo-Hint"]
+
+
+def test_rate_limit_hint_header_on_legacy_form_post():
+    """A form post with curl's default Accept gets HTML, so the hint must
+    ride a header to reach the common legacy caller."""
+    _reset_limiter()
+    r = APIRouter()
+
+    @r.post("/emoji")
+    @limiter.limit("1/minute")
+    async def _emoji(request: Request):
+        return {"ok": True}
+
+    app = _build_test_app(extra_routers=[r])
+    with TestClient(app, raise_server_exceptions=False) as c:
+        c.post("/emoji", data={"url": "https://example.com"})
+        resp = c.post("/emoji", data={"url": "https://example.com"})
+    assert resp.status_code == 429
+    assert "text/html" in resp.headers["content-type"]
+    assert "/api/v1/shorten" in resp.headers["X-Spoo-Hint"]
+
+
+def test_hint_prose_matches_authed_tier():
+    """The anonymous hint hardcodes the authed numbers as prose; fail loudly
+    when the tier changes so the string can't silently lie."""
+    assert Limits.API_AUTHED == "60 per minute; 5000 per day"
 
 
 def test_rate_limit_key_uses_ip_for_anonymous():

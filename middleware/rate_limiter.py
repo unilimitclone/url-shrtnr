@@ -33,6 +33,8 @@ class Limits:
     # API v1 — authenticated vs anonymous tiers
     API_AUTHED = "60 per minute; 5000 per day"
     API_ANON = "20 per minute; 200 per day"
+    # Anonymous public-stats reads keep the pre-tightening daily budget
+    API_ANON_READ = "20 per minute; 1000 per day"
 
     # Alias availability check — cheap read, UI debounces on each keystroke
     API_CHECK_AUTHED = "180 per minute; 10000 per day"
