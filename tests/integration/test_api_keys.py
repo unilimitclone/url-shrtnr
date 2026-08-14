@@ -148,6 +148,7 @@ def test_create_api_key_requires_verified_email():
     assert resp.status_code == 403
     body = resp.json()
     assert body["code"] == "EMAIL_NOT_VERIFIED"
+    assert resp.headers["X-Error-Code"] == "EMAIL_NOT_VERIFIED"
 
 
 def test_create_api_key_requires_auth():

@@ -8,6 +8,29 @@ from __future__ import annotations
 
 from typing import Any
 
+from typing_extensions import NotRequired, TypedDict
+
+# Wire shape of a JSON error body. ``code`` is the machine-readable slug
+# that also feeds the ``X-Error-Code`` response header, so a body without
+# it is a type error at the call site rather than a KeyError inside an
+# exception handler.
+#
+# Functional syntax on purpose: under ``from __future__ import annotations``
+# the class form stringifies its annotations and the (Not)Required markers
+# are silently dropped at class creation — ``__required_keys__`` comes out
+# empty. Dict-literal values are real objects, so the markers survive.
+ErrorBody = TypedDict(  # noqa: UP013 — class syntax loses the markers here
+    "ErrorBody",
+    {
+        "error": str,
+        "code": str,
+        "field": NotRequired[str],
+        "details": NotRequired[Any],
+        "message": NotRequired[str],
+        "hint": NotRequired[str],
+    },
+)
+
 
 class AppError(Exception):
     """Base application error. All typed errors inherit from this."""
@@ -27,8 +50,8 @@ class AppError(Exception):
         self.field = field
         self.details = details
 
-    def to_dict(self) -> dict:
-        payload: dict = {"error": self.message, "code": self.error_code}
+    def to_dict(self) -> ErrorBody:
+        payload: ErrorBody = {"error": self.message, "code": self.error_code}
         if self.field is not None:
             payload["field"] = self.field
         if self.details is not None:
@@ -68,7 +91,7 @@ class EmailNotVerifiedError(ForbiddenError):
 
     error_code = "EMAIL_NOT_VERIFIED"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> ErrorBody:
         d = super().to_dict()
         d["message"] = (
             "You must verify your email address before creating resources. "
@@ -186,7 +209,7 @@ class CloudflareAPIError(AppError):
     status_code = 502
     error_code = "cloudflare_api_error"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> ErrorBody:
         return {
             "error": (
                 "Upstream certificate service is temporarily unavailable. "

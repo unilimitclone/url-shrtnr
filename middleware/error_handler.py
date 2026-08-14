@@ -14,7 +14,7 @@ from pydantic import ValidationError as PydanticValidationError
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from errors import AppError
+from errors import AppError, ErrorBody
 from infrastructure.logging import get_logger
 from infrastructure.templates import templates
 from middleware.rate_limiter import rate_limit_key
@@ -31,7 +31,7 @@ def _field_loc(err: dict) -> str:
     return ".".join(parts) if parts else "input"
 
 
-def _validation_error_response(errors: list[dict]) -> dict:
+def _validation_error_response(errors: list[dict]) -> ErrorBody:
     """Build a JSON-serialisable error dict from Pydantic validation errors.
 
     Follows the same ``{error, code, field?, details?}`` shape used by
@@ -101,6 +101,22 @@ REDIRECT_EDGE_INTERCEPTED_STATUSES = {404, 410, 451}
 _HTTP_STATUS_SLUGS = {404: "not_found", 405: "method_not_allowed"}
 
 
+def _json_error(
+    status_code: int, content: ErrorBody, headers: dict | None = None
+) -> JSONResponse:
+    """Build a JSON error response that self-describes via ``X-Error-Code``.
+
+    The header always carries the exact slug from the body's ``code`` field,
+    so clients and the edge can route on the header without parsing the body
+    — same contract HTML errors already honour via ``_error_html``.
+    """
+    return JSONResponse(
+        status_code=status_code,
+        content=content,
+        headers={**(headers or {}), "X-Error-Code": content["code"]},
+    )
+
+
 def _error_html(
     request: Request, status_code: int, message: str, slug: str
 ) -> Response:
@@ -141,7 +157,7 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError) -> Response:
         if _wants_json(request):
-            return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+            return _json_error(exc.status_code, exc.to_dict())
         return _error_html(
             request, exc.status_code, exc.message.upper(), exc.error_code
         )
@@ -151,31 +167,26 @@ def register_error_handlers(app: FastAPI) -> None:
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
         # Validation errors only occur on typed API/auth routes — always JSON
-        return JSONResponse(
-            status_code=422,
-            content=_validation_error_response(exc.errors()),
-        )
+        return _json_error(422, _validation_error_response(exc.errors()))
 
     @app.exception_handler(PydanticValidationError)
     async def pydantic_validation_error_handler(
         request: Request, exc: PydanticValidationError
     ) -> JSONResponse:
-        return JSONResponse(
-            status_code=422,
-            content=_validation_error_response(exc.errors()),
-        )
+        return _json_error(422, _validation_error_response(exc.errors()))
 
     @app.exception_handler(RateLimitExceeded)
     async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
         hint = _rate_limit_hint(request)
         if _wants_json(request):
-            content = {"error": "Too many requests", "code": "rate_limit_exceeded"}
+            content: ErrorBody = {
+                "error": "Too many requests",
+                "code": "rate_limit_exceeded",
+            }
             if hint:
                 content["hint"] = hint
-            return JSONResponse(
-                status_code=429,
-                content=content,
-                headers={"X-Spoo-Hint": hint} if hint else None,
+            return _json_error(
+                429, content, headers={"X-Spoo-Hint": hint} if hint else None
             )
         response = _error_html(request, 429, "TOO MANY REQUESTS", "rate_limit_exceeded")
         if hint:
@@ -193,9 +204,9 @@ def register_error_handlers(app: FastAPI) -> None:
         slug = _HTTP_STATUS_SLUGS.get(exc.status_code, f"http_{exc.status_code}")
         message = str(exc.detail) if exc.detail else "Error"
         if _wants_json(request):
-            return JSONResponse(
-                status_code=exc.status_code,
-                content={"error": message, "code": slug},
+            return _json_error(
+                exc.status_code,
+                {"error": message, "code": slug},
                 headers=exc.headers,
             )
         return _error_html(request, exc.status_code, message.upper(), slug)
@@ -209,9 +220,9 @@ def register_error_handlers(app: FastAPI) -> None:
             path=request.url.path,
         )
         if _wants_json(request):
-            return JSONResponse(
-                status_code=500,
-                content={
+            return _json_error(
+                500,
+                {
                     "error": "An internal server error occurred.",
                     "code": "internal_error",
                 },
