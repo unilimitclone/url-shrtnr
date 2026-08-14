@@ -429,7 +429,7 @@ async def result(
 
 
 @router.get("/{short_code}+")
-@limiter.limit(Limits.SHORTEN_LEGACY)
+@limiter.limit(Limits.PUBLIC_PREVIEW)
 async def preview_url(
     short_code: str,
     request: Request,
