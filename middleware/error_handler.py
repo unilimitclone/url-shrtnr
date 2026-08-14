@@ -14,7 +14,7 @@ from pydantic import ValidationError as PydanticValidationError
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from errors import AppError
+from errors import AppError, ErrorBody
 from infrastructure.logging import get_logger
 from infrastructure.templates import templates
 
@@ -30,7 +30,7 @@ def _field_loc(err: dict) -> str:
     return ".".join(parts) if parts else "input"
 
 
-def _validation_error_response(errors: list[dict]) -> dict:
+def _validation_error_response(errors: list[dict]) -> ErrorBody:
     """Build a JSON-serialisable error dict from Pydantic validation errors.
 
     Follows the same ``{error, code, field?, details?}`` shape used by
@@ -83,7 +83,7 @@ _HTTP_STATUS_SLUGS = {404: "not_found", 405: "method_not_allowed"}
 
 
 def _json_error(
-    status_code: int, content: dict, headers: dict | None = None
+    status_code: int, content: ErrorBody, headers: dict | None = None
 ) -> JSONResponse:
     """Build a JSON error response that self-describes via ``X-Error-Code``.
 

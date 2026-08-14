@@ -6,7 +6,25 @@ AppError is the base for all typed errors.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
+
+from typing_extensions import Required
+
+
+class ErrorBody(TypedDict, total=False):
+    """Wire shape of a JSON error body.
+
+    ``code`` is the machine-readable slug that also feeds the
+    ``X-Error-Code`` response header, so a body without it is a type
+    error at the call site rather than a KeyError inside an exception
+    handler.
+    """
+
+    error: Required[str]
+    code: Required[str]
+    field: str
+    details: Any
+    message: str
 
 
 class AppError(Exception):
@@ -27,8 +45,8 @@ class AppError(Exception):
         self.field = field
         self.details = details
 
-    def to_dict(self) -> dict:
-        payload: dict = {"error": self.message, "code": self.error_code}
+    def to_dict(self) -> ErrorBody:
+        payload: ErrorBody = {"error": self.message, "code": self.error_code}
         if self.field is not None:
             payload["field"] = self.field
         if self.details is not None:
@@ -68,7 +86,7 @@ class EmailNotVerifiedError(ForbiddenError):
 
     error_code = "EMAIL_NOT_VERIFIED"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> ErrorBody:
         d = super().to_dict()
         d["message"] = (
             "You must verify your email address before creating resources. "
