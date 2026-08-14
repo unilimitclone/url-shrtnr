@@ -22,6 +22,13 @@ STATS_SHORT_CODE_DESC = (
     "When `scope=all`, this is optional and filters stats to a specific URL."
 )
 
+STATS_URL_ID_DESC = (
+    "Comma-separated URL ids (MongoDB ObjectIds) to filter stats to specific "
+    "URLs you own. Slices your own aggregate — ids you do not own simply "
+    "match nothing.\n\n"
+    "For statistics on a single link, prefer `GET /api/v1/stats/links/{url_id}`."
+)
+
 STATS_START_DATE_DESC = (
     "Start of time range. Accepts ISO 8601 datetime string "
     "(e.g., `2025-01-01T00:00:00Z`) or Unix timestamp in seconds "
@@ -80,6 +87,8 @@ STATS_FILTERS_DESC = (
     "- `referrer` — Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n"
     "- `short_code` — Filter by URL alias (e.g., mylink, promo2024) — "
     "**not allowed** with `scope=anon`\n"
+    "- `url_id` — Filter by URL id (MongoDB ObjectId); ids you do not own "
+    "match nothing\n"
     "- `utm_source` / `utm_medium` / `utm_campaign` — Filter by campaign tags; "
     "`(none)` matches untagged clicks\n\n"
     "**Value format:** Array of strings for each dimension.\n\n"
@@ -157,6 +166,54 @@ STATS_UTM_DESC = (
     "**Important:** Values are case-sensitive. `(none)` matches clicks with "
     "no tag.\n\n"
     "**Note:** Both `filters` JSON and individual parameters can be combined."
+)
+
+
+# ── LinkStatsQuery / LinkExportQuery ─────────────────────────────────────────
+# The per-link endpoints select the link in the path, so the link-identity
+# dimensions (`short_code`, `url_id`) disappear from group_by and filters.
+
+LINK_STATS_GROUP_BY_DESC = (
+    "Comma-separated grouping dimensions for the statistics breakdown. "
+    "Defaults to `time` if omitted.\n\n"
+    "**Available dimensions:**\n\n"
+    "- `time` — group by time buckets (day/week/month, auto-selected based on range)\n"
+    "- `browser` — group by browser name (e.g., Chrome, Firefox, Safari)\n"
+    "- `os` — group by operating system (e.g., Windows, macOS, Linux)\n"
+    "- `device` — group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n"
+    "- `country` — group by country\n"
+    "- `city` — group by city\n"
+    "- `referrer` — group by referrer URL\n"
+    "- `utm_source` — group by the `utm_source` tag on the short link "
+    "(untagged clicks appear as `(none)`)\n"
+    "- `utm_medium` — group by the `utm_medium` tag\n"
+    "- `utm_campaign` — group by the `utm_campaign` tag\n\n"
+    "Multiple dimensions can be combined: `time,browser` returns time series "
+    "broken down by browser."
+)
+
+LINK_STATS_FILTERS_DESC = (
+    "**Method 1: JSON Filters Object**\n\n"
+    "JSON string containing dimension filters. "
+    'Format: `{"dimension": ["value1", "value2"]}`\n\n'
+    "**Available filter dimensions:**\n\n"
+    "- `browser` — Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n"
+    "- `os` — Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n"
+    "- `device` — Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n"
+    "- `country` — Filter by country name (e.g., United States, Canada, Germany)\n"
+    "- `city` — Filter by city name (e.g., New York, London, Mumbai)\n"
+    "- `referrer` — Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n"
+    "- `utm_source` / `utm_medium` / `utm_campaign` — Filter by campaign tags; "
+    "`(none)` matches untagged clicks\n\n"
+    "**Value format:** Array of strings for each dimension.\n\n"
+    "**Important:** Filter values are case-sensitive. Use exact capitalization "
+    "as stored in the database.\n\n"
+    "**Examples:**\n\n"
+    '- `{"browser": ["Chrome", "Firefox"]}` — Chrome OR Firefox clicks\n'
+    '- `{"country": ["United States", "Canada"], "browser": ["Chrome"]}` — '
+    "US/CA clicks from Chrome\n\n"
+    "**Alternative:** You can also pass filters as individual query parameters "
+    "(see `browser`, `os`, `country`, `city`, `referrer` parameters below)."
 )
 
 

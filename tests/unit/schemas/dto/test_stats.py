@@ -7,7 +7,12 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from schemas.dto.requests.stats import ExportQuery, StatsQuery
+from schemas.dto.requests.stats import (
+    ExportQuery,
+    LinkExportQuery,
+    LinkStatsQuery,
+    StatsQuery,
+)
 from schemas.dto.responses.stats import (
     StatsResponse,
     StatsSummary,
@@ -95,6 +100,84 @@ class TestStatsQuery:
         assert "DE" in q.parsed_filters.get("country", [])
 
 
+# ── StatsQuery — url_id filter ─────────────────────────────────────────────────
+
+
+class TestStatsQueryUrlIdFilter:
+    def test_url_id_param_parses_comma_separated(self):
+        a, b = "a" * 24, "b" * 24
+        q = StatsQuery.model_validate({"url_id": f"{a},{b}"})
+        assert q.parsed_filters["url_id"] == [a, b]
+
+    def test_url_id_accepted_in_filters_json(self):
+        oid = "c" * 24
+        q = StatsQuery.model_validate({"filters": json.dumps({"url_id": [oid]})})
+        assert q.parsed_filters["url_id"] == [oid]
+
+    def test_invalid_url_id_param_rejected(self):
+        with pytest.raises(ValidationError, match="invalid url_id"):
+            StatsQuery.model_validate({"url_id": "not-an-objectid"})
+
+    def test_invalid_url_id_in_filters_json_rejected(self):
+        # The JSON path must be validated too, not just the param.
+        with pytest.raises(ValidationError, match="invalid url_id"):
+            StatsQuery.model_validate({"filters": json.dumps({"url_id": ["nope"]})})
+
+    def test_url_id_never_a_group_by_dimension(self):
+        with pytest.raises(ValidationError, match="invalid group_by"):
+            StatsQuery.model_validate({"group_by": "url_id"})
+
+
+# ── LinkStatsQuery ─────────────────────────────────────────────────────────────
+
+
+class TestLinkStatsQuery:
+    def test_utm_and_device_group_by_allowed(self):
+        # Owner surface — the utm dimensions stay available per-link.
+        q = LinkStatsQuery.model_validate(
+            {"group_by": "device,utm_source,utm_medium,utm_campaign"}
+        )
+        assert q.parsed_group_by == [
+            "device",
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+        ]
+
+    def test_short_code_group_by_rejected(self):
+        # The path already selects the link — bucketing by it is meaningless.
+        with pytest.raises(ValidationError, match="invalid group_by"):
+            LinkStatsQuery.model_validate({"group_by": "short_code"})
+
+    def test_has_no_link_identity_params(self):
+        # scope/short_code/url_id do not exist on the per-link DTO; stray
+        # params are silently ignored (RequestBase extra behaviour).
+        q = LinkStatsQuery.model_validate(
+            {"scope": "anon", "short_code": "x", "url_id": "a" * 24}
+        )
+        assert not hasattr(q, "scope")
+        assert not hasattr(q, "short_code")
+        assert not hasattr(q, "url_id")
+        assert q.parsed_filters == {}
+
+    def test_link_identity_json_filters_dropped(self):
+        q = LinkStatsQuery.model_validate(
+            {
+                "filters": json.dumps(
+                    {"short_code": ["x"], "url_id": ["a" * 24], "browser": ["Chrome"]}
+                )
+            }
+        )
+        assert q.parsed_filters == {"browser": ["Chrome"]}
+
+    def test_dimension_filters_parsed(self):
+        q = LinkStatsQuery.model_validate(
+            {"browser": "Chrome,Firefox", "utm_source": "(none)"}
+        )
+        assert q.parsed_filters["browser"] == ["Chrome", "Firefox"]
+        assert q.parsed_filters["utm_source"] == ["(none)"]
+
+
 # ── ExportQuery ────────────────────────────────────────────────────────────────
 
 
@@ -115,6 +198,33 @@ class TestExportQuery:
     def test_inherits_stats_fields(self):
         q = ExportQuery.model_validate({"format": "xlsx", "scope": "all"})
         assert q.scope == "all"
+
+    def test_url_id_filter_inherited(self):
+        oid = "d" * 24
+        q = ExportQuery.model_validate({"format": "json", "url_id": oid})
+        assert q.parsed_filters["url_id"] == [oid]
+
+
+# ── LinkExportQuery ────────────────────────────────────────────────────────────
+
+
+class TestLinkExportQuery:
+    @pytest.mark.parametrize("fmt", ["csv", "xlsx", "json", "xml"])
+    def test_valid_format(self, fmt):
+        assert LinkExportQuery.model_validate({"format": fmt}).format == fmt
+
+    def test_missing_format_rejected(self):
+        with pytest.raises(ValidationError):
+            LinkExportQuery.model_validate({})
+
+    def test_invalid_format_rejected(self):
+        with pytest.raises(ValidationError):
+            LinkExportQuery.model_validate({"format": "pdf"})
+
+    def test_inherits_link_stats_fields(self):
+        q = LinkExportQuery.model_validate({"format": "json", "browser": "Chrome"})
+        assert q.parsed_filters["browser"] == ["Chrome"]
+        assert not hasattr(q, "scope")
 
 
 # ── StatsResponse ──────────────────────────────────────────────────────────────

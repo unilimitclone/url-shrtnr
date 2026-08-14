@@ -681,3 +681,156 @@ class TestClaimedLinksArm:
         await svc.query(query=_q(scope="anon", short_code="abc1234"), owner_id=None)
 
         url_repo.list_claimed_ids.assert_not_awaited()
+
+
+# ── Tests: url_id filter (account scope) ──────────────────────────────────────
+
+
+class TestUrlIdFilter:
+    def test_url_id_filter_builds_in_arm_of_object_ids(self):
+        from bson import ObjectId
+
+        from services.stats_service import StatsService
+
+        ids = ["a" * 24, "b" * 24]
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"url_id": ids}
+        )
+        assert q["meta.url_id"] == {"$in": [ObjectId(v) for v in ids]}
+
+    def test_url_id_filter_keeps_owner_stamp(self):
+        """Isolation: the owner stamp stays in the $match, so a foreign
+        url_id in the filter simply matches nothing — no ownership check
+        needed, no leak possible."""
+        from bson import ObjectId
+
+        from services.stats_service import StatsService
+
+        foreign = "f" * 24
+        q = StatsService._build_click_query(
+            "all", OWNER_ID, None, START, NOW, {"url_id": [foreign]}
+        )
+        assert q["meta.owner_id"] == ObjectId(OWNER_ID)
+        assert q["meta.url_id"] == {"$in": [ObjectId(foreign)]}
+
+    @pytest.mark.asyncio
+    async def test_url_id_param_reaches_match_via_query(self):
+        from bson import ObjectId
+
+        svc, click_repo, _ = make_service()
+        click_repo.aggregate.return_value = facet_response()
+        oid = "a" * 24
+
+        await svc.query(
+            query=_q(scope="all", short_code=None, url_id=oid),
+            owner_id=OWNER_ID,
+        )
+        match = click_repo.aggregate.call_args[0][0][0]["$match"]
+        assert match["meta.url_id"] == {"$in": [ObjectId(oid)]}
+        assert match["meta.owner_id"] == ObjectId(OWNER_ID)
+
+
+# ── Tests: per-link query ─────────────────────────────────────────────────────
+
+
+def make_url_doc(alias="mylink"):
+    from bson import ObjectId
+
+    from schemas.models.url import UrlV2Doc
+
+    return UrlV2Doc(
+        **{
+            "_id": ObjectId("e" * 24),
+            "alias": alias,
+            "owner_id": ObjectId(OWNER_ID),
+            "domain": "spoo.me",
+            "created_at": NOW,
+            "long_url": "https://example.com/long",
+            "status": "ACTIVE",
+        }
+    )
+
+
+def _lq(**kwargs):
+    from schemas.dto.requests.stats import LinkStatsQuery
+
+    defaults = {
+        "start_date": START_ISO,
+        "end_date": NOW_ISO,
+        "group_by": "time",
+        "metrics": "clicks",
+        "timezone": "UTC",
+    }
+    defaults.update(kwargs)
+    return LinkStatsQuery(**defaults)
+
+
+class TestQueryLink:
+    @pytest.mark.asyncio
+    async def test_match_scopes_by_url_id_only(self):
+        """The $match is url_id + range — no owner arm, no short_code.
+
+        This is also the claimed-link history guarantee: claim-time
+        reattribution stamps pre-claim clicks with meta.url_id, so the
+        pure url_id match carries the full history without a claimed arm.
+        """
+        svc, click_repo, url_repo = make_service()
+        click_repo.aggregate.return_value = facet_response()
+        url = make_url_doc()
+
+        await svc.query_link(_lq(), url)
+
+        match = click_repo.aggregate.call_args[0][0][0]["$match"]
+        assert match["meta.url_id"] == url.id
+        assert match["clicked_at"] == {"$gte": START, "$lte": NOW}
+        assert "meta.owner_id" not in match
+        assert "meta.short_code" not in match
+        url_repo.list_claimed_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_response_echoes_url_id_and_alias(self):
+        svc, click_repo, _ = make_service()
+        click_repo.aggregate.return_value = facet_response()
+        url = make_url_doc(alias="promo")
+
+        result = await svc.query_link(_lq(), url)
+
+        assert result["url_id"] == str(url.id)
+        assert result["alias"] == "promo"
+        assert result["scope"] == "all"
+        assert "short_code" not in result
+
+    @pytest.mark.asyncio
+    async def test_dimension_filters_applied_with_sentinel_semantics(self):
+        svc, click_repo, _ = make_service()
+        click_repo.aggregate.return_value = facet_response()
+
+        await svc.query_link(_lq(utm_source="(none)", browser="Chrome"), make_url_doc())
+
+        match = click_repo.aggregate.call_args[0][0][0]["$match"]
+        assert match["browser"] == {"$in": ["Chrome"]}
+        assert match["$or"] == [
+            {"utm_source": {"$in": ["(none)"]}},
+            {"utm_source": {"$in": [None, ""]}},
+            {"utm_source": {"$exists": False}},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_utm_group_by_allowed(self):
+        svc, click_repo, _ = make_service()
+        click_repo.aggregate.return_value = facet_response()
+
+        await svc.query_link(_lq(group_by="time,utm_source"), make_url_doc())
+
+        facet = click_repo.aggregate.call_args[0][0][1]["$facet"]
+        assert "utm_source" in facet
+
+    @pytest.mark.asyncio
+    async def test_window_validation_shared_with_account_query(self):
+        svc, _, _ = make_service()
+
+        with pytest.raises(ValidationError, match="date range cannot exceed 90 days"):
+            await svc.query_link(
+                _lq(start_date=(NOW - timedelta(days=95)).isoformat()),
+                make_url_doc(),
+            )

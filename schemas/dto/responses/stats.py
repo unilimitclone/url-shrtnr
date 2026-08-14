@@ -1,7 +1,8 @@
 """
-Response DTO for the statistics endpoint.
+Response DTOs for the statistics endpoints.
 
-StatsResponse — GET /api/v1/stats  (200)
+StatsResponse     — GET /api/v1/stats                  (200)
+LinkStatsResponse — GET /api/v1/stats/links/{url_id}   (200)
 
 The ``metrics`` dict has dynamic keys of the form ``{metric}_by_{dimension}``
 (e.g. ``clicks_by_time``, ``unique_clicks_by_browser``), so it is typed as a
@@ -94,3 +95,14 @@ class StatsResponse(ResponseBase):
 
     # Only present when total_clicks > 0
     computed_metrics: ComputedMetrics | None = None
+
+
+class LinkStatsResponse(StatsResponse):
+    """Response body for GET /api/v1/stats/links/{url_id}.
+
+    The standard stats wire plus the identity of the selected link.
+    ``scope`` stays ``all`` — the link is part of the owner's aggregate.
+    """
+
+    url_id: str
+    alias: str

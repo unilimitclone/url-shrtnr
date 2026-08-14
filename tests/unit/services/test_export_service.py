@@ -264,3 +264,99 @@ class TestDelegation:
         assert result.content == b"custom"
         assert result.mimetype == "application/custom"
         assert result.filename == "out.custom"
+
+
+# ── Tests: ExportService — per-link export ─────────────────────────────────────
+
+
+def _make_url_doc(alias="mylink"):
+    from bson import ObjectId
+
+    from schemas.models.url import UrlV2Doc
+
+    return UrlV2Doc(
+        **{
+            "_id": ObjectId("e" * 24),
+            "alias": alias,
+            "owner_id": ObjectId("a" * 24),
+            "domain": "spoo.me",
+            "created_at": NOW,
+            "long_url": "https://example.com/long",
+            "status": "ACTIVE",
+        }
+    )
+
+
+def _link_export_query(fmt="json"):
+    from schemas.dto.requests.stats import LinkExportQuery
+
+    return LinkExportQuery(
+        format=fmt,
+        start_date=START_ISO,
+        end_date=NOW_ISO,
+        group_by="browser",
+        metrics="clicks",
+        timezone="UTC",
+    )
+
+
+def make_link_service(stats_data=None):
+    stats_svc = AsyncMock(spec=StatsService)
+    stats_svc.query_link = AsyncMock(return_value=stats_data or SAMPLE_STATS)
+    return ExportService(
+        stats_service=stats_svc, formatters=default_formatters()
+    ), stats_svc
+
+
+class TestExportLink:
+    @pytest.mark.asyncio
+    async def test_delegates_to_query_link(self):
+        svc, stats_svc = make_link_service()
+        query = _link_export_query("json")
+        url = _make_url_doc()
+
+        await svc.export_link(query=query, url=url)
+
+        stats_svc.query_link.assert_awaited_once()
+        call_args = stats_svc.query_link.call_args
+        assert call_args[0][0] is query, "must forward the exact query object"
+        assert call_args[0][1] is url, "must forward the resolved URL doc"
+        stats_svc.query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_filename_derived_from_alias(self):
+        svc, _ = make_link_service()
+        result = await svc.export_link(_link_export_query("json"), _make_url_doc())
+        assert result.filename == "spoo-me-export-mylink.json"
+
+    @pytest.mark.asyncio
+    async def test_csv_filename_keeps_format_suffix(self):
+        svc, _ = make_link_service()
+        result = await svc.export_link(_link_export_query("csv"), _make_url_doc())
+        assert result.filename == "spoo-me-export-mylink-csv.zip"
+
+    @pytest.mark.asyncio
+    async def test_emoji_alias_falls_back_to_id_in_filename(self):
+        # Content-Disposition is latin-1 on the wire — a non-encodable alias
+        # must never 500 the download.
+        svc, _ = make_link_service()
+        url = _make_url_doc(alias="🚀🎉")
+        result = await svc.export_link(_link_export_query("json"), url)
+        assert result.filename == f"spoo-me-export-{url.id}.json"
+        result.filename.encode("latin-1")
+
+    @pytest.mark.asyncio
+    async def test_unknown_format_raises_validation_error(self):
+        svc, stats_svc = make_link_service()
+        query = _link_export_query("json")
+        object.__setattr__(query, "format", "pdf")
+        with pytest.raises(ValidationError, match="invalid format"):
+            await svc.export_link(query=query, url=_make_url_doc())
+        stats_svc.query_link.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_query_link_error_propagates(self):
+        svc, stats_svc = make_link_service()
+        stats_svc.query_link.side_effect = NotFoundError("not found")
+        with pytest.raises(NotFoundError):
+            await svc.export_link(_link_export_query("json"), _make_url_doc())
