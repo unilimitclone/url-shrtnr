@@ -32,7 +32,7 @@ class Limits:
 
     # API v1 — authenticated vs anonymous tiers
     API_AUTHED = "60 per minute; 5000 per day"
-    API_ANON = "20 per minute; 1000 per day"
+    API_ANON = "20 per minute; 200 per day"
 
     # Alias availability check — cheap read, UI debounces on each keystroke
     API_CHECK_AUTHED = "180 per minute; 10000 per day"
@@ -147,8 +147,8 @@ class Limits:
     WEBHOOK_RETRY = "30 per minute"
     WEBHOOK_EVENT_TYPES = "60 per minute"
 
-    # URL shortener (legacy endpoint)
-    SHORTEN_LEGACY = "100 per minute"
+    # URL shortener (legacy endpoints) — strict on purpose, pushes to v1
+    SHORTEN_LEGACY = "5 per minute; 50 per day"
 
     # Legacy stats / export pages
     STATS_LEGACY_PAGE = "20 per minute; 1000 per day"

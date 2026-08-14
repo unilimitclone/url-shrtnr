@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from errors import AppError
 from infrastructure.logging import get_logger
 from infrastructure.templates import templates
+from middleware.rate_limiter import rate_limit_key
 
 log = get_logger(__name__)
 
@@ -146,13 +147,28 @@ def register_error_handlers(app: FastAPI) -> None:
             content=_validation_error_response(exc.errors()),
         )
 
+    def _rate_limit_hint(request: Request) -> str | None:
+        if request.url.path.startswith("/api/v1"):
+            if rate_limit_key(request).startswith(("apikey:", "jwt:")):
+                return None
+            return (
+                "Anonymous requests get the lowest limits. Authenticate with "
+                "a free account or an API key for 60 per minute and 5000 per day."
+            )
+        if request.method == "POST" and request.url.path in ("/", "/emoji"):
+            return (
+                "The legacy API is strictly rate limited. Use POST /api/v1/shorten "
+                "for higher limits: https://docs.spoo.me/rate-limits"
+            )
+        return None
+
     @app.exception_handler(RateLimitExceeded)
     async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
         if _wants_json(request):
-            return JSONResponse(
-                status_code=429,
-                content={"error": "Too many requests", "code": "rate_limit_exceeded"},
-            )
+            content = {"error": "Too many requests", "code": "rate_limit_exceeded"}
+            if hint := _rate_limit_hint(request):
+                content["hint"] = hint
+            return JSONResponse(status_code=429, content=content)
         return _error_html(request, 429, "TOO MANY REQUESTS", "rate_limit_exceeded")
 
     @app.exception_handler(StarletteHTTPException)

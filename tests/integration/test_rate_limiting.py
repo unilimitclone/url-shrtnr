@@ -162,6 +162,50 @@ def test_rate_limit_html_edge_composed_returns_empty_body(edge_composed_errors):
     assert resp.content == b""
 
 
+def test_rate_limit_hint_on_anonymous_api_route():
+    """Anonymous 429 on /api/v1/* carries the authenticate hint."""
+    _reset_limiter()
+    router = _make_api_limited_router("1/minute")
+    app = _build_test_app(extra_routers=[router])
+    with TestClient(app, raise_server_exceptions=False) as c:
+        c.get("/api/v1/test-limited")
+        resp = c.get("/api/v1/test-limited")
+    assert resp.status_code == 429
+    assert "free account" in resp.json()["hint"]
+
+
+def test_rate_limit_hint_absent_for_authenticated_api_route():
+    """Authenticated callers already have the top tier — no hint."""
+    _reset_limiter()
+    router = _make_api_limited_router("1/minute")
+    app = _build_test_app(extra_routers=[router])
+    headers = {"Authorization": "Bearer spoo_testkey123"}
+    with TestClient(app, raise_server_exceptions=False) as c:
+        c.get("/api/v1/test-limited", headers=headers)
+        resp = c.get("/api/v1/test-limited", headers=headers)
+    assert resp.status_code == 429
+    assert "hint" not in resp.json()
+
+
+def test_rate_limit_hint_on_legacy_shorten():
+    """429 on the legacy mint endpoints points at API v1."""
+    _reset_limiter()
+    r = APIRouter()
+
+    @r.post("/emoji")
+    @limiter.limit("1/minute")
+    async def _emoji(request: Request):
+        return {"ok": True}
+
+    app = _build_test_app(extra_routers=[r])
+    headers = {"Accept": "application/json"}
+    with TestClient(app, raise_server_exceptions=False) as c:
+        c.post("/emoji", headers=headers)
+        resp = c.post("/emoji", headers=headers)
+    assert resp.status_code == 429
+    assert "/api/v1/shorten" in resp.json()["hint"]
+
+
 def test_rate_limit_key_uses_ip_for_anonymous():
     """Anonymous requests (no auth header, no cookie) should be keyed by client IP."""
     _reset_limiter()
