@@ -158,11 +158,14 @@ class MaxContentLengthMiddleware(BaseHTTPMiddleware):
         except ValueError:
             parsed = None
         if parsed is not None and parsed > self.max_content_length:
+            # Rejected before the exception handlers run, so the response
+            # must self-describe via X-Error-Code itself.
             return JSONResponse(
                 status_code=413,
                 content={
                     "error": "Request body too large",
                     "code": "payload_too_large",
                 },
+                headers={"X-Error-Code": "payload_too_large"},
             )
         return await call_next(request)

@@ -133,6 +133,7 @@ def test_rate_limit_json_response_on_api_route():
     assert "error" in data
     assert "code" in data
     assert data["code"] == "rate_limit_exceeded"
+    assert resp.headers["X-Error-Code"] == "rate_limit_exceeded"
     assert "application/json" in resp.headers["content-type"]
 
 

@@ -266,6 +266,8 @@ def test_body_size_limit_rejects_large_payload():
             },
         )
     assert resp.status_code == 413
+    assert resp.json()["code"] == "payload_too_large"
+    assert resp.headers["X-Error-Code"] == "payload_too_large"
 
 
 def test_body_size_limit_allows_normal_payload():

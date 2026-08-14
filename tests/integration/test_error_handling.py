@@ -26,6 +26,7 @@ from errors import (
     AuthenticationError,
     BlockedUrlError,
     ConflictError,
+    EmailNotVerifiedError,
     ForbiddenError,
     GoneError,
     NotFoundError,
@@ -75,6 +76,18 @@ async def api_validation(request: Request):
 @_api_router.get("/trigger-unhandled")
 async def api_unhandled(request: Request):
     raise RuntimeError("unexpected failure")
+
+
+@_api_router.get("/trigger-email-not-verified")
+async def api_email_not_verified(request: Request):
+    raise EmailNotVerifiedError("email not verified")
+
+
+@_api_router.get("/trigger-teapot")
+async def api_teapot(request: Request):
+    from starlette.exceptions import HTTPException
+
+    raise HTTPException(status_code=418, detail="teapot")
 
 
 @_api_router.get("/trigger-422")
@@ -174,6 +187,7 @@ def test_app_error_json_on_api_route():
     data = resp.json()
     assert data["error"] == "resource not found"
     assert data["code"] == "not_found"
+    assert resp.headers["X-Error-Code"] == "not_found"
     assert "application/json" in resp.headers["content-type"]
 
 
@@ -186,6 +200,7 @@ def test_app_error_json_on_auth_route():
     data = resp.json()
     assert data["error"] == "bad credentials"
     assert data["code"] == "authentication_error"
+    assert resp.headers["X-Error-Code"] == "authentication_error"
     assert "application/json" in resp.headers["content-type"]
 
 
@@ -250,6 +265,7 @@ def test_unmatched_route_json_when_accept_json():
     assert resp.status_code == 404
     data = resp.json()
     assert data["code"] == "not_found"
+    assert resp.headers["X-Error-Code"] == "not_found"
     assert "detail" not in data
 
 
@@ -271,6 +287,7 @@ def test_validation_error_returns_422_json():
     assert resp.status_code == 422
     data = resp.json()
     assert data["code"] == "validation_error"
+    assert resp.headers["X-Error-Code"] == "validation_error"
     assert data["field"] == "count"
     assert data["error"].startswith("count: ")
     assert "details" not in data
@@ -335,6 +352,7 @@ def test_unhandled_exception_returns_500_json():
     data = resp.json()
     assert data["error"] == "An internal server error occurred."
     assert data["code"] == "internal_error"
+    assert resp.headers["X-Error-Code"] == "internal_error"
 
 
 def test_unhandled_exception_returns_500_html():
@@ -426,6 +444,33 @@ def test_page_gone_returns_html():
     assert resp.headers["X-Error-Code"] == "gone"
 
 
+# ── X-Error-Code on JSON responses ───────────────────────────────────────────
+
+
+def test_email_not_verified_header_keeps_casing():
+    """The EMAIL_NOT_VERIFIED slug is upper-case in the body — the header
+    must carry it verbatim, not a normalised variant."""
+    app = _build_test_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/api/v1/trigger-email-not-verified")
+    assert resp.status_code == 403
+    data = resp.json()
+    assert data["code"] == "EMAIL_NOT_VERIFIED"
+    assert resp.headers["X-Error-Code"] == "EMAIL_NOT_VERIFIED"
+
+
+def test_http_exception_fallback_slug_in_header():
+    """Unmapped HTTPException statuses fall back to http_<status> — header
+    and body must agree."""
+    app = _build_test_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/api/v1/trigger-teapot")
+    assert resp.status_code == 418
+    data = resp.json()
+    assert data["code"] == "http_418"
+    assert resp.headers["X-Error-Code"] == "http_418"
+
+
 # ── Edge-composed errors (EDGE_COMPOSED_ERRORS) ──────────────────────────────
 
 
@@ -498,4 +543,4 @@ def test_edge_composed_json_path_unaffected(edge_composed_errors):
     data = resp.json()
     assert data["error"] == "resource not found"
     assert data["code"] == "not_found"
-    assert "X-Error-Code" not in resp.headers
+    assert resp.headers["X-Error-Code"] == "not_found"
