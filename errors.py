@@ -27,6 +27,7 @@ ErrorBody = TypedDict(  # noqa: UP013 — class syntax loses the markers here
         "field": NotRequired[str],
         "details": NotRequired[Any],
         "message": NotRequired[str],
+        "hint": NotRequired[str],
     },
 )
 

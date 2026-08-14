@@ -24,7 +24,7 @@ from schemas.dto.responses.stats import StatsResponse
 
 router = APIRouter(tags=["Statistics"])
 
-_stats_limit, _stats_key = dynamic_limit(Limits.API_AUTHED, Limits.API_ANON)
+_stats_limit, _stats_key = dynamic_limit(Limits.API_AUTHED, Limits.API_ANON_READ)
 
 
 @router.get(

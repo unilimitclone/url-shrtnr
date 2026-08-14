@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from errors import AppError, ErrorBody
 from infrastructure.logging import get_logger
 from infrastructure.templates import templates
+from middleware.rate_limiter import rate_limit_key
 
 log = get_logger(__name__)
 
@@ -67,6 +68,24 @@ def _wants_json(request: Request) -> bool:
         or path.startswith("/auth/")
         or path.startswith("/oauth/")
     )
+
+
+def _rate_limit_hint(request: Request) -> str | None:
+    # Mirrors rate_limit_key on purpose: the hint must match the tier the
+    # limiter actually applied, validated or not.
+    if request.url.path.startswith("/api/v1"):
+        if rate_limit_key(request).startswith(("apikey:", "jwt:")):
+            return None
+        return (
+            "Anonymous requests get the lowest limits. Authenticate with "
+            "a free account or an API key for 60 per minute and 5000 per day."
+        )
+    if request.method == "POST" and request.url.path in ("/", "/emoji"):
+        return (
+            "The legacy API is strictly rate limited. Use POST /api/v1/shorten "
+            "for higher limits: https://docs.spoo.me/rate-limits"
+        )
+    return None
 
 
 # Statuses that return EMPTY bodies under EDGE_COMPOSED_ERRORS — must stay
@@ -158,12 +177,21 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RateLimitExceeded)
     async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
+        hint = _rate_limit_hint(request)
         if _wants_json(request):
+            content: ErrorBody = {
+                "error": "Too many requests",
+                "code": "rate_limit_exceeded",
+            }
+            if hint:
+                content["hint"] = hint
             return _json_error(
-                429,
-                {"error": "Too many requests", "code": "rate_limit_exceeded"},
+                429, content, headers={"X-Spoo-Hint": hint} if hint else None
             )
-        return _error_html(request, 429, "TOO MANY REQUESTS", "rate_limit_exceeded")
+        response = _error_html(request, 429, "TOO MANY REQUESTS", "rate_limit_exceeded")
+        if hint:
+            response.headers["X-Spoo-Hint"] = hint
+        return response
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(
