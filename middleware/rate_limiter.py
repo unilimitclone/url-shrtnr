@@ -156,9 +156,8 @@ class Limits:
     STATS_LEGACY_PAGE = "20 per minute; 1000 per day"
     STATS_LEGACY_EXPORT = "10 per minute; 200 per day"
 
-    # Export stats (auth vs anon tiers)
+    # Export stats (auth required)
     API_EXPORT_AUTHED = "30 per minute; 1000 per day"
-    API_EXPORT_ANON = "10 per minute; 200 per day"
 
     # Password-protected URL check
     PASSWORD_CHECK = "10 per minute; 30 per hour"

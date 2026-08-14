@@ -12,7 +12,12 @@ from enum import Enum
 
 
 class StatsScope(str, Enum):
-    """Stats query scope."""
+    """Stats wire scope.
+
+    Response-only: the ``scope`` request parameter no longer exists (auth
+    is mandatory), but the response wire keeps its ``scope`` key and the
+    public stats endpoint's frozen contract still carries ``anon``.
+    """
 
     ALL = "all"
     ANON = "anon"
@@ -53,7 +58,6 @@ class ExportFormat(str, Enum):
     XML = "xml"
 
 
-ALLOWED_SCOPES = frozenset(StatsScope)
 ALLOWED_GROUP_BY = frozenset(StatsDimension) - {StatsDimension.URL_ID}
 ALLOWED_METRICS = frozenset(StatsMetric)
 ALLOWED_FILTERS = frozenset(

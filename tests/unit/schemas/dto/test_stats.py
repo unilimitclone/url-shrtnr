@@ -25,14 +25,18 @@ from schemas.dto.responses.stats import (
 class TestStatsQuery:
     def test_defaults(self):
         q = StatsQuery.model_validate({})
-        assert q.scope == "all"
         assert q.parsed_group_by == ["time"]
         assert q.parsed_metrics == ["clicks", "unique_clicks"]
         assert q.timezone == "UTC"
 
-    def test_invalid_scope_rejected(self):
-        with pytest.raises(ValidationError):
-            StatsQuery.model_validate({"scope": "invalid"})
+    @pytest.mark.parametrize("value", ["anon", "all", "invalid"])
+    def test_stray_scope_param_silently_ignored(self, value):
+        """The scope field is gone; RequestBase is pydantic extra-ignore,
+        so an old client sending ANY scope value gets a normal response,
+        never a 422."""
+        q = StatsQuery.model_validate({"scope": value})
+        assert not hasattr(q, "scope")
+        assert q.parsed_group_by == ["time"]
 
     def test_comma_separated_group_by(self):
         q = StatsQuery.model_validate({"group_by": "time,browser,os"})
@@ -98,6 +102,10 @@ class TestStatsQuery:
         q = StatsQuery.model_validate({"browser": "Chrome", "country": "US,DE"})
         assert q.parsed_filters.get("browser") == ["Chrome"]
         assert "DE" in q.parsed_filters.get("country", [])
+
+    def test_short_code_param_is_a_plain_multi_value_filter(self):
+        q = StatsQuery.model_validate({"short_code": "link1,link2"})
+        assert q.parsed_filters["short_code"] == ["link1", "link2"]
 
 
 # ── StatsQuery — url_id filter ─────────────────────────────────────────────────
@@ -213,8 +221,8 @@ class TestExportQuery:
             ExportQuery.model_validate({"format": fmt})
 
     def test_inherits_stats_fields(self):
-        q = ExportQuery.model_validate({"format": "xlsx", "scope": "all"})
-        assert q.scope == "all"
+        q = ExportQuery.model_validate({"format": "xlsx", "short_code": "mylink"})
+        assert q.parsed_filters["short_code"] == ["mylink"]
 
     def test_url_id_filter_inherited(self):
         oid = "d" * 24

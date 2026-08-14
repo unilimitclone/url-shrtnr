@@ -20,7 +20,6 @@ import re
 from errors import ValidationError
 from infrastructure.logging import get_logger
 from schemas.dto.requests.stats import ExportQuery, LinkExportQuery
-from schemas.enums.stats import StatsScope
 from schemas.models.url import UrlV2Doc
 from schemas.results import ExportResult
 from services.export.protocol import ExportFormatter
@@ -60,7 +59,7 @@ class ExportService:
 
         Args:
             query:    Validated ExportQuery DTO with format and stats parameters.
-            owner_id: String user ID for scope=all, or None.
+            owner_id: String user ID of the authenticated caller.
 
         Raises:
             ValidationError: Unknown format.
@@ -75,8 +74,6 @@ class ExportService:
         log.info(
             "export_generated",
             format=query.format,
-            scope=query.scope,
-            short_code=query.short_code if query.scope == StatsScope.ANON else None,
             size_bytes=len(content),
         )
         return ExportResult(

@@ -9,17 +9,11 @@ OpenAPI spec.  Each constant is imported into the relevant model's
 
 # ── StatsQuery / ExportQuery ─────────────────────────────────────────────────
 
-STATS_SCOPE_DESC = (
-    "Statistics scope: `all` (authenticated only) or `anon` (public access).\n\n"
-    "- `all` — aggregate stats across all URLs owned by the authenticated user. "
-    "Requires authentication.\n"
-    "- `anon` — public stats for a single URL. Requires `short_code` parameter. "
-    "No authentication needed (unless stats are private)."
-)
-
 STATS_SHORT_CODE_DESC = (
-    "URL alias to query stats for. **Required** when `scope=anon`. "
-    "When `scope=all`, this is optional and filters stats to a specific URL."
+    "Comma-separated URL aliases to filter stats to specific URLs you own. "
+    "Slices your own aggregate — aliases you do not own simply match "
+    "nothing.\n\n"
+    "For statistics on a single link, prefer `GET /api/v1/stats/links/{url_id}`."
 )
 
 STATS_URL_ID_DESC = (
@@ -52,7 +46,7 @@ STATS_GROUP_BY_DESC = (
     "- `country` — group by country\n"
     "- `city` — group by city\n"
     "- `referrer` — group by referrer URL\n"
-    "- `short_code` — group by URL alias (only with `scope=all`)\n"
+    "- `short_code` — group by URL alias\n"
     "- `utm_source` — group by the `utm_source` tag on the short link "
     "(untagged clicks appear as `(none)`)\n"
     "- `utm_medium` — group by the `utm_medium` tag\n"
@@ -85,8 +79,7 @@ STATS_FILTERS_DESC = (
     "- `country` — Filter by country name (e.g., United States, Canada, Germany)\n"
     "- `city` — Filter by city name (e.g., New York, London, Mumbai)\n"
     "- `referrer` — Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n"
-    "- `short_code` — Filter by URL alias (e.g., mylink, promo2024) — "
-    "**not allowed** with `scope=anon`\n"
+    "- `short_code` — Filter by URL alias (e.g., mylink, promo2024)\n"
     "- `url_id` — Filter by URL id (MongoDB ObjectId); ids you do not own "
     "match nothing\n"
     "- `utm_source` / `utm_medium` / `utm_campaign` — Filter by campaign tags; "
@@ -98,8 +91,7 @@ STATS_FILTERS_DESC = (
     '- `{"browser": ["Chrome", "Firefox"]}` — Chrome OR Firefox clicks\n'
     '- `{"country": ["United States", "Canada"], "browser": ["Chrome"]}` — '
     "US/CA clicks from Chrome\n"
-    '- `{"short_code": ["link1", "link2"]}` — Stats for specific URLs '
-    "(`scope=all` only)\n\n"
+    '- `{"short_code": ["link1", "link2"]}` — Stats for specific URLs\n\n'
     "**Alternative:** You can also pass filters as individual query parameters "
     "(see `browser`, `os`, `country`, `city`, `referrer` parameters below)."
 )

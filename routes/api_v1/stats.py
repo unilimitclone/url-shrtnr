@@ -2,8 +2,8 @@
 GET /api/v1/stats               — URL click statistics (account aggregate).
 GET /api/v1/stats/links/{id}    — click statistics for one owned URL.
 
-Auth is optional for scope=anon (public stats); scope=all requires auth.
-The per-link endpoint always requires auth — you must own the URL.
+Both require authentication — every stats read is scoped to the caller's
+own URLs. Public per-link stats live at GET /api/v1/public/stats/{code}.
 API key users require ``stats:read``, ``urls:read``, or ``admin:all``.
 
 Route-ordering note: the two paths differ in segment count, so neither can
@@ -23,67 +23,54 @@ from dependencies import (
     CurrentUser,
     StatsSvc,
     UrlSvc,
-    optional_scopes,
     require_scopes,
 )
-from middleware.openapi import ERROR_RESPONSES, OPTIONAL_AUTH_SECURITY
-from middleware.rate_limiter import Limits, dynamic_limit, limiter
+from middleware.openapi import ERROR_RESPONSES
+from middleware.rate_limiter import Limits, limiter
 from routes.api_v1._helpers import parse_url_id
 from schemas.dto.requests.stats import LinkStatsQuery, StatsQuery
 from schemas.dto.responses.stats import LinkStatsResponse, StatsResponse
 
 router = APIRouter(tags=["Statistics"])
 
-_stats_limit, _stats_key = dynamic_limit(Limits.API_AUTHED, Limits.API_ANON_READ)
-
 
 @router.get(
     "/stats",
     responses=ERROR_RESPONSES,
-    openapi_extra=OPTIONAL_AUTH_SECURITY,
     operation_id="getStats",
     summary="URL Statistics",
 )
-@limiter.limit(_stats_limit, key_func=_stats_key)
+@limiter.limit(Limits.API_AUTHED)
 async def stats_v1(
     request: Request,
     query: Annotated[StatsQuery, Query()],
     stats_service: StatsSvc,
-    user: CurrentUser | None = Depends(optional_scopes(STATS_SCOPES)),  # noqa: B008
+    user: CurrentUser = Depends(require_scopes(STATS_SCOPES)),  # noqa: B008
 ) -> StatsResponse:
-    """Get click statistics for URLs.
+    """Get aggregated click statistics across all URLs you own.
 
-    Retrieve aggregated click analytics with flexible grouping, filtering,
-    and time-range options.
+    Retrieve click analytics with flexible grouping, filtering, and
+    time-range options.
 
-    **Authentication**: Optional for `scope=anon` (public stats on a single URL);
-    required for `scope=all` (all URLs owned by the user).
+    **Authentication**: Required.
 
     **API Key Scope**: `stats:read`, `urls:read`, or `admin:all`
 
-    **Rate Limits**:
+    **Rate Limits**: 60/min, 5,000/day
 
-    - Authenticated: 60/min, 5,000/day
-    - Anonymous: 20/min, 1,000/day
-
-    **Scopes**:
-
-    - `scope=anon` + `short_code=<alias>` — public stats for one URL (if stats are not private)
-    - `scope=all` — aggregate stats across all URLs owned by the authenticated user
-
-    **Grouping Dimensions**: `time`, `browser`, `os`, `country`, `city`,
-    `referrer`, `short_code`
+    **Grouping Dimensions**: `time`, `browser`, `os`, `device`, `country`,
+    `city`, `referrer`, `short_code`, `utm_source`, `utm_medium`,
+    `utm_campaign`
 
     **Metrics**: `clicks`, `unique_clicks`
 
-    **Filtering**: Filter by `browser`, `os`, `country`, `city`, `referrer`,
-    `short_code`, or `url_id` using query params or a JSON `filters` object.
-    Filters slice your own aggregate — `url_id` values you do not own simply
-    match nothing. For statistics on a single link, prefer
-    `GET /stats/links/{url_id}`.
+    **Filtering**: Filter by `browser`, `os`, `device`, `country`, `city`,
+    `referrer`, `short_code`, `url_id`, or the `utm_*` tags using query
+    params or a JSON `filters` object. Filters slice your own aggregate —
+    `url_id` values you do not own simply match nothing. For statistics on
+    a single link, prefer `GET /stats/links/{url_id}`.
     """
-    owner_id = str(user.user_id) if user is not None else None
-    result = await stats_service.query(query, owner_id)
+    result = await stats_service.query(query, str(user.user_id))
     return StatsResponse.model_validate(result)
 
 
