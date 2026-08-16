@@ -39,6 +39,7 @@ from repositories.report_repository import (
 from repositories.token_repository import TokenRepository
 from repositories.url_repository import UrlRepository
 from repositories.user_repository import UserRepository
+from repositories.verdict_repository import VerdictRepository
 from repositories.webhook_delivery_repository import WebhookDeliveryRepository
 from repositories.webhook_endpoint_repository import WebhookEndpointRepository
 from repositories.webhook_event_repository import WebhookEventRepository
@@ -73,6 +74,16 @@ from services.public_link_resolver import PublicLinkResolver
 from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
+from services.safety import (
+    BlockedDomainProvider,
+    BlockedPatternProvider,
+    InlineSafetySink,
+    NullSafetySink,
+    RedisStreamSafetySink,
+    SafetyAnalyzer,
+    SafetyEnforcer,
+    SafetySink,
+)
 from services.stats_service import StatsService
 from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
@@ -282,6 +293,48 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         max_endpoints=wh_settings.max_endpoints,
     )
 
+    # ── Safety pipeline ──────────────────────────────────────────────
+    # Analyzer + enforcer are built unconditionally (cheap objects); the
+    # SINK encodes the degradation ladder: disabled → Null, queue Redis →
+    # stream (worker analyzes), otherwise inline in this process.
+    sf_settings = settings.safety
+    safety_enforcer = SafetyEnforcer(
+        url_repo,
+        legacy_repo,
+        emoji_repo,
+        UrlCache(redis_client, ttl_seconds=settings.redis.redis_ttl_seconds),
+        events=app.state.domain_event_sink,
+        edge_kv=edge_kv_client,
+        system_default_domain=settings.system_default_domain,
+    )
+    safety_analyzer = SafetyAnalyzer(
+        [
+            BlockedDomainProvider(BlockedDomainRepository(db["blocked_domains"])),
+            BlockedPatternProvider(
+                blocked_url_repo, regex_timeout=settings.blocked_url_regex_timeout
+            ),
+        ],
+        VerdictRepository(db["safety_verdicts"]),
+        safety_enforcer,
+        ops_notifier,
+        reverdict_ttl_hours=sf_settings.reverdict_ttl_hours,
+    )
+    app.state.safety_analyzer = safety_analyzer
+    safety_sink: SafetySink
+    if not sf_settings.enabled:
+        safety_sink = NullSafetySink()
+    elif queue_redis_for_webhooks is not None:
+        safety_sink = RedisStreamSafetySink(
+            queue_redis_for_webhooks,
+            stream=sf_settings.stream,
+            maxlen=sf_settings.maxlen,
+        )
+        log.info("safety_stream_sink_enabled", stream=sf_settings.stream)
+    else:
+        safety_sink = InlineSafetySink(safety_analyzer)
+        log.info("safety_inline_sink_enabled")
+    app.state.safety_sink = safety_sink
+
     # ── Services ─────────────────────────────────────────────────────────
     app.state.url_service = UrlService(
         url_repo,
@@ -345,6 +398,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         captcha,
         ops_notifier,
         system_default_domain=settings.system_default_domain,
+        safety_sink=safety_sink,
     )
     app.state.export_service = ExportService(
         app.state.stats_service,

@@ -445,6 +445,37 @@ class WebhookSettings(BaseSettings):
         return self.delivery_log_ttl_days * 86_400
 
 
+class SafetySettings(BaseSettings):
+    """URL safety pipeline — report-triggered destination analysis,
+    verdicts, and automatic enforcement.
+
+    Fully opt-in: ``enabled=False`` wires the Null sink and nothing
+    analyzes. With queue Redis present, analysis requests ride the
+    ``events:safety`` stream and the click worker consumes; without it,
+    analysis runs inline in the app process. Detection thresholds and
+    weights are environment-only ON PURPOSE — they are private tuning,
+    never committed.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="SAFETY_",
+    )
+
+    enabled: bool = False
+    stream: str = "events:safety"
+    dlq_stream: str = "events:safety:dlq"
+    maxlen: int = Field(default=10_000, ge=1000)
+    batch_size: int = Field(default=16, ge=1)
+    block_ms: int = Field(default=5000, ge=100)
+    claim_idle_ms: int = Field(default=60_000, ge=1000)
+    max_deliveries: int = Field(default=5, ge=1)
+    # A verdict younger than this short-circuits re-analysis of the same
+    # destination host (repeat reports of one campaign are the norm).
+    reverdict_ttl_hours: int = Field(default=24, ge=1)
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -604,6 +635,7 @@ class AppSettings(BaseSettings):
     r2: R2StorageSettings | None = None
     meta_tags: MetaTagsSettings | None = None
     webhooks: WebhookSettings | None = None
+    safety: SafetySettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -645,6 +677,8 @@ class AppSettings(BaseSettings):
             self.meta_tags = MetaTagsSettings()
         if self.webhooks is None:
             self.webhooks = WebhookSettings()
+        if self.safety is None:
+            self.safety = SafetySettings()
         if self.webhooks.enabled and not self.secret_key:
             # Signing secrets are encrypted with a key derived from
             # SECRET_KEY; an empty master would mean a predictable key.

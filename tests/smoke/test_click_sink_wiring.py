@@ -33,6 +33,7 @@ _COLLECTIONS = (
     "webhook-events",
     "webhook-endpoints",
     "webhook-deliveries",
+    "safety_verdicts",
 )
 
 
