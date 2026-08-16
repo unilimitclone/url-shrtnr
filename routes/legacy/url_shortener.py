@@ -32,7 +32,7 @@ from repositories.url_repository import UrlRepository
 from routes.legacy.helpers import humanize_number, is_positive_integer
 from shared.emoji_policy import canonicalize_emoji_alias, check_emoji_alias
 from shared.generators import generate_emoji_alias, generate_short_code
-from shared.url_utils import split_destination
+from shared.url_utils import parse_destination, split_destination
 from shared.validators import (
     is_emoji_alias,
     validate_alias,
@@ -193,6 +193,10 @@ async def shorten_url(
         "creation-time": datetime.now().strftime("%H:%M:%S"),
         "creation-ip-address": request.client.host if request.client else "unknown",
     }
+    # Same parsed-destination subdoc as v2 creates, so safety sweeps and
+    # takedown pivots cover the legacy collections via the sparse index.
+    if dest_parts := parse_destination(url):
+        data["dest"] = dest_parts
 
     if password:
         if not validate_url_password(
@@ -337,6 +341,10 @@ async def emoji(
         "creation-time": datetime.now().strftime("%H:%M:%S"),
         "creation-ip-address": request.client.host if request.client else "unknown",
     }
+    # Same parsed-destination subdoc as v2 creates, so safety sweeps and
+    # takedown pivots cover the legacy collections via the sparse index.
+    if dest_parts := parse_destination(url):
+        data["dest"] = dest_parts
 
     if password:
         if not validate_url_password(

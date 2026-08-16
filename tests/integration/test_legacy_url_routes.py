@@ -188,6 +188,49 @@ def test_shorten_url_json_success():
     assert data["original_url"] == "https://example.com"
 
 
+def test_shorten_url_stamps_destination_parts():
+    """v1 creates carry the same parsed dest subdoc as v2, so safety
+    sweeps and takedown pivots cover the legacy collection."""
+    db = _mock_db()
+    blocked_col = MagicMock()
+    blocked_col.find = MagicMock(return_value=MagicMock())
+    blocked_col.find.return_value.to_list = AsyncMock(return_value=[])
+    db.__getitem__ = MagicMock(return_value=blocked_col)
+
+    url_svc = _mock_url_service()
+    settings = _mock_settings()
+
+    app = build_test_app(
+        legacy_url_router,
+        overrides={
+            get_db: lambda: db,
+            get_settings: lambda: settings,
+            get_url_service: lambda: url_svc,
+        },
+    )
+
+    with (
+        patch("routes.legacy.url_shortener.BlockedUrlRepository") as MockBlockedRepo,
+        patch("routes.legacy.url_shortener.LegacyUrlRepository") as MockLegacyRepo,
+        patch("routes.legacy.url_shortener.UrlRepository") as MockUrlRepo,
+    ):
+        MockBlockedRepo.return_value.get_patterns = AsyncMock(return_value=[])
+        MockLegacyRepo.return_value.check_exists = AsyncMock(return_value=False)
+        MockLegacyRepo.return_value.insert = AsyncMock(return_value=None)
+        MockUrlRepo.return_value.check_alias_exists = AsyncMock(return_value=False)
+
+        with TestClient(app) as client:
+            resp = client.post(
+                "/",
+                data={"url": "https://a.evil.co.uk/kit"},
+                headers={"Accept": "application/json"},
+            )
+        assert resp.status_code == 200
+        inserted = MockLegacyRepo.return_value.insert.await_args.args[1]
+    assert inserted["dest"]["registrable_domain"] == "evil.co.uk"
+    assert inserted["dest"]["host"] == "a.evil.co.uk"
+
+
 def test_shorten_url_html_success_redirects_to_result():
     """POST / without Accept: application/json redirects to /result/."""
     db = _mock_db()
