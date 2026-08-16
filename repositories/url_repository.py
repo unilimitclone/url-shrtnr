@@ -292,6 +292,53 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         doc = await self._find_one_raw({"alias": alias, "domain": domain}, {"_id": 1})
         return doc is not None
 
+    # ── Safety enforcement surface ────────────────────────────────────────
+    # All three ride the sparse dest_registrable/dest.host paths stamped at
+    # create time; docs that predate the backfill simply don't match, which
+    # is why the backfill runs before enforcement is enabled.
+
+    async def list_active_alias_domain_by_dest_host(
+        self, host: str, *, limit: int = 50_000
+    ) -> list[tuple[str, str]]:
+        """(alias, domain) of every ACTIVE link pointing at *host* — the
+        cache-invalidation set for a block."""
+        cursor = self._col.find(
+            {"dest.host": host, "status": UrlStatus.ACTIVE.value},
+            {"alias": 1, "domain": 1},
+        ).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        return [(d["alias"], d.get("domain", "")) for d in docs]
+
+    async def list_active_owned_by_dest_host(
+        self, host: str, *, limit: int = 1_000
+    ) -> list[UrlV2Doc]:
+        """Full docs for OWNED active links to *host* — the link.blocked
+        event set (anonymous links have no possible webhook subscriber)."""
+        cursor = self._col.find(
+            {
+                "dest.host": host,
+                "status": UrlStatus.ACTIVE.value,
+                "owner_id": {"$ne": ANONYMOUS_OWNER_ID},
+            }
+        ).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        return [UrlV2Doc.from_mongo(d) for d in docs]
+
+    async def block_active_by_dest_host(self, host: str) -> int:
+        """Flip every ACTIVE link pointing at *host* to BLOCKED. Returns the
+        number of links flipped. Idempotent: already-BLOCKED links no longer
+        match the filter."""
+        result = await self._col.update_many(
+            {"dest.host": host, "status": UrlStatus.ACTIVE.value},
+            {
+                "$set": {
+                    "status": UrlStatus.BLOCKED.value,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+        return int(result.modified_count)
+
     async def increment_clicks(
         self,
         url_id: ObjectId,

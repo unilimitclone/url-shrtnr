@@ -101,6 +101,12 @@ class LegacyUrlRepository(BaseRepository[LegacyUrlDoc]):
         doc = await self._find_one_raw({"_id": short_code}, {"_id": 1})
         return doc is not None
 
+    async def count_by_dest_host(self, host: str) -> int:
+        """v1 links pointing at *host* (via the stamped dest subdoc). v1 has
+        no status field, so enforcement here means manual delete — this
+        count surfaces the exposure to the operator."""
+        return await self._count({"dest.host": host})
+
     async def aggregate(self, pipeline: list[dict]) -> dict[str, Any] | None:
         """Run an aggregation pipeline and return the first result document.
 
