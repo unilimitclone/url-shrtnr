@@ -28,7 +28,19 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Unhealthy \u2014 MongoDB is unreachable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
               }
             }
           }
@@ -3762,7 +3774,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "maxLength": 50
+                  "maxLength": 1000
                 },
                 {
                   "type": "null"
@@ -5001,7 +5013,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "maxLength": 50
+                  "maxLength": 1000
                 },
                 {
                   "type": "null"
@@ -10949,6 +10961,48 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "HealthChecks": {
+        "properties": {
+          "mongodb": {
+            "type": "string",
+            "title": "Mongodb"
+          },
+          "redis": {
+            "type": "string",
+            "title": "Redis"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mongodb",
+          "redis"
+        ],
+        "title": "HealthChecks",
+        "description": "Individual service check statuses inside HealthResponse."
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "checks": {
+            "$ref": "#/components/schemas/HealthChecks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "checks"
+        ],
+        "title": "HealthResponse",
+        "description": "Response body for GET /health."
+      },
       "LayoutResponse": {
         "properties": {
           "layout": {
@@ -14195,7 +14249,7 @@
   ],
   "servers": [
     {
-      "url": "http://spoo.local:8000",
+      "url": "https://spoo.me",
       "description": "Production"
     }
   ],
