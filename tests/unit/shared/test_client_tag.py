@@ -43,6 +43,7 @@ def test_parse_invalid_is_absent(value):
         ("dashboard", "dashboard"),
         ("snap/2.1.0", "snap"),
         ("cli", "cli"),
+        ("sdk-ts/1.0.0", "sdk-ts"),
         # well-formed but not first-party: logged, never persisted
         ("whatever", None),
         ("curl/8.0", None),
