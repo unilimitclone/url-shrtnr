@@ -8,5 +8,6 @@ deploy overlap) never double-run a task.
 """
 
 from services.scheduler.registry import ScheduledTask, TaskRegistry, compute_next_run
+from services.scheduler.runner import TaskScheduler
 
-__all__ = ["ScheduledTask", "TaskRegistry", "compute_next_run"]
+__all__ = ["ScheduledTask", "TaskRegistry", "TaskScheduler", "compute_next_run"]
