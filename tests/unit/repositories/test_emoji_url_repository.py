@@ -134,3 +134,16 @@ class TestEmojiUrlRepository:
         cursor = col.aggregate.return_value
         cursor.to_list = AsyncMock(return_value=[])
         assert await self._repo(col).aggregate([]) is None
+
+
+class TestCountByDestHost:
+    @pytest.mark.asyncio
+    async def test_filters_on_stamped_dest_host(self):
+        from repositories.legacy.emoji_url_repository import EmojiUrlRepository
+
+        col = AsyncMock()
+        col.name = "emojis"
+        col.count_documents = AsyncMock(return_value=3)
+        repo = EmojiUrlRepository(col)
+        assert await repo.count_by_dest_host("evil.com") == 3
+        col.count_documents.assert_awaited_once_with({"dest.host": "evil.com"})

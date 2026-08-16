@@ -27,6 +27,11 @@ class EmojiUrlRepository(BaseRepository[EmojiUrlDoc]):
         """Find an emoji URL document by its alias (_id)."""
         return await self._find_one({"_id": alias})
 
+    async def count_by_dest_host(self, host: str) -> int:
+        """Emoji links pointing at *host* (via the stamped dest subdoc) —
+        same operator-exposure count as LegacyUrlRepository's."""
+        return await self._count({"dest.host": host})
+
     async def insert(self, alias: str, url_data: dict) -> None:
         """Insert a new emoji URL document with the alias as _id.
 

@@ -128,3 +128,16 @@ class TestLegacyUrlRepository:
         cursor = col.aggregate.return_value
         cursor.to_list = AsyncMock(return_value=[])
         assert await self._repo(col).aggregate([]) is None
+
+
+class TestCountByDestHost:
+    @pytest.mark.asyncio
+    async def test_filters_on_stamped_dest_host(self):
+        from repositories.legacy.legacy_url_repository import LegacyUrlRepository
+
+        col = AsyncMock()
+        col.name = "urls"
+        col.count_documents = AsyncMock(return_value=2)
+        repo = LegacyUrlRepository(col)
+        assert await repo.count_by_dest_host("evil.com") == 2
+        col.count_documents.assert_awaited_once_with({"dest.host": "evil.com"})
