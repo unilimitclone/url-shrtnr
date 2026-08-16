@@ -181,6 +181,14 @@ async def ensure_indexes(
     await webhook_deliveries_col.create_index([("webhook_id", 1)], unique=True)
     await _ensure_ttl_index(webhook_deliveries_col, webhook_log_ttl_seconds)
 
+    # ── scheduled_tasks ────────────────────────────────────────────────────
+    # THE claim index — the task runner's whole query shape (same pattern
+    # as the webhook executor above). _id is the task name.
+    scheduled_tasks_col = db["scheduled_tasks"]
+    await scheduled_tasks_col.create_index(
+        [("enabled", 1), ("next_run_at", 1)], name="ix_claim"
+    )
+
     log.info("mongodb_indexes_ensured")
 
 

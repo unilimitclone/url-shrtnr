@@ -30,6 +30,7 @@ class TestEnsureIndexes:
         webhook_events_col = AsyncMock()
         webhook_endpoints_col = AsyncMock()
         webhook_deliveries_col = AsyncMock()
+        scheduled_tasks_col = AsyncMock()
 
         db.__getitem__ = lambda self, name: {
             "users": users_col,
@@ -46,6 +47,7 @@ class TestEnsureIndexes:
             "webhook-events": webhook_events_col,
             "webhook-endpoints": webhook_endpoints_col,
             "webhook-deliveries": webhook_deliveries_col,
+            "scheduled_tasks": scheduled_tasks_col,
         }[name]
 
         # create_collection raises CollectionInvalid when collection already exists
@@ -82,6 +84,10 @@ class TestEnsureIndexes:
         )
         webhook_deliveries_col.create_index.assert_any_await(
             [("created_at", 1)], expireAfterSeconds=2_592_000, name="ttl_created_at"
+        )
+        # Scheduler: the task runner's claim index.
+        scheduled_tasks_col.create_index.assert_any_await(
+            [("enabled", 1), ("next_run_at", 1)], name="ix_claim"
         )
         urls_v2_col.create_index.assert_any_await([("owner_id", 1)])
         clicks_col.create_index.assert_any_await(
