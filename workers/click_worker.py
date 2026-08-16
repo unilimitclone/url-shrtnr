@@ -56,6 +56,7 @@ from infrastructure.logging import get_logger, setup_logging
 from repositories.click_repository import ClickRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
+from repositories.scheduled_task_repository import ScheduledTaskRepository
 from repositories.url_repository import UrlRepository
 from repositories.webhook_delivery_repository import WebhookDeliveryRepository
 from repositories.webhook_endpoint_repository import WebhookEndpointRepository
@@ -72,6 +73,8 @@ from services.edge_cache.og_writethrough import OgEdgeWritethrough
 from services.events.contract import DOMAIN_EVENTS_STREAM
 from services.events.sinks import InlineDomainEventSink
 from services.meta_tags.validator import MetaImageValidator
+from services.scheduler import TaskScheduler
+from services.scheduler.tasks import build_task_registry
 from services.webhooks import (
     DeliveryExecutor,
     OwnerSubscriptionCache,
@@ -137,6 +140,7 @@ async def _build_runtime(
     *,
     run_meta: bool = False,
     run_webhooks: bool = False,
+    run_scheduler: bool = False,
 ) -> _WorkerRuntime:
     ce = settings.click_events
     mongo_client: AsyncMongoClient = AsyncMongoClient(
@@ -310,6 +314,23 @@ async def _build_runtime(
             user_agent=mt.fetch_user_agent,
         )
         log.info("meta_image_validator_registered", stream=mt.stream)
+
+    if run_scheduler:
+        # Scheduled-task runner: Mongo-only claim loop, so it shares this
+        # process without extra infra (same reasoning as the webhook
+        # executor above). The lease makes an overlapping embedded runner
+        # in the app process harmless during runtime transitions.
+        sch = settings.scheduler
+        scheduler = TaskScheduler(
+            ScheduledTaskRepository(db["scheduled_tasks"]),
+            build_task_registry(),
+            poll_interval=sch.poll_seconds,
+            lease_seconds=sch.lease_seconds,
+        )
+        runtime.telemetry_tasks.append(
+            asyncio.create_task(scheduler.run(), name="task-scheduler")
+        )
+        log.info("task_scheduler_worker_registered")
 
     # Telemetry: periodic backlog/lag stats (the Axiom alert signal) and
     # cleanup of restart-leftover consumer names. Best-effort — a missing
@@ -502,6 +523,13 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
     run_webhooks = (
         wh.enabled and wh.runtime in ("auto", "worker") and bool(ce.queue_redis_uri)
     )
+    # The scheduler rides along when the worker runs for other reasons; it
+    # never justifies booting a worker by itself (auto resolves to embedded
+    # in worker-less deploys — see SchedulerSettings).
+    run_scheduler = settings.scheduler.enabled and settings.scheduler.runtime in (
+        "auto",
+        "worker",
+    )
     if not run_clicks and not run_meta and not run_webhooks:
         raise RuntimeError(
             "The worker requires CLICK_EVENTS_QUEUE_REDIS_URI plus at least "
@@ -554,7 +582,11 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
 
     async def _startup() -> None:
         runtime_holder["runtime"] = await _build_runtime(
-            settings, groups, run_meta=run_meta, run_webhooks=run_webhooks
+            settings,
+            groups,
+            run_meta=run_meta,
+            run_webhooks=run_webhooks,
+            run_scheduler=run_scheduler,
         )
         log.info(
             "click_worker_started",

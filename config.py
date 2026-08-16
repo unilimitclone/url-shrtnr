@@ -445,6 +445,41 @@ class WebhookSettings(BaseSettings):
         return self.delivery_log_ttl_days * 86_400
 
 
+class SchedulerSettings(BaseSettings):
+    """Scheduled-task system — the Mongo-lease runner for recurring jobs.
+
+    Mongo-only (the one dependency every deploy has), so ``runtime``
+    chooses the host process with the same rule as webhooks:
+
+      auto     — worker when a queue Redis is configured (a worker exists
+                 in that deploy), else embedded in the app lifespan
+      worker   — only the click worker runs the loop
+      embedded — the app process runs it as a lifespan task
+      off      — nothing polls; tasks stay armed in Mongo
+
+    Enabled by default: with only built-in tasks registered it is a
+    once-an-hour heartbeat, and feature tasks gate themselves on their own
+    settings. The lease makes overlapping runners (deploy overlap, worker
+    plus app) safe — a task can never double-run.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="SCHEDULER_",
+    )
+
+    enabled: bool = True
+    runtime: Literal["auto", "worker", "embedded", "off"] = "auto"
+    # Poll granularity bounds how late a task can start; 5s is invisible
+    # for minute-level cron schedules and costs one indexed no-op query.
+    poll_seconds: float = Field(default=5.0, gt=0)
+    # A crashed run re-claims after this. Must exceed the slowest task;
+    # tasks are idempotent by contract so an early expiry re-runs, never
+    # corrupts.
+    lease_seconds: int = Field(default=600, ge=30)
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -604,6 +639,7 @@ class AppSettings(BaseSettings):
     r2: R2StorageSettings | None = None
     meta_tags: MetaTagsSettings | None = None
     webhooks: WebhookSettings | None = None
+    scheduler: SchedulerSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -645,6 +681,8 @@ class AppSettings(BaseSettings):
             self.meta_tags = MetaTagsSettings()
         if self.webhooks is None:
             self.webhooks = WebhookSettings()
+        if self.scheduler is None:
+            self.scheduler = SchedulerSettings()
         if self.webhooks.enabled and not self.secret_key:
             # Signing secrets are encrypted with a key derived from
             # SECRET_KEY; an empty master would mean a predictable key.

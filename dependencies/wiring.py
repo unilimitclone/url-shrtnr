@@ -36,6 +36,7 @@ from repositories.report_repository import (
     ReportRepository,
     ReportSubmissionRepository,
 )
+from repositories.scheduled_task_repository import ScheduledTaskRepository
 from repositories.token_repository import TokenRepository
 from repositories.url_repository import UrlRepository
 from repositories.user_repository import UserRepository
@@ -73,6 +74,8 @@ from services.public_link_resolver import PublicLinkResolver
 from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
+from services.scheduler import TaskScheduler
+from services.scheduler.tasks import build_task_registry
 from services.stats_service import StatsService
 from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
@@ -280,6 +283,24 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         webhook_owner_cache,
         master_secret=settings.secret_key,
         max_endpoints=wh_settings.max_endpoints,
+    )
+
+    # ── Scheduled tasks ──────────────────────────────────────────────
+    # Mongo-lease runner (see services/scheduler). Same runtime rule as
+    # the webhook executor: embedded in this process when explicitly
+    # requested or (auto) when no worker exists in the deploy — queue
+    # Redis presence is the worker proxy. app.py starts/cancels the task.
+    sch_settings = settings.scheduler
+    task_registry = build_task_registry()
+    app.state.task_scheduler = TaskScheduler(
+        ScheduledTaskRepository(db["scheduled_tasks"]),
+        task_registry,
+        poll_interval=sch_settings.poll_seconds,
+        lease_seconds=sch_settings.lease_seconds,
+    )
+    app.state.task_scheduler_embedded = sch_settings.enabled and (
+        sch_settings.runtime == "embedded"
+        or (sch_settings.runtime == "auto" and queue_redis_for_webhooks is None)
     )
 
     # ── Services ─────────────────────────────────────────────────────────
