@@ -205,9 +205,22 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             )
             log.info("webhook_executor_embedded_started")
 
+        # Embedded task scheduler: same Mongo-lease pattern — runs here
+        # when the deploy has no worker to host it.
+        task_scheduler_task: asyncio.Task | None = None
+        if getattr(app.state, "task_scheduler_embedded", False):
+            task_scheduler_task = asyncio.create_task(
+                app.state.task_scheduler.run(), name="task-scheduler"
+            )
+            log.info("task_scheduler_embedded_started")
+
         yield
 
         # ── Shutdown ─────────────────────────────────────────────────────────
+        if task_scheduler_task is not None:
+            task_scheduler_task.cancel()
+            with suppress(asyncio.CancelledError, asyncio.TimeoutError, TimeoutError):
+                await asyncio.wait_for(task_scheduler_task, timeout=10)
         if webhook_executor_task is not None:
             webhook_executor_task.cancel()
             # Bounded: a delivery attempt mid-flight has a 15s HTTP timeout;
