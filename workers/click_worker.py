@@ -53,10 +53,14 @@ from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.geoip import GeoIPService
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger, setup_logging
+from infrastructure.ops_notify import DiscordOpsNotifier
+from repositories.blocked_domain_repository import BlockedDomainRepository
+from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.click_repository import ClickRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
+from repositories.verdict_repository import VerdictRepository
 from repositories.webhook_delivery_repository import WebhookDeliveryRepository
 from repositories.webhook_endpoint_repository import WebhookEndpointRepository
 from repositories.webhook_event_repository import WebhookEventRepository
@@ -72,6 +76,13 @@ from services.edge_cache.og_writethrough import OgEdgeWritethrough
 from services.events.contract import DOMAIN_EVENTS_STREAM
 from services.events.sinks import InlineDomainEventSink
 from services.meta_tags.validator import MetaImageValidator
+from services.safety import (
+    BlockedDomainProvider,
+    BlockedPatternProvider,
+    SafetyAnalyzer,
+    SafetyEnforcer,
+)
+from services.safety.consumers import SafetyAnalysisConsumer
 from services.webhooks import (
     DeliveryExecutor,
     OwnerSubscriptionCache,
@@ -102,6 +113,7 @@ class _WorkerRuntime:
     consumers: dict[str, ClickConsumer] = field(default_factory=dict)
     meta_validator: MetaImageValidator | None = None
     webhook_domain_consumer: WebhookDomainConsumer | None = None
+    safety_consumer: SafetyAnalysisConsumer | None = None
 
     async def aclose(self) -> None:
         for task in self.telemetry_tasks:
@@ -137,6 +149,7 @@ async def _build_runtime(
     *,
     run_meta: bool = False,
     run_webhooks: bool = False,
+    run_safety: bool = False,
 ) -> _WorkerRuntime:
     ce = settings.click_events
     mongo_client: AsyncMongoClient = AsyncMongoClient(
@@ -311,6 +324,54 @@ async def _build_runtime(
         )
         log.info("meta_image_validator_registered", stream=mt.stream)
 
+    if run_safety:
+        # Safety analysis: own stream/group, same shape as meta-image.
+        # The enforcer gets the worker's domain sink (link.blocked events
+        # dispatch in-process when webhooks also run here) and an edge KV
+        # client when the edge cache is configured.
+        sf = settings.safety
+        edge = settings.edge_cache
+        if runtime.http_client is None:
+            runtime.http_client = HttpClient(timeout=settings.http_client_timeout)
+        safety_edge_kv = None
+        if edge.enabled:
+            safety_edge_kv = CloudflareKVClient(
+                http_client=runtime.http_client,
+                api_token=edge.cf_api_token,
+                account_id=edge.cf_account_id,
+                namespace_id=edge.kv_namespace_id,
+                api_base=edge.api_base,
+                api_host_header=edge.api_host_header,
+            )
+        safety_enforcer = SafetyEnforcer(
+            UrlRepository(db["urlsV2"]),
+            LegacyUrlRepository(db["urls"]),
+            EmojiUrlRepository(db["emojis"]),
+            UrlCache(cache_redis, ttl_seconds=settings.redis.redis_ttl_seconds),
+            events=worker_domain_sink,
+            edge_kv=safety_edge_kv,
+            system_default_domain=settings.system_default_domain,
+        )
+        safety_analyzer = SafetyAnalyzer(
+            [
+                BlockedDomainProvider(BlockedDomainRepository(db["blocked_domains"])),
+                BlockedPatternProvider(
+                    BlockedUrlRepository(db["blocked-urls"]),
+                    regex_timeout=settings.blocked_url_regex_timeout,
+                ),
+            ],
+            VerdictRepository(db["safety_verdicts"]),
+            safety_enforcer,
+            DiscordOpsNotifier(
+                settings.contact_webhook,
+                settings.url_report_webhook,
+                runtime.http_client,
+            ),
+            reverdict_ttl_hours=sf.reverdict_ttl_hours,
+        )
+        runtime.safety_consumer = SafetyAnalysisConsumer(safety_analyzer)
+        log.info("safety_worker_registered", stream=sf.stream)
+
     # Telemetry: periodic backlog/lag stats (the Axiom alert signal) and
     # cleanup of restart-leftover consumer names. Best-effort — a missing
     # telemetry connection never blocks consumption.
@@ -381,6 +442,52 @@ def _register_group(
             consumer=f"{group}-{consumer_suffix}-claim",
             min_idle_time=ce.claim_idle_ms,
             polling_interval=ce.block_ms,
+        )
+    )(claimer)
+
+
+def _register_safety(
+    broker: RedisBroker,
+    sf: Any,
+    consumer_suffix: str,
+    safety_consumer_for: Any,
+) -> None:
+    """Reader + claimer pair for the safety analysis stream."""
+    guard = ClaimDeadLetterGuard(
+        stream=sf.stream,
+        group="safety",
+        dlq_stream=sf.dlq_stream,
+        max_deliveries=sf.max_deliveries,
+    )
+
+    async def reader(body: Any) -> None:
+        await safety_consumer_for().consume(body)
+
+    reader.__name__ = "safety_reader"
+    broker.subscriber(
+        stream=StreamSub(
+            sf.stream,
+            group="safety",
+            consumer=f"safety-{consumer_suffix}",
+            max_records=sf.batch_size,
+            polling_interval=sf.block_ms,
+        )
+    )(reader)
+
+    async def claimer(body: Any, msg: RedisMessage, redis: Redis) -> None:
+        message_id = _first_message_id(msg)
+        if message_id and await guard.intercept(redis, message_id, body):
+            return
+        await safety_consumer_for().consume(body)
+
+    claimer.__name__ = "safety_claimer"
+    broker.subscriber(
+        stream=StreamSub(
+            sf.stream,
+            group="safety",
+            consumer=f"safety-{consumer_suffix}-claim",
+            min_idle_time=sf.claim_idle_ms,
+            polling_interval=sf.block_ms,
         )
     )(claimer)
 
@@ -502,12 +609,15 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
     run_webhooks = (
         wh.enabled and wh.runtime in ("auto", "worker") and bool(ce.queue_redis_uri)
     )
-    if not run_clicks and not run_meta and not run_webhooks:
+    # Safety analysis rides its own stream; with queue Redis absent the app
+    # analyzes inline and the worker has nothing to consume.
+    run_safety = settings.safety.enabled and bool(ce.queue_redis_uri)
+    if not run_clicks and not run_meta and not run_webhooks and not run_safety:
         raise RuntimeError(
             "The worker requires CLICK_EVENTS_QUEUE_REDIS_URI plus at least "
             "one of CLICK_EVENTS_SINK=stream, META_TAGS_ASYNC_IMAGE_VALIDATION, "
-            "or WEBHOOKS_ENABLED. Refusing to start so a misconfigured "
-            "deployment fails loudly instead of idling."
+            "WEBHOOKS_ENABLED, or SAFETY_ENABLED. Refusing to start so a "
+            "misconfigured deployment fails loudly instead of idling."
         )
 
     groups = enabled_groups(ce) if run_clicks else []
@@ -540,6 +650,12 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
             raise RuntimeError("worker runtime not initialised")
         return runtime.webhook_domain_consumer
 
+    def safety_consumer_for() -> SafetyAnalysisConsumer:
+        runtime = runtime_holder.get("runtime")
+        if runtime is None or runtime.safety_consumer is None:  # pragma: no cover
+            raise RuntimeError("worker runtime not initialised")
+        return runtime.safety_consumer
+
     consumer_suffix = f"{socket.gethostname()}-{os.getpid()}"
     for group in groups:
         _register_group(broker, ce, group, consumer_suffix, consumer_for)
@@ -551,10 +667,16 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
         if run_clicks:
             _register_group(broker, ce, "webhooks", consumer_suffix, consumer_for)
         _register_domain_webhooks(broker, ce, consumer_suffix, domain_consumer_for)
+    if run_safety:
+        _register_safety(broker, settings.safety, consumer_suffix, safety_consumer_for)
 
     async def _startup() -> None:
         runtime_holder["runtime"] = await _build_runtime(
-            settings, groups, run_meta=run_meta, run_webhooks=run_webhooks
+            settings,
+            groups,
+            run_meta=run_meta,
+            run_webhooks=run_webhooks,
+            run_safety=run_safety,
         )
         log.info(
             "click_worker_started",
