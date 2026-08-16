@@ -261,6 +261,15 @@ class StatsService:
                     continue
                 query["meta.short_code"] = {"$in": values}
             elif dimension == StatsDimension.URL_ID:
+                # SECURITY: skip if the query already locks url_id — on the
+                # per-link path that equality is the only ownership arm.
+                if "meta.url_id" in query:
+                    log.warning(
+                        "query_builder_scope_bypass_prevented",
+                        dimension="url_id",
+                        attempted_values=values,
+                    )
+                    continue
                 # Values are format-validated by the DTO. No ownership check:
                 # the owner stamp already scopes the $match, so foreign ids
                 # simply match nothing.

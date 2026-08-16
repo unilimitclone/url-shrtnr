@@ -287,6 +287,10 @@ class StatsQuery(_StatsQueryBase):
             parsed_filters["short_code"] = _parse_comma_separated(self.short_code)
         if self.url_id:
             parsed_filters["url_id"] = _parse_comma_separated(self.url_id)
+        # anon queries have no owner arm — an id filter would re-scope the
+        # alias lock onto anyone's link, so reject (param and JSON paths).
+        if self.scope == StatsScope.ANON and parsed_filters.get(StatsDimension.URL_ID):
+            raise ValueError("url_id filters require scope=all")
         # Format-validate every url_id value (the JSON filters path too) so
         # the service can convert to ObjectId without a second check. No
         # ownership check — the owner stamp already scopes the $match, so

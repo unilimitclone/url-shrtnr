@@ -123,6 +123,23 @@ class TestStatsQueryUrlIdFilter:
         with pytest.raises(ValidationError, match="invalid url_id"):
             StatsQuery.model_validate({"filters": json.dumps({"url_id": ["nope"]})})
 
+    def test_url_id_param_rejected_when_anon(self):
+        # anon has no owner arm — an id filter would re-scope the alias lock.
+        with pytest.raises(ValidationError, match="require scope=all"):
+            StatsQuery.model_validate(
+                {"scope": "anon", "short_code": "mylink", "url_id": "d" * 24}
+            )
+
+    def test_url_id_in_filters_json_rejected_when_anon(self):
+        with pytest.raises(ValidationError, match="require scope=all"):
+            StatsQuery.model_validate(
+                {
+                    "scope": "anon",
+                    "short_code": "mylink",
+                    "filters": json.dumps({"url_id": ["d" * 24]}),
+                }
+            )
+
     def test_url_id_never_a_group_by_dimension(self):
         with pytest.raises(ValidationError, match="invalid group_by"):
             StatsQuery.model_validate({"group_by": "url_id"})

@@ -514,6 +514,20 @@ class TestClickQueryBuilding:
         # meta.short_code must remain the locked value, not the filter value
         assert q["meta.short_code"] == "locked"
 
+    def test_url_id_filter_cannot_overwrite_locked_url_id(self):
+        """url_id filter cannot bypass a per-link lock (security).
+
+        On the per-link path the url_id equality is the only ownership arm,
+        so overwriting it would build an ownership-free query."""
+        from bson import ObjectId
+
+        from services.stats_service import StatsService
+
+        locked = ObjectId()
+        q = {"meta.url_id": locked}
+        StatsService._apply_dimension_filters(q, {"url_id": [str(ObjectId())]}, [])
+        assert q["meta.url_id"] == locked
+
     def test_plain_utm_filter_added(self):
         from services.stats_service import StatsService
 
@@ -834,3 +848,76 @@ class TestQueryLink:
                 _lq(start_date=(NOW - timedelta(days=95)).isoformat()),
                 make_url_doc(),
             )
+
+
+# ── Window parity with the public stats service ──────────────────────────────
+
+
+class TestResolveWindowParity:
+    """StatsService._resolve_window and PublicStatsService._resolve_window are
+    two implementations of one contract ("the three must not drift") — run
+    both over the same inputs and pin equal answers."""
+
+    @staticmethod
+    def _both():
+        from services.public_stats_service import PublicStatsService
+
+        stats, _, _ = make_service()
+        public = PublicStatsService(resolver=AsyncMock(), stats_service=stats)
+        return stats, public
+
+    @pytest.mark.parametrize(
+        ("start_raw", "end_raw"),
+        [
+            # fully explicit — byte-equal output required
+            ("2025-01-01T00:00:00Z", "2025-02-01T00:00:00Z"),
+            # end-only: start defaults to end - 7d, still deterministic
+            (None, "2025-02-01T00:00:00Z"),
+        ],
+        ids=["explicit", "end-only"],
+    )
+    def test_deterministic_windows_equal(self, start_raw, end_raw):
+        stats, public = self._both()
+        s1 = stats._resolve_window(start_raw, end_raw)
+        s2 = public._resolve_window(start_raw, end_raw, "UTC")[:2]
+        assert s1 == s2
+
+    @pytest.mark.parametrize(
+        ("start_raw", "end_raw"),
+        [
+            (None, None),  # both default: end=now, start=now-7d
+            # end defaults to now — start must be genuinely recent (module NOW
+            # is a frozen constant) or the 90-day cap fires first.
+            (
+                (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),
+                None,
+            ),
+            ("2999-01-01T00:00:00Z", "2999-01-02T00:00:00Z"),  # future-capped
+        ],
+        ids=["both-default", "start-only", "future-capped"],
+    )
+    def test_now_dependent_windows_agree(self, start_raw, end_raw):
+        # Each implementation samples now() itself; equality holds up to that
+        # sampling skew, so pin the pair to within a second of each other.
+        stats, public = self._both()
+        s1 = stats._resolve_window(start_raw, end_raw)
+        s2 = public._resolve_window(start_raw, end_raw, "UTC")[:2]
+        for a, b in zip(s1, s2, strict=True):
+            assert abs(a - b) < timedelta(seconds=1)
+
+    @pytest.mark.parametrize(
+        ("start_raw", "end_raw", "match"),
+        [
+            ("not-a-date", None, "invalid start_date"),
+            (None, "not-a-date", "invalid end_date"),
+            ("2025-02-01T00:00:00Z", "2025-01-01T00:00:00Z", "before end_date"),
+            ("2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z", "90 days"),
+        ],
+        ids=["bad-start", "bad-end", "inverted", "too-wide"],
+    )
+    def test_rejections_agree(self, start_raw, end_raw, match):
+        stats, public = self._both()
+        with pytest.raises(ValidationError, match=match):
+            stats._resolve_window(start_raw, end_raw)
+        with pytest.raises(ValidationError, match=match):
+            public._resolve_window(start_raw, end_raw, "UTC")
