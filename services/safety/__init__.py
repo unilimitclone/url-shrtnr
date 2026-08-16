@@ -14,8 +14,12 @@ from services.safety.enforcer import EnforcementResult, SafetyEnforcer
 from services.safety.events import SAFETY_STREAM, SafetyAnalyzeEvent
 from services.safety.feeds import (
     FISHFISH_FEED,
+    MANUAL_FEED,
+    SHORTENER_FEED,
     FishFishClient,
+    ensure_shortener_seed,
     fishfish_sync_task,
+    load_shortener_seed,
 )
 from services.safety.policy import PolicyRejection, UrlPolicyService
 from services.safety.providers import (
@@ -34,7 +38,9 @@ from services.safety.sinks import (
 
 __all__ = [
     "FISHFISH_FEED",
+    "MANUAL_FEED",
     "SAFETY_STREAM",
+    "SHORTENER_FEED",
     "AnalysisProvider",
     "BlockedPatternProvider",
     "EnforcementResult",
@@ -51,5 +57,7 @@ __all__ = [
     "SafetySink",
     "UrlPolicyService",
     "WebRiskProvider",
+    "ensure_shortener_seed",
     "fishfish_sync_task",
+    "load_shortener_seed",
 ]

@@ -53,9 +53,15 @@ class UrlPolicyService:
         providers: Sequence[AnalysisProvider],
         *,
         blocked_self_domains: Sequence[str],
+        public_messages: dict[str, str] | None = None,
     ) -> None:
+        """``public_messages`` maps provider name -> wire message for
+        PUBLISHED policies (e.g. the shortener-chain refusal, which is.gd
+        style services document openly). Security-sourced blocks stay on
+        the coarse default."""
         self._providers = list(providers)
         self._self_domains = list(blocked_self_domains)
+        self._public_messages = public_messages or {}
 
     async def check(self, url: str) -> PolicyRejection | None:
         """Return the rejection for *url*, or None when it may be written."""
@@ -78,6 +84,9 @@ class UrlPolicyService:
                     reason=verdict.reason,
                 )
                 return PolicyRejection(
-                    code=provider.name, public_message=_BLOCKED_MESSAGE
+                    code=provider.name,
+                    public_message=self._public_messages.get(
+                        provider.name, _BLOCKED_MESSAGE
+                    ),
                 )
         return None

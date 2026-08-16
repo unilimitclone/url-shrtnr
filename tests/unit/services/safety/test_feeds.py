@@ -82,3 +82,41 @@ class TestFishFishSyncTask:
         with pytest.raises(RuntimeError, match="feed down"):
             await fishfish_sync_task(client, repo).fn()
         repo.replace_feed.assert_not_awaited()
+
+
+class TestShortenerSeed:
+    @pytest.mark.asyncio
+    async def test_seeds_only_when_feed_is_empty(self):
+        from services.safety.feeds import ensure_shortener_seed
+
+        repo = AsyncMock()
+        repo.count = AsyncMock(return_value=0)
+        repo.replace_feed = AsyncMock(return_value=(31, 0))
+
+        await ensure_shortener_seed(repo)
+
+        repo.replace_feed.assert_awaited_once()
+        assert repo.replace_feed.await_args.args[0] == "shorteners"
+
+    @pytest.mark.asyncio
+    async def test_never_reseeds_a_curated_feed(self):
+        """Operator removals must survive restarts — a non-empty feed is
+        owned by the DB, not by the code constant."""
+        from services.safety.feeds import ensure_shortener_seed
+
+        repo = AsyncMock()
+        repo.count = AsyncMock(return_value=12)
+
+        await ensure_shortener_seed(repo)
+
+        repo.replace_feed.assert_not_awaited()
+
+    def test_seed_file_parses_serving_domains_not_corporate_sites(self):
+        from services.safety.feeds import load_shortener_seed
+
+        seed = load_shortener_seed()
+        assert "bit.ly" in seed
+        assert "bitly.com" not in seed
+        assert not any(d.startswith("#") or " " in d for d in seed)
+        # spoo's own observed cloak shorteners are present
+        assert {"l24.im", "e.vg", "bitly.cx", "vlk.by"} <= set(seed)

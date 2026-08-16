@@ -78,6 +78,8 @@ from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
 from services.safety import (
     FISHFISH_FEED,
+    MANUAL_FEED,
+    SHORTENER_FEED,
     BlockedPatternProvider,
     FeedDomainProvider,
     FishFishClient,
@@ -324,8 +326,21 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     pattern_provider = BlockedPatternProvider(
         blocked_url_repo, regex_timeout=settings.blocked_url_regex_timeout
     )
-    gate_providers: list = [pattern_provider]
-    analyzer_providers: list = [pattern_provider]
+    # Operator policy sources are unconditional (they exist regardless of
+    # the SAFETY_ master switch, like the regex blocklist always has):
+    # `manual` = exact destination domains, `shorteners` = chain refusal
+    # (gate-only; existing links to shorteners are the analysis tier's
+    # chain-resolution problem, not a mass-block).
+    manual_provider = FeedDomainProvider(
+        feed_domain_repo, feed=MANUAL_FEED, reason_label="the operator blocklist"
+    )
+    shortener_provider = FeedDomainProvider(
+        feed_domain_repo,
+        feed=SHORTENER_FEED,
+        reason_label="a link shortener (redirect chains are refused)",
+    )
+    gate_providers: list = [pattern_provider, manual_provider, shortener_provider]
+    analyzer_providers: list = [pattern_provider, manual_provider]
     if sf_settings.enabled and sf_settings.fishfish_enabled:
         fishfish_provider = FeedDomainProvider(
             feed_domain_repo, feed=FISHFISH_FEED, reason_label="fishfish.gg"
@@ -343,7 +358,13 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         )
         log.info("safety_web_risk_enabled")
     url_policy = UrlPolicyService(
-        gate_providers, blocked_self_domains=settings.blocked_self_domains
+        gate_providers,
+        blocked_self_domains=settings.blocked_self_domains,
+        # Chain refusal is PUBLISHED policy (is.gd precedent) — a helpful
+        # message is fine; security blocks keep the coarse default.
+        public_messages={
+            shortener_provider.name: "Links to other URL shorteners are not allowed"
+        },
     )
     app.state.url_policy = url_policy
     safety_analyzer = SafetyAnalyzer(

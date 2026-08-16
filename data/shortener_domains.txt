@@ -1,0 +1,45 @@
+# URL-shortener SERVING domains for the L0 chain-refusal seed.
+# One domain per line; lines starting with # are comments.
+#
+# Rules for entries:
+# - serving domains only, never corporate/docs sites (bit.ly serves
+#   redirects, bitly.com hosts the product pages — only bit.ly belongs)
+# - this file seeds the `shorteners` feed in safety_feed_domains ONCE,
+#   on first boot with an empty feed. After that the DB owns the set:
+#   operators (and later the deep-analysis tier) add/remove entries live,
+#   and removals are never re-added by this file.
+
+# major public shorteners
+bit.ly
+tinyurl.com
+t.co
+goo.gl
+is.gd
+v.gd
+ow.ly
+buff.ly
+cutt.ly
+tiny.cc
+rb.gy
+t.ly
+s.id
+shorturl.at
+rebrand.ly
+dub.sh
+lnkd.in
+shorte.st
+adf.ly
+clck.ru
+u.to
+surl.li
+soo.gd
+
+# cloak shorteners observed in live spoo.me abuse campaigns
+l24.im
+mub.me
+n9.cl
+e.vg
+bitly.cx
+vlk.by
+x.gd
+goo.su

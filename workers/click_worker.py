@@ -79,6 +79,7 @@ from services.events.sinks import InlineDomainEventSink
 from services.meta_tags.validator import MetaImageValidator
 from services.safety import (
     FISHFISH_FEED,
+    MANUAL_FEED,
     BlockedPatternProvider,
     FeedDomainProvider,
     FishFishClient,
@@ -362,16 +363,22 @@ async def _build_runtime(
         )
         # Provider order mirrors the app wiring: operator sources, synced
         # feed sets, then online lookups last.
+        worker_feed_repo = FeedDomainRepository(db["safety_feed_domains"])
         safety_providers: list = [
             BlockedPatternProvider(
                 BlockedUrlRepository(db["blocked-urls"]),
                 regex_timeout=settings.blocked_url_regex_timeout,
             ),
+            FeedDomainProvider(
+                worker_feed_repo,
+                feed=MANUAL_FEED,
+                reason_label="the operator blocklist",
+            ),
         ]
         if sf.fishfish_enabled:
             safety_providers.append(
                 FeedDomainProvider(
-                    FeedDomainRepository(db["safety_feed_domains"]),
+                    worker_feed_repo,
                     feed=FISHFISH_FEED,
                     reason_label="fishfish.gg",
                 )

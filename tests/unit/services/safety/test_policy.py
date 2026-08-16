@@ -134,3 +134,36 @@ class TestGateWithRealProviders:
         )
         # A broken provider must never take down link creation.
         assert await gate.check("https://example.com/x") is None
+
+
+class TestPublicMessageOverride:
+    @pytest.mark.asyncio
+    async def test_published_policy_gets_helpful_message(self):
+        provider = _StubProvider(
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="chain refusal"),
+            name="feed_shorteners",
+        )
+        gate = UrlPolicyService(
+            [provider],
+            blocked_self_domains=["spoo.me"],
+            public_messages={
+                "feed_shorteners": "Links to other URL shorteners are not allowed"
+            },
+        )
+        rejection = await gate.check("https://bit.ly/abc")
+        assert rejection.public_message == (
+            "Links to other URL shorteners are not allowed"
+        )
+
+    @pytest.mark.asyncio
+    async def test_security_blocks_keep_coarse_default(self):
+        provider = _StubProvider(
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="x"), name="feed_fishfish"
+        )
+        gate = UrlPolicyService(
+            [provider],
+            blocked_self_domains=["spoo.me"],
+            public_messages={"feed_shorteners": "friendly"},
+        )
+        rejection = await gate.check("https://evil.com/x")
+        assert rejection.public_message == "URL is blocked"

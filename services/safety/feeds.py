@@ -13,6 +13,8 @@ strings, no auth required for the domain list.
 
 from __future__ import annotations
 
+import os
+
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from repositories.feed_domain_repository import FeedDomainRepository
@@ -23,10 +25,48 @@ log = get_logger(__name__)
 FISHFISH_FEED = "fishfish"
 FISHFISH_SYNC_TASK = "safety-fishfish-sync"
 _FISHFISH_SYNC_CRON = "0 * * * *"
+
+# Operator-curated exact destination domains (the destination-side domain
+# blocklist — NOT blocked_domains, which is the custom-domain vanity
+# denylist). No sync task: operators add/remove entries directly.
+MANUAL_FEED = "manual"
+
+# Shortener chains exist almost exclusively to defeat destination checks —
+# is.gd documents the same refusal, and cloak shorteners were spoo.me's
+# dominant observed evasion. The seed DATA lives in
+# data/shortener_domains.txt (repo-root data/, same home as
+# bot_user_agents.txt); it seeds the feed once, then the DB owns the set.
+SHORTENER_FEED = "shorteners"
+_SHORTENER_SEED_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data",
+    "shortener_domains.txt",
+)
+
+
+def load_shortener_seed() -> tuple[str, ...]:
+    """Parse the seed file: one domain per line, ``#`` comments."""
+    with open(_SHORTENER_SEED_PATH, encoding="utf-8") as fh:
+        return tuple(
+            line.strip()
+            for line in fh
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+
+
 # A feed this small is suspicious (fishfish carries thousands of domains):
 # treat it as a bad download rather than a mass delisting, keep the old set.
 _FISHFISH_MIN_SANE = 100
 _FETCH_TIMEOUT = 30.0
+
+
+async def ensure_shortener_seed(repo: FeedDomainRepository) -> None:
+    """Seed the shorteners feed on first boot ONLY (empty feed). Never
+    re-adds afterwards, so an operator removing an entry stays removed."""
+    if await repo.count(SHORTENER_FEED) > 0:
+        return
+    kept, _ = await repo.replace_feed(SHORTENER_FEED, load_shortener_seed())
+    log.info("safety_shortener_feed_seeded", domains=kept)
 
 
 class FishFishClient:
