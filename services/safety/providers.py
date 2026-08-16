@@ -16,9 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from repositories.blocked_domain_repository import BlockedDomainRepository
 from repositories.blocked_url_repository import BlockedUrlRepository
+from repositories.feed_domain_repository import FeedDomainRepository
 from schemas.enums.safety import VerdictTier
 from shared.validators import validate_blocked_url
 
@@ -69,6 +71,102 @@ class BlockedDomainProvider:
                 )
         except Exception as exc:
             log.warning("safety_provider_failed", provider=self.name, error=str(exc))
+        return None
+
+
+class FeedDomainProvider:
+    """Membership check against a synced external feed's domain set
+    (``safety_feed_domains``). An empty or never-synced set abstains — the
+    feed layer is additive signal, never a gate on its own health."""
+
+    def __init__(
+        self, repo: FeedDomainRepository, *, feed: str, reason_label: str
+    ) -> None:
+        self._repo = repo
+        self._feed = feed
+        self._label = reason_label
+        self.name = f"feed_{feed}"
+
+    async def analyze(
+        self, url: str, host: str, registrable_domain: str
+    ) -> ProviderVerdict | None:
+        try:
+            if await self._repo.contains(self._feed, host):
+                return ProviderVerdict(
+                    tier=VerdictTier.TOXIC,
+                    reason=f"host {host} is listed by {self._label}",
+                )
+            if (
+                registrable_domain
+                and registrable_domain != host
+                and await self._repo.contains(self._feed, registrable_domain)
+            ):
+                return ProviderVerdict(
+                    tier=VerdictTier.TOXIC,
+                    reason=f"domain {registrable_domain} is listed by {self._label}",
+                )
+        except Exception as exc:
+            log.warning("safety_provider_failed", provider=self.name, error=str(exc))
+        return None
+
+
+class WebRiskProvider:
+    """Google Web Risk Lookup API (``uris:search``) — judges the full URL
+    against Google's MALWARE and SOCIAL_ENGINEERING lists. Online lookup
+    (100k/month free tier covers report-triggered volume by orders of
+    magnitude); the local hash-DB variant is a later create-gate concern.
+
+    Network or quota failures abstain. The API key never appears in logs.
+    """
+
+    name = "web_risk"
+
+    _THREAT_TYPES = ("MALWARE", "SOCIAL_ENGINEERING")
+
+    def __init__(
+        self,
+        http_client: HttpClient,
+        *,
+        api_key: str,
+        api_base: str = "https://webrisk.googleapis.com",
+    ) -> None:
+        self._http = http_client
+        self._api_key = api_key
+        self._api_base = api_base.rstrip("/")
+
+    async def analyze(
+        self, url: str, host: str, registrable_domain: str
+    ) -> ProviderVerdict | None:
+        try:
+            response = await self._http.get(
+                f"{self._api_base}/v1/uris:search",
+                params={
+                    "uri": url,
+                    "threatTypes": list(self._THREAT_TYPES),
+                    "key": self._api_key,
+                },
+                timeout=10.0,
+            )
+            if response.status_code != 200:
+                log.warning(
+                    "safety_provider_failed",
+                    provider=self.name,
+                    error=f"http {response.status_code}",
+                )
+                return None
+            threat = response.json().get("threat")
+            if threat:
+                types = ",".join(threat.get("threatTypes", [])) or "UNKNOWN"
+                return ProviderVerdict(
+                    tier=VerdictTier.TOXIC,
+                    reason=f"flagged by Google Web Risk ({types})",
+                )
+        except Exception as exc:
+            log.warning(
+                "safety_provider_failed",
+                provider=self.name,
+                error=type(exc).__name__,
+            )
         return None
 
 

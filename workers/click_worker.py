@@ -57,6 +57,7 @@ from infrastructure.ops_notify import DiscordOpsNotifier
 from repositories.blocked_domain_repository import BlockedDomainRepository
 from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.click_repository import ClickRepository
+from repositories.feed_domain_repository import FeedDomainRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.scheduled_task_repository import ScheduledTaskRepository
@@ -78,10 +79,15 @@ from services.events.contract import DOMAIN_EVENTS_STREAM
 from services.events.sinks import InlineDomainEventSink
 from services.meta_tags.validator import MetaImageValidator
 from services.safety import (
+    FISHFISH_FEED,
     BlockedDomainProvider,
     BlockedPatternProvider,
+    FeedDomainProvider,
+    FishFishClient,
     SafetyAnalyzer,
     SafetyEnforcer,
+    WebRiskProvider,
+    fishfish_sync_task,
 )
 from services.safety.consumers import SafetyAnalysisConsumer
 from services.scheduler import TaskScheduler
@@ -356,14 +362,33 @@ async def _build_runtime(
             edge_kv=safety_edge_kv,
             system_default_domain=settings.system_default_domain,
         )
+        # Provider order mirrors the app wiring: operator sources, synced
+        # feed sets, then online lookups last.
+        safety_providers: list = [
+            BlockedDomainProvider(BlockedDomainRepository(db["blocked_domains"])),
+            BlockedPatternProvider(
+                BlockedUrlRepository(db["blocked-urls"]),
+                regex_timeout=settings.blocked_url_regex_timeout,
+            ),
+        ]
+        if sf.fishfish_enabled:
+            safety_providers.append(
+                FeedDomainProvider(
+                    FeedDomainRepository(db["safety_feed_domains"]),
+                    feed=FISHFISH_FEED,
+                    reason_label="fishfish.gg",
+                )
+            )
+        if sf.web_risk_enabled:
+            safety_providers.append(
+                WebRiskProvider(
+                    runtime.http_client,
+                    api_key=sf.web_risk_api_key,
+                    api_base=sf.web_risk_api_base,
+                )
+            )
         safety_analyzer = SafetyAnalyzer(
-            [
-                BlockedDomainProvider(BlockedDomainRepository(db["blocked_domains"])),
-                BlockedPatternProvider(
-                    BlockedUrlRepository(db["blocked-urls"]),
-                    regex_timeout=settings.blocked_url_regex_timeout,
-                ),
-            ],
+            safety_providers,
             VerdictRepository(db["safety_verdicts"]),
             safety_enforcer,
             DiscordOpsNotifier(
@@ -381,9 +406,20 @@ async def _build_runtime(
         # executor above). The lease makes an overlapping embedded runner
         # in the app process harmless during runtime transitions.
         sch = settings.scheduler
+        sf = settings.safety
+        feature_tasks = []
+        if sf.enabled and sf.fishfish_enabled:
+            if runtime.http_client is None:
+                runtime.http_client = HttpClient(timeout=settings.http_client_timeout)
+            feature_tasks.append(
+                fishfish_sync_task(
+                    FishFishClient(runtime.http_client, api_url=sf.fishfish_api_url),
+                    FeedDomainRepository(db["safety_feed_domains"]),
+                )
+            )
         scheduler = TaskScheduler(
             ScheduledTaskRepository(db["scheduled_tasks"]),
-            build_task_registry(),
+            build_task_registry(feature_tasks),
             poll_interval=sch.poll_seconds,
             lease_seconds=sch.lease_seconds,
         )

@@ -33,6 +33,7 @@ class TestEnsureIndexes:
         webhook_endpoints_col = AsyncMock()
         webhook_deliveries_col = AsyncMock()
         safety_verdicts_col = AsyncMock()
+        feed_domains_col = AsyncMock()
         scheduled_tasks_col = AsyncMock()
 
         db.__getitem__ = lambda self, name: {
@@ -53,6 +54,7 @@ class TestEnsureIndexes:
             "webhook-endpoints": webhook_endpoints_col,
             "webhook-deliveries": webhook_deliveries_col,
             "safety_verdicts": safety_verdicts_col,
+            "safety_feed_domains": feed_domains_col,
             "scheduled_tasks": scheduled_tasks_col,
         }[name]
 
@@ -94,6 +96,7 @@ class TestEnsureIndexes:
         # Safety verdicts: one per destination host.
         safety_verdicts_col.create_index.assert_any_await([("host", 1)], unique=True)
         safety_verdicts_col.create_index.assert_any_await([("registrable_domain", 1)])
+        feed_domains_col.create_index.assert_any_await([("feed", 1), ("synced_at", 1)])
         # Destination decomposition: sparse dest_registrable on all three
         # url collections (pre-backfill docs lack `dest`).
         for _c in (urls_v2_col, urls_legacy_col, emojis_col):

@@ -475,6 +475,20 @@ class SafetySettings(BaseSettings):
     # destination host (repeat reports of one campaign are the norm).
     reverdict_ttl_hours: int = Field(default=24, ge=1)
 
+    # External feeds. fishfish.gg is free/no-auth and defaults on (within
+    # the master switch); its domain set syncs hourly via the scheduler.
+    fishfish_enabled: bool = True
+    fishfish_api_url: str = "https://api.fishfish.gg/v1/domains"
+    # Google Web Risk Lookup API — enabled by setting the GCP API key.
+    # (The Safe Browsing API is non-commercial-only; Web Risk is the
+    # sanctioned equivalent.)
+    web_risk_api_key: str = ""
+    web_risk_api_base: str = "https://webrisk.googleapis.com"
+
+    @property
+    def web_risk_enabled(self) -> bool:
+        return bool(self.web_risk_api_key)
+
 
 class SchedulerSettings(BaseSettings):
     """Scheduled-task system — the Mongo-lease runner for recurring jobs.

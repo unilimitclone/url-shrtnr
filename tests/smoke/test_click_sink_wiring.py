@@ -34,6 +34,7 @@ _COLLECTIONS = (
     "webhook-endpoints",
     "webhook-deliveries",
     "safety_verdicts",
+    "safety_feed_domains",
     "scheduled_tasks",
 )
 

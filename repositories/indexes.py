@@ -72,6 +72,12 @@ async def ensure_indexes(
     await verdicts_col.create_index([("registrable_domain", 1)])
     await verdicts_col.create_index([("updated_at", -1)])
 
+    # ── safety_feed_domains ────────────────────────────────────────────────
+    # Membership checks ride _id ("<feed>:<domain>"); this index serves the
+    # per-feed stale purge on sync and per-feed counts.
+    feed_domains_col = db["safety_feed_domains"]
+    await feed_domains_col.create_index([("feed", 1), ("synced_at", 1)])
+
     # ── destination decomposition (url-safety) ─────────────────────────────
     # Sparse: docs written before scripts/backfill_url_dest.py lack `dest`,
     # and unparseable destinations deliberately omit it. Covers all three

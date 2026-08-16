@@ -29,6 +29,7 @@ from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.click_repository import ClickRepository
 from repositories.custom_domain_repository import CustomDomainRepository
 from repositories.feature_flag_repository import FeatureFlagRepository
+from repositories.feed_domain_repository import FeedDomainRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.page_layout_repository import PageLayoutRepository
@@ -76,14 +77,19 @@ from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
 from services.safety import (
+    FISHFISH_FEED,
     BlockedDomainProvider,
     BlockedPatternProvider,
+    FeedDomainProvider,
+    FishFishClient,
     InlineSafetySink,
     NullSafetySink,
     RedisStreamSafetySink,
     SafetyAnalyzer,
     SafetyEnforcer,
     SafetySink,
+    WebRiskProvider,
+    fishfish_sync_task,
 )
 from services.scheduler import TaskScheduler
 from services.scheduler.tasks import build_task_registry
@@ -310,13 +316,32 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         edge_kv=edge_kv_client,
         system_default_domain=settings.system_default_domain,
     )
+    # Provider order: operator sources first (authoritative, cheap), then
+    # synced feed sets (cheap), then online lookups (network) last.
+    feed_domain_repo = FeedDomainRepository(db["safety_feed_domains"])
+    safety_providers: list = [
+        BlockedDomainProvider(BlockedDomainRepository(db["blocked_domains"])),
+        BlockedPatternProvider(
+            blocked_url_repo, regex_timeout=settings.blocked_url_regex_timeout
+        ),
+    ]
+    if sf_settings.fishfish_enabled:
+        safety_providers.append(
+            FeedDomainProvider(
+                feed_domain_repo, feed=FISHFISH_FEED, reason_label="fishfish.gg"
+            )
+        )
+    if sf_settings.web_risk_enabled:
+        safety_providers.append(
+            WebRiskProvider(
+                http_client,
+                api_key=sf_settings.web_risk_api_key,
+                api_base=sf_settings.web_risk_api_base,
+            )
+        )
+        log.info("safety_web_risk_enabled")
     safety_analyzer = SafetyAnalyzer(
-        [
-            BlockedDomainProvider(BlockedDomainRepository(db["blocked_domains"])),
-            BlockedPatternProvider(
-                blocked_url_repo, regex_timeout=settings.blocked_url_regex_timeout
-            ),
-        ],
+        safety_providers,
         VerdictRepository(db["safety_verdicts"]),
         safety_enforcer,
         ops_notifier,
@@ -343,7 +368,17 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # requested or (auto) when no worker exists in the deploy — queue
     # Redis presence is the worker proxy. app.py starts/cancels the task.
     sch_settings = settings.scheduler
-    task_registry = build_task_registry()
+    # Feature tasks: feed syncs run only when safety (and the feed) is on —
+    # no point burning upstream API calls for a set nothing reads.
+    feature_tasks = []
+    if sf_settings.enabled and sf_settings.fishfish_enabled:
+        feature_tasks.append(
+            fishfish_sync_task(
+                FishFishClient(http_client, api_url=sf_settings.fishfish_api_url),
+                feed_domain_repo,
+            )
+        )
+    task_registry = build_task_registry(feature_tasks)
     app.state.task_scheduler = TaskScheduler(
         ScheduledTaskRepository(db["scheduled_tasks"]),
         task_registry,

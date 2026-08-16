@@ -36,3 +36,16 @@ class TestSafetySettings:
     def test_populated_on_app_settings(self):
         settings = AppSettings()
         assert isinstance(settings.safety, SafetySettings)
+
+
+class TestFeedSettings:
+    def test_feed_defaults(self):
+        s = SafetySettings()
+        assert s.fishfish_enabled is True
+        assert s.fishfish_api_url == "https://api.fishfish.gg/v1/domains"
+        assert s.web_risk_api_key == ""
+        assert s.web_risk_enabled is False
+
+    def test_web_risk_enabled_by_key(self, monkeypatch):
+        monkeypatch.setenv("SAFETY_WEB_RISK_API_KEY", "AIzaTest")
+        assert SafetySettings().web_risk_enabled is True

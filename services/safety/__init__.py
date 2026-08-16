@@ -12,11 +12,18 @@ path only ever reads stored state.
 from services.safety.analyzer import SafetyAnalyzer
 from services.safety.enforcer import EnforcementResult, SafetyEnforcer
 from services.safety.events import SAFETY_STREAM, SafetyAnalyzeEvent
+from services.safety.feeds import (
+    FISHFISH_FEED,
+    FishFishClient,
+    fishfish_sync_task,
+)
 from services.safety.providers import (
     AnalysisProvider,
     BlockedDomainProvider,
     BlockedPatternProvider,
+    FeedDomainProvider,
     ProviderVerdict,
+    WebRiskProvider,
 )
 from services.safety.sinks import (
     InlineSafetySink,
@@ -26,11 +33,14 @@ from services.safety.sinks import (
 )
 
 __all__ = [
+    "FISHFISH_FEED",
     "SAFETY_STREAM",
     "AnalysisProvider",
     "BlockedDomainProvider",
     "BlockedPatternProvider",
     "EnforcementResult",
+    "FeedDomainProvider",
+    "FishFishClient",
     "InlineSafetySink",
     "NullSafetySink",
     "ProviderVerdict",
@@ -39,4 +49,6 @@ __all__ = [
     "SafetyAnalyzer",
     "SafetyEnforcer",
     "SafetySink",
+    "WebRiskProvider",
+    "fishfish_sync_task",
 ]
