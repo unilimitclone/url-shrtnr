@@ -524,6 +524,28 @@ class TestUrlServiceCreate:
         url_repo.insert.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_create_stamps_destination_parts(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://a.evil.co.uk/kit?x=1")
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        inserted = url_repo.insert.call_args.args[0]
+        assert inserted["dest"]["registrable_domain"] == "evil.co.uk"
+        assert inserted["dest"]["host"] == "a.evil.co.uk"
+        assert inserted["dest"]["subdomain"] == "a"
+        assert inserted["dest"]["scheme"] == "https"
+
+    @pytest.mark.asyncio
     async def test_create_persists_created_via(self):
         url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
         svc = make_service(
@@ -1006,6 +1028,28 @@ class TestUrlServiceUpdate:
         assert "$set" in update_doc
         assert "long_url" in update_doc["$set"]
         url_cache.invalidate.assert_called_once_with(ALIAS, SYSTEM_DEFAULT_DOMAIN)
+
+    @pytest.mark.asyncio
+    async def test_update_long_url_restamps_dest(self):
+        """A destination edit must re-stamp the parsed dest parts, or the
+        indexed decomposition silently drifts from long_url."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(long_url="https://b.new-dest.com/x")
+        await svc.update(URL_OID, req, USER_OID)
+
+        written = url_repo.update.call_args[0][1]["$set"]
+        assert written["dest"]["registrable_domain"] == "new-dest.com"
+        assert written["dest"]["host"] == "b.new-dest.com"
 
     @pytest.mark.asyncio
     async def test_update_meta_tags_stamps_client_ip(self):

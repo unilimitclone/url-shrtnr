@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from schemas.models.base import ANONYMOUS_OWNER_ID, MongoBaseModel, PyObjectId
 from shared.datetime_utils import as_aware_utc
+from shared.url_utils import parse_destination
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -128,6 +129,25 @@ class LinkMetaTags(BaseModel):
         return warnings
 
 
+class UrlDestination(BaseModel):
+    """Parsed destination parts, stamped at create/edit time.
+
+    Enables index-driven lookups (takedowns, sweeps, blocklist application)
+    over ``dest.registrable_domain`` without regex scans of long_url. Absent
+    on docs written before the backfill (``scripts/backfill_url_dest.py``).
+    """
+
+    scheme: str = ""
+    host: str = ""
+    subdomain: str = ""
+    registrable_domain: str = ""
+
+    @classmethod
+    def from_url(cls, url: str | None) -> UrlDestination | None:
+        parts = parse_destination(url)
+        return cls(**parts) if parts else None
+
+
 class UrlV2Doc(MongoBaseModel):
     """Document model for the `urlsV2` collection.
 
@@ -171,6 +191,9 @@ class UrlV2Doc(MongoBaseModel):
     # unknown-client, and legacy creations.
     created_via: str | None = None
     long_url: str
+    # Parsed destination parts (see UrlDestination). None/absent when the
+    # destination had no parseable hostname or the doc predates the backfill.
+    dest: UrlDestination | None = None
     password: str | None = None
     block_bots: bool | None = None
     max_clicks: int | None = Field(default=None, ge=0)

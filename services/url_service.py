@@ -76,6 +76,7 @@ from schemas.models.url import (
     LegacyUrlDoc,
     LinkMetaTags,
     SchemaVersion,
+    UrlDestination,
     UrlStatus,
     UrlV2Doc,
 )
@@ -174,6 +175,10 @@ async def _handle_long_url(
         ):
             raise ValidationError("URL is blocked", field="long_url")
         ops["long_url"] = request.long_url
+        # Destination changed -> re-stamp the parsed parts (meta_tags
+        # precedent: plain model_dump dicts go into ops).
+        dest = UrlDestination.from_url(request.long_url)
+        ops["dest"] = dest.model_dump() if dest else None
 
 
 async def _handle_alias(
@@ -899,6 +904,7 @@ class UrlService:
             creation_ip=client_ip,
             created_via=created_via,
             long_url=request.long_url,
+            dest=UrlDestination.from_url(request.long_url),
             password=password_hash,
             block_bots=request.block_bots,
             max_clicks=request.max_clicks,
@@ -923,11 +929,12 @@ class UrlService:
             ),
         )
         doc = url_doc.model_dump(by_alias=True, exclude={"id"})
-        # Claim fields must be ABSENT (not null) when unset: the claimed-set
-        # partial index filters on $exists, and $exists matches nulls.
-        for _claim_field in ("claim_token_hash", "claimed_at"):
-            if doc.get(_claim_field) is None:
-                doc.pop(_claim_field, None)
+        # These fields must be ABSENT (not null) when unset: the claim pair
+        # feeds the owner_claimed partial index ($exists matches nulls) and
+        # dest feeds the sparse dest_registrable index.
+        for _absent_if_none in ("claim_token_hash", "claimed_at", "dest"):
+            if doc.get(_absent_if_none) is None:
+                doc.pop(_absent_if_none, None)
 
         # 8. Insert
         inserted_id = await self._url_repo.insert(doc)
