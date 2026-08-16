@@ -7,51 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from schemas.enums.safety import VerdictTier
-from services.safety.providers import BlockedDomainProvider, BlockedPatternProvider
-
-
-class TestBlockedDomainProvider:
-    @pytest.mark.asyncio
-    async def test_host_hit_is_toxic(self):
-        repo = AsyncMock()
-        repo.is_blocked = AsyncMock(return_value=True)
-        verdict = await BlockedDomainProvider(repo).analyze(
-            "https://evil.com/x", "evil.com", "evil.com"
-        )
-        assert verdict is not None
-        assert verdict.tier == VerdictTier.TOXIC
-
-    @pytest.mark.asyncio
-    async def test_registrable_domain_hit_when_host_clean(self):
-        repo = AsyncMock()
-        repo.is_blocked = AsyncMock(side_effect=[False, True])
-        verdict = await BlockedDomainProvider(repo).analyze(
-            "https://sub.evil.com/x", "sub.evil.com", "evil.com"
-        )
-        assert verdict is not None
-        assert "evil.com" in verdict.reason
-
-    @pytest.mark.asyncio
-    async def test_miss_abstains(self):
-        repo = AsyncMock()
-        repo.is_blocked = AsyncMock(return_value=False)
-        assert (
-            await BlockedDomainProvider(repo).analyze(
-                "https://ok.com/x", "ok.com", "ok.com"
-            )
-            is None
-        )
-
-    @pytest.mark.asyncio
-    async def test_repo_error_abstains(self):
-        repo = AsyncMock()
-        repo.is_blocked = AsyncMock(side_effect=RuntimeError("mongo down"))
-        assert (
-            await BlockedDomainProvider(repo).analyze(
-                "https://ok.com/x", "ok.com", "ok.com"
-            )
-            is None
-        )
+from services.safety.providers import BlockedPatternProvider
 
 
 class TestBlockedPatternProvider:
@@ -179,3 +135,31 @@ class TestWebRiskProvider:
         http.get = AsyncMock(side_effect=RuntimeError("boom"))
         provider = WebRiskProvider(http, api_key="k123")
         assert await provider.analyze("https://ok.com/x", "ok.com", "ok.com") is None
+
+
+class TestBlockedPatternProviderCache:
+    @pytest.mark.asyncio
+    async def test_patterns_cached_within_ttl(self):
+        repo = AsyncMock()
+        repo.get_patterns = AsyncMock(return_value=[r"evil\.com"])
+        provider = BlockedPatternProvider(
+            repo, regex_timeout=0.2, patterns_ttl_seconds=60
+        )
+
+        for _ in range(5):
+            await provider.analyze("https://ok.com/x", "ok.com", "ok.com")
+
+        repo.get_patterns.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_ttl_zero_disables_cache(self):
+        repo = AsyncMock()
+        repo.get_patterns = AsyncMock(return_value=[])
+        provider = BlockedPatternProvider(
+            repo, regex_timeout=0.2, patterns_ttl_seconds=0
+        )
+
+        await provider.analyze("https://ok.com/x", "ok.com", "ok.com")
+        await provider.analyze("https://ok.com/x", "ok.com", "ok.com")
+
+        assert repo.get_patterns.await_count == 2

@@ -143,6 +143,22 @@ def make_repos():
     return url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
 
 
+def make_policy(blocked_url_repo):
+    """A REAL L0 gate over the mocked pattern repo (ttl=0 so every check
+    reads the mock fresh) — blocked/self-link tests keep their semantics."""
+    from services.safety.policy import UrlPolicyService
+    from services.safety.providers import BlockedPatternProvider
+
+    return UrlPolicyService(
+        [
+            BlockedPatternProvider(
+                blocked_url_repo, regex_timeout=0.2, patterns_ttl_seconds=0
+            )
+        ],
+        blocked_self_domains=[SYSTEM_DEFAULT_DOMAIN],
+    )
+
+
 def make_service(
     url_repo,
     legacy_repo,
@@ -162,6 +178,7 @@ def make_service(
         url_cache=url_cache,
         blocked_self_domains=[SYSTEM_DEFAULT_DOMAIN],
         system_default_domain=SYSTEM_DEFAULT_DOMAIN,
+        url_policy=make_policy(blocked_url_repo),
         og_writethrough=og_writethrough,
         edge_kv=edge_kv,
     )
@@ -2264,7 +2281,10 @@ class TestUrlServiceGeoRules:
             },
         )
         await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
-        blocked_url_repo.get_patterns.assert_awaited_once()
+        # One fetch by the L0 gate (whose provider caches with a TTL in
+        # production; ttl=0 in this helper) + ONE shared fetch for all
+        # three geo destinations — never a fetch per destination.
+        assert blocked_url_repo.get_patterns.await_count == 2
 
     @pytest.mark.asyncio
     async def test_update_sets_geo_rules(self):

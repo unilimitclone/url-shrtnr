@@ -17,9 +17,9 @@ from services.safety.feeds import (
     FishFishClient,
     fishfish_sync_task,
 )
+from services.safety.policy import PolicyRejection, UrlPolicyService
 from services.safety.providers import (
     AnalysisProvider,
-    BlockedDomainProvider,
     BlockedPatternProvider,
     FeedDomainProvider,
     ProviderVerdict,
@@ -36,19 +36,20 @@ __all__ = [
     "FISHFISH_FEED",
     "SAFETY_STREAM",
     "AnalysisProvider",
-    "BlockedDomainProvider",
     "BlockedPatternProvider",
     "EnforcementResult",
     "FeedDomainProvider",
     "FishFishClient",
     "InlineSafetySink",
     "NullSafetySink",
+    "PolicyRejection",
     "ProviderVerdict",
     "RedisStreamSafetySink",
     "SafetyAnalyzeEvent",
     "SafetyAnalyzer",
     "SafetyEnforcer",
     "SafetySink",
+    "UrlPolicyService",
     "WebRiskProvider",
     "fishfish_sync_task",
 ]

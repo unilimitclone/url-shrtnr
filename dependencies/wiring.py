@@ -78,7 +78,6 @@ from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
 from services.safety import (
     FISHFISH_FEED,
-    BlockedDomainProvider,
     BlockedPatternProvider,
     FeedDomainProvider,
     FishFishClient,
@@ -88,6 +87,7 @@ from services.safety import (
     SafetyAnalyzer,
     SafetyEnforcer,
     SafetySink,
+    UrlPolicyService,
     WebRiskProvider,
     fishfish_sync_task,
 )
@@ -316,23 +316,25 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         edge_kv=edge_kv_client,
         system_default_domain=settings.system_default_domain,
     )
-    # Provider order: operator sources first (authoritative, cheap), then
-    # synced feed sets (cheap), then online lookups (network) last.
+    # Each provider is built ONCE and composed twice: the L0 gate takes
+    # the cheap/local subset (blocks the 201, so no network calls), the
+    # analyzer takes the full chain. Same instances = same pattern cache,
+    # same feed set, one implementation per signal.
     feed_domain_repo = FeedDomainRepository(db["safety_feed_domains"])
-    safety_providers: list = [
-        BlockedDomainProvider(BlockedDomainRepository(db["blocked_domains"])),
-        BlockedPatternProvider(
-            blocked_url_repo, regex_timeout=settings.blocked_url_regex_timeout
-        ),
-    ]
-    if sf_settings.fishfish_enabled:
-        safety_providers.append(
-            FeedDomainProvider(
-                feed_domain_repo, feed=FISHFISH_FEED, reason_label="fishfish.gg"
-            )
+    pattern_provider = BlockedPatternProvider(
+        blocked_url_repo, regex_timeout=settings.blocked_url_regex_timeout
+    )
+    gate_providers: list = [pattern_provider]
+    analyzer_providers: list = [pattern_provider]
+    if sf_settings.enabled and sf_settings.fishfish_enabled:
+        fishfish_provider = FeedDomainProvider(
+            feed_domain_repo, feed=FISHFISH_FEED, reason_label="fishfish.gg"
         )
+        gate_providers.append(fishfish_provider)
+        analyzer_providers.append(fishfish_provider)
     if sf_settings.web_risk_enabled:
-        safety_providers.append(
+        # Online lookup: analyzer only, never the create path.
+        analyzer_providers.append(
             WebRiskProvider(
                 http_client,
                 api_key=sf_settings.web_risk_api_key,
@@ -340,8 +342,12 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
             )
         )
         log.info("safety_web_risk_enabled")
+    url_policy = UrlPolicyService(
+        gate_providers, blocked_self_domains=settings.blocked_self_domains
+    )
+    app.state.url_policy = url_policy
     safety_analyzer = SafetyAnalyzer(
-        safety_providers,
+        analyzer_providers,
         VerdictRepository(db["safety_verdicts"]),
         safety_enforcer,
         ops_notifier,
@@ -399,6 +405,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         url_cache,
         settings.blocked_self_domains,
         system_default_domain=settings.system_default_domain,
+        url_policy=url_policy,
         blocked_url_regex_timeout=settings.blocked_url_regex_timeout,
         max_emoji_alias_length=settings.max_emoji_alias_length,
         emoji_accept_max_version=settings.emoji_accept_max_version,

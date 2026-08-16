@@ -19,13 +19,12 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from dependencies import OptionalUser, Settings, UrlSvc, get_db, get_redis
+from dependencies import OptionalUser, Settings, UrlPolicy, UrlSvc, get_db, get_redis
 from errors import ForbiddenError, GoneError, NotFoundError
 from infrastructure.cache.dual_cache import DualCache
 from infrastructure.logging import get_logger
 from infrastructure.templates import templates
 from middleware.rate_limiter import Limits, limiter
-from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
@@ -36,9 +35,7 @@ from shared.url_utils import parse_destination, split_destination
 from shared.validators import (
     is_emoji_alias,
     validate_alias,
-    validate_blocked_url,
     validate_safe_redirect,
-    validate_url,
     validate_url_password,
 )
 
@@ -80,6 +77,7 @@ async def index(request: Request, user: OptionalUser) -> Response:
 async def shorten_url(
     request: Request,
     url_service: UrlSvc,
+    url_policy: UrlPolicy,
     settings: Settings,
     db=Depends(get_db),
 ) -> Response:
@@ -111,22 +109,21 @@ async def shorten_url(
             status_code=400,
         )
 
-    blocked_patterns = await BlockedUrlRepository(db["blocked-urls"]).get_patterns()
-
-    if not validate_url(url, blocked_self_domains=settings.blocked_self_domains):
-        return JSONResponse(
-            {
-                "UrlError": (
-                    "Invalid URL, URL must have a valid protocol and must follow"
-                    " rfc_1034 & rfc_2728 patterns"
-                )
-            },
-            status_code=400,
-        )
-
-    if not validate_blocked_url(
-        url, blocked_patterns, timeout=settings.blocked_url_regex_timeout
-    ):
+    # The shared L0 gate (format + self-link + patterns + threat feeds) —
+    # same instance the v2 create path uses. Frozen legacy wire shapes.
+    rejection = await url_policy.check(url)
+    if rejection is not None:
+        log.info("url_creation_failed", reason=rejection.code, schema="v1")
+        if rejection.code == "invalid_url":
+            return JSONResponse(
+                {
+                    "UrlError": (
+                        "Invalid URL, URL must have a valid protocol and must follow"
+                        " rfc_1034 & rfc_2728 patterns"
+                    )
+                },
+                status_code=400,
+            )
         return JSONResponse({"BlockedUrlError": "Blocked URL ⛔"}, status_code=403)
 
     if alias and not validate_alias(alias):
@@ -257,6 +254,7 @@ async def shorten_url(
 async def emoji(
     request: Request,
     url_service: UrlSvc,
+    url_policy: UrlPolicy,
     settings: Settings,
     db=Depends(get_db),
 ) -> Response:
@@ -285,8 +283,6 @@ async def emoji(
 
     if not url:
         return JSONResponse({"UrlError": "URL is required"}, status_code=400)
-
-    blocked_patterns = await BlockedUrlRepository(db["blocked-urls"]).get_patterns()
 
     emoji_repo = EmojiUrlRepository(db["emojis"])
 
@@ -318,18 +314,22 @@ async def emoji(
                 {"EmojiError": "Could not generate unique emoji alias"}, status_code=500
             )
 
-    if not validate_url(url, blocked_self_domains=settings.blocked_self_domains):
-        return JSONResponse(
-            {
-                "UrlError": (
-                    "Invalid URL, URL must have a valid protocol and must follow"
-                    " rfc_1034 & rfc_2728 patterns"
-                )
-            },
-            status_code=400,
-        )
-
-    if not validate_blocked_url(url, blocked_patterns):
+    # Shared L0 gate; note this route's frozen blocked shape is UrlError,
+    # not BlockedUrlError. (Also fixes the old bug where this path dropped
+    # the configured regex timeout.)
+    rejection = await url_policy.check(url)
+    if rejection is not None:
+        log.info("url_creation_failed", reason=rejection.code, schema="emoji")
+        if rejection.code == "invalid_url":
+            return JSONResponse(
+                {
+                    "UrlError": (
+                        "Invalid URL, URL must have a valid protocol and must follow"
+                        " rfc_1034 & rfc_2728 patterns"
+                    )
+                },
+                status_code=400,
+            )
         return JSONResponse({"UrlError": "Blocked URL ⛔"}, status_code=403)
 
     data: dict = {

@@ -54,7 +54,6 @@ from infrastructure.geoip import GeoIPService
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger, setup_logging
 from infrastructure.ops_notify import DiscordOpsNotifier
-from repositories.blocked_domain_repository import BlockedDomainRepository
 from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.click_repository import ClickRepository
 from repositories.feed_domain_repository import FeedDomainRepository
@@ -80,7 +79,6 @@ from services.events.sinks import InlineDomainEventSink
 from services.meta_tags.validator import MetaImageValidator
 from services.safety import (
     FISHFISH_FEED,
-    BlockedDomainProvider,
     BlockedPatternProvider,
     FeedDomainProvider,
     FishFishClient,
@@ -365,7 +363,6 @@ async def _build_runtime(
         # Provider order mirrors the app wiring: operator sources, synced
         # feed sets, then online lookups last.
         safety_providers: list = [
-            BlockedDomainProvider(BlockedDomainRepository(db["blocked_domains"])),
             BlockedPatternProvider(
                 BlockedUrlRepository(db["blocked-urls"]),
                 regex_timeout=settings.blocked_url_regex_timeout,

@@ -35,6 +35,7 @@ from services.profile_picture_service import ProfilePictureService
 from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
+from services.safety.policy import UrlPolicyService
 from services.stats_service import StatsService
 from services.url_service import UrlService
 from services.webhooks.service import WebhookService
@@ -42,6 +43,10 @@ from services.webhooks.service import WebhookService
 
 def get_url_service(request: Request) -> UrlService:
     return request.app.state.url_service
+
+
+def get_url_policy(request: Request) -> UrlPolicyService:
+    return request.app.state.url_policy
 
 
 def get_bulk_url_service(request: Request) -> BulkUrlService:
@@ -147,6 +152,7 @@ def get_webhook_service(request: Request) -> WebhookService:
 # ── Annotated type aliases — Depends shortcuts for route signatures ──────────
 
 UrlSvc = Annotated[UrlService, Depends(get_url_service)]
+UrlPolicy = Annotated[UrlPolicyService, Depends(get_url_policy)]
 BulkUrlSvc = Annotated[BulkUrlService, Depends(get_bulk_url_service)]
 StatsSvc = Annotated[StatsService, Depends(get_stats_service)]
 PublicStatsSvc = Annotated[PublicStatsService, Depends(get_public_stats_service)]

@@ -13,12 +13,12 @@ pipeline.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
-from repositories.blocked_domain_repository import BlockedDomainRepository
 from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.feed_domain_repository import FeedDomainRepository
 from schemas.enums.safety import VerdictTier
@@ -39,39 +39,6 @@ class AnalysisProvider(Protocol):
     async def analyze(
         self, url: str, host: str, registrable_domain: str
     ) -> ProviderVerdict | None: ...
-
-
-class BlockedDomainProvider:
-    """Exact-domain blocklist (the ``blocked_domains`` collection): a hit
-    on the host or its registrable domain is an operator-confirmed bad
-    destination."""
-
-    name = "blocked_domain"
-
-    def __init__(self, repo: BlockedDomainRepository) -> None:
-        self._repo = repo
-
-    async def analyze(
-        self, url: str, host: str, registrable_domain: str
-    ) -> ProviderVerdict | None:
-        try:
-            if await self._repo.is_blocked(host):
-                return ProviderVerdict(
-                    tier=VerdictTier.TOXIC,
-                    reason=f"host {host} is on the domain blocklist",
-                )
-            if (
-                registrable_domain
-                and registrable_domain != host
-                and await self._repo.is_blocked(registrable_domain)
-            ):
-                return ProviderVerdict(
-                    tier=VerdictTier.TOXIC,
-                    reason=f"domain {registrable_domain} is on the domain blocklist",
-                )
-        except Exception as exc:
-            log.warning("safety_provider_failed", provider=self.name, error=str(exc))
-        return None
 
 
 class FeedDomainProvider:
@@ -172,20 +139,47 @@ class WebRiskProvider:
 
 class BlockedPatternProvider:
     """Regex blocklist (the ``blocked-urls`` collection) evaluated against
-    the full destination URL — the same patterns the create gate uses, so
-    a reported link that predates a pattern still gets caught."""
+    the full destination URL. One instance is shared by the create gate and
+    the analyzer, so both moments see the same patterns AND share the cache.
+
+    The repository is uncached by contract ("caching is the service
+    layer's job") — this provider IS that service layer: patterns are
+    cached for ``patterns_ttl_seconds`` (0 disables), so the create path
+    stops re-reading the whole collection per request while operator edits
+    still go live within the TTL.
+    """
 
     name = "blocked_pattern"
 
-    def __init__(self, repo: BlockedUrlRepository, *, regex_timeout: float) -> None:
+    def __init__(
+        self,
+        repo: BlockedUrlRepository,
+        *,
+        regex_timeout: float,
+        patterns_ttl_seconds: float = 30.0,
+    ) -> None:
         self._repo = repo
         self._timeout = regex_timeout
+        self._ttl = patterns_ttl_seconds
+        self._cached: list[str] | None = None
+        self._fetched_at = 0.0
+
+    async def _patterns(self) -> list[str]:
+        now = time.monotonic()
+        if (
+            self._cached is None
+            or self._ttl <= 0
+            or now - self._fetched_at >= self._ttl
+        ):
+            self._cached = await self._repo.get_patterns()
+            self._fetched_at = now
+        return self._cached
 
     async def analyze(
         self, url: str, host: str, registrable_domain: str
     ) -> ProviderVerdict | None:
         try:
-            patterns = await self._repo.get_patterns()
+            patterns = await self._patterns()
             # validate_blocked_url returns True = ALLOWED (inverted name).
             if not validate_blocked_url(url, patterns, timeout=self._timeout):
                 return ProviderVerdict(

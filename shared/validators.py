@@ -16,6 +16,10 @@ import emoji
 import regex
 import validators as _validators
 
+from infrastructure.logging import get_logger
+
+log = get_logger(__name__)
+
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 
 
@@ -190,7 +194,12 @@ def validate_blocked_url(
             if regex.search(pattern, url, timeout=timeout):
                 return False
         except TimeoutError:
-            pass  # Treat timed-out patterns as non-matching (fail open)
+            # Fail open (a pathological pattern must not take down link
+            # creation) but never silently: a timing-out pattern is an
+            # operator blocklist entry that has stopped enforcing.
+            log.warning(
+                "blocked_pattern_timeout", pattern=pattern, timeout_seconds=timeout
+            )
     return True
 
 

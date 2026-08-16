@@ -58,6 +58,7 @@ from services.events.protocol import DomainEventSink
 from services.events.sinks import NullDomainEventSink
 from services.meta_tags.events import MetaImageValidateEvent
 from services.meta_tags.images import ingest_meta_image
+from services.safety.policy import UrlPolicyService
 from services.webhooks.payloads import (
     build_link_expired,
     event_changes,
@@ -163,17 +164,12 @@ async def _handle_long_url(
     request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
 ) -> None:
     if request.long_url is not None and request.long_url != existing.long_url:
-        if not validate_url(
-            request.long_url, blocked_self_domains=service._blocked_self_domains
-        ):
-            raise ValidationError("URL is not allowed or invalid", field="long_url")
-        # Same blocklist check as create — an edit must not be a side door
-        # for destinations that would be rejected at creation.
-        patterns = await service._blocked_url_repo.get_patterns()
-        if not validate_blocked_url(
-            request.long_url, patterns, timeout=service._blocked_url_regex_timeout
-        ):
-            raise ValidationError("URL is blocked", field="long_url")
+        # Same gate as create — an edit must not be a side door for
+        # destinations that would be rejected at creation.
+        rejection = await service._url_policy.check(request.long_url)
+        if rejection is not None:
+            log.info("url_update_rejected", reason=rejection.code)
+            raise ValidationError(rejection.public_message, field="long_url")
         ops["long_url"] = request.long_url
         # Destination changed -> re-stamp the parsed parts (meta_tags
         # precedent: plain model_dump dicts go into ops).
@@ -424,6 +420,7 @@ class UrlService:
         url_cache: UrlCache,
         blocked_self_domains: list[str],
         system_default_domain: str,
+        url_policy: UrlPolicyService,
         blocked_url_regex_timeout: float = 0.2,
         max_emoji_alias_length: int = 15,
         emoji_accept_max_version: float = 15.1,
@@ -444,6 +441,10 @@ class UrlService:
         self._blocked_url_repo = blocked_url_repo
         self._url_cache = url_cache
         self._blocked_self_domains = blocked_self_domains
+        # The L0 gate — sole authority on whether a destination may be
+        # written (create AND edit). Shares provider instances with the
+        # safety analyzer via the wiring.
+        self._url_policy = url_policy
         # The only domain on which v1/legacy lookups fire — custom domains
         # are v2-only by definition.
         self._system_default_domain = system_default_domain
@@ -808,33 +809,22 @@ class UrlService:
         target_domain = domain or self._system_default_domain
         now = datetime.now(timezone.utc)
 
-        # 1. Validate the long URL (self-link check + format)
-        if not validate_url(
-            request.long_url, blocked_self_domains=self._blocked_self_domains
-        ):
-            log.info(
-                "url_create_rejected",
-                reason="invalid_url",
-            )
-            raise ValidationError("URL is not allowed or invalid", field="long_url")
-
-        # 2. Check against DB blocked patterns
-        # validate_blocked_url returns True if allowed, False if blocked
-        blocked_patterns = await self._blocked_url_repo.get_patterns()
-        if not validate_blocked_url(
-            request.long_url, blocked_patterns, timeout=self._blocked_url_regex_timeout
-        ):
-            log.info(
-                "url_create_rejected",
-                reason="blocked_pattern",
-            )
-            raise ValidationError("URL is blocked", field="long_url")
+        # 1+2. The L0 gate: format + self-link + every registered policy
+        # provider (operator patterns, threat feeds). Precise reason is
+        # logged by the gate; the wire message stays coarse for security
+        # rejections.
+        rejection = await self._url_policy.check(request.long_url)
+        if rejection is not None:
+            log.info("url_create_rejected", reason=rejection.code)
+            raise ValidationError(rejection.public_message, field="long_url")
 
         # 2b. Geo rules — every destination gets the same two-stage validation
-        # as long_url (patterns already fetched above). Off the event loop:
-        # up to max_countries * len(patterns) synchronous regex scans, and
-        # the blocklist only grows.
+        # as long_url. Off the event loop: up to max_countries *
+        # len(patterns) synchronous regex scans, and the blocklist only
+        # grows. (Sync helper, so it takes raw patterns rather than the
+        # async gate — unify when the gate grows a sync façade.)
         if request.geo_rules:
+            blocked_patterns = await self._blocked_url_repo.get_patterns()
             await asyncio.to_thread(
                 _validate_geo_rules,
                 request.geo_rules,
