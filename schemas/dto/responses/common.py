@@ -33,7 +33,8 @@ class HealthResponse(ResponseBase):
     """Response body for GET /health."""
 
     status: str
-    checks: dict[str, str]
+    version: str
+    checks: HealthChecks
 
 
 class MessageResponse(ResponseBase):
