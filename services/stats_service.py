@@ -33,12 +33,13 @@ from errors import (
 from infrastructure.logging import get_logger
 from repositories.click_repository import ClickRepository
 from repositories.url_repository import UrlRepository
-from schemas.dto.requests.stats import StatsQuery
+from schemas.dto.requests.stats import LinkStatsQuery, StatsQuery
 from schemas.enums.stats import (
     StatsDimension,
     StatsMetric,
     StatsScope,
 )
+from schemas.models.url import UrlV2Doc
 from shared.aggregation_strategies import AggregationStrategyFactory
 from shared.datetime_utils import parse_datetime
 
@@ -134,6 +135,49 @@ class StatsService:
         """Convert a UTC datetime to the user's timezone."""
         return StatsService.to_user_tz(dt, tz_name)
 
+    # ── Private: date window ──────────────────────────────────────────────────
+
+    def _resolve_window(
+        self,
+        start_raw: str | None,
+        end_raw: str | None,
+    ) -> tuple[datetime, datetime]:
+        """Parse, default, cap, and validate the date window.
+
+        Shared by ``query()`` and ``query_link()``; mirrored by
+        PublicStatsService._resolve_window — the three must not drift.
+        """
+        start_date = parse_datetime(start_raw) if start_raw else None
+        if start_raw and start_date is None:
+            raise ValidationError("invalid start_date format")
+        end_date = parse_datetime(end_raw) if end_raw else None
+        if end_raw and end_date is None:
+            raise ValidationError("invalid end_date format")
+
+        now = datetime.now(timezone.utc)
+        if start_date is None and end_date is None:
+            end_date = now
+            start_date = now - timedelta(days=7)
+        elif start_date is None:
+            start_date = end_date - timedelta(days=7)
+        elif end_date is None:
+            end_date = now
+
+        # Cap future dates to now
+        if start_date > now:
+            start_date = now
+        if end_date > now:
+            end_date = now
+
+        if start_date > end_date:
+            raise ValidationError("start_date must be before end_date")
+        if (end_date - start_date).days > self._max_date_range_days:
+            raise ValidationError(
+                f"date range cannot exceed {self._max_date_range_days} days"
+            )
+
+        return start_date, end_date
+
     # ── Private: query building ───────────────────────────────────────────────
 
     @staticmethod
@@ -184,7 +228,23 @@ class StatsService:
         # Time range
         query["clicked_at"] = {"$gte": start_date, "$lte": end_date}
 
-        # Dimension filters (null-sentinel dimensions add $or groups too).
+        StatsService._apply_dimension_filters(query, filters, or_groups)
+        StatsService._merge_or_groups(query, or_groups)
+
+        return query
+
+    @staticmethod
+    def _apply_dimension_filters(
+        query: dict[str, Any],
+        filters: dict[str, list[str]],
+        or_groups: list[list[dict[str, Any]]],
+    ) -> None:
+        """Apply dimension filters to a partially built $match in place.
+
+        Null-sentinel dimensions append $or groups instead of plain arms —
+        the caller merges them via ``_merge_or_groups``. Shared by the
+        account-scope builder and the per-link query.
+        """
         for dimension, values in filters.items():
             if not values:
                 continue
@@ -200,6 +260,20 @@ class StatsService:
                     )
                     continue
                 query["meta.short_code"] = {"$in": values}
+            elif dimension == StatsDimension.URL_ID:
+                # SECURITY: skip if the query already locks url_id — on the
+                # per-link path that equality is the only ownership arm.
+                if "meta.url_id" in query:
+                    log.warning(
+                        "query_builder_scope_bypass_prevented",
+                        dimension="url_id",
+                        attempted_values=values,
+                    )
+                    continue
+                # Values are format-validated by the DTO. No ownership check:
+                # the owner stamp already scopes the $match, so foreign ids
+                # simply match nothing.
+                query["meta.url_id"] = {"$in": [ObjectId(v) for v in values]}
             elif (
                 dimension in _NULL_SENTINEL_FILTERS
                 and _NULL_SENTINEL_FILTERS[dimension] in values
@@ -218,12 +292,16 @@ class StatsService:
             else:
                 query[dimension] = {"$in": values}
 
+    @staticmethod
+    def _merge_or_groups(
+        query: dict[str, Any],
+        or_groups: list[list[dict[str, Any]]],
+    ) -> None:
+        """Fold accumulated $or groups into the $match (nesting under $and)."""
         if len(or_groups) == 1:
             query["$or"] = or_groups[0]
         elif or_groups:
             query["$and"] = [{"$or": group} for group in or_groups]
-
-        return query
 
     # ── Private: aggregation ──────────────────────────────────────────────────
 
@@ -530,46 +608,14 @@ class StatsService:
         """
         scope = query.scope
         short_code = query.short_code
-        start_date = parse_datetime(query.start_date) if query.start_date else None
-        end_date = parse_datetime(query.end_date) if query.end_date else None
-
-        if query.start_date and start_date is None:
-            raise ValidationError("invalid start_date format")
-        if query.end_date and end_date is None:
-            raise ValidationError("invalid end_date format")
         filters = query.parsed_filters
         group_by = query.parsed_group_by
         metrics = query.parsed_metrics
-        tz_name = query.timezone
 
         start_time = time.perf_counter()
 
-        # ── Apply date defaults ───────────────────────────────────────────────
-        now = datetime.now(timezone.utc)
-        if start_date is None and end_date is None:
-            end_date = now
-            start_date = now - timedelta(days=7)
-        elif start_date is None:
-            start_date = end_date - timedelta(days=7)
-        elif end_date is None:
-            end_date = now
-
-        # Cap future dates to now
-        if start_date > now:
-            start_date = now
-        if end_date > now:
-            end_date = now
-
-        # ── Date range validation ─────────────────────────────────────────────
-        if start_date > end_date:
-            raise ValidationError("start_date must be before end_date")
-        if (end_date - start_date).days > self._max_date_range_days:
-            raise ValidationError(
-                f"date range cannot exceed {self._max_date_range_days} days"
-            )
-
-        # ── Validate timezone ─────────────────────────────────────────────────
-        tz_name = self.normalize_timezone(tz_name)
+        start_date, end_date = self._resolve_window(query.start_date, query.end_date)
+        tz_name = self.normalize_timezone(query.timezone)
 
         # ── Scope/target validation ───────────────────────────────────────────
         if scope == StatsScope.ANON:
@@ -644,6 +690,80 @@ class StatsService:
             "stats_query",
             scope=scope,
             short_code=short_code if scope == StatsScope.ANON else None,
+            group_by=group_by,
+            metrics=metrics,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            filter_count=len(filters),
+            total_clicks=summary.get("total_clicks", 0),
+            unique_clicks=summary.get("unique_clicks", 0),
+            duration_ms=duration_ms,
+        )
+
+        return response
+
+    async def query_link(
+        self,
+        query: LinkStatsQuery,
+        url: UrlV2Doc,
+    ) -> dict[str, Any]:
+        """Execute a per-link stats query for an already-resolved owned URL.
+
+        The route layer owns resolution and access control (parse_url_id →
+        get_owned, so a foreign id answers exactly like a missing one).
+        Clicks match on ``meta.url_id`` — never ``meta.short_code``, so a
+        same-alias link on another domain can never bleed in. Claimed links
+        need no special arm: claim-time reattribution stamps pre-claim
+        clicks with ``meta.url_id``, so this match carries full history.
+
+        Args:
+            query: Validated LinkStatsQuery DTO.
+            url:   The owned URL document resolved by the route.
+
+        Returns:
+            The standard stats wire plus top-level ``url_id`` and ``alias``.
+
+        Raises:
+            ValidationError: Invalid dates / range too large.
+            AppError:        DB failure.
+        """
+        filters = query.parsed_filters
+        group_by = query.parsed_group_by
+        metrics = query.parsed_metrics
+
+        start_time = time.perf_counter()
+
+        start_date, end_date = self._resolve_window(query.start_date, query.end_date)
+        tz_name = self.normalize_timezone(query.timezone)
+
+        click_query: dict[str, Any] = {
+            "meta.url_id": url.id,
+            "clicked_at": {"$gte": start_date, "$lte": end_date},
+        }
+        or_groups: list[list[dict[str, Any]]] = []
+        self._apply_dimension_filters(click_query, filters, or_groups)
+        self._merge_or_groups(click_query, or_groups)
+
+        response = await self.compute(
+            click_query,
+            scope=StatsScope.ALL,
+            short_code=None,
+            start_date=start_date,
+            end_date=end_date,
+            group_by=group_by,
+            metrics=metrics,
+            tz_name=tz_name,
+            filters=filters,
+        )
+        response["url_id"] = str(url.id)
+        response["alias"] = url.alias
+        summary = response.get("summary", {})
+
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        log.info(
+            "stats_query",
+            scope=StatsScope.ALL,
+            url_id=str(url.id),
             group_by=group_by,
             metrics=metrics,
             start_date=start_date.isoformat(),
