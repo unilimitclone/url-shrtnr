@@ -2,9 +2,8 @@
 GET /api/v1/export              — export URL stats as CSV, XLSX, JSON, or XML.
 GET /api/v1/export/links/{id}   — export twin of the per-link stats endpoint.
 
-Auth is optional for scope=anon (public stats); scope=all requires auth.
-The per-link endpoint always requires auth — you must own the URL.
-API key users require ``stats:read``, ``urls:read``, or ``admin:all``.
+Both require authentication — every export is scoped to the caller's own
+URLs. API key users require ``stats:read``, ``urls:read``, or ``admin:all``.
 """
 
 from __future__ import annotations
@@ -19,19 +18,14 @@ from dependencies import (
     CurrentUser,
     ExportSvc,
     UrlSvc,
-    optional_scopes,
     require_scopes,
 )
-from middleware.openapi import EXPORT_RESPONSES, OPTIONAL_AUTH_SECURITY
-from middleware.rate_limiter import Limits, dynamic_limit, limiter
+from middleware.openapi import EXPORT_RESPONSES
+from middleware.rate_limiter import Limits, limiter
 from routes.api_v1._helpers import parse_url_id
 from schemas.dto.requests.stats import ExportQuery, LinkExportQuery
 
 router = APIRouter(tags=["Statistics"])
-
-_export_limit, _export_key = dynamic_limit(
-    Limits.API_EXPORT_AUTHED, Limits.API_EXPORT_ANON
-)
 
 # Shared 200 documentation for both export routes — the download body is
 # format-dependent, never JSON-schema'd.
@@ -62,31 +56,26 @@ _EXPORT_200_RESPONSES = {
 @router.get(
     "/export",
     responses=_EXPORT_200_RESPONSES,
-    openapi_extra=OPTIONAL_AUTH_SECURITY,
     operation_id="exportStats",
     summary="Export Statistics",
 )
-@limiter.limit(_export_limit, key_func=_export_key)
+@limiter.limit(Limits.API_EXPORT_AUTHED)
 async def export_v1(
     request: Request,
     query: Annotated[ExportQuery, Query()],
     export_service: ExportSvc,
-    user: CurrentUser | None = Depends(optional_scopes(STATS_SCOPES)),  # noqa: B008
+    user: CurrentUser = Depends(require_scopes(STATS_SCOPES)),  # noqa: B008
 ) -> Response:
-    """Export URL click statistics as a downloadable file.
+    """Export click statistics across all URLs you own as a downloadable file.
 
     Generate a file export of click analytics data in the specified format.
     The response is a binary download with appropriate `Content-Disposition` header.
 
-    **Authentication**: Optional for `scope=anon` (public stats on a single URL);
-    required for `scope=all`.
+    **Authentication**: Required.
 
     **API Key Scope**: `stats:read`, `urls:read`, or `admin:all`
 
-    **Rate Limits**:
-
-    - Authenticated: 30/min, 1,000/day
-    - Anonymous: 10/min, 200/day
+    **Rate Limits**: 30/min, 1,000/day
 
     **Export Formats**:
 
@@ -102,8 +91,7 @@ async def export_v1(
     **Note**: Export generation is resource-intensive. Lower rate limits apply
     compared to other endpoints.
     """
-    owner_id = str(user.user_id) if user is not None else None
-    result = await export_service.export(query, owner_id)
+    result = await export_service.export(query, str(user.user_id))
     return Response(
         content=result.content,
         media_type=result.mimetype,

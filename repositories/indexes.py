@@ -86,9 +86,9 @@ async def ensure_indexes(
 
     await clicks_col.create_index([("meta.url_id", 1), ("clicked_at", -1)])
     await clicks_col.create_index([("clicked_at", -1)])
-    # CRITICAL: for user-level analytics (scope=all queries)
+    # CRITICAL: for user-level analytics (account-scoped stats queries)
     await clicks_col.create_index([("meta.owner_id", 1), ("clicked_at", -1)])
-    # for anonymous stats (scope=anon, by short_code)
+    # for the short_code stats filter
     await clicks_col.create_index([("meta.short_code", 1), ("clicked_at", -1)])
     # sparse — older buckets have no meta.domain, index stays small
     await clicks_col.create_index([("meta.domain", 1), ("clicked_at", -1)], sparse=True)

@@ -32,8 +32,7 @@ NOW_ISO = NOW.isoformat()
 START_ISO = START.isoformat()
 
 SAMPLE_STATS = {
-    "scope": "anon",
-    "short_code": "abc",
+    "scope": "all",
     "filters": {},
     "group_by": ["browser"],
     "timezone": "UTC",
@@ -63,8 +62,6 @@ def _export_query(fmt="json"):
     """Build an ExportQuery with sensible defaults for tests."""
     return ExportQuery(
         format=fmt,
-        scope="anon",
-        short_code="abc",
         start_date=START_ISO,
         end_date=NOW_ISO,
         group_by="browser",

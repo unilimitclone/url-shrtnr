@@ -164,14 +164,14 @@ def test_create_url_with_custom_alias_then_redirect():
 
 
 def test_create_url_then_check_stats():
-    """Create URL, then GET /api/v1/stats?short_code=xxx returns stats."""
+    """Create URL, then GET /api/v1/stats (authed) returns stats."""
     doc = _make_url_doc()
 
     url_svc = AsyncMock()
     url_svc.create.return_value = (doc, None)
 
     stats_result = {
-        "scope": "anon",
+        "scope": "all",
         "filters": {},
         "group_by": ["time"],
         "timezone": "UTC",
@@ -188,12 +188,15 @@ def test_create_url_then_check_stats():
     stats_svc = AsyncMock()
     stats_svc.query.return_value = stats_result
 
+    user = _mock_user()
+
     app = build_test_app(
         api_v1_router,
         redirect_router,
         overrides={
             get_url_service: lambda: url_svc,
             get_stats_service: lambda: stats_svc,
+            get_current_user: lambda: user,
         },
     )
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -202,11 +205,11 @@ def test_create_url_then_check_stats():
         assert resp.status_code == 201
 
         # Step 2: Stats
-        resp = client.get(f"/api/v1/stats?short_code={_ALIAS}&scope=anon")
+        resp = client.get(f"/api/v1/stats?short_code={_ALIAS}")
         assert resp.status_code == 200
         data = resp.json()
         assert data["summary"]["total_clicks"] == 42
-        assert data["scope"] == "anon"
+        assert data["scope"] == "all"
 
 
 def test_create_url_then_update_long_url():
@@ -432,12 +435,15 @@ def test_create_url_then_export_stats():
         filename="stats.json",
     )
 
+    user = _mock_user()
+
     app = build_test_app(
         api_v1_router,
         redirect_router,
         overrides={
             get_url_service: lambda: url_svc,
             get_export_service: lambda: export_svc,
+            get_current_user: lambda: user,
         },
     )
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -446,6 +452,6 @@ def test_create_url_then_export_stats():
         assert resp.status_code == 201
 
         # Step 2: Export
-        resp = client.get(f"/api/v1/export?short_code={_ALIAS}&scope=anon&format=json")
+        resp = client.get(f"/api/v1/export?short_code={_ALIAS}&format=json")
         assert resp.status_code == 200
         assert "attachment" in resp.headers.get("content-disposition", "")

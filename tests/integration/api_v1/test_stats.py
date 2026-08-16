@@ -44,49 +44,56 @@ _BASE_STATS_RESULT = {
 class TestStats:
     _STATS_RESULT: ClassVar[dict] = {
         **_BASE_STATS_RESULT,
-        "scope": "anon",
-        "short_code": "abc123",
+        "scope": "all",
         "time_bucket_info": _TIME_BUCKET_INFO,
     }
 
-    def test_stats_anon_scope(self):
-        mock_svc = AsyncMock()
-        mock_svc.query = AsyncMock(return_value=self._STATS_RESULT)
-
-        application = _build_test_app(
-            {get_current_user: lambda: None, get_stats_service: lambda: mock_svc}
-        )
-        with TestClient(application, raise_server_exceptions=True) as client:
-            resp = client.get("/api/v1/stats?scope=anon&short_code=abc123")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["scope"] == "anon"
-        assert body["summary"]["total_clicks"] == 42
-        assert "time_bucket_info" in body
-        assert body["time_bucket_info"]["strategy"] == "daily"
-
-    def test_stats_all_scope_with_auth(self):
+    def test_stats_with_auth(self):
         user = _make_user()
         mock_svc = AsyncMock()
-        mock_svc.query = AsyncMock(return_value={**_BASE_STATS_RESULT, "scope": "all"})
+        mock_svc.query = AsyncMock(return_value=self._STATS_RESULT)
 
         application = _build_test_app(
             {get_current_user: lambda: user, get_stats_service: lambda: mock_svc}
         )
         with TestClient(application, raise_server_exceptions=True) as client:
-            resp = client.get("/api/v1/stats?scope=all")
+            resp = client.get("/api/v1/stats")
 
         assert resp.status_code == 200
+        body = resp.json()
+        assert body["scope"] == "all"
+        assert body["summary"]["total_clicks"] == 42
+        assert "time_bucket_info" in body
+        assert body["time_bucket_info"]["strategy"] == "daily"
 
-    def test_stats_invalid_scope_returns_422(self):
+    def test_stats_unauthenticated_returns_401(self):
         application = _build_test_app(
             {get_current_user: lambda: None, get_stats_service: lambda: AsyncMock()}
         )
         with TestClient(application, raise_server_exceptions=False) as client:
-            resp = client.get("/api/v1/stats?scope=invalid_value")
+            resp = client.get("/api/v1/stats")
 
-        assert resp.status_code == 422
+        assert resp.status_code == 401
+
+    def test_stats_stray_scope_param_silently_ignored(self):
+        """The scope param is gone; RequestBase drops unknown params, so an
+        old client sending scope=anon gets a normal authed response — the
+        wire never 422s on it."""
+        user = _make_user()
+        mock_svc = AsyncMock()
+        mock_svc.query = AsyncMock(return_value=self._STATS_RESULT)
+
+        application = _build_test_app(
+            {get_current_user: lambda: user, get_stats_service: lambda: mock_svc}
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.get("/api/v1/stats?scope=anon&short_code=abc123")
+
+        assert resp.status_code == 200
+        query = mock_svc.query.call_args[0][0]
+        assert not hasattr(query, "scope")
+        # short_code survives as a plain filter under the owner stamp.
+        assert query.parsed_filters["short_code"] == ["abc123"]
 
     def test_stats_api_key_missing_scope_returns_403(self):
         key_doc = _make_api_key_doc(scopes=["shorten:create"])
@@ -96,7 +103,7 @@ class TestStats:
             {get_current_user: lambda: user, get_stats_service: lambda: AsyncMock()}
         )
         with TestClient(application, raise_server_exceptions=False) as client:
-            resp = client.get("/api/v1/stats?scope=anon&short_code=abc123")
+            resp = client.get("/api/v1/stats")
 
         assert resp.status_code == 403
 

@@ -16,6 +16,7 @@ from .conftest import _build_test_app, _make_api_key_doc, _make_url_doc, _make_u
 
 class TestExport:
     def test_export_json_returns_correct_content_type(self):
+        user = _make_user()
         mock_svc = AsyncMock()
         mock_svc.export = AsyncMock(
             return_value=ExportResult(
@@ -26,31 +27,66 @@ class TestExport:
         )
 
         application = _build_test_app(
-            {get_current_user: lambda: None, get_export_service: lambda: mock_svc}
+            {get_current_user: lambda: user, get_export_service: lambda: mock_svc}
         )
         with TestClient(application, raise_server_exceptions=True) as client:
-            resp = client.get("/api/v1/export?format=json&scope=anon&short_code=abc123")
+            resp = client.get("/api/v1/export?format=json")
 
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("application/json")
         assert "content-disposition" in resp.headers
 
-    def test_export_missing_format_returns_422(self):
+    def test_export_unauthenticated_returns_401(self):
         application = _build_test_app(
             {get_current_user: lambda: None, get_export_service: lambda: AsyncMock()}
         )
         with TestClient(application, raise_server_exceptions=False) as client:
-            resp = client.get("/api/v1/export?scope=anon&short_code=abc123")
+            resp = client.get("/api/v1/export?format=json")
+
+        assert resp.status_code == 401
+
+    def test_export_stray_scope_param_silently_ignored(self):
+        user = _make_user()
+        mock_svc = AsyncMock()
+        mock_svc.export = AsyncMock(
+            return_value=ExportResult(
+                content=b'{"data": []}',
+                mimetype="application/json",
+                filename="stats.json",
+            )
+        )
+
+        application = _build_test_app(
+            {get_current_user: lambda: user, get_export_service: lambda: mock_svc}
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.get("/api/v1/export?format=json&scope=anon")
+
+        assert resp.status_code == 200
+        assert not hasattr(mock_svc.export.call_args[0][0], "scope")
+
+    def test_export_missing_format_returns_422(self):
+        application = _build_test_app(
+            {
+                get_current_user: lambda: _make_user(),
+                get_export_service: lambda: AsyncMock(),
+            }
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.get("/api/v1/export")
 
         # Missing required `format` field → Pydantic validation → 422
         assert resp.status_code == 422
 
     def test_export_invalid_format_returns_422(self):
         application = _build_test_app(
-            {get_current_user: lambda: None, get_export_service: lambda: AsyncMock()}
+            {
+                get_current_user: lambda: _make_user(),
+                get_export_service: lambda: AsyncMock(),
+            }
         )
         with TestClient(application, raise_server_exceptions=False) as client:
-            resp = client.get("/api/v1/export?format=pdf&scope=anon&short_code=abc123")
+            resp = client.get("/api/v1/export?format=pdf")
 
         assert resp.status_code == 422
 
@@ -62,7 +98,7 @@ class TestExport:
             {get_current_user: lambda: user, get_export_service: lambda: AsyncMock()}
         )
         with TestClient(application, raise_server_exceptions=False) as client:
-            resp = client.get("/api/v1/export?format=json&scope=anon&short_code=abc123")
+            resp = client.get("/api/v1/export?format=json")
 
         assert resp.status_code == 403
 

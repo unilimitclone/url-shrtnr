@@ -11,8 +11,8 @@ The route layer is responsible for:
     - HTTP response construction
 
 This service receives already-parsed parameters and handles all business
-logic from there, including date defaults, privacy checks, and the single
-$facet MongoDB call.
+logic from there, including date defaults and the single $facet MongoDB
+call.
 """
 
 from __future__ import annotations
@@ -26,8 +26,6 @@ from bson import ObjectId
 
 from errors import (
     AuthenticationError,
-    ForbiddenError,
-    NotFoundError,
     ValidationError,
 )
 from infrastructure.logging import get_logger
@@ -83,7 +81,7 @@ class StatsService:
 
     Args:
         click_repo:         Repository for the ``clicks`` time-series collection.
-        url_repo:           Repository for the ``urlsV2`` collection (privacy checks).
+        url_repo:           Repository for the ``urlsV2`` collection (claimed ids).
         max_date_range_days: Maximum allowed date range in days (default 90).
     """
 
@@ -182,9 +180,7 @@ class StatsService:
 
     @staticmethod
     def _build_click_query(
-        scope: StatsScope,
-        owner_id: str | None,
-        short_code: str | None,
+        owner_id: str,
         start_date: datetime,
         end_date: datetime,
         filters: dict[str, list[str]],
@@ -192,38 +188,30 @@ class StatsService:
     ) -> dict[str, Any]:
         """Build the MongoDB $match query for the clicks collection.
 
-        Preserves the exact filtering logic from utils/query_builder.py
-        (ClickQueryBuilder + StatsQueryBuilderFactory), including:
-        - meta.owner_id scoping for scope=all
-        - meta.short_code scoping for scope=anon
-        - Time range on clicked_at
-        - Dimension filters with special handling for short_code and referrer/Direct
+        Always owner-scoped (``meta.owner_id``) — auth is mandatory on
+        every caller. Time range on ``clicked_at``, then dimension filters.
 
-        ``claimed_url_ids`` (scope=all only): claimed links' pre-claim
-        clicks are stamped with the anonymous owner, so they need a url_id
-        arm to carry their history. Empty set (almost every account) →
-        query byte-identical to the stamp-only one.
+        ``claimed_url_ids``: claimed links' pre-claim clicks are stamped
+        with the anonymous owner, so they need a url_id arm to carry their
+        history. Empty set (almost every account) → query byte-identical
+        to the stamp-only one.
         """
         query: dict[str, Any] = {}
 
-        # Ownership scope and null-sentinel filters both build $or groups;
+        # Ownership and null-sentinel filters both build $or groups;
         # multiple groups must nest under $and.
         or_groups: list[list[dict[str, Any]]] = []
 
-        # Scope filter
-        if scope == StatsScope.ALL and owner_id:
-            owner_oid = ObjectId(owner_id) if isinstance(owner_id, str) else owner_id
-            if claimed_url_ids:
-                or_groups.append(
-                    [
-                        {"meta.owner_id": owner_oid},
-                        {"meta.url_id": {"$in": claimed_url_ids}},
-                    ]
-                )
-            else:
-                query["meta.owner_id"] = owner_oid
-        elif scope == StatsScope.ANON and short_code:
-            query["meta.short_code"] = short_code
+        owner_oid = ObjectId(owner_id) if isinstance(owner_id, str) else owner_id
+        if claimed_url_ids:
+            or_groups.append(
+                [
+                    {"meta.owner_id": owner_oid},
+                    {"meta.url_id": {"$in": claimed_url_ids}},
+                ]
+            )
+        else:
+            query["meta.owner_id"] = owner_oid
 
         # Time range
         query["clicked_at"] = {"$gte": start_date, "$lte": end_date}
@@ -250,15 +238,6 @@ class StatsService:
                 continue
 
             if dimension == StatsDimension.SHORT_CODE:
-                # SECURITY: skip if scope already locks short_code (scope=anon)
-                if "meta.short_code" in query:
-                    log.warning(
-                        "query_builder_scope_bypass_prevented",
-                        dimension="short_code",
-                        locked_short_code=query.get("meta.short_code"),
-                        attempted_values=values,
-                    )
-                    continue
                 query["meta.short_code"] = {"$in": values}
             elif dimension == StatsDimension.URL_ID:
                 # SECURITY: skip if the query already locks url_id — on the
@@ -590,24 +569,21 @@ class StatsService:
         query: StatsQuery,
         owner_id: str | None,
     ) -> dict[str, Any]:
-        """Execute a stats query and return the formatted, enhanced response.
+        """Execute an account-scoped stats query and return the enhanced response.
 
         Args:
             query:    Validated StatsQuery DTO with all query parameters.
-            owner_id: String user ID for scope=all, or None.
+            owner_id: String user ID of the authenticated caller.
 
         Returns:
             Formatted stats dict ready for JSON serialisation.
 
         Raises:
-            ValidationError:      Invalid scope/target parameters.
-            NotFoundError:        short_code not found (scope=anon).
-            AuthenticationError:  Auth required for private stats or scope=all.
-            ForbiddenError:       Authenticated user does not own private URL.
+            ValidationError:      Invalid date parameters.
+            AuthenticationError:  No owner_id (defence in depth — the route
+                                  already requires auth).
             AppError:             DB failure.
         """
-        scope = query.scope
-        short_code = query.short_code
         filters = query.parsed_filters
         group_by = query.parsed_group_by
         metrics = query.parsed_metrics
@@ -617,56 +593,19 @@ class StatsService:
         start_date, end_date = self._resolve_window(query.start_date, query.end_date)
         tz_name = self.normalize_timezone(query.timezone)
 
-        # ── Scope/target validation ───────────────────────────────────────────
-        if scope == StatsScope.ANON:
-            if not short_code:
-                raise ValidationError("short_code is required when scope=anon")
-
-            privacy = await self._url_repo.check_stats_privacy(short_code)
-            if not privacy["exists"]:
-                raise NotFoundError("short_code not found")
-
-            if privacy["private"]:
-                if owner_id is None:
-                    log.info(
-                        "stats_access_denied",
-                        reason="unauthenticated_private_stats",
-                        short_code=short_code,
-                    )
-                    raise AuthenticationError(
-                        "this URL has private statistics - authentication required"
-                    )
-                if privacy["owner_id"] != str(owner_id):
-                    log.info(
-                        "stats_access_denied",
-                        reason="not_owner",
-                        short_code=short_code,
-                        requesting_user=str(owner_id),
-                        owner_user=privacy["owner_id"],
-                    )
-                    raise ForbiddenError("access denied - private statistics")
-
-        elif scope == StatsScope.ALL:
-            if owner_id is None:
-                log.info(
-                    "stats_access_denied",
-                    reason="unauthenticated_scope_all",
-                )
-                raise AuthenticationError("authentication required for scope=all")
+        if owner_id is None:
+            log.info("stats_access_denied", reason="unauthenticated")
+            raise AuthenticationError("authentication required")
 
         # ── Execute + format ──────────────────────────────────────────────────
         # Claimed links carry pre-claim history under the anonymous stamp;
         # sub-ms partial-index lookup, empty for almost every account.
-        claimed_url_ids: list[ObjectId] = []
-        if scope == StatsScope.ALL and owner_id:
-            claimed_url_ids = await self._url_repo.list_claimed_ids(
-                ObjectId(owner_id) if isinstance(owner_id, str) else owner_id
-            )
+        claimed_url_ids = await self._url_repo.list_claimed_ids(
+            ObjectId(owner_id) if isinstance(owner_id, str) else owner_id
+        )
 
         click_query = self._build_click_query(
-            scope,
             owner_id,
-            short_code,
             start_date,
             end_date,
             filters,
@@ -674,8 +613,8 @@ class StatsService:
         )
         response = await self.compute(
             click_query,
-            scope=scope,
-            short_code=short_code,
+            scope=StatsScope.ALL,
+            short_code=None,
             start_date=start_date,
             end_date=end_date,
             group_by=group_by,
@@ -688,8 +627,6 @@ class StatsService:
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         log.info(
             "stats_query",
-            scope=scope,
-            short_code=short_code if scope == StatsScope.ANON else None,
             group_by=group_by,
             metrics=metrics,
             start_date=start_date.isoformat(),
@@ -762,7 +699,6 @@ class StatsService:
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         log.info(
             "stats_query",
-            scope=StatsScope.ALL,
             url_id=str(url.id),
             group_by=group_by,
             metrics=metrics,

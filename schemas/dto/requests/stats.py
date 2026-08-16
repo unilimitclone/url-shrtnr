@@ -8,9 +8,13 @@ LinkExportQuery  — GET /api/v1/export/links/{id}   (superset: adds ``format``)
 
 All models parse comma-separated strings for multi-value fields and validate
 IANA timezone names.  The JSON ``filters`` string is parsed into a typed dict.
-The per-link variants drop ``scope``/``short_code``/``url_id`` entirely —
-the path already names the link, so slicing or bucketing by link identity
-is meaningless there.
+The per-link variants drop ``short_code``/``url_id`` entirely — the path
+already names the link, so slicing or bucketing by link identity is
+meaningless there.
+
+There is no ``scope`` parameter: every endpoint in this family requires
+auth and reads the caller's own aggregate. A stray ``scope=`` from an old
+client is silently ignored (RequestBase drops unknown params).
 """
 
 from __future__ import annotations
@@ -40,7 +44,6 @@ from schemas.dto.requests._descriptions import (
     STATS_METRICS_DESC,
     STATS_OS_DESC,
     STATS_REFERRER_DESC,
-    STATS_SCOPE_DESC,
     STATS_SHORT_CODE_DESC,
     STATS_START_DATE_DESC,
     STATS_TIMEZONE_DESC,
@@ -56,7 +59,6 @@ from schemas.enums.stats import (
     LINK_ALLOWED_GROUP_BY,
     ExportFormat,
     StatsDimension,
-    StatsScope,
 )
 
 
@@ -260,12 +262,11 @@ class StatsQuery(_StatsQueryBase):
     The ``filters`` parameter accepts a JSON object string.
     """
 
-    scope: Literal[StatsScope.ALL, StatsScope.ANON] = Field(
-        default=StatsScope.ALL, description=STATS_SCOPE_DESC
-    )
     short_code: str | None = Field(
         default=None,
-        max_length=50,
+        # Sized for the documented comma-separated LIST (aliases run up to
+        # 50 chars each), matching url_id and the other multi-value params.
+        max_length=1000,
         description=STATS_SHORT_CODE_DESC,
         examples=["mylink"],
     )
@@ -276,21 +277,11 @@ class StatsQuery(_StatsQueryBase):
         examples=["686cbf34cc37ed6bbcd82ab9"],
     )
 
-    @field_validator("scope", mode="before")
-    @classmethod
-    def _normalize_scope(cls, v: str) -> str:
-        return v.strip().lower() if isinstance(v, str) else v
-
     def _apply_identity_filters(self, parsed_filters: dict[str, list[str]]) -> None:
-        # short_code filter is blocked when scope=anon (bypass prevention)
-        if self.short_code and self.scope != StatsScope.ANON:
+        if self.short_code:
             parsed_filters["short_code"] = _parse_comma_separated(self.short_code)
         if self.url_id:
             parsed_filters["url_id"] = _parse_comma_separated(self.url_id)
-        # anon queries have no owner arm — an id filter would re-scope the
-        # alias lock onto anyone's link, so reject (param and JSON paths).
-        if self.scope == StatsScope.ANON and parsed_filters.get(StatsDimension.URL_ID):
-            raise ValueError("url_id filters require scope=all")
         # Format-validate every url_id value (the JSON filters path too) so
         # the service can convert to ObjectId without a second check. No
         # ownership check — the owner stamp already scopes the $match, so
@@ -307,8 +298,8 @@ class StatsQuery(_StatsQueryBase):
 class LinkStatsQuery(_StatsQueryBase):
     """Query parameters for GET /api/v1/stats/links/{url_id}.
 
-    StatsQuery minus link identity: no ``scope``, and no ``short_code`` or
-    ``url_id`` params or filters — the path already selects the link.
+    StatsQuery minus link identity: no ``short_code`` or ``url_id`` params
+    or filters — the path already selects the link.
     """
 
     _ALLOWED_GROUP_BY: ClassVar[frozenset] = LINK_ALLOWED_GROUP_BY
