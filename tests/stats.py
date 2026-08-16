@@ -49,19 +49,22 @@ def test_v1_stats(alias):
 
 
 def test_v2_stats(alias):
-    """Test stats for V2 URL via API"""
-    response = requests.get(
-        f"{BASE_URL}/api/v1/stats", params={"scope": "anon", "short_code": alias}
-    )
+    """Test public per-link stats for a V2 URL"""
+    response = requests.get(f"{BASE_URL}/api/v1/public/stats/{alias}")
     assert response.status_code == 200, (
         f"V2 stats failed: {response.status_code} - {response.text}"
     )
     data = response.json()
-    assert "summary" in data or "total_clicks" in data or "total-clicks" in data, (
-        "Missing click data"
-    )
+    assert "stats" in data and "summary" in data["stats"], "Missing click data"
     print(f"✅ V2 stats retrieved for {alias}")
     return data
+
+
+def test_v2_stats_requires_auth():
+    """The account stats endpoint answers 401 without credentials"""
+    response = requests.get(f"{BASE_URL}/api/v1/stats")
+    assert response.status_code == 401, f"Expected 401, got {response.status_code}"
+    print("✅ Account stats requires auth")
 
 
 def test_stats_nonexistent():
@@ -100,6 +103,7 @@ def main():
         # Test stats
         test_v1_stats(v1_alias)
         test_v2_stats(v2_alias)
+        test_v2_stats_requires_auth()
         test_stats_nonexistent()
 
         # Test preview

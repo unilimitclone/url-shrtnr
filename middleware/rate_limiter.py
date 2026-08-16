@@ -33,8 +33,6 @@ class Limits:
     # API v1 — authenticated vs anonymous tiers
     API_AUTHED = "60 per minute; 5000 per day"
     API_ANON = "20 per minute; 200 per day"
-    # Anonymous public-stats reads keep the pre-tightening daily budget
-    API_ANON_READ = "20 per minute; 1000 per day"
 
     # Alias availability check — cheap read, UI debounces on each keystroke
     API_CHECK_AUTHED = "180 per minute; 10000 per day"
@@ -156,9 +154,8 @@ class Limits:
     STATS_LEGACY_PAGE = "20 per minute; 1000 per day"
     STATS_LEGACY_EXPORT = "10 per minute; 200 per day"
 
-    # Export stats (auth vs anon tiers)
+    # Export stats (auth required)
     API_EXPORT_AUTHED = "30 per minute; 1000 per day"
-    API_EXPORT_ANON = "10 per minute; 200 per day"
 
     # Password-protected URL check
     PASSWORD_CHECK = "10 per minute; 30 per hour"
