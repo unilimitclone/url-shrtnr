@@ -19,6 +19,8 @@ async def ensure_indexes(
 ) -> None:
     users_col = db["users"]
     urls_v2_col = db["urlsV2"]
+    urls_legacy_col = db["urls"]
+    emojis_col = db["emojis"]
     clicks_col = db["clicks"]
     api_keys_col = db["api-keys"]
     page_layouts_col = db["page-layouts"]
@@ -62,6 +64,15 @@ async def ensure_indexes(
         name="owner_claimed",
         partialFilterExpression={"claimed_at": {"$exists": True}},
     )
+
+    # ── destination decomposition (url-safety) ─────────────────────────────
+    # Sparse: docs written before scripts/backfill_url_dest.py lack `dest`,
+    # and unparseable destinations deliberately omit it. Covers all three
+    # url collections so takedown/sweep pivots never regex-scan long_url.
+    for _url_col in (urls_v2_col, urls_legacy_col, emojis_col):
+        await _url_col.create_index(
+            [("dest.registrable_domain", 1)], name="dest_registrable", sparse=True
+        )
 
     # ── clicks (time-series) ───────────────────────────────────────────────
     # Create the time-series collection if it doesn't exist yet.

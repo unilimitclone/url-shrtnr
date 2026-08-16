@@ -22,6 +22,8 @@ class TestEnsureIndexes:
         tokens_col = AsyncMock()
 
         page_layouts_col = AsyncMock()
+        urls_legacy_col = AsyncMock()
+        emojis_col = AsyncMock()
         app_grants_col = AsyncMock()
         feature_flags_col = AsyncMock()
         custom_domains_col = AsyncMock()
@@ -34,6 +36,8 @@ class TestEnsureIndexes:
         db.__getitem__ = lambda self, name: {
             "users": users_col,
             "urlsV2": urls_v2_col,
+            "urls": urls_legacy_col,
+            "emojis": emojis_col,
             "clicks": clicks_col,
             "api-keys": api_keys_col,
             "verification-tokens": tokens_col,
@@ -83,6 +87,12 @@ class TestEnsureIndexes:
         webhook_deliveries_col.create_index.assert_any_await(
             [("created_at", 1)], expireAfterSeconds=2_592_000, name="ttl_created_at"
         )
+        # Destination decomposition: sparse dest_registrable on all three
+        # url collections (pre-backfill docs lack `dest`).
+        for _c in (urls_v2_col, urls_legacy_col, emojis_col):
+            _c.create_index.assert_any_await(
+                [("dest.registrable_domain", 1)], name="dest_registrable", sparse=True
+            )
         urls_v2_col.create_index.assert_any_await([("owner_id", 1)])
         clicks_col.create_index.assert_any_await(
             [("meta.url_id", 1), ("clicked_at", -1)]
