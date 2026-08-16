@@ -65,6 +65,13 @@ async def ensure_indexes(
         partialFilterExpression={"claimed_at": {"$exists": True}},
     )
 
+    # ── safety_verdicts ────────────────────────────────────────────────────
+    # One verdict per destination host; sweeps pivot on registrable domain.
+    verdicts_col = db["safety_verdicts"]
+    await verdicts_col.create_index([("host", 1)], unique=True)
+    await verdicts_col.create_index([("registrable_domain", 1)])
+    await verdicts_col.create_index([("updated_at", -1)])
+
     # ── destination decomposition (url-safety) ─────────────────────────────
     # Sparse: docs written before scripts/backfill_url_dest.py lack `dest`,
     # and unparseable destinations deliberately omit it. Covers all three

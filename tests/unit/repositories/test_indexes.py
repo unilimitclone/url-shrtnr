@@ -32,6 +32,7 @@ class TestEnsureIndexes:
         webhook_events_col = AsyncMock()
         webhook_endpoints_col = AsyncMock()
         webhook_deliveries_col = AsyncMock()
+        safety_verdicts_col = AsyncMock()
 
         db.__getitem__ = lambda self, name: {
             "users": users_col,
@@ -50,6 +51,7 @@ class TestEnsureIndexes:
             "webhook-events": webhook_events_col,
             "webhook-endpoints": webhook_endpoints_col,
             "webhook-deliveries": webhook_deliveries_col,
+            "safety_verdicts": safety_verdicts_col,
         }[name]
 
         # create_collection raises CollectionInvalid when collection already exists
@@ -87,6 +89,9 @@ class TestEnsureIndexes:
         webhook_deliveries_col.create_index.assert_any_await(
             [("created_at", 1)], expireAfterSeconds=2_592_000, name="ttl_created_at"
         )
+        # Safety verdicts: one per destination host.
+        safety_verdicts_col.create_index.assert_any_await([("host", 1)], unique=True)
+        safety_verdicts_col.create_index.assert_any_await([("registrable_domain", 1)])
         # Destination decomposition: sparse dest_registrable on all three
         # url collections (pre-backfill docs lack `dest`).
         for _c in (urls_v2_col, urls_legacy_col, emojis_col):
