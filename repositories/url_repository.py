@@ -368,16 +368,20 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         docs = await self._aggregate(pipeline)
         return [(d["_id"], d.get("sample_url", "")) for d in docs if d.get("_id")]
 
-    async def block_active_by_dest_host(self, host: str) -> int:
+    async def block_active_by_dest_host(self, host: str, *, reason: str) -> int:
         """Flip every ACTIVE link pointing at *host* to BLOCKED. Returns the
         number of links flipped. Idempotent: already-BLOCKED links no longer
-        match the filter."""
+        match the filter. ``blocked_at``/``blocked_reason`` are the per-link
+        audit trail — ``updated_at`` is lossy, these survive later edits."""
+        now = datetime.now(timezone.utc)
         result = await self._col.update_many(
             {"dest.host": host, "status": UrlStatus.ACTIVE.value},
             {
                 "$set": {
                     "status": UrlStatus.BLOCKED.value,
-                    "updated_at": datetime.now(timezone.utc),
+                    "updated_at": now,
+                    "blocked_at": now,
+                    "blocked_reason": reason,
                 }
             },
         )

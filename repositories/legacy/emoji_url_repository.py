@@ -8,6 +8,7 @@ which MongoDB collection operations target.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from pymongo.errors import DuplicateKeyError, PyMongoError, WriteError
@@ -29,8 +30,45 @@ class EmojiUrlRepository(BaseRepository[EmojiUrlDoc]):
 
     async def count_by_dest_host(self, host: str) -> int:
         """Emoji links pointing at *host* (via the stamped dest subdoc) —
-        same operator-exposure count as LegacyUrlRepository's."""
+        same count surface as LegacyUrlRepository's."""
         return await self._count({"dest.host": host})
+
+    # ── Safety enforcement surface ────────────────────────────────────────
+    # Mirrors LegacyUrlRepository (this class deliberately does not inherit
+    # it); see there for the collect-then-flip ordering rationale.
+
+    async def list_unblocked_ids_by_dest_host(
+        self, host: str, *, limit: int = 50_000
+    ) -> list[str]:
+        """Aliases of not-yet-blocked emoji links pointing at *host*."""
+        cursor = self._col.find(
+            {"dest.host": host, "blocked": {"$ne": True}}, {"_id": 1}
+        ).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        return [d["_id"] for d in docs]
+
+    async def block_by_dest_host(self, host: str, *, reason: str) -> int:
+        """Flip every not-yet-blocked emoji link pointing at *host*."""
+        result = await self._col.update_many(
+            {"dest.host": host, "blocked": {"$ne": True}},
+            {
+                "$set": {
+                    "blocked": True,
+                    "blocked_at": datetime.now(timezone.utc),
+                    "blocked_reason": reason,
+                }
+            },
+        )
+        return int(result.modified_count)
+
+    async def unblock(self, alias: str) -> bool:
+        """Reverse a safety block on one emoji link. The caller owns cache
+        eviction (canonical VS16 key), same contract as the legacy repo."""
+        result = await self._col.update_one(
+            {"_id": alias, "blocked": True},
+            {"$unset": {"blocked": "", "blocked_at": "", "blocked_reason": ""}},
+        )
+        return bool(result.modified_count)
 
     async def insert(self, alias: str, url_data: dict) -> None:
         """Insert a new emoji URL document with the alias as _id.

@@ -11,6 +11,7 @@ Key differences from the v2 UrlRepository:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from pymongo.errors import DuplicateKeyError, PyMongoError, WriteError
@@ -102,10 +103,54 @@ class LegacyUrlRepository(BaseRepository[LegacyUrlDoc]):
         return doc is not None
 
     async def count_by_dest_host(self, host: str) -> int:
-        """v1 links pointing at *host* (via the stamped dest subdoc). v1 has
-        no status field, so enforcement here means manual delete — this
-        count surfaces the exposure to the operator."""
+        """v1 links pointing at *host* (via the stamped dest subdoc)."""
         return await self._count({"dest.host": host})
+
+    # ── Safety enforcement surface ────────────────────────────────────────
+    # v1 has no status machine; enforcement is the single ``blocked`` flag
+    # (absent = active). Same collect-then-flip order as v2: the id list is
+    # the cache-invalidation set and must be read before the flip removes
+    # docs from the not-yet-blocked filter.
+
+    async def list_unblocked_ids_by_dest_host(
+        self, host: str, *, limit: int = 50_000
+    ) -> list[str]:
+        """Short codes of not-yet-blocked links pointing at *host*."""
+        cursor = self._col.find(
+            {"dest.host": host, "blocked": {"$ne": True}}, {"_id": 1}
+        ).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        return [d["_id"] for d in docs]
+
+    async def block_by_dest_host(self, host: str, *, reason: str) -> int:
+        """Flip every not-yet-blocked link pointing at *host*. Returns the
+        number flipped; idempotent like the v2 status flip. ``blocked_at``
+        and ``blocked_reason`` are the per-link audit trail — ``$ne`` in
+        the filter means a re-block never overwrites the original stamp."""
+        result = await self._col.update_many(
+            {"dest.host": host, "blocked": {"$ne": True}},
+            {
+                "$set": {
+                    "blocked": True,
+                    "blocked_at": datetime.now(timezone.utc),
+                    "blocked_reason": reason,
+                }
+            },
+        )
+        return int(result.modified_count)
+
+    async def unblock(self, short_code: str) -> bool:
+        """Reverse a safety block — the thing deletion could never offer.
+        The audit stamps are removed with the flag: an unblocked link is
+        indistinguishable from a never-blocked one on the wire.
+
+        The caller owns cache eviction (same contract as bulk-delete):
+        without it the cached BLOCKED entry keeps serving 451s until TTL."""
+        result = await self._col.update_one(
+            {"_id": short_code, "blocked": True},
+            {"$unset": {"blocked": "", "blocked_at": "", "blocked_reason": ""}},
+        )
+        return bool(result.modified_count)
 
     async def aggregate(self, pipeline: list[dict]) -> dict[str, Any] | None:
         """Run an aggregation pipeline and return the first result document.

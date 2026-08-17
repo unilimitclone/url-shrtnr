@@ -1,11 +1,13 @@
 """SafetyEnforcer — turns a toxic verdict into reality, everywhere at once.
 
-Order matters: collect the invalidation set first (the status flip removes
-docs from the ACTIVE filter), then flip, then evict Redis + edge so the
-next click rebuilds from Mongo and serves the 451. Owned links emit
+Order matters: collect the invalidation set first (the flip removes docs
+from the not-yet-blocked filters), then flip, then evict Redis + edge so
+the next click rebuilds from Mongo and serves the 451. Owned links emit
 link.blocked domain events (anonymous links have no possible webhook
-subscriber). v1/emoji links have no status field — they are counted and
-surfaced to the operator, never auto-deleted.
+subscriber). v1/emoji links have no status machine — they carry a single
+``blocked`` flag, flipped here with the same blocked_at/blocked_reason
+audit stamp the v2 docs get, and reversible where the manual deletes this
+replaces never were.
 
 Idempotent by construction: re-enforcing an already-blocked host matches
 nothing and is free, which is what lets repeat reports re-run enforcement
@@ -28,6 +30,7 @@ from services.edge_cache.contract import cache_key
 from services.events.contract import DomainEvent
 from services.events.protocol import DomainEventSink
 from services.webhooks.payloads import link_owner_id, link_snapshot
+from shared.alias_dispatch import v2_lookup_code
 
 log = get_logger(__name__)
 
@@ -61,20 +64,34 @@ class SafetyEnforcer:
         self._system_domain = system_default_domain
 
     async def block_host(self, host: str, *, reason: str) -> EnforcementResult:
-        # 1. Collect BEFORE the flip: the invalidation set and the owned
-        #    docs for events both filter on status ACTIVE.
+        # 1. Collect BEFORE the flip: the invalidation sets and the owned
+        #    docs for events all filter on not-yet-blocked state.
         pairs = await self._url_repo.list_active_alias_domain_by_dest_host(host)
         owned = await self._url_repo.list_active_owned_by_dest_host(host)
+        legacy_ids = await self._legacy_repo.list_unblocked_ids_by_dest_host(host)
+        emoji_ids = await self._emoji_repo.list_unblocked_ids_by_dest_host(host)
 
-        # 2. Flip.
-        blocked = await self._url_repo.block_active_by_dest_host(host)
+        # 2. Flip — all three collections. v1/emoji carry the ``blocked``
+        #    flag instead of the v2 status machine; their redirects serve
+        #    the same 451, and the flip is reversible (unlike the manual
+        #    deletes this replaces).
+        blocked = await self._url_repo.block_active_by_dest_host(host, reason=reason)
+        legacy = await self._legacy_repo.block_by_dest_host(host, reason=reason)
+        legacy += await self._emoji_repo.block_by_dest_host(host, reason=reason)
 
-        # 3. Evict Redis per domain namespace.
+        # 3. Evict Redis per domain namespace. v1/emoji only ever live on
+        #    the system domain; emoji cache keys use the canonical VS16
+        #    form, not the stored ``_id`` variant.
         by_domain: dict[str, list[str]] = defaultdict(list)
         for alias, domain in pairs:
             by_domain[domain or self._system_domain].append(alias)
+        by_domain[self._system_domain].extend(legacy_ids)
+        by_domain[self._system_domain].extend(
+            v2_lookup_code(alias) for alias in emoji_ids
+        )
         for domain, aliases in by_domain.items():
-            await self._url_cache.invalidate_many(aliases, domain)
+            if aliases:
+                await self._url_cache.invalidate_many(aliases, domain)
 
         # 4. Evict edge KV (system domain only — tenant domains never
         #    promote). Best-effort: the client returns bool, never raises.
@@ -85,7 +102,8 @@ class SafetyEnforcer:
                     [cache_key(self._system_domain, a) for a in system_aliases]
                 )
 
-        # 5. link.blocked for owned links; sink never raises.
+        # 5. link.blocked for owned links; sink never raises. v1/emoji are
+        #    anonymous by construction — no possible webhook subscriber.
         if self._events is not None:
             for doc in owned:
                 owner = link_owner_id(doc)
@@ -100,21 +118,17 @@ class SafetyEnforcer:
                     )
                 )
 
-        # 6. v1 exposure is surfaced, not auto-deleted.
-        legacy = await self._legacy_repo.count_by_dest_host(host)
-        legacy += await self._emoji_repo.count_by_dest_host(host)
-
         log.info(
             "safety_host_blocked",
             host=host,
             blocked_count=blocked,
             legacy_count=legacy,
-            cache_invalidated=len(pairs),
+            cache_invalidated=sum(len(v) for v in by_domain.values()),
             reason=reason,
         )
         return EnforcementResult(
             host=host,
             blocked_count=blocked,
             legacy_count=legacy,
-            cache_invalidated=len(pairs),
+            cache_invalidated=sum(len(v) for v in by_domain.values()),
         )

@@ -510,10 +510,11 @@ class UrlService:
         cached = await self._url_cache.get(short_code, scope)
         if cached is not None:
             schema = cached.schema_version
-            if schema == SchemaVersion.V2 and cached.url_status in (
-                UrlStatus.BLOCKED,
-                UrlStatus.EXPIRED,
-                UrlStatus.INACTIVE,
+            # BLOCKED raises on every schema (v1/emoji carry the safety
+            # flag); EXPIRED/INACTIVE only exist on v2.
+            if cached.url_status == UrlStatus.BLOCKED or (
+                schema == SchemaVersion.V2
+                and cached.url_status in (UrlStatus.EXPIRED, UrlStatus.INACTIVE)
             ):
                 log.info(
                     "url_resolve_non_active",
@@ -549,11 +550,11 @@ class UrlService:
         # 3. Populate cache according to caching rules
         await self._populate_cache(short_code, url_cache_data, schema)
 
-        # 4a. Raise for non-ACTIVE v2 (after caching minimal data)
-        if schema == SchemaVersion.V2 and url_cache_data.url_status in (
-            UrlStatus.BLOCKED,
-            UrlStatus.EXPIRED,
-            UrlStatus.INACTIVE,
+        # 4a. Raise for non-ACTIVE (after caching minimal data). BLOCKED
+        # applies to every schema; EXPIRED/INACTIVE are v2-only states.
+        if url_cache_data.url_status == UrlStatus.BLOCKED or (
+            schema == SchemaVersion.V2
+            and url_cache_data.url_status in (UrlStatus.EXPIRED, UrlStatus.INACTIVE)
         ):
             log.info(
                 "url_resolve_non_active",
@@ -1675,7 +1676,9 @@ def _legacy_doc_to_cache(
         password_hash=doc.password,
         expiration_time=expiration_time,
         max_clicks=doc.max_clicks,
-        url_status=UrlStatus.ACTIVE,
+        # v1/emoji have no status machine — the safety ``blocked`` flag is
+        # the only non-ACTIVE state they can be in.
+        url_status=UrlStatus.BLOCKED if doc.blocked else UrlStatus.ACTIVE,
         schema_version=schema_version,
         total_clicks=doc.total_clicks,
         owner_id=None,

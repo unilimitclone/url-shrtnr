@@ -202,6 +202,12 @@ class UrlV2Doc(MongoBaseModel):
     # long_url stays the fallback for unmatched countries. None = no targeting.
     geo_rules: dict[str, str] | None = None
     status: UrlStatus = UrlStatus.ACTIVE
+    # Enforcement audit trail, stamped when safety flips status to BLOCKED.
+    # ``updated_at`` is lossy (any later touch overwrites); these survive.
+    # Also the only reason-of-record for per-link blocks, which
+    # deliberately write no host-wide verdict.
+    blocked_at: datetime | None = None
+    blocked_reason: str | None = None
     private_stats: bool | None = True  # None for anonymous/unowned URLs
     meta_tags: LinkMetaTags | None = None
     total_clicks: int = Field(default=0, ge=0)
@@ -258,6 +264,15 @@ class LegacyUrlDoc(MongoBaseModel):
 
     url: str
     password: str | None = None
+
+    # Safety enforcement. v1 predates the v2 status machine; a single
+    # ``blocked`` flag is the whole state space it needs (absent = active,
+    # so ten million untouched docs stay valid with zero backfill).
+    # Blocking beats the historical manual delete: evidence preserved,
+    # reversible, and the clicker gets the 451 instead of a bare 404.
+    blocked: bool = False
+    blocked_at: datetime | None = None
+    blocked_reason: str | None = None
 
     # Hyphenated field names — use aliases matching exact MongoDB keys
     max_clicks: int | None = Field(default=None, alias="max-clicks")

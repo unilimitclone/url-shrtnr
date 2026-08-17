@@ -231,6 +231,63 @@ class TestUrlServiceResolve:
             await svc.resolve(ALIAS)
 
     @pytest.mark.asyncio
+    async def test_blocked_v1_raises_451_error(self):
+        """v1 has no status machine — the safety ``blocked`` flag alone
+        must surface as the same BlockedUrlError (→451) as a v2 block."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_cache.get.return_value = None
+        doc = make_legacy_doc(short_code="abcdef")
+        doc.blocked = True
+        legacy_repo.find_by_id.return_value = doc
+
+        with pytest.raises(BlockedUrlError):
+            await svc.resolve("abcdef")
+
+    @pytest.mark.asyncio
+    async def test_blocked_emoji_raises_451_error(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = None
+        doc = make_emoji_doc()
+        doc.blocked = True
+        emoji_repo.find_by_id.return_value = doc
+
+        with pytest.raises(BlockedUrlError):
+            await svc.resolve("🐍🔥💎")
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_blocked_v1_raises_451_error(self):
+        """The eviction on flip recaches the doc as BLOCKED — the cache-hit
+        path must honor a non-v2 BLOCKED status, not gate it on schema."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        url_cache.get.return_value = UrlCacheData(
+            id="abcdef",
+            alias="abcdef",
+            long_url="",
+            block_bots=False,
+            password_hash=None,
+            expiration_time=None,
+            max_clicks=None,
+            url_status="BLOCKED",
+            schema_version="v1",
+            owner_id=None,
+        )
+        with pytest.raises(BlockedUrlError):
+            await svc.resolve("abcdef")
+
+    @pytest.mark.asyncio
     async def test_cache_hit_expired_v2_raises_gone(self):
         url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
         svc = make_service(

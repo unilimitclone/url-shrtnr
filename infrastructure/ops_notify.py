@@ -217,8 +217,8 @@ class DiscordOpsNotifier:
         sample_url: str | None,
     ) -> bool:
         """Enforcement already happened — this states the ACTION TAKEN, it
-        is not a request for one. ``legacy_count`` surfaces v1 links that
-        match but cannot be status-flipped (delete stays manual)."""
+        is not a request for one. ``legacy_count`` is v1/emoji links
+        blocked via their safety flag (same 451 as v2, reversible)."""
         fields: list[dict[str, Any]] = [
             {"name": "Destination Host", "value": f"```{host}```"},
             {"name": "Reason", "value": f"```{reason}```"},
@@ -228,7 +228,7 @@ class DiscordOpsNotifier:
         if legacy_count:
             fields.append(
                 {
-                    "name": "Legacy v1 Matches (manual delete needed)",
+                    "name": "Legacy v1/emoji Blocked",
                     "value": f"```{legacy_count}```",
                 }
             )

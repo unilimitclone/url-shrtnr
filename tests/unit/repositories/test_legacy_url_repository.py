@@ -141,3 +141,47 @@ class TestCountByDestHost:
         repo = LegacyUrlRepository(col)
         assert await repo.count_by_dest_host("evil.com") == 2
         col.count_documents.assert_awaited_once_with({"dest.host": "evil.com"})
+
+
+class TestSafetyBlockSurface:
+    def _repo(self, col):
+        from repositories.legacy.legacy_url_repository import LegacyUrlRepository
+
+        col.name = "urls"
+        return LegacyUrlRepository(col)
+
+    @pytest.mark.asyncio
+    async def test_list_unblocked_ids_filters_blocked(self):
+        col = make_collection()
+        col.find.return_value.to_list = AsyncMock(
+            return_value=[{"_id": "aaa111"}, {"_id": "bbb222"}]
+        )
+        ids = await self._repo(col).list_unblocked_ids_by_dest_host("evil.com")
+        assert ids == ["aaa111", "bbb222"]
+        # $ne (not =False): absent flag means active for 10M legacy docs.
+        assert col.find.call_args.args[0] == {
+            "dest.host": "evil.com",
+            "blocked": {"$ne": True},
+        }
+
+    @pytest.mark.asyncio
+    async def test_block_stamps_audit_trail_and_never_restamps(self):
+        col = make_collection()
+        result = MagicMock(modified_count=4)
+        col.update_many = AsyncMock(return_value=result)
+        assert await self._repo(col).block_by_dest_host("evil.com", reason="phish") == 4
+        flt, ops = col.update_many.await_args.args
+        # $ne in the filter = a re-block never overwrites the original stamp.
+        assert flt == {"dest.host": "evil.com", "blocked": {"$ne": True}}
+        assert ops["$set"]["blocked"] is True
+        assert ops["$set"]["blocked_reason"] == "phish"
+        assert ops["$set"]["blocked_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_unblock_removes_flag_and_stamps(self):
+        col = make_collection()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=1))
+        assert await self._repo(col).unblock("aaa111") is True
+        flt, ops = col.update_one.await_args.args
+        assert flt == {"_id": "aaa111", "blocked": True}
+        assert set(ops["$unset"]) == {"blocked", "blocked_at", "blocked_reason"}
