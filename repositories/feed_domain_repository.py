@@ -29,16 +29,27 @@ class FeedDomainRepository(BaseRepository[None]):
     def _key(feed: str, domain: str) -> str:
         return f"{feed}:{domain}"
 
-    async def replace_feed(self, feed: str, domains: Iterable[str]) -> tuple[int, int]:
-        """Swap *feed*'s set to exactly *domains*. Returns (kept, purged)."""
+    async def replace_feed(
+        self, feed: str, domains: Iterable[str]
+    ) -> tuple[int, int, set[str]]:
+        """Swap *feed*'s set to exactly *domains*.
+
+        Returns (kept, purged, new_domains) — the third element is the
+        domains that were NOT in the feed before this sync, which is the
+        feed-delta sweep's input: existing links pointing at a domain the
+        world just listed."""
+        existing = set(await self._col.distinct("domain", {"feed": feed}))
         now = datetime.now(timezone.utc)
         kept = 0
+        new_domains: set[str] = set()
         batch: list[UpdateOne] = []
         for raw in domains:
             domain = str(raw).strip().lower().rstrip(".")
             if not domain:
                 continue
             kept += 1
+            if domain not in existing:
+                new_domains.add(domain)
             batch.append(
                 UpdateOne(
                     {"_id": self._key(feed, domain)},
@@ -59,7 +70,7 @@ class FeedDomainRepository(BaseRepository[None]):
                 {"feed": feed, "synced_at": {"$lt": now}}
             )
             purged = int(result.deleted_count)
-        return kept, purged
+        return kept, purged, new_domains
 
     async def contains(self, feed: str, domain: str) -> bool:
         doc = await self._col.find_one(

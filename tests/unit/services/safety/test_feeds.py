@@ -51,12 +51,12 @@ class TestFishFishSyncTask:
         client = AsyncMock()
         client.fetch_domains = AsyncMock(return_value=[f"d{i}.com" for i in range(500)])
         repo = AsyncMock()
-        repo.replace_feed = AsyncMock(return_value=(500, 12))
+        repo.replace_feed = AsyncMock(return_value=(500, 12, {"d0.com"}))
 
         detail = await fishfish_sync_task(client, repo).fn()
 
         repo.replace_feed.assert_awaited_once()
-        assert detail == {"domains": 500, "purged": 12}
+        assert detail == {"domains": 500, "purged": 12, "new": 1, "swept_hosts": 0}
 
     @pytest.mark.asyncio
     async def test_tiny_download_keeps_previous_set(self):
@@ -91,7 +91,7 @@ class TestFeedSeeds:
 
         repo = AsyncMock()
         repo.count = AsyncMock(return_value=0)
-        repo.replace_feed = AsyncMock(return_value=(31, 0))
+        repo.replace_feed = AsyncMock(return_value=(31, 0, set()))
 
         await ensure_feed_seeds(repo)
 

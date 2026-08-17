@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from repositories.feed_domain_repository import FeedDomainRepository
+from services.safety.sweeps import FeedDeltaSweeper
 from services.scheduler.registry import ScheduledTask
 
 if TYPE_CHECKING:
@@ -85,8 +86,17 @@ class FeedSpec:
     # L0 wire message for PUBLISHED policies; None keeps the coarse default.
     public_message: str | None = None
     # Scheduler task factory for feeds refreshed from an upstream source.
+    # Receives the delta sweeper (None when sweeping is unavailable).
     sync: (
-        Callable[[HttpClient, FeedDomainRepository, SafetySettings], ScheduledTask]
+        Callable[
+            [
+                HttpClient,
+                FeedDomainRepository,
+                SafetySettings,
+                FeedDeltaSweeper | None,
+            ],
+            ScheduledTask,
+        ]
         | None
     ) = None
     # First-boot seed loader; fires only when the feed is empty.
@@ -94,10 +104,15 @@ class FeedSpec:
 
 
 def _fishfish_task(
-    http_client: HttpClient, repo: FeedDomainRepository, settings: SafetySettings
+    http_client: HttpClient,
+    repo: FeedDomainRepository,
+    settings: SafetySettings,
+    sweeper: FeedDeltaSweeper | None,
 ) -> ScheduledTask:
     return fishfish_sync_task(
-        FishFishClient(http_client, api_url=settings.fishfish_api_url), repo
+        FishFishClient(http_client, api_url=settings.fishfish_api_url),
+        repo,
+        sweeper=sweeper,
     )
 
 
@@ -161,10 +176,13 @@ def build_feed_tasks(
     settings: SafetySettings,
     http_client: HttpClient,
     repo: FeedDomainRepository,
+    sweeper: FeedDeltaSweeper | None = None,
 ) -> list[ScheduledTask]:
-    """Scheduler tasks for every enabled feed that refreshes upstream."""
+    """Scheduler tasks for every enabled feed that refreshes upstream.
+    ``sweeper`` threads the feed-delta sweep into each sync (None = sync
+    without sweeping)."""
     return [
-        spec.sync(http_client, repo, settings)
+        spec.sync(http_client, repo, settings, sweeper)
         for spec in FEED_REGISTRY
         if spec.sync is not None and spec.enabled(settings)
     ]
@@ -179,7 +197,7 @@ async def ensure_feed_seeds(repo: FeedDomainRepository) -> None:
             continue
         if await repo.count(spec.name) > 0:
             continue
-        kept, _ = await repo.replace_feed(spec.name, spec.seed())
+        kept, _, _ = await repo.replace_feed(spec.name, spec.seed())
         log.info("safety_feed_seeded", feed=spec.name, domains=kept)
 
 
@@ -200,9 +218,13 @@ class FishFishClient:
 
 
 def fishfish_sync_task(
-    client: FishFishClient, repo: FeedDomainRepository
+    client: FishFishClient,
+    repo: FeedDomainRepository,
+    sweeper: FeedDeltaSweeper | None = None,
 ) -> ScheduledTask:
-    """Hourly full-swap refresh of the fishfish domain set."""
+    """Hourly full-swap refresh of the fishfish domain set, followed by
+    the feed-delta sweep: links already pointing at a freshly listed
+    domain get their host enqueued for analysis in the same run."""
 
     async def _sync() -> dict | None:
         domains = await client.fetch_domains()
@@ -214,9 +236,17 @@ def fishfish_sync_task(
                 detail="below sanity floor, keeping previous set",
             )
             return {"fetched": len(domains), "kept": 0, "skipped": "below_sanity_floor"}
-        kept, purged = await repo.replace_feed(FISHFISH_FEED, domains)
+        kept, purged, new_domains = await repo.replace_feed(FISHFISH_FEED, domains)
         log.info("safety_feed_synced", feed=FISHFISH_FEED, domains=kept, purged=purged)
-        return {"domains": kept, "purged": purged}
+        swept = 0
+        if sweeper is not None and new_domains:
+            swept = await sweeper.sweep(FISHFISH_FEED, new_domains)
+        return {
+            "domains": kept,
+            "purged": purged,
+            "new": len(new_domains),
+            "swept_hosts": swept,
+        }
 
     return ScheduledTask(
         name=FISHFISH_SYNC_TASK, fn=_sync, schedule=_FISHFISH_SYNC_CRON

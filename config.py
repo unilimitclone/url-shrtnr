@@ -486,6 +486,14 @@ class SafetySettings(BaseSettings):
     l1_ip_burst_threshold: int = Field(default=40, ge=2)
     l1_ip_daily_threshold: int = Field(default=200, ge=2)
 
+    # L3 recent-screening sweep: every destination created in the window
+    # gets screened by the cheap providers (silently) so nothing sits
+    # permanently unjudged. The feed-delta sweep has no settings of its
+    # own — it rides each feed's sync task.
+    sweep_recent_enabled: bool = True
+    sweep_recent_window_hours: int = Field(default=48, ge=1)
+    sweep_max_enqueues: int = Field(default=1000, ge=10)
+
     # External feeds. fishfish.gg is free/no-auth and defaults on (within
     # the master switch); its domain set syncs hourly via the scheduler.
     fishfish_enabled: bool = True

@@ -125,6 +125,13 @@ class SafetyAnalyzer:
             sample_url=event.url,
             context=event.context,
         )
+        if event.trigger == "sweep":
+            # Coverage screening: the uncertain verdict IS the record.
+            # Pinging review for every innocent new destination would make
+            # the sweeper a spam machine; only reports and anomalies ask
+            # for human eyes.
+            log.info("safety_screened", host=event.host)
+            return
         await self._notifier.safety_review(
             host=event.host,
             trigger=event.trigger,

@@ -39,6 +39,7 @@ from services.safety.sinks import (
     RedisStreamSafetySink,
     SafetySink,
 )
+from services.safety.sweeps import FeedDeltaSweeper, SweepDeps, build_sweep_tasks
 
 __all__ = [
     "FISHFISH_FEED",
@@ -49,6 +50,7 @@ __all__ = [
     "BlockedPatternProvider",
     "CreationPatternScorer",
     "EnforcementResult",
+    "FeedDeltaSweeper",
     "FeedDomainProvider",
     "FishFishClient",
     "InlineSafetySink",
@@ -60,11 +62,13 @@ __all__ = [
     "SafetyAnalyzer",
     "SafetyEnforcer",
     "SafetySink",
+    "SweepDeps",
     "ToxicVerdictProvider",
     "UrlPolicyService",
     "WebRiskProvider",
     "build_feed_providers",
     "build_feed_tasks",
+    "build_sweep_tasks",
     "ensure_feed_seeds",
     "fishfish_sync_task",
     "load_shortener_seed",

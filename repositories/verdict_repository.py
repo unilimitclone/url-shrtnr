@@ -50,3 +50,13 @@ class VerdictRepository(BaseRepository[VerdictDoc]):
 
     async def find_by_host(self, host: str) -> VerdictDoc | None:
         return await self._find_one({"host": host})
+
+    async def hosts_with_verdicts(self, hosts: list[str]) -> set[str]:
+        """Which of *hosts* already have a verdict — the screening sweep's
+        novelty filter, one $in query on the unique host index."""
+        if not hosts:
+            return set()
+        docs = await self._col.find({"host": {"$in": hosts}}, {"host": 1}).to_list(
+            length=len(hosts)
+        )
+        return {d["host"] for d in docs}

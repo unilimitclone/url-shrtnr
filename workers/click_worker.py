@@ -79,11 +79,15 @@ from services.events.sinks import InlineDomainEventSink
 from services.meta_tags.validator import MetaImageValidator
 from services.safety import (
     BlockedPatternProvider,
+    FeedDeltaSweeper,
+    InlineSafetySink,
     SafetyAnalyzer,
     SafetyEnforcer,
+    SweepDeps,
     WebRiskProvider,
     build_feed_providers,
     build_feed_tasks,
+    build_sweep_tasks,
 )
 from services.safety.consumers import SafetyAnalysisConsumer
 from services.scheduler import TaskScheduler
@@ -182,6 +186,7 @@ async def _build_runtime(
     # fires from its max-clicks branch). In-process dispatch — same process
     # as the dispatcher, no re-queue round trip.
     worker_domain_sink = None
+    worker_safety_sink = None
     if run_webhooks:
         # Webhooks stack: dispatcher fed by two consumer-group
         # feeds (clicks + domain events), executor as a background task —
@@ -389,6 +394,10 @@ async def _build_runtime(
             reverdict_ttl_hours=sf.reverdict_ttl_hours,
         )
         runtime.safety_consumer = SafetyAnalysisConsumer(safety_analyzer)
+        # Sweeps emitted from THIS process run inline through the worker's
+        # own analyzer — screenings are milliseconds, and it avoids a
+        # second raw queue-redis client just to re-enter our own stream.
+        worker_safety_sink = InlineSafetySink(safety_analyzer)
         log.info("safety_worker_registered", stream=sf.stream)
     if run_scheduler:
         # Scheduled-task runner: Mongo-only claim loop, so it shares this
@@ -398,16 +407,38 @@ async def _build_runtime(
         sch = settings.scheduler
         if runtime.http_client is None:
             runtime.http_client = HttpClient(timeout=settings.http_client_timeout)
-        # Feed sync tasks come straight from FEED_REGISTRY.
+        # Safety catalogs: feed syncs (with the delta sweep when this
+        # process also analyzes) plus the scheduled sweeps.
+        scheduler_feed_repo = FeedDomainRepository(db["safety_feed_domains"])
+        scheduler_url_repo = UrlRepository(db["urlsV2"])
+        feature_tasks = []
+        delta_sweeper = (
+            FeedDeltaSweeper(scheduler_url_repo, worker_safety_sink)
+            if worker_safety_sink is not None
+            else None
+        )
+        feature_tasks.extend(
+            build_feed_tasks(
+                settings.safety,
+                runtime.http_client,
+                scheduler_feed_repo,
+                delta_sweeper,
+            )
+        )
+        if worker_safety_sink is not None:
+            feature_tasks.extend(
+                build_sweep_tasks(
+                    settings.safety,
+                    SweepDeps(
+                        url_repo=scheduler_url_repo,
+                        verdict_repo=VerdictRepository(db["safety_verdicts"]),
+                        sink=worker_safety_sink,
+                    ),
+                )
+            )
         scheduler = TaskScheduler(
             ScheduledTaskRepository(db["scheduled_tasks"]),
-            build_task_registry(
-                build_feed_tasks(
-                    settings.safety,
-                    runtime.http_client,
-                    FeedDomainRepository(db["safety_feed_domains"]),
-                )
-            ),
+            build_task_registry(feature_tasks),
             poll_interval=sch.poll_seconds,
             lease_seconds=sch.lease_seconds,
         )

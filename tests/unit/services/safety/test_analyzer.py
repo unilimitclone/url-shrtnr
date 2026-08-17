@@ -180,3 +180,45 @@ class TestHumanVerdicts:
         await analyzer.analyze(_event())
 
         enforcer.block_host.assert_awaited_once()
+
+
+class TestSweepNotificationPolicy:
+    @pytest.mark.asyncio
+    async def test_sweep_abstention_is_silent(self):
+        """Screening coverage must not ping review for every innocent new
+        destination — the uncertain verdict is the record."""
+        analyzer, verdict_repo, _enforcer, notifier = _build([_Provider(None)])
+
+        await analyzer.analyze(
+            SafetyAnalyzeEvent(
+                url="https://fresh.com/x",
+                host="fresh.com",
+                registrable_domain="fresh.com",
+                trigger="sweep",
+                context={"sweep": "recent_screen"},
+            )
+        )
+
+        verdict_repo.upsert_verdict.assert_awaited_once()
+        notifier.safety_review.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sweep_toxic_hit_still_notifies_action(self):
+        provider = _Provider(
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="listed by fishfish.gg"),
+            name="feed_fishfish",
+        )
+        analyzer, _verdict_repo, enforcer, notifier = _build([provider])
+
+        await analyzer.analyze(
+            SafetyAnalyzeEvent(
+                url="https://evil.com/x",
+                host="evil.com",
+                registrable_domain="evil.com",
+                trigger="sweep",
+                context={"sweep": "feed_delta", "feed": "fishfish"},
+            )
+        )
+
+        enforcer.block_host.assert_awaited_once()
+        notifier.safety_action.assert_awaited_once()

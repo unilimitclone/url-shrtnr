@@ -324,6 +324,50 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         docs = await cursor.to_list(length=limit)
         return [UrlV2Doc.from_mongo(d) for d in docs]
 
+    async def list_active_hosts_by_registrable(
+        self, registrable_domain: str, *, limit: int = 200
+    ) -> list[tuple[str, str]]:
+        """Distinct ACTIVE destination hosts under one registrable domain,
+        each with a sample long_url — the feed-delta sweep's fan-out unit
+        (verdicts are host-keyed, feeds are domain-keyed)."""
+        pipeline = [
+            {
+                "$match": {
+                    "dest.registrable_domain": registrable_domain,
+                    "status": UrlStatus.ACTIVE.value,
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$dest.host",
+                    "sample_url": {"$first": "$long_url"},
+                }
+            },
+            {"$limit": limit},
+        ]
+        docs = await self._col.aggregate(pipeline).to_list(length=limit)
+        return [(d["_id"], d.get("sample_url", "")) for d in docs if d.get("_id")]
+
+    async def list_recent_destination_hosts(
+        self, since: datetime, *, limit: int = 20_000
+    ) -> list[tuple[str, str]]:
+        """Distinct destination hosts of links created since *since*, each
+        with a sample long_url. Rides the _id index (ObjectIds embed their
+        creation time) — no extra index needed for the screening sweep."""
+        since_id = ObjectId.from_datetime(since)
+        pipeline = [
+            {"$match": {"_id": {"$gte": since_id}, "dest.host": {"$exists": True}}},
+            {
+                "$group": {
+                    "_id": "$dest.host",
+                    "sample_url": {"$first": "$long_url"},
+                }
+            },
+            {"$limit": limit},
+        ]
+        docs = await self._col.aggregate(pipeline).to_list(length=limit)
+        return [(d["_id"], d.get("sample_url", "")) for d in docs if d.get("_id")]
+
     async def block_active_by_dest_host(self, host: str) -> int:
         """Flip every ACTIVE link pointing at *host* to BLOCKED. Returns the
         number of links flipped. Idempotent: already-BLOCKED links no longer

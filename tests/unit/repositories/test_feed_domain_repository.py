@@ -14,6 +14,7 @@ def _col() -> AsyncMock:
     col.name = "safety_feed_domains"
     col.bulk_write = AsyncMock()
     col.delete_many = AsyncMock(return_value=MagicMock(deleted_count=7))
+    col.distinct = AsyncMock(return_value=[])
     return col
 
 
@@ -23,12 +24,13 @@ class TestReplaceFeed:
         col = _col()
         repo = FeedDomainRepository(col)
 
-        kept, purged = await repo.replace_feed(
+        kept, purged, new = await repo.replace_feed(
             "fishfish", ["Evil.COM.", "scam.net", "", "  "]
         )
 
         assert kept == 2
         assert purged == 7
+        assert new == {"evil.com", "scam.net"}
         ops = col.bulk_write.await_args.args[0]
         first = ops[0]._doc["$set"]
         assert first == {
@@ -47,9 +49,9 @@ class TestReplaceFeed:
         col = _col()
         repo = FeedDomainRepository(col)
 
-        kept, purged = await repo.replace_feed("fishfish", [])
+        kept, purged, new = await repo.replace_feed("fishfish", [])
 
-        assert (kept, purged) == (0, 0)
+        assert (kept, purged, new) == (0, 0, set())
         col.bulk_write.assert_not_awaited()
         col.delete_many.assert_not_awaited()
 

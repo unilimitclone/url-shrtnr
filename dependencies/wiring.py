@@ -79,17 +79,20 @@ from services.report_intake_service import ReportIntakeService
 from services.safety import (
     BlockedPatternProvider,
     CreationPatternScorer,
+    FeedDeltaSweeper,
     InlineSafetySink,
     NullSafetySink,
     RedisStreamSafetySink,
     SafetyAnalyzer,
     SafetyEnforcer,
     SafetySink,
+    SweepDeps,
     ToxicVerdictProvider,
     UrlPolicyService,
     WebRiskProvider,
     build_feed_providers,
     build_feed_tasks,
+    build_sweep_tasks,
 )
 from services.scheduler import TaskScheduler
 from services.scheduler.tasks import build_task_registry
@@ -406,10 +409,23 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # requested or (auto) when no worker exists in the deploy — queue
     # Redis presence is the worker proxy. app.py starts/cancels the task.
     sch_settings = settings.scheduler
-    # Feature tasks: every enabled feed that refreshes upstream registers
-    # its sync here, straight from FEED_REGISTRY.
+    # Feature tasks from the safety catalogs: feed syncs (each carrying
+    # the feed-delta sweep) plus the scheduled sweeps.
+    delta_sweeper = FeedDeltaSweeper(url_repo, safety_sink)
     task_registry = build_task_registry(
-        build_feed_tasks(sf_settings, http_client, feed_domain_repo)
+        [
+            *build_feed_tasks(
+                sf_settings, http_client, feed_domain_repo, delta_sweeper
+            ),
+            *build_sweep_tasks(
+                sf_settings,
+                SweepDeps(
+                    url_repo=url_repo,
+                    verdict_repo=verdict_repo,
+                    sink=safety_sink,
+                ),
+            ),
+        ]
     )
     app.state.task_scheduler = TaskScheduler(
         ScheduledTaskRepository(db["scheduled_tasks"]),

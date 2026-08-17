@@ -64,3 +64,17 @@ class TestL1Settings:
             SafetySettings(l1_domain_burst_threshold=1)
         with pytest.raises(PydanticValidationError):
             SafetySettings(l1_burst_window_seconds=10)
+
+
+class TestSweepSettings:
+    def test_sweep_defaults(self):
+        s = SafetySettings()
+        assert s.sweep_recent_enabled is True
+        assert s.sweep_recent_window_hours == 48
+        assert s.sweep_max_enqueues == 1000
+
+    def test_sweep_tunables_validated(self):
+        with pytest.raises(PydanticValidationError):
+            SafetySettings(sweep_recent_window_hours=0)
+        with pytest.raises(PydanticValidationError):
+            SafetySettings(sweep_max_enqueues=1)
