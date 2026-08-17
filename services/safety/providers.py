@@ -21,6 +21,7 @@ from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.feed_domain_repository import FeedDomainRepository
+from repositories.verdict_repository import VerdictRepository
 from schemas.enums.safety import VerdictTier
 from shared.validators import validate_blocked_url
 
@@ -134,6 +135,36 @@ class WebRiskProvider:
                 provider=self.name,
                 error=type(exc).__name__,
             )
+        return None
+
+
+class ToxicVerdictProvider:
+    """The verdict store as a gate source: a destination ANY analysis tier
+    has judged toxic (report-triggered today, deep/L2 later) refuses new
+    link creation instantly — one verdict write powers analysis dedupe,
+    click-time enforcement AND the create gate, with no copying into
+    other lists. One indexed point read per create."""
+
+    name = "toxic_verdict"
+
+    def __init__(self, repo: VerdictRepository) -> None:
+        self._repo = repo
+
+    async def analyze(
+        self, url: str, host: str, registrable_domain: str
+    ) -> ProviderVerdict | None:
+        try:
+            verdict = await self._repo.find_by_host(host)
+            if verdict is not None and verdict.tier is VerdictTier.TOXIC:
+                return ProviderVerdict(
+                    tier=VerdictTier.TOXIC,
+                    reason=(
+                        f"destination previously judged malicious"
+                        f" ({verdict.reason or 'no reason recorded'})"
+                    ),
+                )
+        except Exception as exc:
+            log.warning("safety_provider_failed", provider=self.name, error=str(exc))
         return None
 
 

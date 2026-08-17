@@ -27,6 +27,7 @@ from services.safety.providers import (
     BlockedPatternProvider,
     FeedDomainProvider,
     ProviderVerdict,
+    ToxicVerdictProvider,
     WebRiskProvider,
 )
 from services.safety.sinks import (
@@ -55,6 +56,7 @@ __all__ = [
     "SafetyAnalyzer",
     "SafetyEnforcer",
     "SafetySink",
+    "ToxicVerdictProvider",
     "UrlPolicyService",
     "WebRiskProvider",
     "ensure_shortener_seed",

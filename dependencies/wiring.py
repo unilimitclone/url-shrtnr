@@ -89,6 +89,7 @@ from services.safety import (
     SafetyAnalyzer,
     SafetyEnforcer,
     SafetySink,
+    ToxicVerdictProvider,
     UrlPolicyService,
     WebRiskProvider,
     fishfish_sync_task,
@@ -331,6 +332,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # `manual` = exact destination domains, `shorteners` = chain refusal
     # (gate-only; existing links to shorteners are the analysis tier's
     # chain-resolution problem, not a mass-block).
+    verdict_repo = VerdictRepository(db["safety_verdicts"])
     manual_provider = FeedDomainProvider(
         feed_domain_repo, feed=MANUAL_FEED, reason_label="the operator blocklist"
     )
@@ -339,7 +341,12 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         feed=SHORTENER_FEED,
         reason_label="a link shortener (redirect chains are refused)",
     )
-    gate_providers: list = [pattern_provider, manual_provider, shortener_provider]
+    gate_providers: list = [
+        pattern_provider,
+        ToxicVerdictProvider(verdict_repo),
+        manual_provider,
+        shortener_provider,
+    ]
     analyzer_providers: list = [pattern_provider, manual_provider]
     if sf_settings.enabled and sf_settings.fishfish_enabled:
         fishfish_provider = FeedDomainProvider(
@@ -369,7 +376,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     app.state.url_policy = url_policy
     safety_analyzer = SafetyAnalyzer(
         analyzer_providers,
-        VerdictRepository(db["safety_verdicts"]),
+        verdict_repo,
         safety_enforcer,
         ops_notifier,
         reverdict_ttl_hours=sf_settings.reverdict_ttl_hours,

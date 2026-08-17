@@ -163,3 +163,64 @@ class TestBlockedPatternProviderCache:
         await provider.analyze("https://ok.com/x", "ok.com", "ok.com")
 
         assert repo.get_patterns.await_count == 2
+
+
+class TestToxicVerdictProvider:
+    @pytest.mark.asyncio
+    async def test_toxic_verdict_gates_creation(self):
+        from datetime import datetime, timezone
+
+        from schemas.models.verdict import VerdictDoc
+        from services.safety.providers import ToxicVerdictProvider
+
+        repo = AsyncMock()
+        repo.find_by_host = AsyncMock(
+            return_value=VerdictDoc(
+                host="evil.com",
+                tier=VerdictTier.TOXIC,
+                reason="listed by fishfish.gg",
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        verdict = await ToxicVerdictProvider(repo).analyze(
+            "https://evil.com/new-kit", "evil.com", "evil.com"
+        )
+        assert verdict is not None
+        assert verdict.tier == VerdictTier.TOXIC
+        assert "previously judged malicious" in verdict.reason
+
+    @pytest.mark.asyncio
+    async def test_uncertain_verdict_and_miss_abstain(self):
+        from datetime import datetime, timezone
+
+        from schemas.models.verdict import VerdictDoc
+        from services.safety.providers import ToxicVerdictProvider
+
+        repo = AsyncMock()
+        repo.find_by_host = AsyncMock(
+            return_value=VerdictDoc(
+                host="gray.com",
+                tier=VerdictTier.UNCERTAIN,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        provider = ToxicVerdictProvider(repo)
+        assert (
+            await provider.analyze("https://gray.com/x", "gray.com", "gray.com") is None
+        )
+
+        repo.find_by_host = AsyncMock(return_value=None)
+        assert await provider.analyze("https://ok.com/x", "ok.com", "ok.com") is None
+
+    @pytest.mark.asyncio
+    async def test_repo_error_abstains(self):
+        from services.safety.providers import ToxicVerdictProvider
+
+        repo = AsyncMock()
+        repo.find_by_host = AsyncMock(side_effect=RuntimeError("mongo down"))
+        assert (
+            await ToxicVerdictProvider(repo).analyze(
+                "https://ok.com/x", "ok.com", "ok.com"
+            )
+            is None
+        )
