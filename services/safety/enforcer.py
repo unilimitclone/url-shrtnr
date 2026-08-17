@@ -9,6 +9,10 @@ subscriber). v1/emoji links have no status machine — they carry a single
 audit stamp the v2 docs get, and reversible where the manual deletes this
 replaces never were.
 
+Two blast radii, one machine: ``block_host`` is the host-wide verdict
+path; ``block_aliases`` blocks specific links without a host verdict —
+a compromised legitimate site keeps serving while its abusive paths die.
+
 Idempotent by construction: re-enforcing an already-blocked host matches
 nothing and is free, which is what lets repeat reports re-run enforcement
 instead of reasoning about state.
@@ -25,7 +29,7 @@ from infrastructure.logging import get_logger
 from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
-from schemas.models.url import UrlStatus
+from schemas.models.url import UrlStatus, UrlV2Doc
 from services.edge_cache.contract import cache_key
 from services.events.contract import DomainEvent
 from services.events.protocol import DomainEventSink
@@ -40,6 +44,13 @@ class EnforcementResult:
     host: str
     blocked_count: int
     legacy_count: int
+    cache_invalidated: int
+
+
+@dataclass(frozen=True)
+class AliasEnforcementResult:
+    host: str
+    blocked_count: int
     cache_invalidated: int
 
 
@@ -71,64 +82,101 @@ class SafetyEnforcer:
         legacy_ids = await self._legacy_repo.list_unblocked_ids_by_dest_host(host)
         emoji_ids = await self._emoji_repo.list_unblocked_ids_by_dest_host(host)
 
-        # 2. Flip — all three collections. v1/emoji carry the ``blocked``
-        #    flag instead of the v2 status machine; their redirects serve
-        #    the same 451, and the flip is reversible (unlike the manual
-        #    deletes this replaces).
+        # 2. Flip — all three collections.
         blocked = await self._url_repo.block_active_by_dest_host(host, reason=reason)
         legacy = await self._legacy_repo.block_by_dest_host(host, reason=reason)
         legacy += await self._emoji_repo.block_by_dest_host(host, reason=reason)
 
-        # 3. Evict Redis per domain namespace. v1/emoji only ever live on
-        #    the system domain; emoji cache keys use the canonical VS16
-        #    form, not the stored ``_id`` variant.
-        by_domain: dict[str, list[str]] = defaultdict(list)
-        for alias, domain in pairs:
-            by_domain[domain or self._system_domain].append(alias)
-        by_domain[self._system_domain].extend(legacy_ids)
-        by_domain[self._system_domain].extend(
-            v2_lookup_code(alias) for alias in emoji_ids
+        # 3+4. Evict Redis + edge KV. v1/emoji only ever live on the
+        # system domain; emoji cache keys use the canonical VS16 form,
+        # not the stored ``_id`` variant.
+        evicted = await self._evict(
+            pairs,
+            system_extra=[
+                *legacy_ids,
+                *(v2_lookup_code(alias) for alias in emoji_ids),
+            ],
         )
-        for domain, aliases in by_domain.items():
-            if aliases:
-                await self._url_cache.invalidate_many(aliases, domain)
-
-        # 4. Evict edge KV (system domain only — tenant domains never
-        #    promote). Best-effort: the client returns bool, never raises.
-        if self._edge_kv is not None:
-            system_aliases = by_domain.get(self._system_domain, [])
-            if system_aliases:
-                await self._edge_kv.bulk_delete(
-                    [cache_key(self._system_domain, a) for a in system_aliases]
-                )
 
         # 5. link.blocked for owned links; sink never raises. v1/emoji are
         #    anonymous by construction — no possible webhook subscriber.
-        if self._events is not None:
-            for doc in owned:
-                owner = link_owner_id(doc)
-                if owner is None:
-                    continue
-                snapshot_doc = doc.model_copy(update={"status": UrlStatus.BLOCKED})
-                await self._events.emit(
-                    DomainEvent(
-                        type="link.blocked",
-                        owner_id=owner,
-                        data={"link": link_snapshot(snapshot_doc), "reason": reason},
-                    )
-                )
+        await self._emit_blocked(owned, reason)
 
         log.info(
             "safety_host_blocked",
             host=host,
             blocked_count=blocked,
             legacy_count=legacy,
-            cache_invalidated=sum(len(v) for v in by_domain.values()),
+            cache_invalidated=evicted,
             reason=reason,
         )
         return EnforcementResult(
             host=host,
             blocked_count=blocked,
             legacy_count=legacy,
-            cache_invalidated=sum(len(v) for v in by_domain.values()),
+            cache_invalidated=evicted,
         )
+
+    async def block_aliases(
+        self, pairs: list[tuple[str, str]], *, host: str, reason: str
+    ) -> AliasEnforcementResult:
+        """Per-link enforcement: block specific v2 (alias, domain) links
+        without a host-wide verdict — a compromised legitimate site keeps
+        serving, only the abusive links die. The doc-level blocked_reason
+        is the only reason-of-record here (no verdict doc exists). Same
+        collect → flip → evict → notify order, idempotent the same way."""
+        owned = await self._url_repo.list_active_owned_by_aliases(pairs)
+        blocked = await self._url_repo.block_active_by_aliases(pairs, reason=reason)
+        evicted = await self._evict(pairs)
+        await self._emit_blocked(owned, reason)
+        log.info(
+            "safety_aliases_blocked",
+            host=host,
+            blocked_count=blocked,
+            cache_invalidated=evicted,
+            reason=reason,
+        )
+        return AliasEnforcementResult(
+            host=host, blocked_count=blocked, cache_invalidated=evicted
+        )
+
+    async def _evict(
+        self,
+        pairs: list[tuple[str, str]],
+        *,
+        system_extra: list[str] | None = None,
+    ) -> int:
+        """Redis per domain namespace, then edge KV (system domain only —
+        tenant domains never promote). Best-effort: the KV client returns
+        bool, never raises. Returns the number of keys evicted."""
+        by_domain: dict[str, list[str]] = defaultdict(list)
+        for alias, domain in pairs:
+            by_domain[domain or self._system_domain].append(alias)
+        if system_extra:
+            by_domain[self._system_domain].extend(system_extra)
+        for domain, aliases in by_domain.items():
+            if aliases:
+                await self._url_cache.invalidate_many(aliases, domain)
+        if self._edge_kv is not None:
+            system_aliases = by_domain.get(self._system_domain, [])
+            if system_aliases:
+                await self._edge_kv.bulk_delete(
+                    [cache_key(self._system_domain, a) for a in system_aliases]
+                )
+        return sum(len(v) for v in by_domain.values())
+
+    async def _emit_blocked(self, owned: list[UrlV2Doc], reason: str) -> None:
+        if self._events is None:
+            return
+        for doc in owned:
+            owner = link_owner_id(doc)
+            if owner is None:
+                continue
+            snapshot_doc = doc.model_copy(update={"status": UrlStatus.BLOCKED})
+            await self._events.emit(
+                DomainEvent(
+                    type="link.blocked",
+                    owner_id=owner,
+                    data={"link": link_snapshot(snapshot_doc), "reason": reason},
+                )
+            )

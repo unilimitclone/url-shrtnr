@@ -368,6 +368,50 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         docs = await self._aggregate(pipeline)
         return [(d["_id"], d.get("sample_url", "")) for d in docs if d.get("_id")]
 
+    async def list_active_owned_by_aliases(
+        self, pairs: list[tuple[str, str]], *, limit: int = 1_000
+    ) -> list[UrlV2Doc]:
+        """Full docs for OWNED active links among *(alias, domain)* pairs —
+        the link.blocked event set for a per-link block."""
+        if not pairs:
+            return []
+        cursor = self._col.find(
+            {
+                "$or": [{"alias": a, "domain": d} for a, d in pairs],
+                "status": UrlStatus.ACTIVE.value,
+                "owner_id": {"$ne": ANONYMOUS_OWNER_ID},
+            }
+        ).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        return [UrlV2Doc.from_mongo(d) for d in docs]
+
+    async def block_active_by_aliases(
+        self, pairs: list[tuple[str, str]], *, reason: str
+    ) -> int:
+        """Flip specific ACTIVE links to BLOCKED by (alias, domain). The
+        per-link enforcement path: a compromised legitimate site or a
+        redirector endpoint gets its aliases blocked without a host-wide
+        verdict — which makes the doc-level ``blocked_reason`` the ONLY
+        reason-of-record for these. Idempotent like the host-wide flip."""
+        if not pairs:
+            return 0
+        now = datetime.now(timezone.utc)
+        result = await self._col.update_many(
+            {
+                "$or": [{"alias": a, "domain": d} for a, d in pairs],
+                "status": UrlStatus.ACTIVE.value,
+            },
+            {
+                "$set": {
+                    "status": UrlStatus.BLOCKED.value,
+                    "updated_at": now,
+                    "blocked_at": now,
+                    "blocked_reason": reason,
+                }
+            },
+        )
+        return int(result.modified_count)
+
     async def block_active_by_dest_host(self, host: str, *, reason: str) -> int:
         """Flip every ACTIVE link pointing at *host* to BLOCKED. Returns the
         number of links flipped. Idempotent: already-BLOCKED links no longer

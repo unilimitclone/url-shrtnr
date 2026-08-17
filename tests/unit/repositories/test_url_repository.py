@@ -484,3 +484,37 @@ class TestSweepQueries:
         assert result == [("fresh.com", "https://fresh.com/a")]
         pipeline = col.aggregate.await_args.args[0]
         assert "$gte" in pipeline[0]["$match"]["_id"]
+
+
+class TestBlockActiveByAliases:
+    def _repo(self, col):
+        from repositories.url_repository import UrlRepository
+
+        col.name = "urlsV2"
+        return UrlRepository(col)
+
+    @pytest.mark.asyncio
+    async def test_stamps_audit_trail_on_specific_pairs(self):
+        col = make_collection()
+        col.update_many = AsyncMock(return_value=MagicMock(modified_count=2))
+        repo = self._repo(col)
+        n = await repo.block_active_by_aliases(
+            [("abc", "spoo.me"), ("xyz", "go.acme.com")], reason="compromised"
+        )
+        assert n == 2
+        flt, ops = col.update_many.await_args.args
+        assert flt["$or"] == [
+            {"alias": "abc", "domain": "spoo.me"},
+            {"alias": "xyz", "domain": "go.acme.com"},
+        ]
+        assert flt["status"] == "ACTIVE"
+        assert ops["$set"]["status"] == "BLOCKED"
+        assert ops["$set"]["blocked_reason"] == "compromised"
+        assert ops["$set"]["blocked_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_empty_pairs_never_hits_the_db(self):
+        col = make_collection()
+        repo = self._repo(col)
+        assert await repo.block_active_by_aliases([], reason="r") == 0
+        col.update_many.assert_not_awaited()

@@ -494,6 +494,21 @@ class SafetySettings(BaseSettings):
     sweep_recent_window_hours: int = Field(default=48, ge=1)
     sweep_max_enqueues: int = Field(default=1000, ge=10)
 
+    # L2 investigation stage — its own queue and consumer, entered only
+    # through the admission policy when screening ends unresolved.
+    # Reports and destination edits always admit; pattern bursts admit
+    # within the daily budget; sweep novelty never admits by default.
+    deep_enabled: bool = False
+    deep_stream: str = "events:safety:deep"
+    deep_dlq_stream: str = "events:safety:deep:dlq"
+    deep_maxlen: int = Field(default=5_000, ge=100)
+    deep_batch_size: int = Field(default=4, ge=1)
+    deep_block_ms: int = Field(default=5000, ge=100)
+    deep_claim_idle_ms: int = Field(default=300_000, ge=1000)
+    deep_max_deliveries: int = Field(default=3, ge=1)
+    deep_daily_budget: int = Field(default=200, ge=1)
+    deep_admit_sweeps: bool = False
+
     # External feeds. fishfish.gg is free/no-auth and defaults on (within
     # the master switch); its domain set syncs hourly via the scheduler.
     fishfish_enabled: bool = True

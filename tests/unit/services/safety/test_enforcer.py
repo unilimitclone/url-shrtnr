@@ -154,3 +154,48 @@ class TestBlockHost:
         assert result.blocked_count == 0
         assert result.legacy_count == 0
         url_cache.invalidate_many.assert_not_awaited()
+
+
+class TestBlockAliases:
+    @pytest.mark.asyncio
+    async def test_blocks_evicts_and_notifies_without_host_verdict(self):
+        """Per-link enforcement: flip only the named (alias, domain) pairs,
+        evict exactly those keys, emit link.blocked for owned — and never
+        touch the host-wide surfaces."""
+        events = AsyncMock()
+        enforcer, url_repo, url_cache, legacy_repo, emoji_repo = _build(
+            [], [], 0, events=events
+        )
+        url_repo.list_active_owned_by_aliases = AsyncMock(
+            return_value=[_owned_doc("abc")]
+        )
+        url_repo.block_active_by_aliases = AsyncMock(return_value=2)
+        pairs = [("abc", "spoo.me"), ("xyz", "spoo.me")]
+
+        result = await enforcer.block_aliases(
+            pairs, host="real-bakery.com", reason="compromised path"
+        )
+
+        url_repo.block_active_by_aliases.assert_awaited_once_with(
+            pairs, reason="compromised path"
+        )
+        # Host-wide machinery untouched: no dest-host queries, no legacy flips.
+        url_repo.block_active_by_dest_host.assert_not_awaited()
+        legacy_repo.block_by_dest_host.assert_not_awaited()
+        emoji_repo.block_by_dest_host.assert_not_awaited()
+        assert url_cache.invalidate_many.await_args.args == (
+            ["abc", "xyz"],
+            "spoo.me",
+        )
+        assert events.emit.await_count == 1
+        assert result.blocked_count == 2
+        assert result.cache_invalidated == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_pairs_is_a_noop(self):
+        enforcer, url_repo, url_cache, _, _ = _build([], [], 0)
+        url_repo.list_active_owned_by_aliases = AsyncMock(return_value=[])
+        url_repo.block_active_by_aliases = AsyncMock(return_value=0)
+        result = await enforcer.block_aliases([], host="x.com", reason="r")
+        assert result.blocked_count == 0
+        url_cache.invalidate_many.assert_not_awaited()
