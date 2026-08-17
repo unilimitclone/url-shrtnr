@@ -8,7 +8,7 @@ MessageResponse  — generic {success, message} shape used by many endpoints
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from schemas.dto.base import ResponseBase
 
@@ -25,8 +25,8 @@ class ErrorResponse(ResponseBase):
 class HealthChecks(ResponseBase):
     """Individual service check statuses inside HealthResponse."""
 
-    mongodb: str
-    redis: str
+    mongodb: Literal["ok", "error", "not_configured"]
+    redis: Literal["ok", "error", "not_configured"]
 
 
 class HealthResponse(ResponseBase):

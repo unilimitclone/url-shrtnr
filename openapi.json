@@ -10965,10 +10965,20 @@
         "properties": {
           "mongodb": {
             "type": "string",
+            "enum": [
+              "ok",
+              "error",
+              "not_configured"
+            ],
             "title": "Mongodb"
           },
           "redis": {
             "type": "string",
+            "enum": [
+              "ok",
+              "error",
+              "not_configured"
+            ],
             "title": "Redis"
           }
         },
