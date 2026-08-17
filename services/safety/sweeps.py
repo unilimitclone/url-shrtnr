@@ -54,7 +54,12 @@ class FeedDeltaSweeper:
             try:
                 hosts = await self._url_repo.list_active_hosts_by_registrable(domain)
             except Exception as exc:
-                log.warning("sweep_delta_lookup_failed", domain=domain, error=str(exc))
+                log.error(
+                    "sweep_delta_lookup_failed",
+                    domain=domain,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
                 continue
             for host, sample_url in hosts:
                 await self._sink.emit(

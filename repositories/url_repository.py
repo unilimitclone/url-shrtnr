@@ -345,7 +345,7 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             },
             {"$limit": limit},
         ]
-        docs = await self._col.aggregate(pipeline).to_list(length=limit)
+        docs = await self._aggregate(pipeline)
         return [(d["_id"], d.get("sample_url", "")) for d in docs if d.get("_id")]
 
     async def list_recent_destination_hosts(
@@ -365,7 +365,7 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             },
             {"$limit": limit},
         ]
-        docs = await self._col.aggregate(pipeline).to_list(length=limit)
+        docs = await self._aggregate(pipeline)
         return [(d["_id"], d.get("sample_url", "")) for d in docs if d.get("_id")]
 
     async def block_active_by_dest_host(self, host: str) -> int:

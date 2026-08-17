@@ -438,3 +438,49 @@ class TestUrlRepositoryBulkByIds:
                 [URL_OID], USER_OID, {"domain": "links.acme.com"}
             )
         log_mock.error.assert_not_called()
+
+
+class TestSweepQueries:
+    """These ride the async aggregate helper — a raw `.to_list()` on the
+    un-awaited cursor silently returns nothing (caught in a live run)."""
+
+    @pytest.mark.asyncio
+    async def test_list_active_hosts_by_registrable_awaits_aggregate(self):
+        from repositories.url_repository import UrlRepository
+
+        col = AsyncMock()
+        col.name = "urlsV2"
+        cursor = MagicMock()
+        cursor.to_list = AsyncMock(
+            return_value=[{"_id": "a.evil.com", "sample_url": "https://a.evil.com/x"}]
+        )
+        col.aggregate = AsyncMock(return_value=cursor)
+
+        result = await UrlRepository(col).list_active_hosts_by_registrable("evil.com")
+
+        assert result == [("a.evil.com", "https://a.evil.com/x")]
+        pipeline = col.aggregate.await_args.args[0]
+        assert pipeline[0]["$match"]["dest.registrable_domain"] == "evil.com"
+        assert pipeline[0]["$match"]["status"] == "ACTIVE"
+
+    @pytest.mark.asyncio
+    async def test_list_recent_destination_hosts_awaits_aggregate(self):
+        from datetime import datetime, timezone
+
+        from repositories.url_repository import UrlRepository
+
+        col = AsyncMock()
+        col.name = "urlsV2"
+        cursor = MagicMock()
+        cursor.to_list = AsyncMock(
+            return_value=[{"_id": "fresh.com", "sample_url": "https://fresh.com/a"}]
+        )
+        col.aggregate = AsyncMock(return_value=cursor)
+
+        result = await UrlRepository(col).list_recent_destination_hosts(
+            datetime(2026, 8, 1, tzinfo=timezone.utc)
+        )
+
+        assert result == [("fresh.com", "https://fresh.com/a")]
+        pipeline = col.aggregate.await_args.args[0]
+        assert "$gte" in pipeline[0]["$match"]["_id"]
