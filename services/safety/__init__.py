@@ -17,7 +17,9 @@ from services.safety.feeds import (
     MANUAL_FEED,
     SHORTENER_FEED,
     FishFishClient,
-    ensure_shortener_seed,
+    build_feed_providers,
+    build_feed_tasks,
+    ensure_feed_seeds,
     fishfish_sync_task,
     load_shortener_seed,
 )
@@ -59,7 +61,9 @@ __all__ = [
     "ToxicVerdictProvider",
     "UrlPolicyService",
     "WebRiskProvider",
-    "ensure_shortener_seed",
+    "build_feed_providers",
+    "build_feed_tasks",
+    "ensure_feed_seeds",
     "fishfish_sync_task",
     "load_shortener_seed",
 ]

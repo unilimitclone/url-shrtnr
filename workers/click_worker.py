@@ -78,15 +78,12 @@ from services.events.contract import DOMAIN_EVENTS_STREAM
 from services.events.sinks import InlineDomainEventSink
 from services.meta_tags.validator import MetaImageValidator
 from services.safety import (
-    FISHFISH_FEED,
-    MANUAL_FEED,
     BlockedPatternProvider,
-    FeedDomainProvider,
-    FishFishClient,
     SafetyAnalyzer,
     SafetyEnforcer,
     WebRiskProvider,
-    fishfish_sync_task,
+    build_feed_providers,
+    build_feed_tasks,
 )
 from services.safety.consumers import SafetyAnalysisConsumer
 from services.scheduler import TaskScheduler
@@ -362,27 +359,16 @@ async def _build_runtime(
             system_default_domain=settings.system_default_domain,
         )
         # Provider order mirrors the app wiring: operator sources, synced
-        # feed sets, then online lookups last.
+        # feed sets (from FEED_REGISTRY), then online lookups last.
         worker_feed_repo = FeedDomainRepository(db["safety_feed_domains"])
+        _, feed_analyzer, _ = build_feed_providers(sf, worker_feed_repo)
         safety_providers: list = [
             BlockedPatternProvider(
                 BlockedUrlRepository(db["blocked-urls"]),
                 regex_timeout=settings.blocked_url_regex_timeout,
             ),
-            FeedDomainProvider(
-                worker_feed_repo,
-                feed=MANUAL_FEED,
-                reason_label="the operator blocklist",
-            ),
+            *feed_analyzer,
         ]
-        if sf.fishfish_enabled:
-            safety_providers.append(
-                FeedDomainProvider(
-                    worker_feed_repo,
-                    feed=FISHFISH_FEED,
-                    reason_label="fishfish.gg",
-                )
-            )
         if sf.web_risk_enabled:
             safety_providers.append(
                 WebRiskProvider(
@@ -410,20 +396,18 @@ async def _build_runtime(
         # executor above). The lease makes an overlapping embedded runner
         # in the app process harmless during runtime transitions.
         sch = settings.scheduler
-        sf = settings.safety
-        feature_tasks = []
-        if sf.enabled and sf.fishfish_enabled:
-            if runtime.http_client is None:
-                runtime.http_client = HttpClient(timeout=settings.http_client_timeout)
-            feature_tasks.append(
-                fishfish_sync_task(
-                    FishFishClient(runtime.http_client, api_url=sf.fishfish_api_url),
-                    FeedDomainRepository(db["safety_feed_domains"]),
-                )
-            )
+        if runtime.http_client is None:
+            runtime.http_client = HttpClient(timeout=settings.http_client_timeout)
+        # Feed sync tasks come straight from FEED_REGISTRY.
         scheduler = TaskScheduler(
             ScheduledTaskRepository(db["scheduled_tasks"]),
-            build_task_registry(feature_tasks),
+            build_task_registry(
+                build_feed_tasks(
+                    settings.safety,
+                    runtime.http_client,
+                    FeedDomainRepository(db["safety_feed_domains"]),
+                )
+            ),
             poll_interval=sch.poll_seconds,
             lease_seconds=sch.lease_seconds,
         )

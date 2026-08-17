@@ -84,30 +84,31 @@ class TestFishFishSyncTask:
         repo.replace_feed.assert_not_awaited()
 
 
-class TestShortenerSeed:
+class TestFeedSeeds:
     @pytest.mark.asyncio
-    async def test_seeds_only_when_feed_is_empty(self):
-        from services.safety.feeds import ensure_shortener_seed
+    async def test_seeds_only_feeds_that_declare_one_and_are_empty(self):
+        from services.safety.feeds import ensure_feed_seeds
 
         repo = AsyncMock()
         repo.count = AsyncMock(return_value=0)
         repo.replace_feed = AsyncMock(return_value=(31, 0))
 
-        await ensure_shortener_seed(repo)
+        await ensure_feed_seeds(repo)
 
+        # Only the shorteners feed declares a seed today.
         repo.replace_feed.assert_awaited_once()
         assert repo.replace_feed.await_args.args[0] == "shorteners"
 
     @pytest.mark.asyncio
     async def test_never_reseeds_a_curated_feed(self):
         """Operator removals must survive restarts — a non-empty feed is
-        owned by the DB, not by the code constant."""
-        from services.safety.feeds import ensure_shortener_seed
+        owned by the DB, not by the seed file."""
+        from services.safety.feeds import ensure_feed_seeds
 
         repo = AsyncMock()
         repo.count = AsyncMock(return_value=12)
 
-        await ensure_shortener_seed(repo)
+        await ensure_feed_seeds(repo)
 
         repo.replace_feed.assert_not_awaited()
 
@@ -120,3 +121,51 @@ class TestShortenerSeed:
         assert not any(d.startswith("#") or " " in d for d in seed)
         # spoo's own observed cloak shorteners are present
         assert {"l24.im", "e.vg", "bitly.cx", "vlk.by"} <= set(seed)
+
+
+class TestFeedRegistry:
+    """The registry drives composition — these pins are what makes 'add a
+    feed = one entry' true."""
+
+    def _settings(self, **overrides):
+        from config import SafetySettings
+
+        return SafetySettings(**overrides)
+
+    def test_operator_feeds_are_always_on_fishfish_gates_on_master(self):
+        from services.safety.feeds import build_feed_providers
+
+        repo = AsyncMock()
+        gate, analyzer, _messages = build_feed_providers(
+            self._settings(enabled=False), repo
+        )
+        assert [p.name for p in gate] == ["feed_manual", "feed_shorteners"]
+        assert [p.name for p in analyzer] == ["feed_manual"]
+
+        gate, analyzer, _ = build_feed_providers(self._settings(enabled=True), repo)
+        assert "feed_fishfish" in [p.name for p in gate]
+        assert "feed_fishfish" in [p.name for p in analyzer]
+
+    def test_shorteners_never_join_the_analyzer(self):
+        from services.safety.feeds import build_feed_providers
+
+        _, analyzer, _ = build_feed_providers(self._settings(enabled=True), AsyncMock())
+        assert "feed_shorteners" not in [p.name for p in analyzer]
+
+    def test_public_message_comes_from_the_registry(self):
+        from services.safety.feeds import build_feed_providers
+
+        _, _, messages = build_feed_providers(self._settings(), AsyncMock())
+        assert messages == {
+            "feed_shorteners": "Links to other URL shorteners are not allowed"
+        }
+
+    def test_sync_tasks_come_from_the_registry(self):
+        from services.safety.feeds import FISHFISH_SYNC_TASK, build_feed_tasks
+
+        tasks = build_feed_tasks(self._settings(enabled=True), AsyncMock(), AsyncMock())
+        assert [t.name for t in tasks] == [FISHFISH_SYNC_TASK]
+        assert (
+            build_feed_tasks(self._settings(enabled=False), AsyncMock(), AsyncMock())
+            == []
+        )

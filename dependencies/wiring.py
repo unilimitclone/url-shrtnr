@@ -77,12 +77,7 @@ from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
 from services.safety import (
-    FISHFISH_FEED,
-    MANUAL_FEED,
-    SHORTENER_FEED,
     BlockedPatternProvider,
-    FeedDomainProvider,
-    FishFishClient,
     InlineSafetySink,
     NullSafetySink,
     RedisStreamSafetySink,
@@ -92,7 +87,8 @@ from services.safety import (
     ToxicVerdictProvider,
     UrlPolicyService,
     WebRiskProvider,
-    fishfish_sync_task,
+    build_feed_providers,
+    build_feed_tasks,
 )
 from services.scheduler import TaskScheduler
 from services.scheduler.tasks import build_task_registry
@@ -322,38 +318,23 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # Each provider is built ONCE and composed twice: the L0 gate takes
     # the cheap/local subset (blocks the 201, so no network calls), the
     # analyzer takes the full chain. Same instances = same pattern cache,
-    # same feed set, one implementation per signal.
+    # same feed set, one implementation per signal. Feed membership comes
+    # from FEED_REGISTRY (catalog as code) — adding a feed never edits
+    # this function.
     feed_domain_repo = FeedDomainRepository(db["safety_feed_domains"])
+    verdict_repo = VerdictRepository(db["safety_verdicts"])
     pattern_provider = BlockedPatternProvider(
         blocked_url_repo, regex_timeout=settings.blocked_url_regex_timeout
     )
-    # Operator policy sources are unconditional (they exist regardless of
-    # the SAFETY_ master switch, like the regex blocklist always has):
-    # `manual` = exact destination domains, `shorteners` = chain refusal
-    # (gate-only; existing links to shorteners are the analysis tier's
-    # chain-resolution problem, not a mass-block).
-    verdict_repo = VerdictRepository(db["safety_verdicts"])
-    manual_provider = FeedDomainProvider(
-        feed_domain_repo, feed=MANUAL_FEED, reason_label="the operator blocklist"
-    )
-    shortener_provider = FeedDomainProvider(
-        feed_domain_repo,
-        feed=SHORTENER_FEED,
-        reason_label="a link shortener (redirect chains are refused)",
+    feed_gate, feed_analyzer, feed_messages = build_feed_providers(
+        sf_settings, feed_domain_repo
     )
     gate_providers: list = [
         pattern_provider,
         ToxicVerdictProvider(verdict_repo),
-        manual_provider,
-        shortener_provider,
+        *feed_gate,
     ]
-    analyzer_providers: list = [pattern_provider, manual_provider]
-    if sf_settings.enabled and sf_settings.fishfish_enabled:
-        fishfish_provider = FeedDomainProvider(
-            feed_domain_repo, feed=FISHFISH_FEED, reason_label="fishfish.gg"
-        )
-        gate_providers.append(fishfish_provider)
-        analyzer_providers.append(fishfish_provider)
+    analyzer_providers: list = [pattern_provider, *feed_analyzer]
     if sf_settings.web_risk_enabled:
         # Online lookup: analyzer only, never the create path.
         analyzer_providers.append(
@@ -367,11 +348,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     url_policy = UrlPolicyService(
         gate_providers,
         blocked_self_domains=settings.blocked_self_domains,
-        # Chain refusal is PUBLISHED policy (is.gd precedent) — a helpful
-        # message is fine; security blocks keep the coarse default.
-        public_messages={
-            shortener_provider.name: "Links to other URL shorteners are not allowed"
-        },
+        public_messages=feed_messages,
     )
     app.state.url_policy = url_policy
     safety_analyzer = SafetyAnalyzer(
@@ -402,17 +379,11 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # requested or (auto) when no worker exists in the deploy — queue
     # Redis presence is the worker proxy. app.py starts/cancels the task.
     sch_settings = settings.scheduler
-    # Feature tasks: feed syncs run only when safety (and the feed) is on —
-    # no point burning upstream API calls for a set nothing reads.
-    feature_tasks = []
-    if sf_settings.enabled and sf_settings.fishfish_enabled:
-        feature_tasks.append(
-            fishfish_sync_task(
-                FishFishClient(http_client, api_url=sf_settings.fishfish_api_url),
-                feed_domain_repo,
-            )
-        )
-    task_registry = build_task_registry(feature_tasks)
+    # Feature tasks: every enabled feed that refreshes upstream registers
+    # its sync here, straight from FEED_REGISTRY.
+    task_registry = build_task_registry(
+        build_feed_tasks(sf_settings, http_client, feed_domain_repo)
+    )
     app.state.task_scheduler = TaskScheduler(
         ScheduledTaskRepository(db["scheduled_tasks"]),
         task_registry,

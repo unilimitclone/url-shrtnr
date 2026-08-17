@@ -1,10 +1,15 @@
-"""External threat-feed integrations.
+"""External threat-feed integrations — FEED_REGISTRY is the catalog as code.
 
-Each feed contributes two pieces: a sync TASK (scheduler-hosted, full-swap
-refresh into ``safety_feed_domains``) and membership lookups consumed by
-``FeedDomainProvider`` (services/safety/providers.py). Feeds are additive
-signal sources — a feed being down, stale, or unconfigured only ever means
-abstention, never a broken pipeline.
+One ``FeedSpec`` entry per feed drives everything (same discipline as the
+webhook EVENT_REGISTRY, so nothing can drift): which chains the feed joins
+(create gate / analyzer), its config switch, its optional sync task, its
+optional first-boot seed, and its L0 wire message. Adding a feed = one
+registry entry — the gate, analyzer, wiring, worker and seeder never
+change. All feed DATA lives in one place (``safety_feed_domains``), read
+through ``FeedDomainProvider`` membership lookups.
+
+Feeds are additive signal sources — a feed being down, stale, or
+unconfigured only ever means abstention, never a broken pipeline.
 
 fishfish.gg: community-run scam-domain feed (strong on the Discord
 ecosystem). ``GET /v1/domains`` returns a flat JSON array of domain
@@ -14,11 +19,17 @@ strings, no auth required for the domain list.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from repositories.feed_domain_repository import FeedDomainRepository
 from services.scheduler.registry import ScheduledTask
+
+if TYPE_CHECKING:
+    from config import SafetySettings
 
 log = get_logger(__name__)
 
@@ -60,13 +71,116 @@ _FISHFISH_MIN_SANE = 100
 _FETCH_TIMEOUT = 30.0
 
 
-async def ensure_shortener_seed(repo: FeedDomainRepository) -> None:
-    """Seed the shorteners feed on first boot ONLY (empty feed). Never
-    re-adds afterwards, so an operator removing an entry stays removed."""
-    if await repo.count(SHORTENER_FEED) > 0:
-        return
-    kept, _ = await repo.replace_feed(SHORTENER_FEED, load_shortener_seed())
-    log.info("safety_shortener_feed_seeded", domains=kept)
+@dataclass(frozen=True)
+class FeedSpec:
+    """One feed's complete declaration. ``enabled`` receives SafetySettings
+    so operator-policy feeds (manual, shorteners) can stay on regardless of
+    the SAFETY_ master switch while detection feeds gate on it."""
+
+    name: str
+    reason_label: str
+    gate: bool
+    analyzer: bool
+    enabled: Callable[[SafetySettings], bool]
+    # L0 wire message for PUBLISHED policies; None keeps the coarse default.
+    public_message: str | None = None
+    # Scheduler task factory for feeds refreshed from an upstream source.
+    sync: (
+        Callable[[HttpClient, FeedDomainRepository, SafetySettings], ScheduledTask]
+        | None
+    ) = None
+    # First-boot seed loader; fires only when the feed is empty.
+    seed: Callable[[], tuple[str, ...]] | None = None
+
+
+def _fishfish_task(
+    http_client: HttpClient, repo: FeedDomainRepository, settings: SafetySettings
+) -> ScheduledTask:
+    return fishfish_sync_task(
+        FishFishClient(http_client, api_url=settings.fishfish_api_url), repo
+    )
+
+
+FEED_REGISTRY: tuple[FeedSpec, ...] = (
+    FeedSpec(
+        name=MANUAL_FEED,
+        reason_label="the operator blocklist",
+        gate=True,
+        analyzer=True,
+        enabled=lambda s: True,
+    ),
+    FeedSpec(
+        name=SHORTENER_FEED,
+        reason_label="a link shortener (redirect chains are refused)",
+        gate=True,
+        # Gate-only: existing links to shorteners are the deep tier's
+        # chain-resolution problem, never a mass-block.
+        analyzer=False,
+        enabled=lambda s: True,
+        public_message="Links to other URL shorteners are not allowed",
+        seed=load_shortener_seed,
+    ),
+    FeedSpec(
+        name=FISHFISH_FEED,
+        reason_label="fishfish.gg",
+        gate=True,
+        analyzer=True,
+        enabled=lambda s: s.enabled and s.fishfish_enabled,
+        sync=_fishfish_task,
+    ),
+)
+
+
+def build_feed_providers(
+    settings: SafetySettings, repo: FeedDomainRepository
+) -> tuple[list, list, dict[str, str]]:
+    """Compose (gate_providers, analyzer_providers, public_messages) from
+    the registry — the ONLY place feed membership turns into providers, so
+    the app wiring and the worker can never drift."""
+    from services.safety.providers import FeedDomainProvider
+
+    gate: list = []
+    analyzer: list = []
+    messages: dict[str, str] = {}
+    for spec in FEED_REGISTRY:
+        if not spec.enabled(settings):
+            continue
+        provider = FeedDomainProvider(
+            repo, feed=spec.name, reason_label=spec.reason_label
+        )
+        if spec.gate:
+            gate.append(provider)
+        if spec.analyzer:
+            analyzer.append(provider)
+        if spec.public_message:
+            messages[provider.name] = spec.public_message
+    return gate, analyzer, messages
+
+
+def build_feed_tasks(
+    settings: SafetySettings,
+    http_client: HttpClient,
+    repo: FeedDomainRepository,
+) -> list[ScheduledTask]:
+    """Scheduler tasks for every enabled feed that refreshes upstream."""
+    return [
+        spec.sync(http_client, repo, settings)
+        for spec in FEED_REGISTRY
+        if spec.sync is not None and spec.enabled(settings)
+    ]
+
+
+async def ensure_feed_seeds(repo: FeedDomainRepository) -> None:
+    """First-boot seeds for every feed that declares one — only when that
+    feed is EMPTY. Never re-adds afterwards, so an operator removing an
+    entry stays removed and deep-tier additions are never clobbered."""
+    for spec in FEED_REGISTRY:
+        if spec.seed is None:
+            continue
+        if await repo.count(spec.name) > 0:
+            continue
+        kept, _ = await repo.replace_feed(spec.name, spec.seed())
+        log.info("safety_feed_seeded", feed=spec.name, domains=kept)
 
 
 class FishFishClient:
