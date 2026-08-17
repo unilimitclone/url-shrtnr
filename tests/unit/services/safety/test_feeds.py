@@ -112,15 +112,18 @@ class TestFeedSeeds:
 
         repo.replace_feed.assert_not_awaited()
 
-    def test_seed_file_parses_serving_domains_not_corporate_sites(self):
+    def test_seed_is_cloak_only_and_spares_mainstream_shorteners(self):
+        """Refusing t.co / lnkd.in / bit.ly would reject legitimate tweet
+        and LinkedIn shares — real traffic sacrificed for no safety gain,
+        since the observed abuse rides the obscure cloak services."""
         from services.safety.feeds import load_shortener_seed
 
-        seed = load_shortener_seed()
-        assert "bit.ly" in seed
+        seed = set(load_shortener_seed())
+        assert {"l24.im", "e.vg", "bitly.cx", "vlk.by", "goo.su"} <= seed
+        assert not ({"t.co", "lnkd.in", "bit.ly", "tinyurl.com", "buff.ly"} & seed)
+        # Serving domains only, never corporate sites, and no stray comments.
         assert "bitly.com" not in seed
         assert not any(d.startswith("#") or " " in d for d in seed)
-        # spoo's own observed cloak shorteners are present
-        assert {"l24.im", "e.vg", "bitly.cx", "vlk.by"} <= set(seed)
 
 
 class TestFeedRegistry:
