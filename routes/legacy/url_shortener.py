@@ -224,6 +224,7 @@ async def shorten_url(
 
     legacy_repo = LegacyUrlRepository(db["urls"])
     await legacy_repo.insert(short_code, data)
+    await url_policy.record_create(url, request.client.host if request.client else None)
 
     log.info(
         "url_created",
@@ -374,6 +375,7 @@ async def emoji(
         data["block-bots"] = True
 
     await emoji_repo.insert(emojies, data)
+    await url_policy.record_create(url, request.client.host if request.client else None)
 
     log.info(
         "url_created",

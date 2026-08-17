@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict
 from infrastructure.logging import get_logger
 from schemas.enums.safety import VerdictTier
 from services.safety.providers import AnalysisProvider
+from services.safety.scoring import CreationPatternScorer
 from shared.url_utils import parse_destination
 from shared.validators import validate_url
 
@@ -54,14 +55,19 @@ class UrlPolicyService:
         *,
         blocked_self_domains: Sequence[str],
         public_messages: dict[str, str] | None = None,
+        scorer: CreationPatternScorer | None = None,
     ) -> None:
         """``public_messages`` maps provider name -> wire message for
         PUBLISHED policies (e.g. the shortener-chain refusal, which is.gd
         style services document openly). Security-sourced blocks stay on
-        the coarse default."""
+        the coarse default.
+
+        ``scorer`` is the L1 accumulator; None (no queue Redis, or safety
+        off) degrades record_create to a no-op."""
         self._providers = list(providers)
         self._self_domains = list(blocked_self_domains)
         self._public_messages = public_messages or {}
+        self._scorer = scorer
 
     async def check(self, url: str) -> PolicyRejection | None:
         """Return the rejection for *url*, or None when it may be written."""
@@ -90,3 +96,16 @@ class UrlPolicyService:
                     ),
                 )
         return None
+
+    async def record_create(self, url: str, client_ip: str | None) -> None:
+        """L1 accumulation for one SUCCESSFUL create. Called by every
+        creation path after its insert; best-effort by contract (the
+        scorer never raises, never blocks the write)."""
+        if self._scorer is None:
+            return
+        parts = parse_destination(url)
+        if parts is None:
+            return
+        await self._scorer.record_create(
+            url, parts["host"], parts["registrable_domain"], client_ip
+        )

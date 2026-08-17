@@ -475,6 +475,17 @@ class SafetySettings(BaseSettings):
     # destination host (repeat reports of one campaign are the norm).
     reverdict_ttl_hours: int = Field(default=24, ge=1)
 
+    # L1 creation-pattern scoring (needs the queue Redis for counters).
+    # Thresholds fire once per window on exact equality; production values
+    # are PRIVATE tuning set via env, calibrated by replaying past
+    # campaigns — the defaults here are deliberately conservative.
+    l1_enabled: bool = True
+    l1_burst_window_seconds: int = Field(default=600, ge=60)
+    l1_domain_burst_threshold: int = Field(default=50, ge=2)
+    l1_domain_daily_threshold: int = Field(default=300, ge=2)
+    l1_ip_burst_threshold: int = Field(default=40, ge=2)
+    l1_ip_daily_threshold: int = Field(default=200, ge=2)
+
     # External feeds. fishfish.gg is free/no-auth and defaults on (within
     # the master switch); its domain set syncs hourly via the scheduler.
     fishfish_enabled: bool = True

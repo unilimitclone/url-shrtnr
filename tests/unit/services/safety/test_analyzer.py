@@ -141,3 +141,42 @@ class TestAnalyze:
         assert first.calls == 1
         assert second.calls == 0
         assert verdict_repo.upsert_verdict.await_args.kwargs["source"] == "first"
+
+
+class TestHumanVerdicts:
+    @pytest.mark.asyncio
+    async def test_human_benign_verdict_never_goes_stale(self):
+        """The allowlist: a human marking a popular domain benign silences
+        its recurring bursts permanently, however old the verdict is."""
+        provider = _Provider(None)
+        existing = VerdictDoc(
+            host="youtube.com",
+            tier=VerdictTier.BENIGN,
+            decided_by="human:zingzy",
+            updated_at=datetime.now(timezone.utc) - timedelta(days=365),
+        )
+        analyzer, verdict_repo, enforcer, notifier = _build([provider], existing)
+
+        await analyzer.analyze(_event("youtube.com"))
+
+        assert provider.calls == 0
+        verdict_repo.upsert_verdict.assert_not_awaited()
+        enforcer.block_host.assert_not_awaited()
+        notifier.safety_review.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_human_toxic_verdict_still_enforces(self):
+        existing = VerdictDoc(
+            host="evil.com",
+            tier=VerdictTier.TOXIC,
+            decided_by="human:zingzy",
+            reason="confirmed phishing",
+            updated_at=datetime.now(timezone.utc) - timedelta(days=90),
+        )
+        analyzer, _verdict_repo, enforcer, _notifier = _build(
+            [_Provider(None)], existing
+        )
+
+        await analyzer.analyze(_event())
+
+        enforcer.block_host.assert_awaited_once()

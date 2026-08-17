@@ -930,6 +930,10 @@ class UrlService:
         inserted_id = await self._url_repo.insert(doc)
         url_doc.id = inserted_id
 
+        # L1 accumulation: count the successful create (best-effort, the
+        # policy service never raises from here).
+        await self._url_policy.record_create(request.long_url, client_ip)
+
         _url_base = request.long_url.split("?")[0]
         _log_url = f"{_url_base}?[REDACTED]" if "?" in request.long_url else _url_base
 

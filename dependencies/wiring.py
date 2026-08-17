@@ -78,6 +78,7 @@ from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
 from services.safety import (
     BlockedPatternProvider,
+    CreationPatternScorer,
     InlineSafetySink,
     NullSafetySink,
     RedisStreamSafetySink,
@@ -345,12 +346,6 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
             )
         )
         log.info("safety_web_risk_enabled")
-    url_policy = UrlPolicyService(
-        gate_providers,
-        blocked_self_domains=settings.blocked_self_domains,
-        public_messages=feed_messages,
-    )
-    app.state.url_policy = url_policy
     safety_analyzer = SafetyAnalyzer(
         analyzer_providers,
         verdict_repo,
@@ -373,6 +368,38 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         safety_sink = InlineSafetySink(safety_analyzer)
         log.info("safety_inline_sink_enabled")
     app.state.safety_sink = safety_sink
+    # L1 creation-pattern scoring: counters need the durable queue Redis
+    # (the cache Redis would evict them); without it, or with safety off,
+    # record_create degrades to a no-op.
+    pattern_scorer = None
+    if (
+        sf_settings.enabled
+        and sf_settings.l1_enabled
+        and queue_redis_for_webhooks is not None
+    ):
+        pattern_scorer = CreationPatternScorer(
+            queue_redis_for_webhooks,
+            safety_sink,
+            ops_notifier,
+            burst_window_seconds=sf_settings.l1_burst_window_seconds,
+            domain_burst_threshold=sf_settings.l1_domain_burst_threshold,
+            domain_daily_threshold=sf_settings.l1_domain_daily_threshold,
+            ip_burst_threshold=sf_settings.l1_ip_burst_threshold,
+            ip_daily_threshold=sf_settings.l1_ip_daily_threshold,
+        )
+        log.info("safety_l1_scoring_enabled")
+    elif sf_settings.enabled and sf_settings.l1_enabled:
+        log.warning(
+            "safety_l1_scoring_unconfigured",
+            detail="pattern scoring needs CLICK_EVENTS_QUEUE_REDIS_URI",
+        )
+    url_policy = UrlPolicyService(
+        gate_providers,
+        blocked_self_domains=settings.blocked_self_domains,
+        public_messages=feed_messages,
+        scorer=pattern_scorer,
+    )
+    app.state.url_policy = url_policy
     # ── Scheduled tasks ──────────────────────────────────────────────
     # Mongo-lease runner (see services/scheduler). Same runtime rule as
     # the webhook executor: embedded in this process when explicitly

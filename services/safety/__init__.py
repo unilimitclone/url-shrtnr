@@ -32,6 +32,7 @@ from services.safety.providers import (
     ToxicVerdictProvider,
     WebRiskProvider,
 )
+from services.safety.scoring import CreationPatternScorer
 from services.safety.sinks import (
     InlineSafetySink,
     NullSafetySink,
@@ -46,6 +47,7 @@ __all__ = [
     "SHORTENER_FEED",
     "AnalysisProvider",
     "BlockedPatternProvider",
+    "CreationPatternScorer",
     "EnforcementResult",
     "FeedDomainProvider",
     "FishFishClient",

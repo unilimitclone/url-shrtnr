@@ -49,3 +49,18 @@ class TestFeedSettings:
     def test_web_risk_enabled_by_key(self, monkeypatch):
         monkeypatch.setenv("SAFETY_WEB_RISK_API_KEY", "AIzaTest")
         assert SafetySettings().web_risk_enabled is True
+
+
+class TestL1Settings:
+    def test_l1_defaults(self):
+        s = SafetySettings()
+        assert s.l1_enabled is True
+        assert s.l1_burst_window_seconds == 600
+        assert s.l1_domain_burst_threshold == 50
+        assert s.l1_domain_daily_threshold == 300
+
+    def test_l1_thresholds_reject_degenerate_values(self):
+        with pytest.raises(PydanticValidationError):
+            SafetySettings(l1_domain_burst_threshold=1)
+        with pytest.raises(PydanticValidationError):
+            SafetySettings(l1_burst_window_seconds=10)

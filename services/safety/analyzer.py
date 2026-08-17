@@ -56,6 +56,17 @@ class SafetyAnalyzer:
                     event.host, reason=existing.reason or "previous toxic verdict"
                 )
                 return
+            if existing.decided_by != "system":
+                # A human's non-toxic call never goes stale — this is the
+                # allowlist: mark a popular domain benign once and its
+                # recurring bursts stay silent until a human says otherwise.
+                log.info(
+                    "safety_analysis_skipped",
+                    host=event.host,
+                    reason="human_verdict",
+                    tier=existing.tier.value,
+                )
+                return
             updated = as_aware_utc(existing.updated_at)
             if (
                 updated is not None
