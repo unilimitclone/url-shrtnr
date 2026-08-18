@@ -49,5 +49,10 @@ class VerdictDoc(MongoBaseModel):
     evidence: list[str] | None = None
     egress: str | None = None
     corroborated: bool | None = None
+    # The scope decision and its reasoning — a host block is the most
+    # destructive action here, so why it was chosen is auditable.
+    scope: str | None = None
+    path_pattern: str | None = None
+    scope_justification: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = Field(default=None)

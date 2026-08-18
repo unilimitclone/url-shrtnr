@@ -467,6 +467,58 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             "edited_count": d.get("edited_count", 0),
         }
 
+    async def host_breadth(self, host: str, *, sample: int = 8) -> dict:
+        """How WIDELY a destination host is used on the platform — the
+        evidence for deciding whether abuse is the host or one path on it.
+
+        A host with hundreds of links across many distinct paths and many
+        distinct creators is a shared platform (Google Sites, raw
+        githubusercontent, a website builder): blocking it host-wide
+        punishes every unrelated tenant. A host whose every link is the
+        same handful of paths from one anonymous creator is a purpose-built
+        destination. Also reports how many of its links are ALREADY blocked
+        — a host with a long history of blocked links has earned less
+        benefit of the doubt.
+        """
+        pipeline = [
+            {"$match": {"dest.host": host}},
+            {
+                "$group": {
+                    "_id": None,
+                    "total": {"$sum": 1},
+                    "blocked": {
+                        "$sum": {
+                            "$cond": [
+                                {"$eq": ["$status", UrlStatus.BLOCKED.value]},
+                                1,
+                                0,
+                            ]
+                        }
+                    },
+                    "paths": {"$addToSet": "$long_url"},
+                    "creators": {"$addToSet": "$owner_id"},
+                }
+            },
+        ]
+        docs = await self._aggregate(pipeline)
+        if not docs:
+            return {
+                "total_links": 0,
+                "blocked_links": 0,
+                "distinct_urls": 0,
+                "distinct_creators": 0,
+                "sample_urls": [],
+            }
+        d = docs[0]
+        urls = d.get("paths", []) or []
+        return {
+            "total_links": d.get("total", 0),
+            "blocked_links": d.get("blocked", 0),
+            "distinct_urls": len(urls),
+            "distinct_creators": len(d.get("creators", []) or []),
+            "sample_urls": urls[:sample],
+        }
+
     async def block_active_by_dest_host(self, host: str, *, reason: str) -> int:
         """Flip every ACTIVE link pointing at *host* to BLOCKED. Returns the
         number of links flipped. Idempotent: already-BLOCKED links no longer

@@ -59,8 +59,18 @@ class Confidence(str, Enum):
 
 
 class Scope(str, Enum):
+    """How far the model believes its finding reaches.
+
+    ``PATH_PATTERN`` exists because host-wide is the wrong answer on a
+    shared platform: one abusive Google Sites page or one bad
+    githubusercontent user does not make the platform abusive. The model
+    proposes the narrowest scope that covers the abuse, and code still
+    decides what authority that carries.
+    """
+
     HOST = "host"
     LINKS = "links"
+    PATH_PATTERN = "path_pattern"
 
 
 class ListProposal(BaseModel):
@@ -77,6 +87,17 @@ class InvestigationVerdict(BaseModel):
     reason: str = Field(description="one operator-facing sentence")
     evidence: list[str] = Field(default_factory=list)
     scope: Scope = Scope.HOST
+    # Required when scope is PATH_PATTERN: the narrowest regex covering the
+    # abuse, e.g. ^https://sites\\.google\\.com/view/evil-page/.*  — an
+    # operator reviews it before it ever reaches the blocklist.
+    path_pattern: str | None = None
+    # Why host-wide is or is not justified. Demanded separately from
+    # ``reason`` so the scope decision is auditable on its own: a host
+    # block is the most destructive action this system takes.
+    scope_justification: str | None = Field(
+        default=None,
+        description="why the chosen scope is right, especially if host-wide",
+    )
     proposals: list[ListProposal] = Field(default_factory=list)
 
 
@@ -138,6 +159,11 @@ def decide_authority(
         # compromised_legit NEVER gets a host-wide verdict — the host is a
         # real business; only the specific links die.
         if cls == Classification.COMPROMISED_LEGIT:
+            return AuthorityDecision("block_aliases", VerdictTier.TOXIC, auto=True)
+        # A narrower scope than host is honoured even on scam_host: the
+        # model saw a shared platform. Kill the matching links now; the
+        # PATTERN reaches every future link, so it waits for a human.
+        if verdict.scope in (Scope.LINKS, Scope.PATH_PATTERN):
             return AuthorityDecision("block_aliases", VerdictTier.TOXIC, auto=True)
         return AuthorityDecision("block_host", VerdictTier.TOXIC, auto=True)
 
@@ -263,6 +289,9 @@ class DeepInvestigator:
             "evidence": verdict.evidence,
             "egress": None,  # set by fetch_page tool usage; recorded in evidence
             "corroborated": corroborated,
+            "scope": verdict.scope.value,
+            "path_pattern": verdict.path_pattern,
+            "scope_justification": verdict.scope_justification,
         }
         await self._verdict_repo.upsert_verdict(
             event.host,
@@ -318,9 +347,14 @@ class DeepInvestigator:
             result = await self._enforcer.block_aliases(
                 pairs, host=event.host, reason=verdict.reason
             )
+            scope_note = (
+                f"pattern proposed for the blocklist: {verdict.path_pattern}"
+                if verdict.scope == Scope.PATH_PATTERN and verdict.path_pattern
+                else "specific links only, host left serving"
+            )
             await self._notifier.safety_action(
                 host=event.host,
-                reason=f"{verdict.reason} (compromised host — specific links only)",
+                reason=f"{verdict.reason} ({scope_note})",
                 trigger=event.trigger,
                 blocked_count=result.blocked_count,
                 legacy_count=0,
@@ -337,6 +371,9 @@ class DeepInvestigator:
                     "confidence": verdict.confidence.value,
                     "reason": verdict.reason,
                     "proposals": [p.model_dump() for p in verdict.proposals],
+                    "scope": verdict.scope.value,
+                    "path_pattern": verdict.path_pattern,
+                    "scope_justification": verdict.scope_justification,
                     "needs": "list proposal"
                     if decision.action == "propose"
                     else "block decision",

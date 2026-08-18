@@ -452,6 +452,7 @@ async def _build_runtime(
                     ),
                     http=runtime.http_client,
                     feed_repo=worker_feed_repo,
+                    url_repo=UrlRepository(db["urlsV2"]),
                     web_risk=(
                         WebRiskProvider(
                             runtime.http_client,

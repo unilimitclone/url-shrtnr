@@ -563,3 +563,38 @@ class TestDestinationHistory:
         assert hist["total_clicks"] == 120
         assert hist["first_seen"] == first.generation_time.isoformat()
         assert hist["edited_count"] == 1
+
+
+class TestHostBreadth:
+    def _repo(self, col):
+        from repositories.url_repository import UrlRepository
+
+        col.name = "urlsV2"
+        return UrlRepository(col)
+
+    @pytest.mark.asyncio
+    async def test_reports_shared_platform_shape(self):
+        col = make_collection()
+        col.aggregate.return_value.to_list = AsyncMock(
+            return_value=[
+                {
+                    "total": 380,
+                    "blocked": 3,
+                    "paths": [f"https://sites.google.com/view/p{i}" for i in range(40)],
+                    "creators": [ObjectId() for _ in range(12)],
+                }
+            ]
+        )
+        b = await self._repo(col).host_breadth("sites.google.com")
+        assert b["total_links"] == 380
+        assert b["blocked_links"] == 3
+        assert b["distinct_urls"] == 40
+        assert b["distinct_creators"] == 12
+        assert len(b["sample_urls"]) == 8  # capped sample, not the whole set
+
+    @pytest.mark.asyncio
+    async def test_unknown_host_is_zeroed(self):
+        col = make_collection()
+        col.aggregate.return_value.to_list = AsyncMock(return_value=[])
+        b = await self._repo(col).host_breadth("nobody.example")
+        assert b["total_links"] == 0 and b["sample_urls"] == []

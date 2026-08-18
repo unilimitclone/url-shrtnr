@@ -39,6 +39,7 @@ from infrastructure.browser_run import BrowserRunClient
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from repositories.feed_domain_repository import FeedDomainRepository
+from repositories.url_repository import UrlRepository
 from services.safety.providers import WebRiskProvider
 from shared.url_utils import registrable_domain
 
@@ -310,6 +311,7 @@ class InvestigationToolDeps:
     http: HttpClient
     feed_repo: FeedDomainRepository
     web_risk: WebRiskProvider | None = None
+    url_repo: UrlRepository | None = None
 
 
 def build_investigation_tools(deps: InvestigationToolDeps) -> list[Callable]:
@@ -377,4 +379,28 @@ def build_investigation_tools(deps: InvestigationToolDeps) -> list[Callable]:
             return f"HARD HITS on {host}: {', '.join(hits)}"
         return f"no feed or Web Risk hits on {host}"
 
-    return [resolve_chain, fetch_page, domain_intel, feed_lookup]
+    async def host_usage(host: str) -> str:
+        """How widely this host is used across the shortener, and how much
+        of it is already blocked. Call this BEFORE concluding that a whole
+        host is abusive. Many links across many distinct URLs from many
+        distinct creators means a shared platform (site builders, raw file
+        hosts, document services) where one abusive page says nothing about
+        the platform — the right scope there is a path pattern, not the
+        host. A host whose links are a handful of URLs from one anonymous
+        creator, or one with many already-blocked links, is the opposite."""
+        if deps.url_repo is None:
+            return "host usage unavailable"
+        b = await deps.url_repo.host_breadth(host)
+        lines = [
+            f"host: {host}",
+            f"links pointing here: {b['total_links']} "
+            f"({b['blocked_links']} already blocked)",
+            f"distinct destination URLs: {b['distinct_urls']}",
+            f"distinct creators: {b['distinct_creators']}",
+        ]
+        if b["sample_urls"]:
+            lines.append("sample of the URLs used:")
+            lines.extend(f"  - {u}" for u in b["sample_urls"])
+        return "\n".join(lines)
+
+    return [resolve_chain, fetch_page, domain_intel, feed_lookup, host_usage]

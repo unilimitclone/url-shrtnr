@@ -266,3 +266,63 @@ class TestInvestigatorFlow:
         review_ctx = notifier.safety_review.await_args.kwargs["context"]
         assert review_ctx["needs"] == "list proposal"
         assert review_ctx["proposals"][0]["domain"] == "sus.link"
+
+
+class TestScopeAuthority:
+    """A host block switches off every link to a host AND refuses all
+    future ones. These pin that a narrower scope is always honoured."""
+
+    def test_scam_host_with_path_pattern_scope_blocks_links_not_host(self):
+        v = _verdict(Classification.SCAM_HOST, scope=Scope.PATH_PATTERN)
+        v = v.model_copy(
+            update={"path_pattern": r"^https://sites\.google\.com/view/evil/.*"}
+        )
+        d = decide_authority(v, corroborated=True, policy=AutoBlockPolicy.CORROBORATED)
+        # Unambiguous scam, fully corroborated — and still not host-wide,
+        # because the model said the abuse is one path on a shared platform.
+        assert d.action == "block_aliases" and d.auto
+
+    def test_scam_host_with_links_scope_blocks_links_not_host(self):
+        d = decide_authority(
+            _verdict(Classification.SCAM_HOST, scope=Scope.LINKS),
+            corroborated=True,
+            policy=AutoBlockPolicy.CORROBORATED,
+        )
+        assert d.action == "block_aliases"
+
+    def test_host_scope_still_blocks_the_host(self):
+        d = decide_authority(
+            _verdict(Classification.SCAM_HOST, scope=Scope.HOST),
+            corroborated=True,
+            policy=AutoBlockPolicy.CORROBORATED,
+        )
+        assert d.action == "block_host"
+
+    def test_narrow_scope_never_widens_an_uncorroborated_verdict(self):
+        d = decide_authority(
+            _verdict(Classification.SCAM_HOST, scope=Scope.PATH_PATTERN),
+            corroborated=False,
+            policy=AutoBlockPolicy.CORROBORATED,
+        )
+        assert d.action == "review"
+
+    @pytest.mark.asyncio
+    async def test_pattern_reaches_the_operator_and_the_verdict(self):
+        v = _verdict(Classification.SCAM_HOST, scope=Scope.PATH_PATTERN).model_copy(
+            update={
+                "path_pattern": r"^https://sites\.google\.com/view/evil/.*",
+                "scope_justification": "shared site builder, 210 creators",
+            }
+        )
+        inv, verdict_repo, enforcer, notifier = _investigator(v)
+        await inv.investigate(_event())
+
+        enforcer.block_host.assert_not_awaited()
+        enforcer.block_aliases.assert_awaited_once()
+        prov = verdict_repo.upsert_verdict.await_args.kwargs["provenance"]
+        assert prov["scope"] == "path_pattern"
+        assert "sites" in prov["path_pattern"]
+        assert prov["scope_justification"] == "shared site builder, 210 creators"
+        # The operator is told the pattern to add, since a pattern reaches
+        # every FUTURE link and only a human may apply it.
+        assert "pattern proposed" in notifier.safety_action.await_args.kwargs["reason"]
