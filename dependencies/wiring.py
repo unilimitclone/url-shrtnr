@@ -77,11 +77,15 @@ from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
 from services.safety import (
+    AdmissionPolicy,
     BlockedPatternProvider,
     CreationPatternScorer,
+    DeepAnalysisSink,
     FeedDeltaSweeper,
     InlineSafetySink,
+    NullDeepAnalysisSink,
     NullSafetySink,
+    RedisStreamDeepAnalysisSink,
     RedisStreamSafetySink,
     SafetyAnalyzer,
     SafetyEnforcer,
@@ -349,12 +353,38 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
             )
         )
         log.info("safety_web_risk_enabled")
+    # Deep tier (investigation): its own stream, entered only through the
+    # admission policy when screening ends unresolved. Requires the queue
+    # Redis — investigation makes outbound calls and must never run
+    # inline, so without a queue the deep tier is simply off.
+    deep_sink: DeepAnalysisSink = NullDeepAnalysisSink()
+    admission = None
+    if sf_settings.enabled and sf_settings.deep_enabled:
+        if queue_redis_for_webhooks is not None:
+            deep_sink = RedisStreamDeepAnalysisSink(
+                queue_redis_for_webhooks,
+                stream=sf_settings.deep_stream,
+                maxlen=sf_settings.deep_maxlen,
+            )
+            admission = AdmissionPolicy(
+                queue_redis_for_webhooks,
+                daily_budget=sf_settings.deep_daily_budget,
+                admit_sweeps=sf_settings.deep_admit_sweeps,
+            )
+            log.info("safety_deep_sink_enabled", stream=sf_settings.deep_stream)
+        else:
+            log.warning(
+                "safety_deep_unconfigured",
+                detail="deep analysis needs CLICK_EVENTS_QUEUE_REDIS_URI",
+            )
     safety_analyzer = SafetyAnalyzer(
         analyzer_providers,
         verdict_repo,
         safety_enforcer,
         ops_notifier,
         reverdict_ttl_hours=sf_settings.reverdict_ttl_hours,
+        admission=admission,
+        deep_sink=deep_sink if admission is not None else None,
     )
     app.state.safety_analyzer = safety_analyzer
     safety_sink: SafetySink

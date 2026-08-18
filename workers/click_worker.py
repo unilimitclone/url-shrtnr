@@ -78,9 +78,11 @@ from services.events.contract import DOMAIN_EVENTS_STREAM
 from services.events.sinks import InlineDomainEventSink
 from services.meta_tags.validator import MetaImageValidator
 from services.safety import (
+    AdmissionPolicy,
     BlockedPatternProvider,
     FeedDeltaSweeper,
     InlineSafetySink,
+    RedisStreamDeepAnalysisSink,
     SafetyAnalyzer,
     SafetyEnforcer,
     SweepDeps,
@@ -117,6 +119,7 @@ class _WorkerRuntime:
     cache_redis: Any | None
     counter_redis: Any | None
     telemetry_redis: Any | None = None
+    deep_redis: Any | None = None
     http_client: HttpClient | None = None
     telemetry_tasks: list[asyncio.Task] = field(default_factory=list)
     consumers: dict[str, ClickConsumer] = field(default_factory=dict)
@@ -138,6 +141,8 @@ class _WorkerRuntime:
             await self.counter_redis.aclose()
         if self.telemetry_redis is not None:
             await self.telemetry_redis.aclose()
+        if self.deep_redis is not None:
+            await self.deep_redis.aclose()
         if self.http_client is not None:
             await self.http_client.aclose()
 
@@ -382,6 +387,26 @@ async def _build_runtime(
                     api_base=sf.web_risk_api_base,
                 )
             )
+        # Deep tier: unresolved screenings this worker judges get handed
+        # to the admission policy and, when admitted, emitted onto the
+        # investigation stream for its own consumer.
+        deep_sink = None
+        admission = None
+        if sf.deep_enabled:
+            deep_redis = await create_redis_client(
+                ce.queue_redis_uri, label="safety-deep"
+            )
+            if deep_redis is not None:
+                runtime.deep_redis = deep_redis
+                deep_sink = RedisStreamDeepAnalysisSink(
+                    deep_redis, stream=sf.deep_stream, maxlen=sf.deep_maxlen
+                )
+                admission = AdmissionPolicy(
+                    deep_redis,
+                    daily_budget=sf.deep_daily_budget,
+                    admit_sweeps=sf.deep_admit_sweeps,
+                )
+                log.info("safety_deep_sink_enabled", stream=sf.deep_stream)
         safety_analyzer = SafetyAnalyzer(
             safety_providers,
             VerdictRepository(db["safety_verdicts"]),
@@ -392,6 +417,8 @@ async def _build_runtime(
                 runtime.http_client,
             ),
             reverdict_ttl_hours=sf.reverdict_ttl_hours,
+            admission=admission,
+            deep_sink=deep_sink,
         )
         runtime.safety_consumer = SafetyAnalysisConsumer(safety_analyzer)
         # Sweeps emitted from THIS process run inline through the worker's

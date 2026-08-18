@@ -222,3 +222,109 @@ class TestSweepNotificationPolicy:
 
         enforcer.block_host.assert_awaited_once()
         notifier.safety_action.assert_awaited_once()
+
+
+class TestDeepAdmission:
+    """Unresolved screenings cross into investigation only through the
+    admission policy — and an admitted event must not also ping review."""
+
+    def _deep_build(self, *, admitted: bool, reason: str = "always"):
+        from services.safety.admission import AdmissionDecision
+
+        verdict_repo = AsyncMock()
+        verdict_repo.find_by_host = AsyncMock(return_value=None)
+        enforcer = AsyncMock()
+        notifier = AsyncMock()
+        admission = AsyncMock()
+        admission.decide = AsyncMock(
+            return_value=AdmissionDecision(admitted=admitted, reason=reason)
+        )
+        deep_sink = AsyncMock()
+        analyzer = SafetyAnalyzer(
+            [],
+            verdict_repo,
+            enforcer,
+            notifier,
+            reverdict_ttl_hours=24,
+            admission=admission,
+            deep_sink=deep_sink,
+        )
+        return analyzer, verdict_repo, notifier, deep_sink
+
+    @pytest.mark.asyncio
+    async def test_admitted_event_goes_deep_and_skips_the_review_embed(self):
+        analyzer, verdict_repo, notifier, deep_sink = self._deep_build(admitted=True)
+
+        await analyzer.analyze(_event())
+
+        # The uncertain verdict is still written — investigation upgrades
+        # it later; screening's record never depends on the deep tier.
+        assert verdict_repo.upsert_verdict.await_args.kwargs["tier"] == (
+            VerdictTier.UNCERTAIN
+        )
+        deep_sink.emit.assert_awaited_once()
+        notifier.safety_review.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_denied_report_still_reaches_review(self):
+        analyzer, _, notifier, deep_sink = self._deep_build(
+            admitted=False, reason="budget_exhausted"
+        )
+
+        await analyzer.analyze(_event())
+
+        deep_sink.emit.assert_not_awaited()
+        notifier.safety_review.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_denied_sweep_stays_silent(self):
+        analyzer, _, notifier, deep_sink = self._deep_build(
+            admitted=False, reason="sweep_excluded"
+        )
+
+        sweep_event = SafetyAnalyzeEvent(
+            url="https://evil.com/kit",
+            host="evil.com",
+            registrable_domain="evil.com",
+            trigger="sweep",
+        )
+        await analyzer.analyze(sweep_event)
+
+        deep_sink.emit.assert_not_awaited()
+        notifier.safety_review.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_toxic_short_circuits_before_admission(self):
+        """A screening hit never reaches the deep tier — enforcement is
+        already done; investigation would be spend without a question."""
+        from services.safety.admission import AdmissionDecision
+
+        provider = _Provider(
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="feed hit"),
+            name="feed_fishfish",
+        )
+        verdict_repo = AsyncMock()
+        verdict_repo.find_by_host = AsyncMock(return_value=None)
+        enforcer = AsyncMock()
+        enforcer.block_host = AsyncMock(
+            return_value=AsyncMock(blocked_count=1, legacy_count=0)
+        )
+        admission = AsyncMock()
+        admission.decide = AsyncMock(
+            return_value=AdmissionDecision(admitted=True, reason="always")
+        )
+        deep_sink = AsyncMock()
+        analyzer = SafetyAnalyzer(
+            [provider],
+            verdict_repo,
+            enforcer,
+            AsyncMock(),
+            reverdict_ttl_hours=24,
+            admission=admission,
+            deep_sink=deep_sink,
+        )
+
+        await analyzer.analyze(_event())
+
+        deep_sink.emit.assert_not_awaited()
+        admission.decide.assert_not_awaited()

@@ -9,6 +9,7 @@ review embed. Detection computes once per destination host; the redirect
 path only ever reads stored state.
 """
 
+from services.safety.admission import AdmissionDecision, AdmissionPolicy
 from services.safety.analyzer import SafetyAnalyzer
 from services.safety.enforcer import EnforcementResult, SafetyEnforcer
 from services.safety.events import SAFETY_STREAM, SafetyAnalyzeEvent
@@ -34,8 +35,11 @@ from services.safety.providers import (
 )
 from services.safety.scoring import CreationPatternScorer
 from services.safety.sinks import (
+    DeepAnalysisSink,
     InlineSafetySink,
+    NullDeepAnalysisSink,
     NullSafetySink,
+    RedisStreamDeepAnalysisSink,
     RedisStreamSafetySink,
     SafetySink,
 )
@@ -46,17 +50,22 @@ __all__ = [
     "MANUAL_FEED",
     "SAFETY_STREAM",
     "SHORTENER_FEED",
+    "AdmissionDecision",
+    "AdmissionPolicy",
     "AnalysisProvider",
     "BlockedPatternProvider",
     "CreationPatternScorer",
+    "DeepAnalysisSink",
     "EnforcementResult",
     "FeedDeltaSweeper",
     "FeedDomainProvider",
     "FishFishClient",
     "InlineSafetySink",
+    "NullDeepAnalysisSink",
     "NullSafetySink",
     "PolicyRejection",
     "ProviderVerdict",
+    "RedisStreamDeepAnalysisSink",
     "RedisStreamSafetySink",
     "SafetyAnalyzeEvent",
     "SafetyAnalyzer",

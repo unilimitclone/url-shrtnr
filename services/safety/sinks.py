@@ -73,3 +73,44 @@ class RedisStreamSafetySink:
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
+
+
+# ── Deep tier (investigation) ────────────────────────────────────────────
+# The deep queue reuses the SafetyAnalyzeEvent wire format on its own
+# stream. There is deliberately NO inline rung: investigation makes
+# outbound calls to hostile destinations and must never ride a request —
+# without the queue Redis the deep tier is simply off (Null + one boot
+# warning), and screening still covers everything.
+
+
+class DeepAnalysisSink(Protocol):
+    async def emit(self, event: SafetyAnalyzeEvent) -> None: ...
+
+
+class NullDeepAnalysisSink:
+    async def emit(self, event: SafetyAnalyzeEvent) -> None:
+        return None
+
+
+class RedisStreamDeepAnalysisSink:
+    def __init__(self, redis_client, *, stream: str, maxlen: int) -> None:
+        self._redis = redis_client
+        self._stream = stream
+        self._maxlen = maxlen
+
+    async def emit(self, event: SafetyAnalyzeEvent) -> None:
+        try:
+            await self._redis.xadd(
+                self._stream,
+                to_stream_fields(event),
+                maxlen=self._maxlen,
+                approximate=True,
+                ref_policy="ACKED",
+            )
+        except Exception as exc:
+            log.warning(
+                "safety_deep_emit_failed",
+                host=event.host,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )

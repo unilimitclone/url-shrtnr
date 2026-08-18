@@ -1,0 +1,93 @@
+"""Admission policy — the one readable rule between screening and
+investigation.
+
+Screening (the cheap provider chain) runs for every trigger on one shared
+queue. Investigation (the deep tier: outbound calls, renders, the model)
+has its own queue and consumer, and is entered ONLY through this policy
+when screening ends unresolved. The asymmetry between a report and a
+sweep lives here, in one function, instead of as hidden pipeline
+behavior:
+
+- ``report`` / ``edit``  — always admitted. Reports are the P0 lane;
+  a destination edited after creation is the bait-and-switch shape and
+  gets report-grade priority.
+- ``pattern``            — admitted within the daily budget. Bursts are
+  anomalies worth spending on, but a counter, not a blank check.
+- ``sweep``              — never admitted by default. Sweep novelty keeps
+  its uncertain verdict; coverage is screening's job, not the deep
+  tier's. ``SAFETY_DEEP_ADMIT_SWEEPS`` opts sweeps into the same budget.
+
+The budget is a fixed-window counter in the durable queue Redis (the
+cache Redis would evict it). Redis being down fails CLOSED for
+budget-bound triggers — investigation is the expensive tier, and "we
+couldn't count, so spend freely" is the wrong failure mode. Reports and
+edits are unaffected: their admission consults nothing.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from infrastructure.logging import get_logger
+from services.safety.events import SafetyAnalyzeEvent
+
+log = get_logger(__name__)
+
+_ALWAYS_ADMITTED = frozenset({"report", "edit"})
+_BUDGETED = frozenset({"pattern"})
+_BUDGET_KEY_PREFIX = "safety:deep:budget:"
+# Two days: the window key outlives its day so a process straddling
+# midnight never resurrects an expired counter, then Redis reaps it.
+_BUDGET_KEY_TTL_SECONDS = 2 * 24 * 3600
+
+
+@dataclass(frozen=True)
+class AdmissionDecision:
+    admitted: bool
+    reason: str  # "always" | "within_budget" | "budget_exhausted" |
+    #              "sweep_excluded" | "budget_unavailable" | "unknown_trigger"
+
+
+class AdmissionPolicy:
+    def __init__(
+        self,
+        redis_client,
+        *,
+        daily_budget: int,
+        admit_sweeps: bool = False,
+    ) -> None:
+        self._redis = redis_client
+        self._daily_budget = daily_budget
+        self._admit_sweeps = admit_sweeps
+
+    async def decide(self, event: SafetyAnalyzeEvent) -> AdmissionDecision:
+        trigger = event.trigger
+        if trigger in _ALWAYS_ADMITTED:
+            return AdmissionDecision(True, "always")
+        if trigger == "sweep" and not self._admit_sweeps:
+            return AdmissionDecision(False, "sweep_excluded")
+        if trigger in _BUDGETED or (trigger == "sweep" and self._admit_sweeps):
+            return await self._within_budget()
+        # A trigger this policy has never heard of is a coding error
+        # upstream; refuse rather than spend on it silently.
+        log.warning("safety_deep_unknown_trigger", trigger=trigger)
+        return AdmissionDecision(False, "unknown_trigger")
+
+    async def _within_budget(self) -> AdmissionDecision:
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        key = f"{_BUDGET_KEY_PREFIX}{day}"
+        try:
+            used = await self._redis.incr(key)
+            if used == 1:
+                await self._redis.expire(key, _BUDGET_KEY_TTL_SECONDS)
+        except Exception as exc:
+            log.warning(
+                "safety_deep_budget_unavailable",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return AdmissionDecision(False, "budget_unavailable")
+        if used > self._daily_budget:
+            return AdmissionDecision(False, "budget_exhausted")
+        return AdmissionDecision(True, "within_budget")
