@@ -41,6 +41,7 @@ class LlmTask:
     output_type: type
     tools: Sequence[Callable] = field(default_factory=tuple)
     max_requests: int | None = None
+    max_tool_calls: int | None = None
     max_total_tokens: int | None = None
     run_timeout_seconds: float | None = None
 

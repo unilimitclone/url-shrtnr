@@ -48,6 +48,9 @@ _MAX_HOPS = 10
 _HOP_TIMEOUT = 5.0
 _CHAIN_TIMEOUT = 20.0
 _VISIBLE_TEXT_CAP = 3000
+_MAX_FORMS = 4
+_MAX_FORM_FIELDS = 8
+_MAX_SCRIPT_HOSTS = 12
 _RDAP_TIMEOUT = 8.0
 _TLS_TIMEOUT = 5.0
 
@@ -180,9 +183,17 @@ class _EvidenceHTMLParser(HTMLParser):
         elif tag == "title":
             self._in_title = False
         elif tag == "form" and self._form_fields is not None:
+            # Hidden inputs are CSRF/telemetry noise — their COUNT matters
+            # (a form is real), their names never decide a verdict.
+            shown = [f for f in self._form_fields if not f.startswith("hidden:")]
+            hidden = len(self._form_fields) - len(shown)
+            summary = ", ".join(shown[:_MAX_FORM_FIELDS]) or "none"
+            if len(shown) > _MAX_FORM_FIELDS:
+                summary += f", +{len(shown) - _MAX_FORM_FIELDS} more"
+            if hidden:
+                summary += f", {hidden} hidden"
             self.forms.append(
-                f"action={self._form_action or '(same page)'} "
-                f"fields=[{', '.join(self._form_fields) or 'none'}]"
+                f"action={self._form_action or '(same page)'} fields=[{summary}]"
             )
             self._form_fields = None
 
@@ -199,16 +210,31 @@ class _EvidenceHTMLParser(HTMLParser):
 
 
 def trim_html(html: str) -> str:
+    """Render a page down to the judgment surface, under a token budget.
+
+    Every section is capped. Real login pages carry several forms of a
+    dozen hidden CSRF/telemetry fields each, and uncapped that single
+    line dwarfs the rest of the evidence — measured at 60k tokens for one
+    investigation before these caps. What decides phishing is the form's
+    ACTION and whether it carries a password field, not the names of its
+    hidden inputs, so hidden fields are counted rather than listed.
+    """
     parser = _EvidenceHTMLParser()
     # Tolerate hostile markup — keep whatever parsed before the choke.
     with contextlib.suppress(Exception):
         parser.feed(html)
     visible = " ".join(parser.text_parts)[:_VISIBLE_TEXT_CAP]
+    forms = parser.forms[:_MAX_FORMS]
+    if len(parser.forms) > _MAX_FORMS:
+        forms.append(f"(+{len(parser.forms) - _MAX_FORMS} more forms)")
+    hosts = sorted(parser.script_hosts)[:_MAX_SCRIPT_HOSTS]
+    if len(parser.script_hosts) > _MAX_SCRIPT_HOSTS:
+        hosts.append(f"(+{len(parser.script_hosts) - _MAX_SCRIPT_HOSTS} more)")
     parts = [
         f"title: {parser.title or '(none)'}",
         f"meta description: {parser.meta_description or '(none)'}",
-        f"forms: {'; '.join(parser.forms) or 'none'}",
-        f"external script hosts: {', '.join(sorted(parser.script_hosts)) or 'none'}",
+        f"forms: {'; '.join(forms) or 'none'}",
+        f"external script hosts: {', '.join(hosts) or 'none'}",
         f"visible text (capped): {visible or '(none)'}",
     ]
     return "\n".join(parts)
@@ -310,7 +336,11 @@ def build_investigation_tools(deps: InvestigationToolDeps) -> list[Callable]:
         parked or purpose-built domain."""
         result = await deps.browser.snapshot(url)
         if result is None:
-            return "render unavailable — treat as missing evidence, not as clean"
+            return (
+                "render unavailable for this URL (page failed to load or is "
+                "unreachable) — do NOT retry it; treat as missing evidence, "
+                "not as evidence of being clean"
+            )
         trimmed = trim_html(result.html)
         return f"rendered via {result.egress}\nurl: {url}\n{trimmed}"
 

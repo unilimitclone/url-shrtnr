@@ -103,8 +103,14 @@ class LlmTaskRunner:
         """Run one task to a validated ``task.output_type`` instance."""
         if not self._settings.enabled:
             raise LlmTaskFailed(task.name, "disabled")
+        # Three independent ceilings, because they fail differently: a
+        # runaway loop trips requests, a chatty page trips tokens, and a
+        # model re-calling one tool trips tool_calls.
         limits = UsageLimits(
             request_limit=task.max_requests or self._settings.max_requests_per_run,
+            tool_calls_limit=(
+                task.max_tool_calls or self._settings.max_tool_calls_per_run
+            ),
             total_tokens_limit=(
                 task.max_total_tokens or self._settings.max_total_tokens_per_run
             ),

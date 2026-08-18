@@ -213,3 +213,40 @@ class TestBrowserRunClient:
         http.post = AsyncMock(side_effect=RuntimeError("cf down"))
         client = BrowserRunClient(http, account_id="acc", api_token="tok")
         assert await client.snapshot("https://x.example") is None
+
+
+class TestTrimHtmlBudget:
+    """Live-run finding: an uncapped forms line dwarfed every other piece
+    of evidence and helped push one investigation past 60k tokens."""
+
+    def test_hidden_fields_are_counted_not_listed(self):
+        html = (
+            "<form action=/session>"
+            + "".join(f"<input type=hidden name=csrf_{i}>" for i in range(14))
+            + "<input type=text name=login><input type=password name=password>"
+            "</form>"
+        )
+        out = trim_html(html)
+        assert "password:password" in out  # the discriminator survives
+        assert "14 hidden" in out
+        assert "csrf_1" not in out  # noise does not
+
+    def test_form_and_script_host_counts_are_capped(self):
+        html = "".join(f"<form action=/f{i}><input name=x></form>" for i in range(9))
+        html += "".join(
+            f'<script src="https://cdn{i}.example.com/a.js"></script>'
+            for i in range(20)
+        )
+        out = trim_html(html)
+        assert "more forms)" in out
+        assert "more)" in out
+
+    def test_real_world_login_page_stays_small(self):
+        """A page with many forms and fields must still fit a token budget."""
+        html = "<title>Sign in</title>" + "".join(
+            "<form action=/session>"
+            + "".join(f"<input type=hidden name=h{j}>" for j in range(16))
+            + "<input type=password name=password></form>"
+            for _ in range(6)
+        )
+        assert len(trim_html(html)) < 1200

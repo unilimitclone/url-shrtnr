@@ -475,7 +475,8 @@ class LlmSettings(BaseSettings):
     # ones. Requests = model round-trips in one task run (tool loop
     # included); tokens = total across the run.
     max_requests_per_run: int = Field(default=8, ge=1)
-    max_total_tokens_per_run: int = Field(default=60_000, ge=1000)
+    max_tool_calls_per_run: int = Field(default=10, ge=1)
+    max_total_tokens_per_run: int = Field(default=120_000, ge=1000)
     request_timeout_seconds: float = Field(default=60.0, gt=0)
     run_timeout_seconds: float = Field(default=300.0, gt=0)
     # Prompt overrides: a directory of <task>.md files that replaces the
