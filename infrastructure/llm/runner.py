@@ -55,18 +55,33 @@ class LlmTaskRunner:
         self._agents: dict[str, Agent] = {}
 
     def _build_model(self) -> Any:
+        """Resolve ``<provider>:<model>`` into a PydanticAI model.
+
+        The explicit key from ``LLM_API_KEY`` is threaded into the
+        provider so the capability has exactly ONE config surface — a
+        deploy never has to also set ANTHROPIC_API_KEY / OPENAI_API_KEY.
+        Without a key we hand the string back and let the provider read
+        its own environment.
+        """
         if self._model is not None:
             return self._model
         model_id = self._settings.model
-        if model_id.startswith("openai:") and self._settings.api_key:
-            # Explicit key from LLM_API_KEY — never require the provider's
-            # own env var so the capability has exactly one config surface.
+        key = self._settings.api_key
+        if key and model_id.startswith("anthropic:"):
+            from pydantic_ai.models.anthropic import AnthropicModel
+            from pydantic_ai.providers.anthropic import AnthropicProvider
+
+            return AnthropicModel(
+                model_id.removeprefix("anthropic:"),
+                provider=AnthropicProvider(api_key=key),
+            )
+        if key and model_id.startswith("openai:"):
             from pydantic_ai.models.openai import OpenAIChatModel
             from pydantic_ai.providers.openai import OpenAIProvider
 
             return OpenAIChatModel(
                 model_id.removeprefix("openai:"),
-                provider=OpenAIProvider(api_key=self._settings.api_key),
+                provider=OpenAIProvider(api_key=key),
             )
         return model_id  # provider infers credentials from its environment
 

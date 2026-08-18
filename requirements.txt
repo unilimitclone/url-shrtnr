@@ -3,6 +3,7 @@ aiohttp==3.14.1
 aiosignal==1.4.0
 annotated-doc==0.0.4
 annotated-types==0.7.0
+anthropic==0.122.0
 anyio==4.14.1
 argon2-cffi==25.1.0
 argon2-cffi-bindings==25.1.0
@@ -22,6 +23,7 @@ dicttoxml==1.7.16
 distlib==0.4.3
 distro==1.9.0
 dnspython==2.8.0
+docstring-parser==0.18.0
 email-validator==2.3.0
 emoji==2.15.0
 et-xmlfile==2.0.0

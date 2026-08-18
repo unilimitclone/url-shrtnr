@@ -149,3 +149,25 @@ class TestCatalog:
     def test_registry_keys_by_name(self):
         reg = build_llm_tasks([_task()])
         assert set(reg) == {"test-task"}
+
+
+class TestProviderResolution:
+    """One config surface: LLM_API_KEY is threaded into whichever provider
+    the model string names — a deploy never also sets ANTHROPIC_API_KEY."""
+
+    def test_anthropic_prefix_builds_an_anthropic_model(self):
+        runner = LlmTaskRunner(
+            _settings(model="anthropic:claude-sonnet-5", api_key="k")
+        )
+        model = runner._build_model()
+        assert type(model).__name__ == "AnthropicModel"
+
+    def test_openai_prefix_builds_an_openai_model(self):
+        runner = LlmTaskRunner(_settings(model="openai:gpt-5-mini", api_key="k"))
+        model = runner._build_model()
+        assert type(model).__name__ == "OpenAIChatModel"
+
+    def test_without_a_key_the_string_passes_through(self):
+        """No LLM_API_KEY = let the provider read its own environment."""
+        runner = LlmTaskRunner(_settings(model="anthropic:claude-sonnet-5", api_key=""))
+        assert runner._build_model() == "anthropic:claude-sonnet-5"

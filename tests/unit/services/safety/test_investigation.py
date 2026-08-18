@@ -175,7 +175,7 @@ def _investigator(verdict_or_exc, *, policy=AutoBlockPolicy.CORROBORATED):
         enforcer,
         notifier,
         policy=policy,
-        model_name="openai:gpt-5-mini",
+        model_name="anthropic:claude-sonnet-5",
     )
     return inv, verdict_repo, enforcer, notifier
 

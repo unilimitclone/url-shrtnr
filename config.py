@@ -467,7 +467,9 @@ class LlmSettings(BaseSettings):
     )
 
     enabled: bool = False
-    model: str = "openai:gpt-5-mini"
+    # ``<provider>:<model>``; anthropic and openai are both wired. The
+    # model is a config value on purpose — see the class docstring.
+    model: str = "anthropic:claude-sonnet-5"
     api_key: str = ""
     # Hard ceilings applied to every task unless the task declares tighter
     # ones. Requests = model round-trips in one task run (tool loop
