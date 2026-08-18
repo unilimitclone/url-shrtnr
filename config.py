@@ -445,6 +445,42 @@ class WebhookSettings(BaseSettings):
         return self.delivery_log_ttl_days * 86_400
 
 
+class LlmSettings(BaseSettings):
+    """The LLM capability — one client, many consumers.
+
+    This is deliberately NOT a safety setting: the model is
+    infrastructure (``infrastructure/llm``), registered tasks are the
+    consumers (safety investigation first, the report-inbox scanner
+    next), and the plumbing — client, retries, budgets, cost accounting —
+    is owned once here. ``enabled`` is the kill switch: off means every
+    task runner returns a typed failure instead of calling out.
+
+    The model is a config value on purpose: every task result records the
+    model + prompt version it was produced by, so swapping providers is a
+    replay-and-compare exercise, not a leap of faith.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="LLM_",
+    )
+
+    enabled: bool = False
+    model: str = "openai:gpt-5-mini"
+    api_key: str = ""
+    # Hard ceilings applied to every task unless the task declares tighter
+    # ones. Requests = model round-trips in one task run (tool loop
+    # included); tokens = total across the run.
+    max_requests_per_run: int = Field(default=8, ge=1)
+    max_total_tokens_per_run: int = Field(default=60_000, ge=1000)
+    request_timeout_seconds: float = Field(default=60.0, gt=0)
+    run_timeout_seconds: float = Field(default=300.0, gt=0)
+    # Prompt overrides: a directory of <task>.md files that replaces the
+    # in-repo defaults — production prompt text is private tuning.
+    prompt_dir: str = ""
+
+
 class SafetySettings(BaseSettings):
     """URL safety pipeline — report-triggered destination analysis,
     verdicts, and automatic enforcement.
@@ -720,6 +756,7 @@ class AppSettings(BaseSettings):
     webhooks: WebhookSettings | None = None
     safety: SafetySettings | None = None
     scheduler: SchedulerSettings | None = None
+    llm: LlmSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -761,6 +798,8 @@ class AppSettings(BaseSettings):
             self.meta_tags = MetaTagsSettings()
         if self.webhooks is None:
             self.webhooks = WebhookSettings()
+        if self.llm is None:
+            self.llm = LlmSettings()
         if self.safety is None:
             self.safety = SafetySettings()
         if self.scheduler is None:
