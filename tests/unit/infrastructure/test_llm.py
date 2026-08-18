@@ -171,3 +171,27 @@ class TestProviderResolution:
         """No LLM_API_KEY = let the provider read its own environment."""
         runner = LlmTaskRunner(_settings(model="anthropic:claude-sonnet-5", api_key=""))
         assert runner._build_model() == "anthropic:claude-sonnet-5"
+
+
+class TestCostTelemetryIsNotRedacted:
+    """Live-run finding: the log redactor's "token" substring heuristic
+    ate every cost field, so spend telemetry never reached Axiom."""
+
+    def test_token_count_fields_survive_redaction(self):
+        from infrastructure.logging import redact_sensitive_fields
+
+        out = redact_sensitive_fields(
+            None,
+            "info",
+            {
+                "event": "llm_task_completed",
+                "input_tokens": 11935,
+                "output_tokens": 314,
+                "cache_read_tokens": 0,
+                "api_key": "sk-secret",
+            },
+        )
+        assert out["input_tokens"] == 11935
+        assert out["output_tokens"] == 314
+        assert out["cache_read_tokens"] == 0
+        assert out["api_key"] == "***REDACTED***"  # real secrets still go

@@ -475,7 +475,10 @@ class LlmSettings(BaseSettings):
     # ones. Requests = model round-trips in one task run (tool loop
     # included); tokens = total across the run.
     max_requests_per_run: int = Field(default=8, ge=1)
-    max_tool_calls_per_run: int = Field(default=10, ge=1)
+    # Measured: a clean investigation uses 4-5 tool calls; one whose
+    # destination is dead legitimately explores more (root, variants,
+    # chain) before concluding. 10 cut those off mid-investigation.
+    max_tool_calls_per_run: int = Field(default=18, ge=1)
     max_total_tokens_per_run: int = Field(default=120_000, ge=1000)
     request_timeout_seconds: float = Field(default=60.0, gt=0)
     run_timeout_seconds: float = Field(default=300.0, gt=0)

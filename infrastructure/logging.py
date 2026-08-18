@@ -64,6 +64,15 @@ SAFE_FIELDS = {
     "key_prefix",
     "token_prefix",
     "query_keys",
+    # LLM cost accounting: token COUNTS, not token material. Without
+    # these the substring heuristic redacts the spend telemetry and
+    # Axiom cannot answer what a task cost.
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "max_tokens",
 }
 
 
