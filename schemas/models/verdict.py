@@ -35,5 +35,19 @@ class VerdictDoc(MongoBaseModel):
     # Trigger-specific snapshot (report reasons, counts) for review embeds.
     context: dict | None = None
     decided_by: str = "system"
+    # Deep-tier (investigation) provenance — null on screening verdicts.
+    # ``model`` + ``prompt_version`` make a verdict replayable against a
+    # later prompt; ``evidence`` is what the model rested on; ``egress``
+    # is which IP the render came from (a clean render from a scanner IP
+    # is weaker than a clean render); ``corroborated`` records whether a
+    # hard external source agreed, which is what the authority mapper
+    # gates auto-block on.
+    model: str | None = None
+    prompt_version: str | None = None
+    classification: str | None = None
+    confidence: str | None = None
+    evidence: list[str] | None = None
+    egress: str | None = None
+    corroborated: bool | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = Field(default=None)

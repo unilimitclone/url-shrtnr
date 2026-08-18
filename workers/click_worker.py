@@ -52,6 +52,7 @@ from infrastructure.cache.url_cache import UrlCache
 from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.geoip import GeoIPService
 from infrastructure.http_client import HttpClient
+from infrastructure.llm import LlmTaskRunner
 from infrastructure.logging import get_logger, setup_logging
 from infrastructure.ops_notify import DiscordOpsNotifier
 from repositories.blocked_url_repository import BlockedUrlRepository
@@ -79,9 +80,14 @@ from services.events.sinks import InlineDomainEventSink
 from services.meta_tags.validator import MetaImageValidator
 from services.safety import (
     AdmissionPolicy,
+    AutoBlockPolicy,
     BlockedPatternProvider,
+    BrowserRunClient,
+    DeepAnalysisConsumer,
+    DeepInvestigator,
     FeedDeltaSweeper,
     InlineSafetySink,
+    InvestigationToolDeps,
     RedisStreamDeepAnalysisSink,
     SafetyAnalyzer,
     SafetyEnforcer,
@@ -89,6 +95,8 @@ from services.safety import (
     WebRiskProvider,
     build_feed_providers,
     build_feed_tasks,
+    build_investigate_task,
+    build_investigation_tools,
     build_sweep_tasks,
 )
 from services.safety.consumers import SafetyAnalysisConsumer
@@ -126,6 +134,7 @@ class _WorkerRuntime:
     meta_validator: MetaImageValidator | None = None
     webhook_domain_consumer: WebhookDomainConsumer | None = None
     safety_consumer: SafetyAnalysisConsumer | None = None
+    deep_consumer: DeepAnalysisConsumer | None = None
 
     async def aclose(self) -> None:
         for task in self.telemetry_tasks:
@@ -426,6 +435,58 @@ async def _build_runtime(
         # second raw queue-redis client just to re-enter our own stream.
         worker_safety_sink = InlineSafetySink(safety_analyzer)
         log.info("safety_worker_registered", stream=sf.stream)
+
+        # Deep tier consumer: its own stream, own consumer beside the
+        # render sandbox. Requires both the deep queue AND the LLM
+        # capability; without either it stays off and admitted events
+        # simply queue with no reader (harmless — maxlen-trimmed).
+        llm = settings.llm
+        if sf.deep_enabled and deep_sink is not None and llm.enabled:
+            llm_runner = LlmTaskRunner(llm)
+            investigation_tools = build_investigation_tools(
+                InvestigationToolDeps(
+                    browser=BrowserRunClient(
+                        runtime.http_client,
+                        account_id=edge.cf_account_id,
+                        api_token=edge.cf_api_token,
+                    ),
+                    http=runtime.http_client,
+                    feed_repo=worker_feed_repo,
+                    web_risk=(
+                        WebRiskProvider(
+                            runtime.http_client,
+                            api_key=sf.web_risk_api_key,
+                            api_base=sf.web_risk_api_base,
+                        )
+                        if sf.web_risk_enabled
+                        else None
+                    ),
+                )
+            )
+            investigate_task = build_investigate_task(
+                prompt_dir=llm.prompt_dir, tools=investigation_tools
+            )
+            investigator = DeepInvestigator(
+                llm_runner,
+                investigate_task,
+                UrlRepository(db["urlsV2"]),
+                VerdictRepository(db["safety_verdicts"]),
+                safety_enforcer,
+                DiscordOpsNotifier(
+                    settings.contact_webhook,
+                    settings.url_report_webhook,
+                    runtime.http_client,
+                ),
+                policy=AutoBlockPolicy(sf.deep_autoblock),
+                model_name=llm.model,
+            )
+            runtime.deep_consumer = DeepAnalysisConsumer(investigator)
+            log.info("safety_deep_worker_registered", stream=sf.deep_stream)
+        elif sf.deep_enabled and deep_sink is not None:
+            log.warning(
+                "safety_deep_investigator_unconfigured",
+                detail="deep investigation needs LLM_ENABLED",
+            )
     if run_scheduler:
         # Scheduled-task runner: Mongo-only claim loop, so it shares this
         # process without extra infra (same reasoning as the webhook
@@ -594,6 +655,54 @@ def _register_safety(
     )(claimer)
 
 
+def _register_safety_deep(
+    broker: RedisBroker,
+    sf: Any,
+    consumer_suffix: str,
+    deep_consumer_for: Any,
+) -> None:
+    """Reader + claimer pair for the investigation stream — its own group
+    and DLQ, so a sweep flood on the screening stream can never delay a
+    reported host here (the whole reason the deep queue is separate)."""
+    guard = ClaimDeadLetterGuard(
+        stream=sf.deep_stream,
+        group="safety-deep",
+        dlq_stream=sf.deep_dlq_stream,
+        max_deliveries=sf.deep_max_deliveries,
+    )
+
+    async def reader(body: Any) -> None:
+        await deep_consumer_for().consume(body)
+
+    reader.__name__ = "safety_deep_reader"
+    broker.subscriber(
+        stream=StreamSub(
+            sf.deep_stream,
+            group="safety-deep",
+            consumer=f"safety-deep-{consumer_suffix}",
+            max_records=sf.deep_batch_size,
+            polling_interval=sf.deep_block_ms,
+        )
+    )(reader)
+
+    async def claimer(body: Any, msg: RedisMessage, redis: Redis) -> None:
+        message_id = _first_message_id(msg)
+        if message_id and await guard.intercept(redis, message_id, body):
+            return
+        await deep_consumer_for().consume(body)
+
+    claimer.__name__ = "safety_deep_claimer"
+    broker.subscriber(
+        stream=StreamSub(
+            sf.deep_stream,
+            group="safety-deep",
+            consumer=f"safety-deep-{consumer_suffix}-claim",
+            min_idle_time=sf.deep_claim_idle_ms,
+            polling_interval=sf.deep_block_ms,
+        )
+    )(claimer)
+
+
 def _register_meta_image(
     broker: RedisBroker,
     mt: Any,
@@ -714,6 +823,12 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
     # Safety analysis rides its own stream; with queue Redis absent the app
     # analyzes inline and the worker has nothing to consume.
     run_safety = settings.safety.enabled and bool(ce.queue_redis_uri)
+    # The investigation consumer registers only when the deep tier AND the
+    # LLM capability are both on; the deep runtime build (which needs the
+    # http client + feed repo) short-circuits the investigator otherwise.
+    run_safety_deep = (
+        run_safety and settings.safety.deep_enabled and settings.llm.enabled
+    )
     # The scheduler rides along when the worker runs for other reasons; it
     # never justifies booting a worker by itself (auto resolves to embedded
     # in worker-less deploys — see SchedulerSettings).
@@ -765,6 +880,12 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
             raise RuntimeError("worker runtime not initialised")
         return runtime.safety_consumer
 
+    def deep_consumer_for() -> DeepAnalysisConsumer:
+        runtime = runtime_holder.get("runtime")
+        if runtime is None or runtime.deep_consumer is None:  # pragma: no cover
+            raise RuntimeError("worker runtime not initialised")
+        return runtime.deep_consumer
+
     consumer_suffix = f"{socket.gethostname()}-{os.getpid()}"
     for group in groups:
         _register_group(broker, ce, group, consumer_suffix, consumer_for)
@@ -778,6 +899,10 @@ def create_worker_app(settings: AppSettings | None = None) -> AsgiFastStream:
         _register_domain_webhooks(broker, ce, consumer_suffix, domain_consumer_for)
     if run_safety:
         _register_safety(broker, settings.safety, consumer_suffix, safety_consumer_for)
+    if run_safety_deep:
+        _register_safety_deep(
+            broker, settings.safety, consumer_suffix, deep_consumer_for
+        )
 
     async def _startup() -> None:
         runtime_holder["runtime"] = await _build_runtime(

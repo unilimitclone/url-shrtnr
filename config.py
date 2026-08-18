@@ -544,6 +544,15 @@ class SafetySettings(BaseSettings):
     deep_max_deliveries: int = Field(default=3, ge=1)
     deep_daily_budget: int = Field(default=200, ge=1)
     deep_admit_sweeps: bool = False
+    # Auto-block policy for a model toxic verdict:
+    #   corroborated — a hard source (report, feed, Web Risk) must agree
+    #                  (default; the model alone goes to review)
+    #   confident    — a high-confidence model verdict blocks alone
+    #   both         — high confidence AND corroboration
+    #   off          — never auto-block; every toxic verdict is reviewed
+    # Graduate from corroborated by measurement (review taps are labels),
+    # not by trusting the model up front.
+    deep_autoblock: Literal["corroborated", "confident", "both", "off"] = "corroborated"
 
     # External feeds. fishfish.gg is free/no-auth and defaults on (within
     # the master switch); its domain set syncs hourly via the scheduler.

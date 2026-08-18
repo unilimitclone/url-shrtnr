@@ -27,24 +27,29 @@ class VerdictRepository(BaseRepository[VerdictDoc]):
         sample_url: str | None = None,
         context: dict | None = None,
         decided_by: str = "system",
+        provenance: dict | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
+        fields = {
+            "registrable_domain": registrable_domain,
+            "tier": tier.value,
+            "reason": reason,
+            "source": source,
+            "trigger": trigger,
+            "sample_url": sample_url,
+            "context": context,
+            "decided_by": decided_by,
+            "updated_at": now,
+        }
+        # Deep-tier provenance (model, prompt_version, classification,
+        # confidence, evidence, egress, corroborated) — merged only when an
+        # investigation produced this verdict, so screening writes stay
+        # untouched.
+        if provenance:
+            fields.update(provenance)
         await self._col.update_one(
             {"host": host},
-            {
-                "$set": {
-                    "registrable_domain": registrable_domain,
-                    "tier": tier.value,
-                    "reason": reason,
-                    "source": source,
-                    "trigger": trigger,
-                    "sample_url": sample_url,
-                    "context": context,
-                    "decided_by": decided_by,
-                    "updated_at": now,
-                },
-                "$setOnInsert": {"created_at": now},
-            },
+            {"$set": fields, "$setOnInsert": {"created_at": now}},
             upsert=True,
         )
 

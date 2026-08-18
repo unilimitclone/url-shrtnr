@@ -412,6 +412,61 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         )
         return int(result.modified_count)
 
+    async def destination_history(self, host: str) -> dict:
+        """First-party history of a destination host — the deep tier's
+        strongest FREE signal. One aggregation over the dest.host index:
+        how many links point here, the anon/owned split, total clicks, and
+        the earliest sighting. All facts we already own; no network."""
+        pipeline = [
+            {"$match": {"dest.host": host}},
+            {
+                "$group": {
+                    "_id": None,
+                    "link_count": {"$sum": 1},
+                    "anon_count": {
+                        "$sum": {
+                            "$cond": [
+                                {"$eq": ["$owner_id", ANONYMOUS_OWNER_ID]},
+                                1,
+                                0,
+                            ]
+                        }
+                    },
+                    "total_clicks": {"$sum": {"$ifNull": ["$total_clicks", 0]}},
+                    "distinct_owners": {"$addToSet": "$owner_id"},
+                    "first_seen": {"$min": "$_id"},
+                    "edited_count": {
+                        "$sum": {"$cond": [{"$ifNull": ["$updated_at", False]}, 1, 0]}
+                    },
+                }
+            },
+        ]
+        docs = await self._aggregate(pipeline)
+        if not docs:
+            return {
+                "link_count": 0,
+                "anon_count": 0,
+                "owned_count": 0,
+                "distinct_owners": 0,
+                "total_clicks": 0,
+                "first_seen": None,
+                "edited_count": 0,
+            }
+        d = docs[0]
+        owners = [o for o in d.get("distinct_owners", []) if o != ANONYMOUS_OWNER_ID]
+        first = d.get("first_seen")
+        return {
+            "link_count": d.get("link_count", 0),
+            "anon_count": d.get("anon_count", 0),
+            "owned_count": d.get("link_count", 0) - d.get("anon_count", 0),
+            "distinct_owners": len(owners),
+            "total_clicks": d.get("total_clicks", 0),
+            "first_seen": (
+                first.generation_time.isoformat() if first is not None else None
+            ),
+            "edited_count": d.get("edited_count", 0),
+        }
+
     async def block_active_by_dest_host(self, host: str, *, reason: str) -> int:
         """Flip every ACTIVE link pointing at *host* to BLOCKED. Returns the
         number of links flipped. Idempotent: already-BLOCKED links no longer

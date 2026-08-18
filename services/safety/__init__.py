@@ -9,8 +9,10 @@ review embed. Detection computes once per destination host; the redirect
 path only ever reads stored state.
 """
 
+from infrastructure.browser_run import BrowserRunClient
 from services.safety.admission import AdmissionDecision, AdmissionPolicy
 from services.safety.analyzer import SafetyAnalyzer
+from services.safety.deep_consumer import DeepAnalysisConsumer
 from services.safety.enforcer import EnforcementResult, SafetyEnforcer
 from services.safety.events import SAFETY_STREAM, SafetyAnalyzeEvent
 from services.safety.feeds import (
@@ -23,6 +25,13 @@ from services.safety.feeds import (
     ensure_feed_seeds,
     fishfish_sync_task,
     load_shortener_seed,
+)
+from services.safety.investigation import (
+    AutoBlockPolicy,
+    DeepInvestigator,
+    InvestigationVerdict,
+    build_investigate_task,
+    decide_authority,
 )
 from services.safety.policy import PolicyRejection, UrlPolicyService
 from services.safety.providers import (
@@ -44,6 +53,10 @@ from services.safety.sinks import (
     SafetySink,
 )
 from services.safety.sweeps import FeedDeltaSweeper, SweepDeps, build_sweep_tasks
+from services.safety.tools import (
+    InvestigationToolDeps,
+    build_investigation_tools,
+)
 
 __all__ = [
     "FISHFISH_FEED",
@@ -53,14 +66,20 @@ __all__ = [
     "AdmissionDecision",
     "AdmissionPolicy",
     "AnalysisProvider",
+    "AutoBlockPolicy",
     "BlockedPatternProvider",
+    "BrowserRunClient",
     "CreationPatternScorer",
+    "DeepAnalysisConsumer",
     "DeepAnalysisSink",
+    "DeepInvestigator",
     "EnforcementResult",
     "FeedDeltaSweeper",
     "FeedDomainProvider",
     "FishFishClient",
     "InlineSafetySink",
+    "InvestigationToolDeps",
+    "InvestigationVerdict",
     "NullDeepAnalysisSink",
     "NullSafetySink",
     "PolicyRejection",
@@ -77,7 +96,10 @@ __all__ = [
     "WebRiskProvider",
     "build_feed_providers",
     "build_feed_tasks",
+    "build_investigate_task",
+    "build_investigation_tools",
     "build_sweep_tasks",
+    "decide_authority",
     "ensure_feed_seeds",
     "fishfish_sync_task",
     "load_shortener_seed",

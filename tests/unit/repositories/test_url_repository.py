@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bson import ObjectId
 from pymongo.errors import (
     DuplicateKeyError,
     OperationFailure,
@@ -518,3 +519,47 @@ class TestBlockActiveByAliases:
         repo = self._repo(col)
         assert await repo.block_active_by_aliases([], reason="r") == 0
         col.update_many.assert_not_awaited()
+
+
+class TestDestinationHistory:
+    def _repo(self, col):
+        from repositories.url_repository import UrlRepository
+
+        col.name = "urlsV2"
+        return UrlRepository(col)
+
+    @pytest.mark.asyncio
+    async def test_empty_host_returns_zeroed_shape(self):
+        col = make_collection()
+        col.aggregate.return_value.to_list = AsyncMock(return_value=[])
+        hist = await self._repo(col).destination_history("nobody.com")
+        assert hist["link_count"] == 0
+        assert hist["first_seen"] is None
+
+    @pytest.mark.asyncio
+    async def test_splits_anon_and_owned_and_counts_owners(self):
+        from schemas.models.base import ANONYMOUS_OWNER_ID
+
+        col = make_collection()
+        first = ObjectId()
+        col.aggregate.return_value.to_list = AsyncMock(
+            return_value=[
+                {
+                    "link_count": 5,
+                    "anon_count": 3,
+                    "total_clicks": 120,
+                    "distinct_owners": [ANONYMOUS_OWNER_ID, ObjectId(), ObjectId()],
+                    "first_seen": first,
+                    "edited_count": 1,
+                }
+            ]
+        )
+        hist = await self._repo(col).destination_history("busy.com")
+        assert hist["link_count"] == 5
+        assert hist["anon_count"] == 3
+        assert hist["owned_count"] == 2
+        # ANONYMOUS_OWNER_ID is excluded from the distinct-owner count.
+        assert hist["distinct_owners"] == 2
+        assert hist["total_clicks"] == 120
+        assert hist["first_seen"] == first.generation_time.isoformat()
+        assert hist["edited_count"] == 1
