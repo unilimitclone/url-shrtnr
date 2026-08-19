@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -161,3 +162,108 @@ class TestUserRepository:
         col.update_one = AsyncMock(side_effect=ServerSelectionTimeoutError("timed out"))
         with pytest.raises(ServerSelectionTimeoutError):
             await self._repo(col).update(USER_OID, {"$set": {"email_verified": True}})
+
+    # ── Pending deletion ──────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_mark_pending_deletion_sets_status_and_grace_window(self):
+        col = make_collection()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=1))
+        before = datetime.now(timezone.utc)
+
+        ok = await self._repo(col).mark_pending_deletion(USER_OID, grace_days=7)
+
+        assert ok is True
+        query, ops = col.update_one.await_args.args
+        # Guarded transition: only an ACTIVE doc may flip.
+        assert query == {"_id": USER_OID, "status": "ACTIVE"}
+        st = ops["$set"]
+        assert st["status"] == "PENDING_DELETION"
+        assert st["deletion_requested_at"] >= before
+        assert st["deletion_requested_at"].tzinfo is not None
+        assert st["purge_after"] - st["deletion_requested_at"] == timedelta(days=7)
+
+    @pytest.mark.asyncio
+    async def test_mark_pending_deletion_zero_grace_purges_immediately(self):
+        col = make_collection()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=1))
+        assert await self._repo(col).mark_pending_deletion(USER_OID, grace_days=0)
+        _, ops = col.update_one.await_args.args
+        st = ops["$set"]
+        assert st["purge_after"] == st["deletion_requested_at"]
+
+    @pytest.mark.asyncio
+    async def test_mark_pending_deletion_rejected_when_not_active(self):
+        """Already-pending (or INACTIVE) accounts don't match the filter."""
+        col = make_collection()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=0))
+        assert (
+            await self._repo(col).mark_pending_deletion(USER_OID, grace_days=7) is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_restore_flips_pending_to_active_and_clears_fields(self):
+        col = make_collection()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=1))
+
+        ok = await self._repo(col).restore(USER_OID)
+
+        assert ok is True
+        query, ops = col.update_one.await_args.args
+        # Guarded transition: only a PENDING_DELETION doc may flip back.
+        assert query == {"_id": USER_OID, "status": "PENDING_DELETION"}
+        assert ops["$set"] == {"status": "ACTIVE"}
+        assert set(ops["$unset"]) == {"deletion_requested_at", "purge_after"}
+
+    @pytest.mark.asyncio
+    async def test_restore_rejected_when_not_pending(self):
+        col = make_collection()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=0))
+        assert await self._repo(col).restore(USER_OID) is False
+
+    @pytest.mark.asyncio
+    async def test_find_purge_due_query_shape_and_models(self):
+        """Only due PENDING_DELETION docs match; oldest deadline first, capped."""
+        col = make_collection()
+        now = datetime.now(timezone.utc)
+        doc = self._user_doc() | {
+            "status": "PENDING_DELETION",
+            "deletion_requested_at": now - timedelta(days=7),
+            "purge_after": now - timedelta(seconds=1),
+        }
+        cursor = col.find.return_value
+        cursor.to_list = AsyncMock(return_value=[doc])
+
+        due = await self._repo(col).find_purge_due(now=now, limit=25)
+
+        col.find.assert_called_once_with(
+            {"status": "PENDING_DELETION", "purge_after": {"$lte": now}}
+        )
+        cursor.sort.assert_called_once_with("purge_after", 1)
+        cursor.limit.assert_called_once_with(25)
+        cursor.to_list.assert_awaited_once_with(length=25)
+        assert [u.id for u in due] == [USER_OID]
+        assert due[0].purge_after == doc["purge_after"]
+
+    @pytest.mark.asyncio
+    async def test_find_purge_due_empty(self):
+        col = make_collection()
+        assert (
+            await self._repo(col).find_purge_due(
+                now=datetime.now(timezone.utc), limit=25
+            )
+            == []
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_hard_removes_doc(self):
+        col = make_collection()
+        col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))
+        assert await self._repo(col).delete_hard(USER_OID) is True
+        col.delete_one.assert_awaited_once_with({"_id": USER_OID})
+
+    @pytest.mark.asyncio
+    async def test_delete_hard_returns_false_on_miss(self):
+        col = make_collection()
+        col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=0))
+        assert await self._repo(col).delete_hard(USER_OID) is False

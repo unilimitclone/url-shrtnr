@@ -26,6 +26,7 @@ class UserStatus(str, Enum):
 
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"
+    PENDING_DELETION = "PENDING_DELETION"
 
 
 class OAuthAction(str, Enum):
@@ -99,7 +100,7 @@ class UserDoc(MongoBaseModel):
     """
     Document model for the `users` collection.
 
-    status: UserStatus enum (ACTIVE, INACTIVE)
+    status: UserStatus enum (ACTIVE, INACTIVE, PENDING_DELETION)
     plan: UserPlan enum (FREE)
     """
 
@@ -122,3 +123,7 @@ class UserDoc(MongoBaseModel):
     # HDYHAU attribution, captured once at onboarding completion.
     heard_from: str | None = None
     status: UserStatus = UserStatus.ACTIVE
+    # Account deletion (GDPR erasure): both set on PENDING_DELETION, both
+    # cleared on restore. Null on every account that never requested deletion.
+    deletion_requested_at: datetime | None = None
+    purge_after: datetime | None = None

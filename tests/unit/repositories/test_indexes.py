@@ -65,6 +65,12 @@ class TestEnsureIndexes:
 
         # Check a few critical indexes
         users_col.create_index.assert_any_await([("email", 1)], unique=True)
+        # Erasure sweep: partial — holds only PENDING_DELETION docs.
+        users_col.create_index.assert_any_await(
+            [("status", 1), ("purge_after", 1)],
+            name="pending_deletion_sweep",
+            partialFilterExpression={"status": "PENDING_DELETION"},
+        )
         urls_v2_col.create_index.assert_any_await(
             [("owner_id", 1)],
             name="owner_claimed",

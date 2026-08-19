@@ -37,6 +37,13 @@ async def ensure_indexes(
         sparse=True,
     )
     await users_col.create_index([("auth_providers.provider", 1)])
+    # THE erasure sweep's whole query shape. Partial — holds only
+    # PENDING_DELETION docs, so it stays tiny at any account count.
+    await users_col.create_index(
+        [("status", 1), ("purge_after", 1)],
+        name="pending_deletion_sweep",
+        partialFilterExpression={"status": "PENDING_DELETION"},
+    )
 
     # ── urlsV2 ─────────────────────────────────────────────────────────────
     # Per-domain alias namespace via compound unique. Replaces the legacy
