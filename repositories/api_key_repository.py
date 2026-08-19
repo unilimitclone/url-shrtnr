@@ -66,6 +66,14 @@ class ApiKeyRepository(BaseRepository[ApiKeyDoc]):
             {"$set": {"last_used_at": datetime.now(timezone.utc)}},
         )
 
+    async def delete_by_user(self, user_id: ObjectId) -> int:
+        """Hard-delete ALL of a user's API keys, revoked ones included.
+
+        Account-erasure path — the soft ``revoked`` flag is an audit
+        nicety, not something erasure honours. Returns the number deleted.
+        """
+        return await self._delete_many({"user_id": user_id})
+
     async def count_by_user(self, user_id: ObjectId) -> int:
         """Count active (non-revoked) API keys for a user."""
         return await self._count({"user_id": user_id, "revoked": {"$ne": True}})

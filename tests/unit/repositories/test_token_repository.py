@@ -70,3 +70,24 @@ class TestTokenRepository:
         assert query["token_type"] == "email_verify"
         assert "$gte" in query["created_at"]
         assert count == 2
+
+
+class TestTokenRepositoryErasure:
+    def _repo(self, col=None):
+        from repositories.token_repository import TokenRepository
+
+        return TokenRepository(col or make_collection())
+
+    @pytest.mark.asyncio
+    async def test_delete_by_user_or_email_matches_either(self):
+        col = make_collection()
+        result = MagicMock()
+        result.deleted_count = 3
+        col.delete_many = AsyncMock(return_value=result)
+        count = await self._repo(col).delete_by_user_or_email(
+            USER_OID, "user@example.com"
+        )
+        col.delete_many.assert_awaited_once_with(
+            {"$or": [{"user_id": USER_OID}, {"email": "user@example.com"}]}
+        )
+        assert count == 3

@@ -8,6 +8,7 @@ shared CRUD helpers.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
 from bson import ObjectId
@@ -217,6 +218,40 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
                 error=str(exc),
             )
             raise
+
+    async def iter_by_owner(self, owner_id: ObjectId) -> AsyncIterator[UrlV2Doc]:
+        """Stream every URL the owner has, across all domains.
+
+        Drives the account-erasure per-link cache/edge purge; the deletion
+        itself is a separate bulk call (two-step like the domain cascade —
+        a cache miss after delete is correct behavior anyway). Refuses the
+        anonymous sentinel, mirroring ``delete_by_owner``.
+        """
+        if not owner_id or owner_id == ANONYMOUS_OWNER_ID:
+            raise ValueError("owner_id must be a real account id")
+        try:
+            async for doc in self._col.find({"owner_id": owner_id}):
+                yield UrlV2Doc.from_mongo(doc)  # type: ignore[misc]
+        except PyMongoError as exc:
+            log.error(
+                "repo_iter_by_owner_failed",
+                collection=self._collection_name,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise
+
+    async def delete_by_owner(self, owner_id: ObjectId) -> int:
+        """Bulk-delete ALL URLs the owner has, across every domain.
+
+        Account-erasure only — unlike the domain-scoped bulk deletes there
+        is deliberately no domain guard. Refuses the anonymous sentinel so
+        a bug can never mass-delete unclaimed links. Returns the number of
+        documents deleted.
+        """
+        if not owner_id or owner_id == ANONYMOUS_OWNER_ID:
+            raise ValueError("owner_id must be a real account id")
+        return await self._delete_many({"owner_id": owner_id})
 
     async def find_by_ids_and_owner(
         self, url_ids: list[ObjectId], owner_id: ObjectId

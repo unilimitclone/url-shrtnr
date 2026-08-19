@@ -95,6 +95,29 @@ class ReportRepository(BaseRepository[None]):
             )
             raise
 
+    async def pull_reporter(self, reporter_id: ObjectId) -> int:
+        """``$pull`` the reporter's id out of every report's ``reporter_ids``.
+
+        Account erasure: the aggregate counters stay (they're anonymous) —
+        only the id linking the user to their reports goes. Returns the
+        number of documents modified.
+        """
+        try:
+            result = await self._col.update_many(
+                {"reporter_ids": reporter_id},
+                {"$pull": {"reporter_ids": reporter_id}},
+            )
+            return result.modified_count
+        except PyMongoError as exc:
+            log.error(
+                "repo_pull_reporter_failed",
+                collection=self._collection_name,
+                reporter_id=str(reporter_id),
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise
+
 
 class ReportSubmissionRepository(BaseRepository[None]):
     """Append-only audit trail — one document per POST /api/v1/reports."""
@@ -103,3 +126,21 @@ class ReportSubmissionRepository(BaseRepository[None]):
         """Insert a submission record. Returns the inserted ``_id``
         (the ``submission_id`` echoed on the wire)."""
         return await self._insert(doc)
+
+    async def delete_by_reporter(
+        self, reporter_id: ObjectId, reporter_email: str
+    ) -> int:
+        """Delete every submission traceable to the reporter (account erasure).
+
+        Matches by id OR by the optional follow-up email, so anonymous
+        submissions that left a contact address go too. Returns the number
+        of documents deleted.
+        """
+        return await self._delete_many(
+            {
+                "$or": [
+                    {"reporter_id": reporter_id},
+                    {"reporter_email": reporter_email},
+                ]
+            }
+        )

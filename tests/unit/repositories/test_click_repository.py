@@ -85,3 +85,25 @@ class TestClickRepository:
         cursor.to_list = AsyncMock(side_effect=ServerSelectionTimeoutError("timed out"))
         with pytest.raises(ServerSelectionTimeoutError):
             await self._repo(col).aggregate([{"$match": {}}])
+
+    # ── Account erasure ───────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_delete_by_owner_uses_metafield_only_predicate(self):
+        col = make_collection()
+        result = MagicMock()
+        result.deleted_count = 7
+        col.delete_many = AsyncMock(return_value=result)
+        count = await self._repo(col).delete_by_owner(USER_OID)
+        # Time-series delete: the predicate MUST stay meta.owner_id-only.
+        col.delete_many.assert_awaited_once_with({"meta.owner_id": USER_OID})
+        assert count == 7
+
+    @pytest.mark.asyncio
+    async def test_delete_by_owner_refuses_anonymous_sentinel(self):
+        from schemas.models.base import ANONYMOUS_OWNER_ID
+
+        col = make_collection()
+        with pytest.raises(ValueError):
+            await self._repo(col).delete_by_owner(ANONYMOUS_OWNER_ID)
+        col.delete_many.assert_not_awaited()

@@ -82,3 +82,16 @@ class TestApiKeyRepository:
             {"user_id": USER_OID, "revoked": {"$ne": True}}
         )
         assert count == 3
+
+    # ── Account erasure ───────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_delete_by_user_hard_deletes_revoked_keys_too(self):
+        col = make_collection()
+        result = MagicMock()
+        result.deleted_count = 2
+        col.delete_many = AsyncMock(return_value=result)
+        count = await self._repo(col).delete_by_user(USER_OID)
+        # No revoked filter — erasure ignores the soft-delete flag.
+        col.delete_many.assert_awaited_once_with({"user_id": USER_OID})
+        assert count == 2

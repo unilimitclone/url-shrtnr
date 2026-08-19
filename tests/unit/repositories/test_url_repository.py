@@ -598,3 +598,58 @@ class TestHostBreadth:
         col.aggregate.return_value.to_list = AsyncMock(return_value=[])
         b = await self._repo(col).host_breadth("nobody.example")
         assert b["total_links"] == 0 and b["sample_urls"] == []
+class TestUrlRepositoryOwnerErasure:
+    """iter_by_owner + delete_by_owner — the account-erasure pair."""
+
+    def _repo(self, col=None):
+        from repositories.url_repository import UrlRepository
+
+        return UrlRepository(col or make_collection())
+
+    @pytest.mark.asyncio
+    async def test_delete_by_owner_deletes_across_domains(self):
+        col = make_collection()
+        result = MagicMock()
+        result.deleted_count = 4
+        col.delete_many = AsyncMock(return_value=result)
+        count = await self._repo(col).delete_by_owner(USER_OID)
+        col.delete_many.assert_awaited_once_with({"owner_id": USER_OID})
+        assert count == 4
+
+    @pytest.mark.asyncio
+    async def test_delete_by_owner_refuses_anonymous_sentinel(self):
+        from schemas.models.base import ANONYMOUS_OWNER_ID
+
+        col = make_collection()
+        with pytest.raises(ValueError):
+            await self._repo(col).delete_by_owner(ANONYMOUS_OWNER_ID)
+        col.delete_many.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_iter_by_owner_streams_models(self):
+        class _Cursor:
+            def __init__(self, docs):
+                self._docs = docs
+
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                for d in self._docs:
+                    yield d
+
+        col = make_collection()
+        col.find = MagicMock(return_value=_Cursor([_url_v2_doc()]))
+        docs = [d async for d in self._repo(col).iter_by_owner(USER_OID)]
+        col.find.assert_called_once_with({"owner_id": USER_OID})
+        assert [d.alias for d in docs] == ["abc1234"]
+
+    @pytest.mark.asyncio
+    async def test_iter_by_owner_refuses_anonymous_sentinel(self):
+        from schemas.models.base import ANONYMOUS_OWNER_ID
+
+        col = make_collection()
+        with pytest.raises(ValueError):
+            async for _ in self._repo(col).iter_by_owner(ANONYMOUS_OWNER_ID):
+                pass
+        col.find.assert_not_called()

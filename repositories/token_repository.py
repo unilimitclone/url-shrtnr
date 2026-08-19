@@ -139,6 +139,17 @@ class TokenRepository(BaseRepository[VerificationTokenDoc]):
             query["app_id"] = app_id
         return await self._delete_many(query)
 
+    async def delete_by_user_or_email(self, user_id: ObjectId, email: str) -> int:
+        """Delete every token tied to the user id OR the email address.
+
+        Account-erasure path: pre-signup flows key tokens by email alone,
+        so an id-only sweep would leave the address behind. Returns the
+        number of documents deleted.
+        """
+        return await self._delete_many(
+            {"$or": [{"user_id": user_id}, {"email": email}]}
+        )
+
     async def count_recent(
         self, user_id: ObjectId, token_type: str, minutes: int = 60
     ) -> int:

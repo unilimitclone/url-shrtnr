@@ -149,3 +149,80 @@ class TestR2StorageClient:
     def test_endpoint_override_for_local_dev(self):
         client, _ = _client(endpoint_url="http://localhost:9000/")
         assert client._endpoint == "http://localhost:9000"
+
+
+class TestSigV4Query:
+    def test_query_string_changes_the_signature(self):
+        common = dict(
+            method="GET",
+            host="acc.r2.cloudflarestorage.com",
+            path="/bucket",
+            payload_hash=hashlib.sha256(b"").hexdigest(),
+            access_key_id="k",
+            secret_access_key="s",
+            now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        plain = sigv4_headers(**common)
+        with_query = sigv4_headers(query="list-type=2&prefix=og%2Fx%2F", **common)
+        assert plain["Authorization"] != with_query["Authorization"]
+        # Deterministic for the same query.
+        again = sigv4_headers(query="list-type=2&prefix=og%2Fx%2F", **common)
+        assert again["Authorization"] == with_query["Authorization"]
+
+
+_LIST_PAGE_1 = """<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <IsTruncated>true</IsTruncated>
+  <NextContinuationToken>tok-1</NextContinuationToken>
+  <Contents><Key>og/pfx/a.png</Key></Contents>
+  <Contents><Key>og/pfx/b.png</Key></Contents>
+</ListBucketResult>"""
+
+_LIST_PAGE_2 = """<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult>
+  <IsTruncated>false</IsTruncated>
+  <Contents><Key>og/pfx/c.png</Key></Contents>
+</ListBucketResult>"""
+
+
+class TestR2ListKeys:
+    @pytest.mark.asyncio
+    async def test_list_keys_paginates_with_continuation_token(self):
+        client, http = _client()
+        page1 = MagicMock(status_code=200, text=_LIST_PAGE_1)
+        page2 = MagicMock(status_code=200, text=_LIST_PAGE_2)
+        http.request = AsyncMock(side_effect=[page1, page2])
+
+        keys = await client.list_keys("og/pfx/")
+
+        assert keys == ["og/pfx/a.png", "og/pfx/b.png", "og/pfx/c.png"]
+        first_target = http.request.await_args_list[0].args[1]
+        assert first_target == (
+            "https://acc.r2.cloudflarestorage.com/og-images"
+            "?list-type=2&prefix=og%2Fpfx%2F"
+        )
+        second_target = http.request.await_args_list[1].args[1]
+        assert "continuation-token=tok-1" in second_target
+
+    @pytest.mark.asyncio
+    async def test_list_keys_empty_result(self):
+        client, http = _client()
+        empty = MagicMock(
+            status_code=200,
+            text="<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>",
+        )
+        http.request = AsyncMock(return_value=empty)
+        assert await client.list_keys("og/none/") == []
+
+    @pytest.mark.asyncio
+    async def test_list_keys_failure_raises(self):
+        client, _ = _client(status=403)
+        with pytest.raises(R2StorageError):
+            await client.list_keys("og/pfx/")
+
+    @pytest.mark.asyncio
+    async def test_list_keys_transport_error_raises(self):
+        client, http = _client()
+        http.request.side_effect = RuntimeError("conn reset")
+        with pytest.raises(R2StorageError):
+            await client.list_keys("og/pfx/")

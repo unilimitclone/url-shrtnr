@@ -212,3 +212,16 @@ class TestTouchLastUsed:
         col.update_one = AsyncMock(side_effect=PyMongoError("fail"))
         with pytest.raises(PyMongoError):
             await _repo(col).touch_last_used(USER_OID, _APP_ID)
+
+
+class TestDeleteByUser:
+    @pytest.mark.asyncio
+    async def test_hard_deletes_revoked_grants_too(self):
+        col = make_collection()
+        result = MagicMock()
+        result.deleted_count = 3
+        col.delete_many = AsyncMock(return_value=result)
+        count = await _repo(col).delete_by_user(USER_OID)
+        # No revoked_at filter — erasure ignores the soft-delete flag.
+        col.delete_many.assert_awaited_once_with({"user_id": USER_OID})
+        assert count == 3

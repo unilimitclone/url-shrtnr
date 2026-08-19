@@ -62,6 +62,13 @@ class WebhookDeliveryRepository(BaseRepository[WebhookDeliveryDoc]):
         docs = await cursor.to_list(length=page_size)
         return [WebhookDeliveryDoc.from_mongo(d) for d in docs], total
 
+    async def delete_by_user(self, user_id: ObjectId) -> int:
+        """Delete every delivery row for the user (account erasure).
+
+        Returns the number of documents deleted.
+        """
+        return await self._delete_many({"user_id": user_id})
+
     # ── Executor surface ─────────────────────────────────────────────────
 
     async def claim_due(self, *, lease_seconds: int = 60) -> WebhookDeliveryDoc | None:

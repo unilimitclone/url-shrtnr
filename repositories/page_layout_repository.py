@@ -49,3 +49,10 @@ class PageLayoutRepository(BaseRepository[PageLayoutDoc]):
     async def delete(self, user_id: ObjectId, page: str) -> bool:
         """Remove the layout override; True if a document was deleted."""
         return await self._delete({"user_id": user_id, "page": page})
+
+    async def delete_by_user(self, user_id: ObjectId) -> int:
+        """Delete every saved layout for the user (account erasure).
+
+        Returns the number of documents deleted.
+        """
+        return await self._delete_many({"user_id": user_id})
