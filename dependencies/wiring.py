@@ -20,9 +20,11 @@ from infrastructure.cache.web_risk_budget import WebRiskBudget
 from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.cloudflare_client import CloudflareClient
 from infrastructure.cloudflare_kv import CloudflareKVClient
+from infrastructure.email.zeptomail import ZeptoMailProvider
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from infrastructure.ops_notify import DiscordOpsNotifier
+from infrastructure.posthog_erasure import HttpPostHogEraser
 from infrastructure.storage.r2 import R2StorageClient
 from infrastructure.web_risk import (
     DISPLAY_THREAT_TYPES,
@@ -56,6 +58,10 @@ from schemas.enums.domain_status import VerificationMethod
 from services.account_deletion_service import AccountDeletionService
 from services.account_erasure_service import (
     AccountErasureService,
+    ErasureMailer,
+    NoopErasureMailer,
+    NoopPostHogEraser,
+    PostHogEraser,
     erasure_sweep_task,
 )
 from services.api_key_service import ApiKeyService
@@ -178,6 +184,42 @@ def build_click_service(
     )
 
 
+def build_erasure_mailer(
+    settings: AppSettings,
+    http_client,
+    email_provider: ZeptoMailProvider | None = None,
+) -> ErasureMailer:
+    """Deletion lifecycle mail: ZeptoMail when configured, Noop otherwise.
+
+    The app process passes its existing ``email_provider`` singleton (one
+    Jinja environment, one client); the worker passes None and gets a
+    fresh provider. Unconfigured token ⇒ Noop, so the deletion paths never
+    log per-send "token_not_configured" errors on mail-less deployments.
+    """
+    if not settings.email.zepto_api_token:
+        return NoopErasureMailer()
+    return email_provider or ZeptoMailProvider(
+        settings.email, http_client, app_url=settings.app_url
+    )
+
+
+def build_posthog_eraser(settings: AppSettings, http_client) -> PostHogEraser:
+    """PostHog person deletion: HTTP eraser when configured, Noop otherwise.
+
+    Env-gated on POSTHOG_ERASURE_API_KEY + POSTHOG_ERASURE_PROJECT_ID —
+    self-hosts without PostHog skip the step entirely.
+    """
+    ph = settings.posthog_erasure
+    if not ph.enabled:
+        return NoopPostHogEraser()
+    return HttpPostHogEraser(
+        http_client,
+        api_key=ph.api_key,
+        project_id=ph.project_id,
+        host=ph.host,
+    )
+
+
 def build_account_erasure_service(
     db,
     settings: AppSettings,
@@ -297,6 +339,8 @@ def build_account_erasure_service(
         ReportSubmissionRepository(db["report_submissions"]),
         FeatureFlagRepository(db["feature_flags"]),
         r2_storage=r2_storage,
+        posthog=build_posthog_eraser(settings, http_client),
+        mailer=build_erasure_mailer(settings, http_client),
         key_secret=settings.secret_key,
         batch_limit=settings.account_erasure_batch_limit,
     )
@@ -706,11 +750,15 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         account_password_min_length=settings.account_password_min_length,
         account_password_max_length=settings.account_password_max_length,
     )
-    # Deletion intake + grace-period restore. The mailer stays on its Noop
-    # default until Task 5 wires the real templates — same stance as the
-    # erasure cascade below.
+    # Deletion intake + grace-period restore. One mailer instance shared
+    # with the erasure cascade below: the ZeptoMail singleton when the
+    # token is configured, Noop otherwise.
+    erasure_mailer = build_erasure_mailer(
+        settings, http_client, email_provider=app.state.email_provider
+    )
     app.state.account_deletion_service = AccountDeletionService(
         user_repo,
+        mailer=erasure_mailer,
         grace_days=settings.account_deletion_grace_days,
     )
     app.state.verification_service = EmailVerificationService(
@@ -908,8 +956,8 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     # GDPR Art. 17 cascade, driven by the erasure sweep below. Reuses the
     # singletons built above so deletion side effects (cache invalidate,
     # edge purge, CF hostname cascade, R2 sweep) match the interactive
-    # paths exactly. PostHog/mailer stay on their Noop defaults until the
-    # real integrations land.
+    # paths exactly. PostHog and the confirmation mail are env-gated —
+    # Noop when their settings are unconfigured.
     account_erasure_service = AccountErasureService(
         user_repo,
         app.state.url_service,
@@ -926,6 +974,8 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         report_submission_repo,
         feature_flag_repo,
         r2_storage=r2_storage,
+        posthog=build_posthog_eraser(settings, http_client),
+        mailer=erasure_mailer,
         key_secret=settings.secret_key,
         batch_limit=settings.account_erasure_batch_limit,
     )

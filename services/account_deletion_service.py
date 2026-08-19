@@ -47,8 +47,8 @@ class AccountDeletionService:
 
     Args:
         user_repo:  Repository for the ``users`` collection.
-        mailer:     Deletion lifecycle mail (Noop until Task 5 wires
-                    the real templates).
+        mailer:     Deletion lifecycle mail (Noop when ZeptoMail is
+                    unconfigured).
         grace_days: Days between the request and the erasure sweep
                     picking the account up (``settings.account_deletion_grace_days``).
     """

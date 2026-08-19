@@ -283,3 +283,27 @@ class TestAccountDeletionSettings:
         with_mongo.setenv("ACCOUNT_ERASURE_BATCH_LIMIT", "0")
         with pytest.raises(PydanticValidationError):
             AppSettings()
+
+
+class TestPostHogErasureSettings:
+    def test_defaults_disabled(self, with_mongo):
+        settings = AppSettings()
+        assert settings.posthog_erasure.api_key == ""
+        assert settings.posthog_erasure.project_id == ""
+        assert settings.posthog_erasure.host == "https://eu.posthog.com"
+        assert settings.posthog_erasure.enabled is False
+
+    def test_enabled_requires_key_and_project(self, with_mongo):
+        with_mongo.setenv("POSTHOG_ERASURE_API_KEY", "phx_secret")
+        assert AppSettings().posthog_erasure.enabled is False
+        with_mongo.setenv("POSTHOG_ERASURE_PROJECT_ID", "12345")
+        assert AppSettings().posthog_erasure.enabled is True
+
+    def test_env_prefix(self, with_mongo):
+        with_mongo.setenv("POSTHOG_ERASURE_API_KEY", "phx_secret")
+        with_mongo.setenv("POSTHOG_ERASURE_PROJECT_ID", "12345")
+        with_mongo.setenv("POSTHOG_ERASURE_HOST", "https://us.posthog.com")
+        settings = AppSettings()
+        assert settings.posthog_erasure.api_key == "phx_secret"
+        assert settings.posthog_erasure.project_id == "12345"
+        assert settings.posthog_erasure.host == "https://us.posthog.com"

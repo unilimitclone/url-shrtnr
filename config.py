@@ -87,6 +87,30 @@ class EmailSettings(BaseSettings):
     zepto_from_name: str = "spoo.me"
 
 
+class PostHogErasureSettings(BaseSettings):
+    """PostHog person deletion for the account-erasure cascade (GDPR Art. 17).
+
+    Off unless both ``api_key`` and ``project_id`` are set — the cascade
+    then skips the step via the Noop eraser. The key is a personal API key
+    with person-deletion scope, NOT the public project key. Env vars
+    prefixed ``POSTHOG_ERASURE_`` (same convention as ``R2_``).
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="POSTHOG_ERASURE_",
+    )
+
+    api_key: str = ""
+    project_id: str = ""
+    host: str = "https://eu.posthog.com"
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key and self.project_id)
+
+
 class LoggingSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -806,6 +830,7 @@ class AppSettings(BaseSettings):
     safety: SafetySettings | None = None
     scheduler: SchedulerSettings | None = None
     llm: LlmSettings | None = None
+    posthog_erasure: PostHogErasureSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -853,6 +878,8 @@ class AppSettings(BaseSettings):
             self.safety = SafetySettings()
         if self.scheduler is None:
             self.scheduler = SchedulerSettings()
+        if self.posthog_erasure is None:
+            self.posthog_erasure = PostHogErasureSettings()
         if self.webhooks.enabled and not self.secret_key:
             # Signing secrets are encrypted with a key derived from
             # SECRET_KEY; an empty master would mean a predictable key.
