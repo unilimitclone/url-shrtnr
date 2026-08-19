@@ -31,6 +31,8 @@ FIRST_PARTY_CLIENTS = frozenset(
         "sdk-py",
         "sdk-go",
         "sdk-rust",
+        "sdk-kotlin",
+        "app-android",
     }
 )
 
