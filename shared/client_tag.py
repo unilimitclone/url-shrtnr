@@ -29,6 +29,7 @@ FIRST_PARTY_CLIENTS = frozenset(
         "bot",
         "sdk-ts",
         "sdk-py",
+        "sdk-go",
         "sdk-rust",
     }
 )
