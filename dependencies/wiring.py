@@ -53,6 +53,10 @@ from repositories.webhook_delivery_repository import WebhookDeliveryRepository
 from repositories.webhook_endpoint_repository import WebhookEndpointRepository
 from repositories.webhook_event_repository import WebhookEventRepository
 from schemas.enums.domain_status import VerificationMethod
+from services.account_erasure_service import (
+    AccountErasureService,
+    erasure_sweep_task,
+)
 from services.api_key_service import ApiKeyService
 from services.auth.credentials import CredentialService
 from services.auth.device import DeviceAuthService
@@ -170,6 +174,130 @@ def build_click_service(
             "v2": V2ClickHandler(click_repo, url_repo, geoip, url_cache, events=events),
             "v1": LegacyClickHandler(legacy_repo, emoji_repo, geoip),
         }
+    )
+
+
+def build_account_erasure_service(
+    db,
+    settings: AppSettings,
+    http_client,
+    redis_client,
+) -> AccountErasureService:
+    """Erasure cascade for the click worker's scheduler runtime.
+
+    The app process wires ``AccountErasureService`` from the singletons in
+    ``wire_services``; the worker has no ``app.state``, so this composes an
+    erasure-grade graph from primitives. Every deletion side effect (URL
+    cache invalidate, edge-KV purge / og write-through removal, CF custom
+    hostname cascade, R2 sweep) is wired identically to the app — creation-
+    side deps (captcha, meta sinks, event fanout) are irrelevant to deletes
+    and stay off. ``redis_client`` may be None: cache invalidation then
+    degrades to no-ops, same as everywhere else in the worker.
+    """
+    url_cache = UrlCache(redis_client, ttl_seconds=settings.redis.redis_ttl_seconds)
+
+    edge = settings.edge_cache
+    edge_kv_client = None
+    og_writethrough = None
+    if edge.enabled:
+        edge_kv_client = CloudflareKVClient(
+            http_client=http_client,
+            api_token=edge.cf_api_token,
+            account_id=edge.cf_account_id,
+            namespace_id=edge.kv_namespace_id,
+            api_base=edge.api_base,
+            api_host_header=edge.api_host_header,
+        )
+        og_writethrough = OgEdgeWritethrough(
+            edge_kv_client,
+            system_domain=settings.system_default_domain,
+            ttl_seconds=edge.og_ttl_seconds,
+        )
+
+    r2 = settings.r2
+    r2_storage = None
+    if r2.enabled:
+        r2_storage = R2StorageClient(
+            http_client=http_client,
+            account_id=r2.account_id,
+            access_key_id=r2.access_key_id,
+            secret_access_key=r2.secret_access_key,
+            bucket=r2.bucket,
+            public_base_url=r2.public_base_url,
+            endpoint_url=r2.endpoint_url,
+            request_timeout_seconds=r2.request_timeout_seconds,
+        )
+
+    url_service = UrlService(
+        UrlRepository(db["urlsV2"]),
+        LegacyUrlRepository(db["urls"]),
+        EmojiUrlRepository(db["emojis"]),
+        BlockedUrlRepository(db["blocked-urls"]),
+        url_cache,
+        settings.blocked_self_domains,
+        system_default_domain=settings.system_default_domain,
+        og_writethrough=og_writethrough,
+        edge_kv=edge_kv_client,
+        r2_storage=r2_storage,
+        meta_key_secret=settings.secret_key,
+    )
+
+    # Custom-domains stack, mirrored from wire_services: erasure needs the
+    # edge provisioner (announce_revoked) for the CF cascade. Mock backend
+    # under CUSTOM_DOMAINS_MOCK_DCV keeps local stacks CF-free.
+    cd_settings = settings.custom_domains
+    custom_domain_repo = CustomDomainRepository(db["custom_domains"])
+    if cd_settings.mock_dcv:
+        backend = MockDcvBackend(cname_target=cd_settings.cf_cname_target)
+    else:
+        backend = CfSaasBackend(
+            cf_client=CloudflareClient(
+                http_client=http_client,
+                api_token=cd_settings.cf_api_token,
+                zone_id=cd_settings.cf_zone_id,
+                max_retries=cd_settings.cf_api_max_retries,
+                initial_backoff_seconds=cd_settings.cf_api_initial_backoff_seconds,
+            ),
+            custom_domain_repo=custom_domain_repo,
+            cname_target=cd_settings.cf_cname_target,
+            dcv_delegation_target=cd_settings.cf_dcv_delegation_target,
+        )
+    domain_service = CustomDomainService(
+        repo=custom_domain_repo,
+        verifiers={
+            VerificationMethod.CF_DELEGATED_DCV: backend,
+            VerificationMethod.CF_HTTP_DCV: backend,
+        },
+        edge_provisioner=backend,
+        registrar=backend,
+        settings=cd_settings,
+        tenant_resolver=CachedMongoTenantResolver(
+            repo=custom_domain_repo,
+            redis_client=redis_client,
+            system_default_domain=settings.system_default_domain,
+        ),
+        redis_client=redis_client,
+        url_service=url_service,
+    )
+
+    return AccountErasureService(
+        UserRepository(db["users"]),
+        url_service,
+        domain_service,
+        ClickRepository(db["clicks"]),
+        ApiKeyRepository(db["api-keys"]),
+        TokenRepository(db["verification-tokens"]),
+        PageLayoutRepository(db["page-layouts"]),
+        AppGrantRepository(db["app-grants"]),
+        WebhookEndpointRepository(db["webhook-endpoints"]),
+        WebhookEventRepository(db["webhook-events"]),
+        WebhookDeliveryRepository(db["webhook-deliveries"]),
+        ReportRepository(db["reports"]),
+        ReportSubmissionRepository(db["report_submissions"]),
+        FeatureFlagRepository(db["feature_flags"]),
+        r2_storage=r2_storage,
+        key_secret=settings.secret_key,
+        batch_limit=settings.account_erasure_batch_limit,
     )
 
 
@@ -470,55 +598,6 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         redirect_sink=safety_sink if sf_settings.enabled else None,
     )
     app.state.url_policy = url_policy
-    # ── Scheduled tasks ──────────────────────────────────────────────
-    # Mongo-lease runner (see services/scheduler). Same runtime rule as
-    # the webhook executor: embedded in this process when explicitly
-    # requested or (auto) when no worker exists in the deploy — queue
-    # Redis presence is the worker proxy. app.py starts/cancels the task.
-    sch_settings = settings.scheduler
-    # Feature tasks from the safety catalogs: feed syncs (each carrying
-    # the feed-delta sweep) plus the scheduled sweeps.
-    delta_sweeper = FeedDeltaSweeper(url_repo, safety_sink)
-    task_registry = build_task_registry(
-        [
-            *build_feed_tasks(
-                sf_settings, http_client, feed_domain_repo, delta_sweeper
-            ),
-            *build_sweep_tasks(
-                sf_settings,
-                SweepDeps(
-                    url_repo=url_repo,
-                    verdict_repo=verdict_repo,
-                    sink=safety_sink,
-                ),
-            ),
-        ]
-    )
-    app.state.task_scheduler = TaskScheduler(
-        ScheduledTaskRepository(db["scheduled_tasks"]),
-        task_registry,
-        poll_interval=sch_settings.poll_seconds,
-        lease_seconds=sch_settings.lease_seconds,
-    )
-    app.state.task_scheduler_embedded = sch_settings.enabled and (
-        sch_settings.runtime == "embedded"
-        or (sch_settings.runtime == "auto" and queue_redis_for_webhooks is None)
-    )
-    if (
-        sch_settings.enabled
-        and not app.state.task_scheduler_embedded
-        and sch_settings.runtime in ("auto", "worker")
-    ):
-        # The worker only boots for its OWN features, never for the scheduler alone.
-        log.warning(
-            "task_scheduler_delegated_to_worker",
-            runtime=sch_settings.runtime,
-            detail=(
-                "scheduler will only run if a worker process is actually "
-                "deployed; no worker means nothing polls scheduled tasks"
-            ),
-        )
-
     # ── Services ─────────────────────────────────────────────────────────
     app.state.url_service = UrlService(
         url_repo,
@@ -589,10 +668,13 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     )
     # Report intake shares the resolver (existence checks answer from the
     # same generation the redirect serves) and the ops notifier + captcha
-    # already built above for ContactService.
+    # already built above for ContactService. The repos are locals so the
+    # account-erasure cascade below shares the same instances.
+    report_repo = ReportRepository(db["reports"])
+    report_submission_repo = ReportSubmissionRepository(db["report_submissions"])
     app.state.report_intake_service = ReportIntakeService(
-        ReportRepository(db["reports"]),
-        ReportSubmissionRepository(db["report_submissions"]),
+        report_repo,
+        report_submission_repo,
         public_link_resolver,
         url_repo,
         captcha,
@@ -813,3 +895,83 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         else None,
         url_service=app.state.url_service,
     )
+
+    # ── Account erasure ──────────────────────────────────────────────
+    # GDPR Art. 17 cascade, driven by the erasure sweep below. Reuses the
+    # singletons built above so deletion side effects (cache invalidate,
+    # edge purge, CF hostname cascade, R2 sweep) match the interactive
+    # paths exactly. PostHog/mailer stay on their Noop defaults until the
+    # real integrations land.
+    account_erasure_service = AccountErasureService(
+        user_repo,
+        app.state.url_service,
+        app.state.custom_domain_service,
+        click_repo,
+        api_key_repo,
+        token_repo,
+        page_layout_repo,
+        app_grant_repo,
+        webhook_endpoint_repo,
+        webhook_event_repo,
+        webhook_delivery_repo,
+        report_repo,
+        report_submission_repo,
+        feature_flag_repo,
+        r2_storage=r2_storage,
+        key_secret=settings.secret_key,
+        batch_limit=settings.account_erasure_batch_limit,
+    )
+
+    # ── Scheduled tasks ──────────────────────────────────────────────
+    # Mongo-lease runner (see services/scheduler). Same runtime rule as
+    # the webhook executor: embedded in this process when explicitly
+    # requested or (auto) when no worker exists in the deploy — queue
+    # Redis presence is the worker proxy. app.py starts/cancels the task.
+    # Feature tasks are constructed here with their deps closed over; the
+    # click worker registers its own instances (workers/click_worker.py)
+    # so the task exists in whichever process hosts the runner.
+    sch_settings = settings.scheduler
+    # Feature tasks from the safety catalogs (feed syncs, each carrying
+    # the feed-delta sweep, plus the scheduled sweeps) and the account
+    # erasure sweep. One registry — the runner claims only names in it.
+    delta_sweeper = FeedDeltaSweeper(url_repo, safety_sink)
+    task_registry = build_task_registry(
+        [
+            *build_feed_tasks(
+                sf_settings, http_client, feed_domain_repo, delta_sweeper
+            ),
+            *build_sweep_tasks(
+                sf_settings,
+                SweepDeps(
+                    url_repo=url_repo,
+                    verdict_repo=verdict_repo,
+                    sink=safety_sink,
+                ),
+            ),
+            erasure_sweep_task(account_erasure_service),
+        ]
+    )
+    app.state.task_scheduler = TaskScheduler(
+        ScheduledTaskRepository(db["scheduled_tasks"]),
+        task_registry,
+        poll_interval=sch_settings.poll_seconds,
+        lease_seconds=sch_settings.lease_seconds,
+    )
+    app.state.task_scheduler_embedded = sch_settings.enabled and (
+        sch_settings.runtime == "embedded"
+        or (sch_settings.runtime == "auto" and queue_redis_for_webhooks is None)
+    )
+    if (
+        sch_settings.enabled
+        and not app.state.task_scheduler_embedded
+        and sch_settings.runtime in ("auto", "worker")
+    ):
+        # The worker only boots for its OWN features, never for the scheduler alone.
+        log.warning(
+            "task_scheduler_delegated_to_worker",
+            runtime=sch_settings.runtime,
+            detail=(
+                "scheduler will only run if a worker process is actually "
+                "deployed; no worker means nothing polls scheduled tasks"
+            ),
+        )

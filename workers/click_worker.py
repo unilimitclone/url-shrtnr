@@ -46,7 +46,7 @@ from faststream.redis.annotations import Redis, RedisMessage
 from pymongo.asynchronous.mongo_client import AsyncMongoClient
 
 from config import AppSettings, ClickEventsSettings
-from dependencies.wiring import build_click_service
+from dependencies.wiring import build_account_erasure_service, build_click_service
 from infrastructure.cache.redis_client import create_redis_client
 from infrastructure.cache.url_cache import UrlCache
 from infrastructure.cloudflare_kv import CloudflareKVClient
@@ -66,6 +66,7 @@ from repositories.verdict_repository import VerdictRepository
 from repositories.webhook_delivery_repository import WebhookDeliveryRepository
 from repositories.webhook_endpoint_repository import WebhookEndpointRepository
 from repositories.webhook_event_repository import WebhookEventRepository
+from services.account_erasure_service import erasure_sweep_task
 from services.click.consumers import (
     ClickConsumer,
     HotUrlDetector,
@@ -542,6 +543,13 @@ async def _build_runtime(
                     ),
                 )
             )
+        # The erasure sweep must exist in this registry too — a task the
+        # app registers but this process lacks would otherwise sit
+        # unclaimable here (the runner only claims names it knows).
+        erasure_service = build_account_erasure_service(
+            db, settings, runtime.http_client, runtime.cache_redis
+        )
+        feature_tasks.append(erasure_sweep_task(erasure_service))
         scheduler = TaskScheduler(
             ScheduledTaskRepository(db["scheduled_tasks"]),
             build_task_registry(feature_tasks),

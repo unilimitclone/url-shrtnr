@@ -694,6 +694,12 @@ class AppSettings(BaseSettings):
     max_active_api_keys: int = 20
     max_date_range_days: int = 90
     http_client_timeout: float = 5.0
+    # Account deletion (GDPR Art. 17): days between the deletion request
+    # and the erasure sweep purging the account (0 = purge on the next
+    # sweep — integration smoke only), and how many due accounts one
+    # sweep run erases (the */10 cron drains any backlog).
+    account_deletion_grace_days: int = 7
+    account_erasure_batch_limit: int = 25
 
     # Validator constraints (overridable by self-hosters via env vars)
     blocked_url_regex_timeout: float = 0.2
@@ -723,11 +729,20 @@ class AppSettings(BaseSettings):
         "max_emoji_alias_length",
         "emoji_generated_alias_length",
         "geo_rules_max_countries",
+        "account_erasure_batch_limit",
     )
     @classmethod
     def _must_be_positive_int(cls, v: int, info) -> int:
         if v < 1:
             raise ValueError(f"{info.field_name} must be >= 1, got {v}")
+        return v
+
+    @field_validator("account_deletion_grace_days")
+    @classmethod
+    def _grace_days_non_negative(cls, v: int) -> int:
+        # 0 is legal (purge on the next sweep) — negatives are not.
+        if v < 0:
+            raise ValueError(f"account_deletion_grace_days must be >= 0, got {v}")
         return v
 
     @field_validator("emoji_accept_max_version", "emoji_generate_max_version")

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Protocol
 from errors import R2StorageError
 from infrastructure.logging import get_logger
 from services.image_ingest import owner_key_prefix
+from services.scheduler.registry import ScheduledTask
 
 if TYPE_CHECKING:
     from bson import ObjectId
@@ -251,3 +252,19 @@ class AccountErasureService:
             await self._mailer.send_erasure_confirmation(email)
         except Exception as exc:
             log.warning("account_erasure_mail_failed", error=str(exc))
+
+
+# ── Scheduler registration ───────────────────────────────────────────────────
+
+ERASURE_SWEEP_TASK = "account-erasure-sweep"
+_ERASURE_SWEEP_CRON = "*/10 * * * *"
+
+
+def erasure_sweep_task(service: AccountErasureService) -> ScheduledTask:
+    """The sweep's scheduler registration — this module owns the name and
+    cadence so the app wiring and the click worker can never drift. The
+    10-minute cron keeps worst-case latency past ``purge_after`` small and
+    re-drains any backlog the batch limit left behind."""
+    return ScheduledTask(
+        name=ERASURE_SWEEP_TASK, fn=service.sweep, schedule=_ERASURE_SWEEP_CRON
+    )

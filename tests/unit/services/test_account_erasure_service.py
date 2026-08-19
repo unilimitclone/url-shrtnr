@@ -13,11 +13,14 @@ from bson import ObjectId
 
 from errors import R2StorageError
 from services.account_erasure_service import (
+    ERASURE_SWEEP_TASK,
     AccountErasureService,
     NoopErasureMailer,
     NoopPostHogEraser,
+    erasure_sweep_task,
 )
 from services.image_ingest import owner_key_prefix
+from services.scheduler.tasks import build_task_registry
 
 UID = ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")
 UID2 = ObjectId("bbbbbbbbbbbbbbbbbbbbbbbb")
@@ -374,3 +377,23 @@ async def test_sweep_counts_all_successes():
     result = await _service(stubs).sweep()
     assert result == {"erased": 2, "failed": 0}
     assert stubs.user_repo.delete_hard.await_count == 2
+
+
+# ── scheduler registration ───────────────────────────────────────────────────
+
+
+class TestErasureSweepTask:
+    def test_task_shape(self):
+        service = _service(Stubs())
+        task = erasure_sweep_task(service)
+        assert task.name == "account-erasure-sweep"
+        assert task.schedule == "*/10 * * * *"
+        assert task.fn == service.sweep
+
+    def test_registered_in_composed_registry(self):
+        """Mirror of the exact composition wiring and the worker perform."""
+        task = erasure_sweep_task(_service(Stubs()))
+        registry = build_task_registry([task])
+        registered = registry.get(ERASURE_SWEEP_TASK)
+        assert registered is task
+        assert registered.schedule == "*/10 * * * *"

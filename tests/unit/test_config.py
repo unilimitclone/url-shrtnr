@@ -255,3 +255,31 @@ class TestWebhookSettingsGuard:
         monkeypatch.setenv("WEBHOOKS_ENABLED", "true")
         settings = AppSettings(secret_key="a-real-secret")
         assert settings.webhooks.enabled is True
+
+
+class TestAccountDeletionSettings:
+    def test_defaults(self, with_mongo):
+        settings = AppSettings()
+        assert settings.account_deletion_grace_days == 7
+        assert settings.account_erasure_batch_limit == 25
+
+    def test_env_override(self, with_mongo):
+        with_mongo.setenv("ACCOUNT_DELETION_GRACE_DAYS", "30")
+        with_mongo.setenv("ACCOUNT_ERASURE_BATCH_LIMIT", "100")
+        settings = AppSettings()
+        assert settings.account_deletion_grace_days == 30
+        assert settings.account_erasure_batch_limit == 100
+
+    def test_grace_zero_allowed_for_immediate_purge(self, with_mongo):
+        with_mongo.setenv("ACCOUNT_DELETION_GRACE_DAYS", "0")
+        assert AppSettings().account_deletion_grace_days == 0
+
+    def test_negative_grace_days_rejected(self, with_mongo):
+        with_mongo.setenv("ACCOUNT_DELETION_GRACE_DAYS", "-1")
+        with pytest.raises(PydanticValidationError):
+            AppSettings()
+
+    def test_zero_batch_limit_rejected(self, with_mongo):
+        with_mongo.setenv("ACCOUNT_ERASURE_BATCH_LIMIT", "0")
+        with pytest.raises(PydanticValidationError):
+            AppSettings()
