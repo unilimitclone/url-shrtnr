@@ -45,6 +45,7 @@ def test_parse_invalid_is_absent(value):
         ("cli", "cli"),
         ("sdk-ts/1.0.0", "sdk-ts"),
         ("sdk-py/1.0.0", "sdk-py"),
+        ("sdk-rust/0.2.0", "sdk-rust"),
         # well-formed but not first-party: logged, never persisted
         ("whatever", None),
         ("curl/8.0", None),
