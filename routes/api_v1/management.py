@@ -233,9 +233,10 @@ async def delete_url_v1(
 ) -> DeleteUrlResponse:
     """Delete a URL permanently.
 
-    **This action is IRREVERSIBLE.** The URL, its alias, and all associated
-    click analytics data will be permanently deleted. The alias may be reclaimed
-    by another user afterward.
+    **This action is IRREVERSIBLE.** The URL and its alias are permanently
+    deleted, and the alias may be reclaimed by another user afterward.
+    Historical click analytics are not removed; they are erased when the
+    owning account is deleted.
 
     **Authentication**: Required — you must own the URL.
 
