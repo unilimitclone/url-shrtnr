@@ -1344,6 +1344,30 @@ class UrlService:
         )
         return deleted
 
+    async def delete_all_by_owner(self, owner_id: ObjectId) -> int:
+        """Erase every URL the owner has, across ALL domains.
+
+        Account-erasure counterpart of ``delete_all_by_domain`` — no
+        system-default guard here: nuking the user's spoo.me links is the
+        whole point. Per link, mirrors ``delete``'s cache/edge side
+        effects (url_cache invalidate, og write-through removal or edge-KV
+        purge), then one bulk delete. Returns the number deleted.
+        """
+        async for existing in self._url_repo.iter_by_owner(owner_id):
+            await self._url_cache.invalidate(existing.alias, existing.domain)
+            if existing.meta_tags is not None and self._og_writethrough:
+                await self._og_writethrough.remove(existing.domain, existing.alias)
+            else:
+                self._purge_edge_key(existing.domain, existing.alias)
+
+        deleted = await self._url_repo.delete_by_owner(owner_id)
+        log.info(
+            "urls_owner_erased",
+            user_id=str(owner_id),
+            count=deleted,
+        )
+        return deleted
+
     async def list_by_owner(
         self,
         owner_id: ObjectId,

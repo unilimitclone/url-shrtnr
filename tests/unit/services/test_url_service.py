@@ -7,6 +7,7 @@ Tests verify behavior, not implementation details.
 
 from __future__ import annotations
 
+import asyncio
 import time as time_module
 import typing
 from datetime import datetime, timedelta, timezone
@@ -3613,3 +3614,82 @@ class TestUrlServiceClaim:
             (str(mine_id), "already_yours"),
             (str(URL_OID), "claimed"),
         ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestUrlServiceDeleteAllByOwner (account erasure)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _owner_iter(docs):
+    """iter_by_owner is an async generator, not a coroutine — wire a
+    MagicMock returning one."""
+
+    async def gen(_owner_id):
+        for d in docs:
+            yield d
+
+    return MagicMock(side_effect=gen)
+
+
+class TestUrlServiceDeleteAllByOwner:
+    @pytest.mark.asyncio
+    async def test_erases_across_domains_with_per_link_side_effects(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        plain = make_url_v2_doc()
+        tenant = make_url_v2_doc(alias="xyz9876", domain="links.acme.com")
+        url_repo.iter_by_owner = _owner_iter([plain, tenant])
+        url_repo.delete_by_owner = AsyncMock(return_value=2)
+        edge_kv = MagicMock()
+        edge_kv.delete = AsyncMock(return_value=True)
+        svc = make_service(
+            url_repo,
+            legacy_repo,
+            emoji_repo,
+            blocked_url_repo,
+            url_cache,
+            edge_kv=edge_kv,
+        )
+
+        count = await svc.delete_all_by_owner(USER_OID)
+        while svc._edge_purge_tasks:
+            await asyncio.gather(*list(svc._edge_purge_tasks))
+
+        assert count == 2
+        url_repo.delete_by_owner.assert_awaited_once_with(USER_OID)
+        invalidated = [c.args for c in url_cache.invalidate.await_args_list]
+        assert invalidated == [
+            (ALIAS, SYSTEM_DEFAULT_DOMAIN),
+            ("xyz9876", "links.acme.com"),
+        ]
+        # Only the system-default plain link gets an edge-KV purge.
+        edge_kv.delete.assert_awaited_once_with(
+            f"cache:{SYSTEM_DEFAULT_DOMAIN}:{ALIAS}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_og_links_go_through_the_writethrough(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        og_doc = make_url_v2_doc(meta_tags={"title": "T"})
+        url_repo.iter_by_owner = _owner_iter([og_doc])
+        url_repo.delete_by_owner = AsyncMock(return_value=1)
+        og = MagicMock(remove=AsyncMock(), sync=AsyncMock())
+        edge_kv = MagicMock()
+        edge_kv.delete = AsyncMock(return_value=True)
+        svc = make_service(
+            url_repo,
+            legacy_repo,
+            emoji_repo,
+            blocked_url_repo,
+            url_cache,
+            og_writethrough=og,
+            edge_kv=edge_kv,
+        )
+
+        count = await svc.delete_all_by_owner(USER_OID)
+        while svc._edge_purge_tasks:
+            await asyncio.gather(*list(svc._edge_purge_tasks))
+
+        assert count == 1
+        og.remove.assert_awaited_once_with(SYSTEM_DEFAULT_DOMAIN, ALIAS)
+        edge_kv.delete.assert_not_awaited()

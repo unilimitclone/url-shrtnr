@@ -386,6 +386,43 @@ class CustomDomainService:
         refreshed = await self._repo.find_by_id(doc.id)
         return refreshed or doc, urls_deleted
 
+    async def delete_all_for_owner(self, owner_id: ObjectId) -> int:
+        """Erase every domain the owner has — the account-erasure cascade.
+
+        Deliberately NOT gated on ``settings.enabled``: erasure must work
+        even mid-rollback, and takes a raw owner id (there is no
+        authenticated caller by the time the sweep runs). Per domain:
+        cascade-delete its URLs when wired (a no-op after the erasure's
+        owner-wide URL delete), announce edge eviction (best-effort — the
+        doc deletion makes the tenant resolver 404 regardless), invalidate
+        the tenant cache, then hard-delete the doc. Repo failures propagate
+        so the sweep re-queues the whole user. Returns domains removed.
+        """
+        removed = 0
+        while True:
+            page = await self._repo.list_by_owner(owner_id, skip=0, limit=50)
+            if not page:
+                return removed
+            for doc in page:
+                if self._url_service is not None:
+                    await self._url_service.delete_all_by_domain(owner_id, doc.fqdn)
+                if not await self._edge.announce_revoked(doc.fqdn):
+                    log.warning(
+                        "audit.domain.erase_eviction_failed",
+                        fqdn=doc.fqdn,
+                        domain_id=str(doc.id),
+                        owner_id=str(owner_id),
+                    )
+                await self._invalidate_cache(doc.fqdn)
+                await self._repo.delete_by_id(doc.id)
+                removed += 1
+                log.info(
+                    "audit.domain.erased",
+                    fqdn=doc.fqdn,
+                    domain_id=str(doc.id),
+                    owner_id=str(owner_id),
+                )
+
     async def remove_revoked(
         self,
         domain_id: ObjectId,

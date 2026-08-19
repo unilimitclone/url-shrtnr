@@ -1,0 +1,253 @@
+"""Account erasure cascade — GDPR Art. 17 hard delete.
+
+One class, two entry points: ``erase()`` removes a single account from
+every collection and external system that references it; ``sweep()``
+drains the purge queue (the users collection itself — PENDING_DELETION
+docs past their ``purge_after``).
+
+The cascade order is load-bearing: ``email`` and the R2 owner-key prefix
+are captured BEFORE anything is deleted, external systems (R2, PostHog,
+the confirmation mail) run before the user doc dies, and the users
+collection goes LAST — so a crash anywhere re-queues the whole user on
+the next sweep. That makes at-least-once execution safe: every step is a
+``delete_many``/``$pull`` that no-ops on re-run.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Protocol
+
+from errors import R2StorageError
+from infrastructure.logging import get_logger
+from services.image_ingest import owner_key_prefix
+
+if TYPE_CHECKING:
+    from bson import ObjectId
+
+    from infrastructure.storage.r2 import R2StorageClient
+    from repositories.api_key_repository import ApiKeyRepository
+    from repositories.app_grant_repository import AppGrantRepository
+    from repositories.click_repository import ClickRepository
+    from repositories.feature_flag_repository import FeatureFlagRepository
+    from repositories.page_layout_repository import PageLayoutRepository
+    from repositories.report_repository import (
+        ReportRepository,
+        ReportSubmissionRepository,
+    )
+    from repositories.token_repository import TokenRepository
+    from repositories.user_repository import UserRepository
+    from repositories.webhook_delivery_repository import WebhookDeliveryRepository
+    from repositories.webhook_endpoint_repository import WebhookEndpointRepository
+    from repositories.webhook_event_repository import WebhookEventRepository
+    from services.custom_domain_service import CustomDomainService
+    from services.url_service import UrlService
+
+log = get_logger(__name__)
+
+
+class PostHogEraser(Protocol):
+    """Deletes a PostHog person (and their events) by distinct_id."""
+
+    async def delete_person(self, distinct_id: str) -> None: ...
+
+
+class NoopPostHogEraser:
+    """Default when PostHog erasure is unconfigured — nothing to erase."""
+
+    async def delete_person(self, distinct_id: str) -> None:
+        return None
+
+
+class ErasureMailer(Protocol):
+    """Sends the final "your account was erased" confirmation."""
+
+    async def send_erasure_confirmation(self, email: str) -> None: ...
+
+
+class NoopErasureMailer:
+    """Default until the real templates land (Task 5 wires ZeptoMail)."""
+
+    async def send_erasure_confirmation(self, email: str) -> None:
+        return None
+
+
+class AccountErasureService:
+    """Hard-erases one account across every collection that references it.
+
+    Every step is idempotent (``delete_many`` / ``$pull``); the user doc
+    goes last, so at-least-once sweep execution is safe: a crash anywhere
+    re-queues the user for the next sweep.
+    """
+
+    def __init__(
+        self,
+        user_repo: UserRepository,
+        url_service: UrlService,
+        domain_service: CustomDomainService,
+        click_repo: ClickRepository,
+        api_key_repo: ApiKeyRepository,
+        token_repo: TokenRepository,
+        page_layout_repo: PageLayoutRepository,
+        app_grant_repo: AppGrantRepository,
+        webhook_endpoint_repo: WebhookEndpointRepository,
+        webhook_event_repo: WebhookEventRepository,
+        webhook_delivery_repo: WebhookDeliveryRepository,
+        report_repo: ReportRepository,
+        report_submission_repo: ReportSubmissionRepository,
+        feature_flag_repo: FeatureFlagRepository,
+        *,
+        r2_storage: R2StorageClient | None = None,
+        posthog: PostHogEraser | None = None,
+        mailer: ErasureMailer | None = None,
+        key_secret: str = "",
+        batch_limit: int = 25,
+    ) -> None:
+        self._user_repo = user_repo
+        self._url_service = url_service
+        self._domain_service = domain_service
+        self._click_repo = click_repo
+        self._api_key_repo = api_key_repo
+        self._token_repo = token_repo
+        self._page_layout_repo = page_layout_repo
+        self._app_grant_repo = app_grant_repo
+        self._webhook_endpoint_repo = webhook_endpoint_repo
+        self._webhook_event_repo = webhook_event_repo
+        self._webhook_delivery_repo = webhook_delivery_repo
+        self._report_repo = report_repo
+        self._report_submission_repo = report_submission_repo
+        self._feature_flag_repo = feature_flag_repo
+        # None ⇒ no R2 on this deployment; the sweep step counts 0.
+        self._r2_storage = r2_storage
+        self._posthog = posthog or NoopPostHogEraser()
+        self._mailer = mailer or NoopErasureMailer()
+        # HMAC pepper for R2 owner prefixes — same secret the upload paths
+        # key with (settings.secret_key), or the sweep misses everything.
+        self._key_secret = key_secret
+        self._batch_limit = batch_limit
+
+    async def erase(self, user_id: ObjectId) -> dict[str, int]:
+        """Run the full cascade for one account. Returns per-step counts.
+
+        A missing user returns ``{}`` — already erased by a prior attempt.
+        Mongo/R2 failures propagate (the user doc is still there, so the
+        next sweep retries); PostHog and mail failures are swallowed —
+        neither may park an account in PENDING_DELETION forever.
+        """
+        user = await self._user_repo.find_by_id(user_id)
+        if user is None:
+            return {}
+        # Captured BEFORE any deletion: the confirmation mail and the
+        # email-keyed predicates need these after the docs are gone.
+        email = user.email
+        r2_prefix = owner_key_prefix(user_id, self._key_secret)
+
+        counts: dict[str, int] = {}
+        # 1. Links first — per-link cache/edge purge, then bulk delete.
+        counts["urlsV2"] = await self._url_service.delete_all_by_owner(user_id)
+        # 2. Custom domains — CF/edge cascade + doc removal.
+        counts["custom_domains"] = await self._domain_service.delete_all_for_owner(
+            user_id
+        )
+        # 3. Clicks — time-series, metaField-only predicate.
+        counts["clicks"] = await self._click_repo.delete_by_owner(user_id)
+        # 4. Satellites — hard deletes, soft-delete flags ignored.
+        counts["api_keys"] = await self._api_key_repo.delete_by_user(user_id)
+        counts["verification_tokens"] = await self._token_repo.delete_by_user_or_email(
+            user_id, email
+        )
+        counts["page_layouts"] = await self._page_layout_repo.delete_by_user(user_id)
+        counts["app_grants"] = await self._app_grant_repo.delete_by_user(user_id)
+        counts["webhook_endpoints"] = await self._webhook_endpoint_repo.delete_by_user(
+            user_id
+        )
+        counts["webhook_events"] = await self._webhook_event_repo.delete_by_owner(
+            user_id
+        )
+        counts["webhook_deliveries"] = await self._webhook_delivery_repo.delete_by_user(
+            user_id
+        )
+        counts[
+            "report_submissions"
+        ] = await self._report_submission_repo.delete_by_reporter(user_id, email)
+        # 5. Pulls — shared docs stay, the user's identifiers go.
+        counts["reports_pulled"] = await self._report_repo.pull_reporter(user_id)
+        counts["feature_flags_pulled"] = await self._feature_flag_repo.pull_allowlisted(
+            user_id, email
+        )
+        # 6. R2 — profile pictures + og images under the owner prefix.
+        counts["r2_objects"] = await self._sweep_r2(r2_prefix)
+        # 7-8. External systems, then the doc itself — LAST.
+        await self._erase_posthog(user_id)
+        await self._send_confirmation(email)
+        await self._user_repo.delete_hard(user_id)
+
+        # D6: the one compliance record — user_id + counts, never email/IP.
+        log.info("account_erased", user_id=str(user_id), **counts)
+        return counts
+
+    async def sweep(self) -> dict[str, int]:
+        """Erase every account whose purge deadline has passed.
+
+        Per-user failures are isolated: log, count, continue — the failed
+        user stays PENDING_DELETION and the next sweep retries. The batch
+        limit bounds one run; the recurring schedule drains any backlog.
+        """
+        due = await self._user_repo.find_purge_due(
+            now=datetime.now(timezone.utc), limit=self._batch_limit
+        )
+        erased = failed = 0
+        for user in due:
+            try:
+                await self.erase(user.id)
+                erased += 1
+            except Exception:
+                log.exception("account_erase_failed", user_id=str(user.id))
+                failed += 1
+        return {"erased": erased, "failed": failed}
+
+    # ── Internal ────────────────────────────────────────────────────────
+
+    async def _sweep_r2(self, prefix: str) -> int:
+        """Delete every stored object under the owner's key prefix.
+
+        A failed delete RAISES — the user doc must survive so the next
+        sweep retries, instead of orphaning the object forever.
+        """
+        if self._r2_storage is None or not self._r2_storage.is_configured:
+            return 0
+        removed = 0
+        for scope in (f"profile-pictures/{prefix}/", f"og/{prefix}/"):
+            for key in await self._r2_storage.list_keys(scope):
+                if not await self._r2_storage.delete_object(key):
+                    raise R2StorageError(f"erasure could not delete {key}")
+                removed += 1
+        return removed
+
+    async def _erase_posthog(self, user_id: ObjectId) -> None:
+        """Best-effort person deletion — log-and-continue on failure.
+
+        The step is idempotent and PostHog re-runs free on the next sweep
+        only if something ELSE fails after it; an analytics outage must
+        never block the Mongo erasure.
+        """
+        try:
+            await self._posthog.delete_person(str(user_id))
+        except Exception as exc:
+            log.warning(
+                "account_erasure_posthog_failed",
+                user_id=str(user_id),
+                error=str(exc),
+            )
+
+    async def _send_confirmation(self, email: str) -> None:
+        """Best-effort confirmation mail — log-and-continue on failure.
+
+        Propagating would let a mail outage park accounts in
+        PENDING_DELETION past the GDPR deadline — worse than a missed
+        courtesy mail. Never log the address (D6).
+        """
+        try:
+            await self._mailer.send_erasure_confirmation(email)
+        except Exception as exc:
+            log.warning("account_erasure_mail_failed", error=str(exc))

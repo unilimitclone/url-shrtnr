@@ -1139,3 +1139,51 @@ class TestUpdateRouting:
             assert event_name == "audit.domain.routing_updated"
             kwargs = mock_log.info.call_args.kwargs
             assert kwargs["fields"] == ["not_found_redirect"]
+
+
+class TestDeleteAllForOwner:
+    """Account-erasure cascade — raw owner id, no enabled gate."""
+
+    @pytest.mark.asyncio
+    async def test_erases_every_domain_even_when_disabled(self):
+        url_service = MagicMock()
+        url_service.delete_all_by_domain = AsyncMock(return_value=0)
+        svc, repo, _, edge, tenant_resolver = _build_service(
+            enabled=False, url_service=url_service
+        )
+        d1 = _doc(fqdn="links.acme.com", domain_id=ObjectId())
+        d2 = _doc(fqdn="go.acme.com", domain_id=ObjectId())
+        repo.list_by_owner = AsyncMock(side_effect=[[d1, d2], []])
+
+        removed = await svc.delete_all_for_owner(USER_OID)
+
+        assert removed == 2
+        assert repo.delete_by_id.await_count == 2
+        url_service.delete_all_by_domain.assert_any_await(USER_OID, "links.acme.com")
+        url_service.delete_all_by_domain.assert_any_await(USER_OID, "go.acme.com")
+        edge.announce_revoked.assert_any_await("links.acme.com")
+        tenant_resolver.invalidate.assert_any_await("go.acme.com")
+
+    @pytest.mark.asyncio
+    async def test_no_domains_is_a_noop(self):
+        svc, repo, _, edge, _ = _build_service()
+        repo.list_by_owner = AsyncMock(return_value=[])
+        assert await svc.delete_all_for_owner(USER_OID) == 0
+        repo.delete_by_id.assert_not_awaited()
+        edge.announce_revoked.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_eviction_does_not_block_erasure(self):
+        svc, repo, _, edge, _ = _build_service()
+        edge.announce_revoked = AsyncMock(return_value=False)
+        repo.list_by_owner = AsyncMock(side_effect=[[_doc()], []])
+        assert await svc.delete_all_for_owner(USER_OID) == 1
+        repo.delete_by_id.assert_awaited_once_with(DOMAIN_OID)
+
+    @pytest.mark.asyncio
+    async def test_repo_failure_propagates(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.list_by_owner = AsyncMock(side_effect=[[_doc()], []])
+        repo.delete_by_id = AsyncMock(side_effect=RuntimeError("mongo down"))
+        with pytest.raises(RuntimeError):
+            await svc.delete_all_for_owner(USER_OID)
