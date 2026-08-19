@@ -8,6 +8,7 @@ POST /auth/login
 POST /auth/register
 POST /auth/refresh
 POST /auth/logout
+POST /auth/restore
 GET  /auth/me
 PATCH /auth/me
 POST /auth/set-password
@@ -20,6 +21,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from dependencies import (
+    AccountDeletionSvc,
     AuthUser,
     CredentialSvc,
     JwtConfig,
@@ -34,6 +36,7 @@ from infrastructure.logging import get_logger
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES, PUBLIC_SECURITY
 from middleware.rate_limiter import Limits, limiter
 from routes.cookie_helpers import clear_auth_cookies, set_auth_cookies
+from schemas.dto.requests.account import RestoreAccountRequest
 from schemas.dto.requests.auth import (
     LoginRequest,
     RegisterRequest,
@@ -235,6 +238,41 @@ async def logout(
     """
     clear_auth_cookies(response, jwt_cfg)
     return LogoutResponse(success=True)
+
+
+@router.post(
+    "/auth/restore",
+    responses=ERROR_RESPONSES,
+    openapi_extra=PUBLIC_SECURITY,
+    operation_id="restoreAccount",
+    summary="Restore Account",
+)
+# Tightest account-security budget (3/hour) — an unauthenticated
+# credential check, same guessing surface as a password reset.
+@limiter.limit(Limits.PASSWORD_RESET_REQUEST)
+async def restore_account(
+    request: Request,
+    body: RestoreAccountRequest,
+    deletion_service: AccountDeletionSvc,
+) -> MessageResponse:
+    """Cancel a pending account deletion during the grace period.
+
+    Validates email + password against the account and flips it back to
+    ACTIVE, clearing the purge deadline. Only works while the account is
+    PENDING_DELETION (i.e. before `purge_after` from ``DELETE /api/v1/me``
+    passes); OAuth-only accounts restore via the frontend's OAuth restore
+    flow instead.
+
+    **Authentication**: Not required (public endpoint)
+
+    **Rate Limits**: 3/hour
+
+    **Security**: Returns a uniform 403 for wrong credentials, unknown
+    email, and accounts not pending deletion — prevents account
+    enumeration and state probing.
+    """
+    await deletion_service.restore(body.email, body.password)
+    return MessageResponse(success=True, message="account restored")
 
 
 @router.get(

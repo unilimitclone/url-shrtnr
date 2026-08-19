@@ -61,13 +61,21 @@ class NoopPostHogEraser:
 
 
 class ErasureMailer(Protocol):
-    """Sends the final "your account was erased" confirmation."""
+    """Deletion lifecycle mail: the grace-period notice and the final
+    "your account was erased" confirmation."""
+
+    async def send_deletion_requested(
+        self, email: str, purge_after: datetime
+    ) -> None: ...
 
     async def send_erasure_confirmation(self, email: str) -> None: ...
 
 
 class NoopErasureMailer:
     """Default until the real templates land (Task 5 wires ZeptoMail)."""
+
+    async def send_deletion_requested(self, email: str, purge_after: datetime) -> None:
+        return None
 
     async def send_erasure_confirmation(self, email: str) -> None:
         return None

@@ -42,6 +42,7 @@ def make_user_doc(
     email_verified=True,
     password_set=False,
     auth_providers=None,
+    status="ACTIVE",
 ):
     doc: dict[str, Any] = {
         "_id": oid,
@@ -53,7 +54,7 @@ def make_user_doc(
         "pfp": None,
         "auth_providers": auth_providers or [],
         "plan": "free",
-        "status": "ACTIVE",
+        "status": status,
         "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
         "updated_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
     }
@@ -143,6 +144,50 @@ class TestHandleCallbackExistingOAuthUser:
             issuer=settings.jwt_issuer,
         )
         assert payload["amr"] == ["github"]
+
+
+# ── handle_callback: pending-deletion accounts are blocked ───────────────────
+
+
+class TestHandleCallbackPendingDeletion:
+    @pytest.mark.asyncio
+    async def test_existing_oauth_user_login_blocked_when_pending_deletion(self):
+        from errors import AccountPendingDeletionError
+
+        svc = make_oauth_service()
+        user = make_user_doc(status="PENDING_DELETION")
+        svc._user_repo.find_by_oauth_provider.return_value = user
+
+        with pytest.raises(AccountPendingDeletionError) as exc_info:
+            await svc.handle_callback(
+                provider_key="google",
+                provider_info=make_provider_info(),
+                action="login",
+                state_data={"action": "login"},
+            )
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.error_code == "ACCOUNT_PENDING_DELETION"
+        # No auto-restore, no session bookkeeping — the account is untouched.
+        svc._user_repo.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auto_link_blocked_when_pending_deletion(self):
+        from errors import AccountPendingDeletionError
+
+        svc = make_oauth_service()
+        svc._user_repo.find_by_oauth_provider.return_value = None
+        svc._user_repo.find_by_email.return_value = make_user_doc(
+            status="PENDING_DELETION"
+        )
+
+        with pytest.raises(AccountPendingDeletionError):
+            await svc.handle_callback(
+                provider_key="google",
+                provider_info=make_provider_info(email_verified=True),
+                action="login",
+                state_data={"action": "login"},
+            )
+        svc._user_repo.update.assert_not_awaited()
 
 
 # ── handle_callback: new user (flow 4) ───────────────────────────────────────

@@ -100,6 +100,17 @@ class EmailNotVerifiedError(ForbiddenError):
         return d
 
 
+class AccountPendingDeletionError(ForbiddenError):
+    """Login attempted against an account scheduled for erasure.
+
+    The uppercase slug rides the ``X-Error-Code`` header (error-pages
+    contract), so the frontend can branch to the restore flow instead of
+    rendering a generic 403.
+    """
+
+    error_code = "ACCOUNT_PENDING_DELETION"
+
+
 class NotFoundError(AppError):
     status_code = 404
     error_code = "not_found"

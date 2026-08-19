@@ -1,4 +1,5 @@
 """
+DELETE /api/v1/me                — request account deletion (grace period)
 GET    /api/v1/me/features       — per-account feature availability
 GET    /api/v1/me/layouts/{page} — fetch the saved dashboard layout (null = default)
 PUT    /api/v1/me/layouts/{page} — save the layout document verbatim
@@ -20,14 +21,22 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Path, Request
 
-from dependencies import FeatureFlagSvc, JwtUser, PageLayoutSvc, ProfilePictureSvc
+from dependencies import (
+    AccountDeletionSvc,
+    FeatureFlagSvc,
+    JwtUser,
+    PageLayoutSvc,
+    ProfilePictureSvc,
+)
 from middleware.openapi import AUTH_RESPONSES
 from middleware.rate_limiter import Limits, limiter
+from schemas.dto.requests.account import DeleteAccountRequest
 from schemas.dto.requests.layouts import PutLayoutRequest
 from schemas.dto.requests.profile_pictures import (
     SetProfilePictureRequest,
     UploadProfilePictureRequest,
 )
+from schemas.dto.responses.account import AccountDeletionResponse
 from schemas.dto.responses.features import FeaturesResponse
 from schemas.dto.responses.layouts import LayoutResponse
 from schemas.dto.responses.profile_pictures import (
@@ -36,6 +45,50 @@ from schemas.dto.responses.profile_pictures import (
 )
 
 router = APIRouter(prefix="/me", tags=["Me"])
+
+
+@router.delete(
+    "",
+    responses=AUTH_RESPONSES,
+    operation_id="deleteMyAccount",
+    summary="Delete Account",
+)
+# Tightest account-security budget in the file (ties RESEND_VERIFICATION's
+# hourly cap): the re-auth body makes this endpoint a password oracle.
+@limiter.limit(Limits.PASSWORD_RESET_REQUEST)
+async def delete_my_account(
+    request: Request,
+    body: DeleteAccountRequest,
+    user: JwtUser,
+    deletion_service: AccountDeletionSvc,
+) -> AccountDeletionResponse:
+    """Request permanent account deletion (GDPR Art. 17).
+
+    Re-authentication is required: accounts with a password send
+    ``password``; OAuth-only accounts confirm by typing their exact
+    account email as ``confirm_email``. On success the account enters a
+    grace period (7 days by default) and `purge_after` marks its end —
+    after that instant a background sweep permanently erases the account,
+    its links, and their analytics.
+
+    During the grace period every login is blocked with error code
+    ``ACCOUNT_PENDING_DELETION``; ``POST /auth/restore`` (email +
+    password) cancels the deletion and reactivates the account.
+
+    **Authentication**: Required (JWT only — API keys and app tokens
+    cannot delete the account)
+
+    **Rate Limits**: 3/hour
+
+    **Errors**: 403 when re-authentication fails (never says which field
+    was wrong), 409 when deletion is already pending.
+    """
+    purge_after = await deletion_service.request_deletion(
+        user.user_id,
+        password=body.password,
+        confirm_email=body.confirm_email,
+    )
+    return AccountDeletionResponse(purge_after=purge_after)
 
 
 @router.get(

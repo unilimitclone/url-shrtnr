@@ -53,6 +53,7 @@ from dependencies.infra import (
     get_settings,
 )
 from dependencies.services import (
+    AccountDeletionSvc,
     ApiKeySvc,
     AppGrantRepo,
     BulkUrlSvc,
@@ -78,6 +79,7 @@ from dependencies.services import (
     VerificationSvc,
     WebhookSvc,
     fetch_user_profile,
+    get_account_deletion_service,
     get_api_key_service,
     get_app_grant_repo,
     get_bulk_url_service,
@@ -112,6 +114,7 @@ __all__ = [
     "URL_MANAGEMENT_SCOPES",
     "URL_READ_SCOPES",
     # services (aliases)
+    "AccountDeletionSvc",
     "ApiKeySvc",
     "AppGrantRepo",
     # infra
@@ -155,6 +158,7 @@ __all__ = [
     "check_credential_scopes",
     # services (getters)
     "fetch_user_profile",
+    "get_account_deletion_service",
     "get_api_key_service",
     "get_app_grant_repo",
     "get_app_registry",

@@ -53,6 +53,7 @@ from repositories.webhook_delivery_repository import WebhookDeliveryRepository
 from repositories.webhook_endpoint_repository import WebhookEndpointRepository
 from repositories.webhook_event_repository import WebhookEventRepository
 from schemas.enums.domain_status import VerificationMethod
+from services.account_deletion_service import AccountDeletionService
 from services.account_erasure_service import (
     AccountErasureService,
     erasure_sweep_task,
@@ -704,6 +705,13 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         token_factory,
         account_password_min_length=settings.account_password_min_length,
         account_password_max_length=settings.account_password_max_length,
+    )
+    # Deletion intake + grace-period restore. The mailer stays on its Noop
+    # default until Task 5 wires the real templates — same stance as the
+    # erasure cascade below.
+    app.state.account_deletion_service = AccountDeletionService(
+        user_repo,
+        grace_days=settings.account_deletion_grace_days,
     )
     app.state.verification_service = EmailVerificationService(
         user_repo,
