@@ -300,6 +300,54 @@ def test_shorten_url_blocked_url_returns_403():
     assert "BlockedUrlError" in resp.json()
 
 
+def test_shorten_url_published_policy_message_reaches_the_wire():
+    """A shortener refusal is a PUBLISHED policy: its descriptive message
+    must survive the legacy route instead of collapsing into the opaque
+    malice flag (frozen key names stay)."""
+    from services.safety.feeds import SHORTENER_FEED
+    from services.safety.policy import UrlPolicyService
+    from services.safety.providers import FeedDomainProvider
+
+    db = _mock_db()
+    settings = _mock_settings()
+    url_svc = _mock_url_service()
+
+    app = build_test_app(
+        legacy_url_router,
+        overrides={
+            get_db: lambda: db,
+            get_settings: lambda: settings,
+            get_url_service: lambda: url_svc,
+        },
+    )
+
+    feed_repo = MagicMock()
+    feed_repo.contains = AsyncMock(return_value=True)
+    gate = UrlPolicyService(
+        [
+            FeedDomainProvider(
+                feed_repo, feed=SHORTENER_FEED, reason_label="a link shortener"
+            )
+        ],
+        blocked_self_domains=["spoo.me"],
+        public_messages={
+            f"feed_{SHORTENER_FEED}": "Links to other URL shorteners are not allowed"
+        },
+    )
+    app.dependency_overrides[get_url_policy] = lambda: gate
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/",
+            data={"url": "https://bit.ly/abc"},
+            headers={"Accept": "application/json"},
+        )
+    assert resp.status_code == 403
+    assert resp.json()["BlockedUrlError"] == (
+        "Links to other URL shorteners are not allowed"
+    )
+
+
 def test_shorten_url_invalid_alias_returns_400():
     db = _mock_db()
     settings = _mock_settings()

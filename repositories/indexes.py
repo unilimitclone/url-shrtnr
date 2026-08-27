@@ -86,6 +86,11 @@ async def ensure_indexes(
         await _url_col.create_index(
             [("dest.registrable_domain", 1)], name="dest_registrable", sparse=True
         )
+        # Every enforcement query (block, unblock, eviction-set collection)
+        # is an equality match on dest.host; without this each host block
+        # is six unindexed scans across the three collections, on the box
+        # serving the redirect path.
+        await _url_col.create_index([("dest.host", 1)], name="dest_host", sparse=True)
 
     # ── clicks (time-series) ───────────────────────────────────────────────
     # Create the time-series collection if it doesn't exist yet.

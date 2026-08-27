@@ -114,6 +114,13 @@ def _bracket(ip: str) -> str:
     return f"[{ip}]" if ":" in ip else ip
 
 
+# Public seam: the ONE SSRF resolver. Other outbound callers (the safety
+# evidence tools) reuse these instead of maintaining a second guard that
+# drifts from this one's rebinding/NAT64/multicast rules.
+resolve_public_ip = _resolve_public_ip
+bracket_ip = _bracket
+
+
 async def _read_body(
     resp: httpx.Response, max_bytes: int, truncate_over_cap: bool
 ) -> bytearray:

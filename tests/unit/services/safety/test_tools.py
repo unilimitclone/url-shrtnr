@@ -54,9 +54,11 @@ class TestTrimHtml:
 class TestResolveChain:
     @pytest.mark.asyncio
     async def test_private_address_hop_is_refused(self):
+        from infrastructure.safe_fetch import FetchHardError
+
         with patch(
-            "services.safety.tools._host_is_private_async",
-            AsyncMock(return_value=True),
+            "services.safety.tools.resolve_public_ip",
+            AsyncMock(side_effect=FetchHardError("not public")),
         ):
             out = await resolve_chain_impl("https://internal.example/x")
         assert "refused" in out
@@ -82,8 +84,8 @@ class TestResolveChain:
         client.__aexit__ = AsyncMock(return_value=False)
         with (
             patch(
-                "services.safety.tools._host_is_private_async",
-                AsyncMock(return_value=False),
+                "services.safety.tools.resolve_public_ip",
+                AsyncMock(return_value="93.184.216.34"),
             ),
             patch("services.safety.tools.httpx.AsyncClient", return_value=client),
         ):
@@ -106,8 +108,8 @@ class TestResolveChain:
         client.__aexit__ = AsyncMock(return_value=False)
         with (
             patch(
-                "services.safety.tools._host_is_private_async",
-                AsyncMock(return_value=False),
+                "services.safety.tools.resolve_public_ip",
+                AsyncMock(return_value="93.184.216.34"),
             ),
             patch("services.safety.tools.httpx.AsyncClient", return_value=client),
         ):

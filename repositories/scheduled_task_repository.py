@@ -101,6 +101,14 @@ class ScheduledTaskRepository(BaseRepository[ScheduledTaskDoc]):
             },
         )
 
+    async def release_claim(self, name: str) -> None:
+        """Release a claim without recording a run or re-arming — the
+        yield path for a claimer that cannot execute the task."""
+        await self._col.update_one(
+            {"_id": name},
+            {"$set": {"claimed_until": None}},
+        )
+
     async def invoke_now(self, name: str) -> bool:
         """Run-now invocator. Any caller (ops tooling, tests, future HTTP
         endpoint) schedules an immediate run by arming next_run_at; the
@@ -110,9 +118,6 @@ class ScheduledTaskRepository(BaseRepository[ScheduledTaskDoc]):
             {"$set": {"next_run_at": datetime.now(timezone.utc)}},
         )
         return bool(result.modified_count)
-
-    async def find_by_name(self, name: str) -> ScheduledTaskDoc | None:
-        return await self._find_one({"_id": name})
 
     async def list_names(self) -> set[str]:
         docs = await self._col.find({}, {"_id": 1}).to_list(length=None)

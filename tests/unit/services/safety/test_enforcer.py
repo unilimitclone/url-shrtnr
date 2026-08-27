@@ -35,16 +35,20 @@ def _build(
     edge_kv=None,
 ):
     url_repo = AsyncMock()
-    url_repo.list_active_alias_domain_by_dest_host = AsyncMock(return_value=pairs)
+    url_repo.list_by_dest_host_with_urls = AsyncMock(
+        return_value=[(a, d, f"https://evil.com/{a}") for a, d in pairs]
+    )
     url_repo.list_active_owned_by_dest_host = AsyncMock(return_value=owned)
     url_repo.block_active_by_dest_host = AsyncMock(return_value=blocked_count)
     legacy_repo = AsyncMock()
-    legacy_repo.list_unblocked_ids_by_dest_host = AsyncMock(
-        return_value=legacy_ids or []
+    legacy_repo.list_by_dest_host = AsyncMock(
+        return_value=[(c, f"https://evil.com/{c}") for c in (legacy_ids or [])]
     )
     legacy_repo.block_by_dest_host = AsyncMock(return_value=len(legacy_ids or []))
     emoji_repo = AsyncMock()
-    emoji_repo.list_unblocked_ids_by_dest_host = AsyncMock(return_value=emoji_ids or [])
+    emoji_repo.list_by_dest_host = AsyncMock(
+        return_value=[(a, f"https://evil.com/{a}") for a in (emoji_ids or [])]
+    )
     emoji_repo.block_by_dest_host = AsyncMock(return_value=len(emoji_ids or []))
     url_cache = AsyncMock()
     enforcer = SafetyEnforcer(
@@ -210,7 +214,7 @@ class TestBlockMatching:
         enforcer, url_repo, _url_cache, legacy_repo, emoji_repo = _build(
             [], [], 0, events=events
         )
-        url_repo.list_active_by_dest_host_with_urls = AsyncMock(
+        url_repo.list_by_dest_host_with_urls = AsyncMock(
             return_value=[
                 ("evil1", "spoo.me", "https://sites.google.com/view/evil/a"),
                 ("club", "spoo.me", "https://sites.google.com/view/school-club/x"),
@@ -219,14 +223,14 @@ class TestBlockMatching:
         )
         url_repo.list_active_owned_by_aliases = AsyncMock(return_value=[])
         url_repo.block_active_by_aliases = AsyncMock(return_value=2)
-        legacy_repo.list_unblocked_by_dest_host = AsyncMock(
+        legacy_repo.list_by_dest_host = AsyncMock(
             return_value=[
                 ("old1", "https://sites.google.com/view/evil/c"),
                 ("old2", "https://sites.google.com/view/fine/d"),
             ]
         )
         legacy_repo.block_by_ids = AsyncMock(return_value=1)
-        emoji_repo.list_unblocked_by_dest_host = AsyncMock(return_value=[])
+        emoji_repo.list_by_dest_host = AsyncMock(return_value=[])
         emoji_repo.block_by_ids = AsyncMock(return_value=0)
 
         result = await enforcer.block_matching(
@@ -248,14 +252,14 @@ class TestBlockMatching:
     @pytest.mark.asyncio
     async def test_nothing_matches_is_a_noop(self):
         enforcer, url_repo, _cache, legacy_repo, emoji_repo = _build([], [], 0)
-        url_repo.list_active_by_dest_host_with_urls = AsyncMock(
+        url_repo.list_by_dest_host_with_urls = AsyncMock(
             return_value=[("a", "spoo.me", "https://ok.com/x")]
         )
         url_repo.list_active_owned_by_aliases = AsyncMock(return_value=[])
         url_repo.block_active_by_aliases = AsyncMock(return_value=0)
         legacy_repo.list_unblocked_by_dest_host = AsyncMock(return_value=[])
         legacy_repo.block_by_ids = AsyncMock(return_value=0)
-        emoji_repo.list_unblocked_by_dest_host = AsyncMock(return_value=[])
+        emoji_repo.list_by_dest_host = AsyncMock(return_value=[])
         emoji_repo.block_by_ids = AsyncMock(return_value=0)
 
         result = await enforcer.block_matching(
@@ -263,3 +267,24 @@ class TestBlockMatching:
         )
         assert result.blocked_count == 0
         assert result.legacy_count == 0
+
+
+class TestUnblockHost:
+    @pytest.mark.asyncio
+    async def test_reverses_all_three_collections_and_evicts(self):
+        enforcer, url_repo, url_cache, legacy_repo, emoji_repo = _build(
+            [("abc", "spoo.me")], [], 0, legacy_ids=["old1"], emoji_ids=[]
+        )
+        url_repo.unblock_by_dest_host = AsyncMock(return_value=2)
+        legacy_repo.unblock_by_dest_host = AsyncMock(return_value=1)
+        emoji_repo.unblock_by_dest_host = AsyncMock(return_value=0)
+
+        result = await enforcer.unblock_host("fine.com")
+
+        url_repo.unblock_by_dest_host.assert_awaited_once_with("fine.com")
+        legacy_repo.unblock_by_dest_host.assert_awaited_once_with("fine.com")
+        emoji_repo.unblock_by_dest_host.assert_awaited_once_with("fine.com")
+        # Cached 451s must not keep serving after the reversal.
+        url_cache.invalidate_many.assert_awaited()
+        assert result.blocked_count == 2
+        assert result.legacy_count == 1

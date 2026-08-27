@@ -31,6 +31,7 @@ from repositories.url_repository import UrlRepository
 from routes.legacy.helpers import humanize_number, is_positive_integer
 from shared.emoji_policy import canonicalize_emoji_alias, check_emoji_alias
 from shared.generators import generate_emoji_alias, generate_short_code
+from shared.ip_utils import get_client_ip
 from shared.url_utils import parse_destination, split_destination
 from shared.validators import (
     is_emoji_alias,
@@ -124,7 +125,11 @@ async def shorten_url(
                 },
                 status_code=400,
             )
-        return JSONResponse({"BlockedUrlError": "Blocked URL ⛔"}, status_code=403)
+        # Published policies (the shortener refusal) get their descriptive
+        # message; security blocks keep the coarse default. Frozen key name.
+        return JSONResponse(
+            {"BlockedUrlError": rejection.public_message}, status_code=403
+        )
 
     if alias and not validate_alias(alias):
         if wants_json:
@@ -224,7 +229,11 @@ async def shorten_url(
 
     legacy_repo = LegacyUrlRepository(db["urls"])
     await legacy_repo.insert(short_code, data)
-    await url_policy.record_create(url, request.client.host if request.client else None)
+    # get_client_ip, not request.client.host: behind Caddy + Cloudflare the
+    # socket peer is the proxy, one constant value for every anonymous
+    # create, which would collapse the L1 per-creator counters into a
+    # single always-bursting bucket.
+    await url_policy.record_create(url, get_client_ip(request))
 
     log.info(
         "url_created",
@@ -331,7 +340,7 @@ async def emoji(
                 },
                 status_code=400,
             )
-        return JSONResponse({"UrlError": "Blocked URL ⛔"}, status_code=403)
+        return JSONResponse({"UrlError": rejection.public_message}, status_code=403)
 
     data: dict = {
         "url": url,
@@ -375,7 +384,11 @@ async def emoji(
         data["block-bots"] = True
 
     await emoji_repo.insert(emojies, data)
-    await url_policy.record_create(url, request.client.host if request.client else None)
+    # get_client_ip, not request.client.host: behind Caddy + Cloudflare the
+    # socket peer is the proxy, one constant value for every anonymous
+    # create, which would collapse the L1 per-creator counters into a
+    # single always-bursting bucket.
+    await url_policy.record_create(url, get_client_ip(request))
 
     log.info(
         "url_created",

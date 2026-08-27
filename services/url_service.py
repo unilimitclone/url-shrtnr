@@ -99,7 +99,6 @@ from shared.url_utils import extract_hostname
 from shared.validators import (
     validate_alias,
     validate_blocked_url,
-    validate_url,
 )
 
 log = get_logger(__name__)
@@ -109,21 +108,15 @@ AliasCheckResult = Literal[
 ]
 
 
-def _validate_geo_rules(
+def _validate_geo_rules_shape(
     rules: dict[str, str],
     *,
-    blocked_self_domains: tuple[str, ...],
-    patterns: Sequence[str],
-    timeout: float,
     max_countries: int,
 ) -> None:
-    """Validate a geo_rules map: entry cap, real ISO codes, URL safety.
-
-    Keys are already uppercase-normalised (and deduplicated) by the DTO
-    validator. Every destination URL gets the same two-stage validation as
-    long_url: format/self-link check plus the DB blocklist. Callers fetch
-    the blocklist patterns once and pass them in; ``max_countries`` comes
-    from settings (``geo_rules_max_countries``, self-hoster overridable).
+    """Entry cap + real ISO codes. Destination URL safety is NOT here —
+    every geo target goes through the same ``url_policy.check`` gate as
+    long_url (feeds, shortener refusal and toxic verdicts included), or a
+    clean long_url could ship a blocked destination to one region only.
 
     Raises:
         ValidationError: with field paths like ``geo_rules.IN``.
@@ -133,18 +126,12 @@ def _validate_geo_rules(
             f"geo_rules cannot exceed {max_countries} country entries",
             field="geo_rules",
         )
-    for code, url in rules.items():
+    for code in rules:
         if pycountry.countries.get(alpha_2=code) is None:
             raise ValidationError(
                 f"'{code}' is not a valid ISO 3166-1 alpha-2 country code",
                 field=f"geo_rules.{code}",
             )
-        if not validate_url(url, blocked_self_domains=blocked_self_domains):
-            raise ValidationError(
-                "URL is not allowed or invalid", field=f"geo_rules.{code}"
-            )
-        if not validate_blocked_url(url, patterns, timeout=timeout):
-            raise ValidationError("URL is blocked", field=f"geo_rules.{code}")
 
 
 # ── Field update handlers ────────────────────────────────────────────────────
@@ -317,15 +304,16 @@ async def _handle_geo_rules(
         # read-modify-write PATCH echoing unchanged rules must not 400
         # because a destination entered the blocklist since creation.
         return
-    patterns = await service._blocked_url_repo.get_patterns()
-    await asyncio.to_thread(
-        _validate_geo_rules,
+    _validate_geo_rules_shape(
         request.geo_rules,
-        blocked_self_domains=service._blocked_self_domains,
-        patterns=patterns,
-        timeout=service._blocked_url_regex_timeout,
         max_countries=service._geo_rules_max_countries,
     )
+    for geo_code, geo_url in request.geo_rules.items():
+        rejection = await service._url_policy.check(geo_url)
+        if rejection is not None:
+            raise ValidationError(
+                rejection.public_message, field=f"geo_rules.{geo_code}"
+            )
     ops["geo_rules"] = request.geo_rules
 
 
@@ -819,21 +807,21 @@ class UrlService:
             log.info("url_create_rejected", reason=rejection.code)
             raise ValidationError(rejection.public_message, field="long_url")
 
-        # 2b. Geo rules — every destination gets the same two-stage validation
-        # as long_url. Off the event loop: up to max_countries *
-        # len(patterns) synchronous regex scans, and the blocklist only
-        # grows. (Sync helper, so it takes raw patterns rather than the
-        # async gate — unify when the gate grows a sync façade.)
+        # 2b. Geo rules — every destination runs the FULL gate, same as
+        # long_url, so a clean long_url can never ship a blocked
+        # destination to one targeted region.
         if request.geo_rules:
-            blocked_patterns = await self._blocked_url_repo.get_patterns()
-            await asyncio.to_thread(
-                _validate_geo_rules,
+            _validate_geo_rules_shape(
                 request.geo_rules,
-                blocked_self_domains=self._blocked_self_domains,
-                patterns=blocked_patterns,
-                timeout=self._blocked_url_regex_timeout,
                 max_countries=self._geo_rules_max_countries,
             )
+            for geo_code, geo_url in request.geo_rules.items():
+                geo_rejection = await self._url_policy.check(geo_url)
+                if geo_rejection is not None:
+                    log.info("url_create_rejected", reason=geo_rejection.code)
+                    raise ValidationError(
+                        geo_rejection.public_message, field=f"geo_rules.{geo_code}"
+                    )
         # Meta-tags: resolve data-URI uploads to R2 URLs, then run abuse
         # checks (the route layer already gated the feature itself).
         meta_req = request.meta_tags

@@ -521,6 +521,11 @@ class SafetySettings(BaseSettings):
     # Thresholds fire once per window on exact equality; production values
     # are PRIVATE tuning set via env, calibrated by replaying past
     # campaigns — the defaults here are deliberately conservative.
+    # Published-policy gates: each one changes what the public create API
+    # refuses, so each has its own rollout/rollback switch.
+    manual_feed_enabled: bool = True
+    shorteners_enabled: bool = False
+
     l1_enabled: bool = True
     l1_burst_window_seconds: int = Field(default=600, ge=60)
     l1_domain_burst_threshold: int = Field(default=50, ge=2)
@@ -546,8 +551,13 @@ class SafetySettings(BaseSettings):
     deep_maxlen: int = Field(default=5_000, ge=100)
     deep_batch_size: int = Field(default=4, ge=1)
     deep_block_ms: int = Field(default=5000, ge=100)
-    deep_claim_idle_ms: int = Field(default=300_000, ge=1000)
+    # Must exceed the LLM run timeout (LLM_RUN_TIMEOUT_SECONDS, 300s) with
+    # real headroom: at parity the claimer re-claims an investigation at
+    # the exact moment its slowest, most expensive runs are finishing —
+    # duplicate model spend and duplicate outbound calls.
+    deep_claim_idle_ms: int = Field(default=900_000, ge=1000)
     deep_max_deliveries: int = Field(default=3, ge=1)
+    deep_report_daily_budget: int = Field(default=200, ge=1)
     deep_daily_budget: int = Field(default=200, ge=1)
     deep_admit_sweeps: bool = False
     # Auto-block policy for a model toxic verdict:
@@ -589,8 +599,11 @@ class SchedulerSettings(BaseSettings):
 
     Enabled by default: with only built-in tasks registered it is a
     once-an-hour heartbeat, and feature tasks gate themselves on their own
-    settings. The lease makes overlapping runners (deploy overlap, worker
-    plus app) safe — a task can never double-run.
+    settings. The lease dedupes overlapping runners (deploy overlap,
+    worker plus app) only while a run finishes within ``lease_seconds`` —
+    the real guarantee is at-least-once with idempotent handlers, so a
+    task expected to run longer than the lease needs the lease raised
+    first (there is no mid-run renewal).
     """
 
     model_config = SettingsConfigDict(

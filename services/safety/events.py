@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic import ValidationError as PydanticValidationError
 
 from infrastructure.logging import get_logger
@@ -36,7 +36,10 @@ class SafetyAnalyzeEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     url: str
-    host: str
+    # The worker's trust boundary: an empty host would upsert a "" row
+    # into the unique-host verdict index and run {"dest.host": ""}
+    # enforcement across the collections.
+    host: str = Field(min_length=1)
     registrable_domain: str = ""
     # What surfaced the destination: "report" today; "hot" / "pattern" /
     # "sweep" / "edit" later.

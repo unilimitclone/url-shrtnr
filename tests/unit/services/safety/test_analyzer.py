@@ -443,3 +443,84 @@ class TestScopedReenforcement:
             verdict_repo.upsert_verdict.await_args.kwargs["tier"]
             == VerdictTier.UNCERTAIN
         )
+
+
+class TestTriggerAuthority:
+    @pytest.mark.asyncio
+    async def test_report_reanalyzes_a_sweep_screened_host(self):
+        """The regression that mattered: a sweep writes an uncertain
+        verdict, then a user report arrives inside the re-verdict TTL —
+        the report MUST re-analyze, not be swallowed by freshness."""
+        provider = _Provider(None)
+        existing = VerdictDoc(
+            host="evil.com",
+            tier=VerdictTier.UNCERTAIN,
+            trigger="sweep",
+            updated_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+        analyzer, verdict_repo, _e, _n = _build([provider], existing)
+
+        await analyzer.analyze(_event())
+
+        assert provider.calls == 1
+        verdict_repo.upsert_verdict.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sweep_never_reanalyzes_a_fresh_report_verdict(self):
+        provider = _Provider(None)
+        existing = VerdictDoc(
+            host="evil.com",
+            tier=VerdictTier.UNCERTAIN,
+            trigger="report",
+            updated_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+        analyzer, verdict_repo, _e, _n = _build([provider], existing)
+
+        await analyzer.analyze(
+            SafetyAnalyzeEvent(
+                url="https://evil.com/x",
+                host="evil.com",
+                registrable_domain="evil.com",
+                trigger="sweep",
+            )
+        )
+
+        assert provider.calls == 0
+        verdict_repo.upsert_verdict.assert_not_awaited()
+
+
+class TestReenforcementNotify:
+    @pytest.mark.asyncio
+    async def test_reenforcement_that_blocks_new_links_notifies(self):
+        existing = VerdictDoc(
+            host="evil.com",
+            tier=VerdictTier.TOXIC,
+            reason="old verdict",
+            updated_at=datetime.now(timezone.utc) - timedelta(days=30),
+        )
+        analyzer, _v, enforcer, notifier = _build([_Provider(None)], existing)
+        enforcer.block_host = AsyncMock(
+            return_value=AsyncMock(blocked_count=3, legacy_count=1)
+        )
+
+        await analyzer.analyze(_event())
+
+        reason = notifier.safety_action.await_args.kwargs["reason"]
+        assert "re-enforced" in reason
+
+    @pytest.mark.asyncio
+    async def test_idempotent_reenforcement_stays_quiet(self):
+        existing = VerdictDoc(
+            host="evil.com",
+            tier=VerdictTier.TOXIC,
+            reason="old verdict",
+            updated_at=datetime.now(timezone.utc) - timedelta(days=30),
+        )
+        analyzer, _v, enforcer, notifier = _build([_Provider(None)], existing)
+        enforcer.block_host = AsyncMock(
+            return_value=AsyncMock(blocked_count=0, legacy_count=0)
+        )
+
+        await analyzer.analyze(_event())
+
+        notifier.safety_action.assert_not_awaited()

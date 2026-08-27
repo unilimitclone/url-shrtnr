@@ -44,14 +44,22 @@ class TaskScheduler:
 
     async def run(self) -> None:
         """Long-lived task; cancellation is the shutdown path."""
-        await self.sync_registry()
         log.info(
             "task_scheduler_started",
             poll_interval=self._poll_interval,
             tasks=[t.name for t in self._registry.all()],
         )
+        # The initial registry sync lives INSIDE the retry loop: a
+        # transient Mongo error (or the E11000 two booting processes can
+        # race on ensure_task) at boot must retry, not silently kill the
+        # scheduler for the process lifetime and then re-raise out of the
+        # lifespan's wait_for at shutdown.
+        synced = False
         while True:
             try:
+                if not synced:
+                    await self.sync_registry()
+                    synced = True
                 row = await self._repo.claim_due(lease_seconds=self._lease)
                 if row is None:
                     await asyncio.sleep(self._poll_interval)
@@ -104,20 +112,14 @@ class TaskScheduler:
         task = self._registry.get(name)
         if task is None:
             # Claimed a doc this process has no handler for (orphan or
-            # rollout skew). Record and re-arm from the STORED schedule so
-            # it stays claimable by a process that does know it, without
-            # hot-looping here.
+            # rollout skew). Release the lease WITHOUT touching
+            # next_run_at, so the occurrence is yielded to a process that
+            # does know the task rather than consumed: during a deploy
+            # overlap the two runners trade claims for a few seconds,
+            # bounded by the poll interval, and no run is swallowed.
             log.warning("task_unknown", task=name)
-            await self._repo.finish_run(
-                name,
-                result=TaskRunResult(
-                    at=datetime.now(timezone.utc),
-                    status="error",
-                    duration_ms=0,
-                    detail="no handler registered in this process",
-                ),
-                next_run_at=compute_next_run(row.schedule, datetime.now(timezone.utc)),
-            )
+            await self._repo.release_claim(name)
+            await asyncio.sleep(self._poll_interval)
             return
 
         log.info("task_run_started", task=name)

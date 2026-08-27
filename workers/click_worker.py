@@ -413,6 +413,7 @@ async def _build_runtime(
                 admission = AdmissionPolicy(
                     deep_redis,
                     daily_budget=sf.deep_daily_budget,
+                    report_daily_budget=sf.deep_report_daily_budget,
                     admit_sweeps=sf.deep_admit_sweeps,
                 )
                 log.info("safety_deep_sink_enabled", stream=sf.deep_stream)
@@ -453,6 +454,7 @@ async def _build_runtime(
                     http=runtime.http_client,
                     feed_repo=worker_feed_repo,
                     url_repo=UrlRepository(db["urlsV2"]),
+                    own_domains=settings.blocked_self_domains,
                     web_risk=(
                         WebRiskProvider(
                             runtime.http_client,

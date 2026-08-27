@@ -122,7 +122,9 @@ FEED_REGISTRY: tuple[FeedSpec, ...] = (
         reason_label="the operator blocklist",
         gate=True,
         analyzer=True,
-        enabled=lambda s: True,
+        # Operator-curated entries; on by default but switchable — every
+        # change to published create behavior needs an env rollback path.
+        enabled=lambda s: s.manual_feed_enabled,
     ),
     FeedSpec(
         name=SHORTENER_FEED,
@@ -131,7 +133,11 @@ FEED_REGISTRY: tuple[FeedSpec, ...] = (
         # Gate-only: existing links to shorteners are the deep tier's
         # chain-resolution problem, never a mass-block.
         analyzer=False,
-        enabled=lambda s: True,
+        # Off by default: refusing shortener destinations changes the
+        # published behavior of the public anonymous API, so it rolls out
+        # (and back) by env flag like everything else instead of being
+        # live the moment the code merges.
+        enabled=lambda s: s.shorteners_enabled,
         public_message="Links to other URL shorteners are not allowed",
         seed=load_shortener_seed,
     ),

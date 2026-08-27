@@ -115,11 +115,14 @@ class TestExecute:
         assert repo.finish_run.await_args.kwargs["next_run_at"] is None
 
     @pytest.mark.asyncio
-    async def test_unknown_task_finishes_with_error_and_stored_schedule(self):
+    async def test_unknown_task_yields_the_claim_without_consuming_the_run(self):
+        """Rollout skew: a process without the handler releases the lease
+        and leaves next_run_at untouched, so the occurrence goes to a
+        process that knows the task instead of being recorded as an error
+        and re-armed past it."""
         repo = _repo()
-        await TaskScheduler(repo, TaskRegistry())._execute(_row("ghost"))
+        scheduler = TaskScheduler(repo, TaskRegistry(), poll_interval=0.01)
+        await scheduler._execute(_row("ghost"))
 
-        kwargs = repo.finish_run.await_args.kwargs
-        assert kwargs["result"].status == "error"
-        # Re-armed from the STORED schedule so a knowing process can claim it.
-        assert kwargs["next_run_at"] is not None
+        repo.release_claim.assert_awaited_once_with("ghost")
+        repo.finish_run.assert_not_awaited()

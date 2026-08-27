@@ -141,15 +141,29 @@ class TestFeedRegistry:
 
         return SafetySettings(**overrides)
 
-    def test_operator_feeds_are_always_on_fishfish_gates_on_master(self):
+    def test_each_published_policy_has_its_own_switch(self):
+        """Every gate that changes what the public create API refuses gets
+        an env rollout/rollback switch: manual defaults on, the shortener
+        refusal defaults OFF (dark until flipped), fishfish rides the
+        master flag."""
         from services.safety.feeds import build_feed_providers
 
         repo = AsyncMock()
         gate, analyzer, _messages = build_feed_providers(
             self._settings(enabled=False), repo
         )
-        assert [p.name for p in gate] == ["feed_manual", "feed_shorteners"]
+        assert [p.name for p in gate] == ["feed_manual"]
         assert [p.name for p in analyzer] == ["feed_manual"]
+
+        gate, _, _ = build_feed_providers(
+            self._settings(enabled=False, shorteners_enabled=True), repo
+        )
+        assert [p.name for p in gate] == ["feed_manual", "feed_shorteners"]
+
+        gate, _, _ = build_feed_providers(
+            self._settings(enabled=False, manual_feed_enabled=False), repo
+        )
+        assert gate == []
 
         gate, analyzer, _ = build_feed_providers(self._settings(enabled=True), repo)
         assert "feed_fishfish" in [p.name for p in gate]
@@ -158,13 +172,17 @@ class TestFeedRegistry:
     def test_shorteners_never_join_the_analyzer(self):
         from services.safety.feeds import build_feed_providers
 
-        _, analyzer, _ = build_feed_providers(self._settings(enabled=True), AsyncMock())
+        _, analyzer, _ = build_feed_providers(
+            self._settings(enabled=True, shorteners_enabled=True), AsyncMock()
+        )
         assert "feed_shorteners" not in [p.name for p in analyzer]
 
     def test_public_message_comes_from_the_registry(self):
         from services.safety.feeds import build_feed_providers
 
-        _, _, messages = build_feed_providers(self._settings(), AsyncMock())
+        _, _, messages = build_feed_providers(
+            self._settings(shorteners_enabled=True), AsyncMock()
+        )
         assert messages == {
             "feed_shorteners": "Links to other URL shorteners are not allowed"
         }

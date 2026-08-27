@@ -45,6 +45,11 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+# A fresh verdict only short-circuits triggers of equal or lower
+# authority: a sweep screening must never swallow a user report that
+# arrives inside the re-verdict TTL. Unknown triggers rank lowest.
+_TRIGGER_AUTHORITY = {"sweep": 0, "pattern": 1, "edit": 2, "report": 2}
+
 
 class SafetyAnalyzer:
     def __init__(
@@ -89,9 +94,12 @@ class SafetyAnalyzer:
                 )
                 return
             updated = as_aware_utc(existing.updated_at)
+            incoming = _TRIGGER_AUTHORITY.get(event.trigger, 0)
+            stored = _TRIGGER_AUTHORITY.get(existing.trigger or "", 2)
             if (
                 updated is not None
                 and datetime.now(timezone.utc) - updated < self._reverdict_ttl
+                and incoming <= stored
             ):
                 log.info(
                     "safety_analysis_skipped",
@@ -214,19 +222,37 @@ class SafetyAnalyzer:
         if scope == "host":
             # Already judged bad host-wide (deep tier or human): cheap,
             # idempotent, and covers links created after the original block.
-            await self._enforcer.block_host(event.host, reason=reason)
+            result = await self._enforcer.block_host(event.host, reason=reason)
+            await self._notify_reenforced(event, result, reason)
             return True
         if scope == "path_pattern" and existing.path_pattern:
             pattern = existing.path_pattern
-            await self._enforcer.block_matching(
+            result = await self._enforcer.block_matching(
                 event.host,
                 matcher=lambda u: matching_blocked_pattern(u, (pattern,)) is not None,
                 reason=reason,
             )
+            await self._notify_reenforced(event, result, reason)
             return matching_blocked_pattern(event.url, (pattern,)) is not None
         # links scope: the judged links are already blocked and the create
         # gate refuses the exact URL; nothing host-side to re-run.
         return event.url == existing.sample_url
+
+    async def _notify_reenforced(self, event, result, reason: str) -> None:
+        """A re-enforcement that actually blocked something is a real
+        action and the operator hears about it — otherwise a partial
+        failure retried through this path would mass-block silently.
+        Zero new blocks stays quiet (the routine idempotent case)."""
+        if result.blocked_count + result.legacy_count == 0:
+            return
+        await self._notifier.safety_action(
+            host=event.host,
+            reason=f"{reason} (re-enforced existing verdict)",
+            trigger=event.trigger,
+            blocked_count=result.blocked_count,
+            legacy_count=result.legacy_count,
+            sample_url=event.url,
+        )
 
     async def _escalate(
         self, event: SafetyAnalyzeEvent, verdict: ProviderVerdict, source: str

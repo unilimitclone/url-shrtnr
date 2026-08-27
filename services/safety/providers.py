@@ -92,7 +92,8 @@ class WebRiskProvider:
     (100k/month free tier covers report-triggered volume by orders of
     magnitude); the local hash-DB variant is a later create-gate concern.
 
-    Network or quota failures abstain. The API key never appears in logs.
+    Network or quota failures abstain. The API key rides the
+    ``X-Goog-Api-Key`` header so it never appears in logged URLs.
     """
 
     name = "web_risk"
@@ -114,13 +115,16 @@ class WebRiskProvider:
         self, url: str, host: str, registrable_domain: str
     ) -> ProviderVerdict | None:
         try:
+            # Key rides a header, never the query string: httpx logs full
+            # request URLs, so a ?key= param would land in stdout and the
+            # log sink on every lookup.
             response = await self._http.get(
                 f"{self._api_base}/v1/uris:search",
                 params={
                     "uri": url,
                     "threatTypes": list(self._THREAT_TYPES),
-                    "key": self._api_key,
                 },
+                headers={"X-Goog-Api-Key": self._api_key},
                 timeout=10.0,
             )
             if response.status_code != 200:

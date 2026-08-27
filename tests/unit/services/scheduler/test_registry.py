@@ -33,8 +33,24 @@ class TestTaskRegistry:
 
     def test_invalid_cron_rejected_at_register(self):
         reg = TaskRegistry()
-        with pytest.raises(ValueError, match="invalid cron"):
+        with pytest.raises(ValueError, match="cron"):
             reg.register(ScheduledTask(name="bad", fn=_noop, schedule="not a cron"))
+
+    def test_six_field_cron_rejected(self):
+        """CronSim also speaks a seconds-first six-field syntax; the
+        ScheduledTask contract is five fields, so the rest is a boot
+        error, not a subtly different schedule."""
+        reg = TaskRegistry()
+        with pytest.raises(ValueError, match="5 cron fields"):
+            reg.register(ScheduledTask(name="six", fn=_noop, schedule="*/10 * * * * *"))
+
+    def test_impossible_date_rejected_at_register(self):
+        """Feb 31 must be a boot error, whichever way CronSim reports it
+        (construction error today; the eager next() also converts a
+        StopIteration from a valid-but-never schedule)."""
+        reg = TaskRegistry()
+        with pytest.raises(ValueError, match="cron"):
+            reg.register(ScheduledTask(name="never", fn=_noop, schedule="0 0 31 2 *"))
 
     def test_manual_only_task_has_no_schedule(self):
         reg = TaskRegistry()

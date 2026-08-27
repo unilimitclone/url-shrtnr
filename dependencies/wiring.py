@@ -369,6 +369,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
             admission = AdmissionPolicy(
                 queue_redis_for_webhooks,
                 daily_budget=sf_settings.deep_daily_budget,
+                report_daily_budget=sf_settings.deep_report_daily_budget,
                 admit_sweeps=sf_settings.deep_admit_sweeps,
             )
             log.info("safety_deep_sink_enabled", stream=sf_settings.deep_stream)
@@ -398,7 +399,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         )
         log.info("safety_stream_sink_enabled", stream=sf_settings.stream)
     else:
-        safety_sink = InlineSafetySink(safety_analyzer)
+        safety_sink = InlineSafetySink(safety_analyzer, background=True)
         log.info("safety_inline_sink_enabled")
     app.state.safety_sink = safety_sink
     # L1 creation-pattern scoring: counters need the durable queue Redis
@@ -467,6 +468,23 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         sch_settings.runtime == "embedded"
         or (sch_settings.runtime == "auto" and queue_redis_for_webhooks is None)
     )
+    if (
+        sch_settings.enabled
+        and not app.state.task_scheduler_embedded
+        and sch_settings.runtime in ("auto", "worker")
+    ):
+        # Queue Redis present resolves auto/worker to "the worker hosts
+        # it" — but the worker only boots for its OWN features (clicks
+        # stream, meta, webhooks, safety), never for the scheduler alone.
+        # Say so at boot instead of silently scheduling nothing.
+        log.warning(
+            "task_scheduler_delegated_to_worker",
+            runtime=sch_settings.runtime,
+            detail=(
+                "scheduler will only run if a worker process is actually "
+                "deployed; no worker means nothing polls scheduled tasks"
+            ),
+        )
 
     # ── Services ─────────────────────────────────────────────────────────
     app.state.url_service = UrlService(

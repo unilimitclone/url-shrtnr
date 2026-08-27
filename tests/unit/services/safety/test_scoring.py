@@ -19,6 +19,8 @@ def _redis(counts: list[int]) -> MagicMock:
         results.extend([c, True])
     pipe.execute = AsyncMock(return_value=results)
     redis.pipeline = MagicMock(return_value=pipe)
+    # The fired marker: SET NX succeeds by default (first crossing).
+    redis.set = AsyncMock(return_value=True)
     return redis, pipe
 
 
@@ -96,14 +98,29 @@ class TestThresholds:
 
     @pytest.mark.asyncio
     async def test_fires_once_per_window(self):
-        """Exact equality: over the threshold means the window already
-        fired — no event storm from a sustained campaign."""
+        """SET NX fired marker: over the threshold with the marker already
+        taken means the window already fired — no event storm from a
+        sustained campaign, and a redis-py retry that double-applies the
+        INCRs (counter jumps past the threshold) cannot disarm it."""
         sink = AsyncMock()
         redis, _ = _redis([4, 5, 1, 1])  # burst already past threshold
+        redis.set = AsyncMock(return_value=None)  # NX lost: already fired
         await _scorer(redis, sink=sink).record_create(
             "https://a.evil.com/x", "a.evil.com", "evil.com", "1.2.3.4"
         )
         sink.emit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_counter_jump_past_threshold_still_fires(self):
+        """The retry pathology: increments applied twice, the counter
+        lands beyond the threshold without ever equalling it. The marker
+        makes the crossing fire anyway."""
+        sink = AsyncMock()
+        redis, _ = _redis([5, 1, 1, 1])  # jumped from 3 straight to 5
+        await _scorer(redis, sink=sink).record_create(
+            "https://a.evil.com/x", "a.evil.com", "evil.com", "1.2.3.4"
+        )
+        sink.emit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_daily_domain_crossing_enqueues_analysis(self):

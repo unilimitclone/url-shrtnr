@@ -112,26 +112,29 @@ class LegacyUrlRepository(BaseRepository[LegacyUrlDoc]):
     # the cache-invalidation set and must be read before the flip removes
     # docs from the not-yet-blocked filter.
 
-    async def list_unblocked_ids_by_dest_host(
-        self, host: str, *, limit: int = 50_000
-    ) -> list[str]:
-        """Short codes of not-yet-blocked links pointing at *host*."""
-        cursor = self._col.find(
-            {"dest.host": host, "blocked": {"$ne": True}}, {"_id": 1}
-        ).limit(limit)
-        docs = await cursor.to_list(length=limit)
-        return [d["_id"] for d in docs]
-
-    async def list_unblocked_by_dest_host(
+    async def list_by_dest_host(
         self, host: str, *, limit: int = 50_000
     ) -> list[tuple[str, str]]:
-        """(short_code, url) of not-yet-blocked links pointing at *host* —
-        the candidate set for scoped enforcement."""
-        cursor = self._col.find(
-            {"dest.host": host, "blocked": {"$ne": True}}, {"_id": 1, "url": 1}
-        ).limit(limit)
+        """(short_code, url) of every link pointing at *host*, regardless
+        of blocked state — enforcement candidates and the eviction set (a
+        re-delivered block must still evict already-flipped entries)."""
+        cursor = self._col.find({"dest.host": host}, {"_id": 1, "url": 1}).limit(limit)
         docs = await cursor.to_list(length=limit)
+        if len(docs) >= limit:
+            log.warning("dest_host_listing_truncated", host=host, limit=limit)
         return [(d["_id"], d.get("url", "")) for d in docs]
+
+    async def unblock_by_dest_host(self, host: str) -> int:
+        """Reverse a safety host block on v1 links. Stamps stay,
+        ``unblocked_at`` records the reversal."""
+        result = await self._col.update_many(
+            {"dest.host": host, "blocked": True},
+            {
+                "$unset": {"blocked": ""},
+                "$set": {"unblocked_at": datetime.now(timezone.utc)},
+            },
+        )
+        return int(result.modified_count)
 
     async def block_by_ids(self, short_codes: list[str], *, reason: str) -> int:
         """Flip specific not-yet-blocked links by short code."""
@@ -168,14 +171,19 @@ class LegacyUrlRepository(BaseRepository[LegacyUrlDoc]):
 
     async def unblock(self, short_code: str) -> bool:
         """Reverse a safety block — the thing deletion could never offer.
-        The audit stamps are removed with the flag: an unblocked link is
-        indistinguishable from a never-blocked one on the wire.
+        Only the flag goes; ``blocked_at``/``blocked_reason`` stay and
+        ``unblocked_at`` is stamped, so a wrong block that was quietly
+        reversed still shows what happened and when. The wire shape is a
+        DTO concern — resolution only reads the flag.
 
         The caller owns cache eviction (same contract as bulk-delete):
         without it the cached BLOCKED entry keeps serving 451s until TTL."""
         result = await self._col.update_one(
             {"_id": short_code, "blocked": True},
-            {"$unset": {"blocked": "", "blocked_at": "", "blocked_reason": ""}},
+            {
+                "$unset": {"blocked": ""},
+                "$set": {"unblocked_at": datetime.now(timezone.utc)},
+            },
         )
         return bool(result.modified_count)
 

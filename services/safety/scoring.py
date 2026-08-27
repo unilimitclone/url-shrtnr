@@ -81,9 +81,14 @@ class CreationPatternScorer:
             )
             return
         for (family, window), count in counts.items():
-            # Exact equality: each window fires exactly once (hotness
-            # precedent); a sustained campaign re-fires each new window.
-            if count != self._thresholds[(family, window)]:
+            # At-or-past threshold plus a SET NX fired marker: each window
+            # fires exactly once; a sustained campaign re-fires each new
+            # window.
+            if count < self._thresholds[(family, window)]:
+                continue
+            if not await self._mark_fired(
+                family, window, registrable_domain, client_ip
+            ):
                 continue
             if family == "dom":
                 await self._on_domain_burst(
@@ -91,6 +96,25 @@ class CreationPatternScorer:
                 )
             else:
                 await self._on_ip_burst(url, client_ip, window, count)
+
+    async def _mark_fired(
+        self, family: str, window: int, registrable_domain: str, client_ip: str | None
+    ) -> bool:
+        """SET NX on a fired marker — fire-once that survives redis-py
+        retries. Exact-equality could not: a retried pipeline re-applies
+        the INCRs server-side, the counter jumps past the threshold in one
+        logical create, and the window never fires."""
+        now = int(time.time())
+        bucket = now // window
+        subject = registrable_domain if family == "dom" else _hash_ip(client_ip or "")
+        key = f"l1:fired:{family}:{window}:{subject}:{bucket}"
+        try:
+            return bool(await self._redis.set(key, "1", nx=True, ex=window * 2))
+        except Exception as exc:
+            log.warning(
+                "l1_fired_marker_failed", error=str(exc), error_type=type(exc).__name__
+            )
+            return False
 
     async def _bump(
         self, registrable_domain: str, client_ip: str | None

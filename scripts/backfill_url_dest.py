@@ -2,6 +2,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
+#     "idna>=3.6",
 #     "pymongo>=4.6",
 #     "tldextract>=5.1",
 # ]
@@ -33,13 +34,15 @@ import os
 import sys
 from urllib.parse import urlsplit
 
+import idna
 import tldextract
 from pymongo import MongoClient, UpdateOne
+from pymongo.errors import BulkWriteError
 
 _FILTER = {"dest": {"$exists": False}}
 _BATCH = 1_000
 _COLLECTIONS = (("urlsV2", "long_url"), ("urls", "url"), ("emojis", "url"))
-_tld = tldextract.TLDExtract(cache_dir=None)
+_tld = tldextract.TLDExtract(cache_dir=None, suffix_list_urls=())
 
 
 def parse_destination(url: object) -> dict | None:
@@ -57,8 +60,8 @@ def parse_destination(url: object) -> dict | None:
     if not host:
         return None
     if any(ord(ch) > 127 for ch in host):
-        with contextlib.suppress(UnicodeError):
-            host = host.encode("idna").decode("ascii")
+        with contextlib.suppress(idna.IDNAError):
+            host = idna.encode(host, uts46=True).decode("ascii")
     ext = _tld(host)
     if ext.suffix:
         registrable, subdomain = f"{ext.domain}.{ext.suffix}", ext.subdomain
@@ -85,10 +88,20 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
         )
         return
     done = 0
+    failed = 0
+    last_id = None
+    # Cursor pagination: the filter has no usable index, so restarting the
+    # scan each batch would be O(N^2) over a 20M-doc collection. Riding _id
+    # makes it one pass, and it also carries the scan past any doc whose
+    # update fails (see below) instead of dying on it forever.
     while True:
-        batch = list(coll.find(_FILTER, {url_field: 1}).limit(_BATCH))
+        query = dict(_FILTER)
+        if last_id is not None:
+            query["_id"] = {"$gt": last_id}
+        batch = list(coll.find(query, {url_field: 1}).sort("_id", 1).limit(_BATCH))
         if not batch:
             break
+        last_id = batch[-1]["_id"]
         ops = [
             UpdateOne(
                 {"_id": d["_id"]},
@@ -96,12 +109,27 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
             )
             for d in batch
         ]
-        coll.bulk_write(ops, ordered=False)
+        try:
+            coll.bulk_write(ops, ordered=False)
+        except BulkWriteError as exc:
+            # Known failure class: v1 docs at the 16MB ceiling (unbounded ip
+            # arrays) reject any $set. One oversized doc costs one skipped
+            # row, never the migration.
+            errors = exc.details.get("writeErrors", [])
+            failed += len(errors)
+            for err in errors[:10]:
+                print(
+                    f"[{coll.name}] SKIPPED _id={err.get('op', {}).get('q')}: "
+                    f"code={err.get('code')} {err.get('errmsg', '')[:120]}"
+                )
         done += len(batch)
         if done % 50_000 < _BATCH:
             print(f"[{coll.name}] progress: {done}/{todo}")
     remaining = coll.count_documents(_FILTER)
-    print(f"[{coll.name}] stamped {done}; remaining (expect 0): {remaining}")
+    print(
+        f"[{coll.name}] stamped {done - failed}; failed: {failed}; "
+        f"remaining (expect {failed}): {remaining}"
+    )
 
 
 def main() -> None:

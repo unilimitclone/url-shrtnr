@@ -6,6 +6,7 @@ import contextlib
 import re
 from urllib.parse import urlparse, urlsplit
 
+import idna
 import tldextract
 
 # RFC 1035 hostname matcher used by the custom-domains code path.
@@ -20,9 +21,10 @@ _HOSTNAME_RE = re.compile(
 )
 _FORBIDDEN_CHARS = re.compile(r"[\x00-\x1F\x7F-\x9F<>\"'`\\]")
 
-# Single tldextract seam for the whole codebase. cache_dir=None uses the
-# bundled PSL snapshot: deterministic, offline, no first-call network fetch.
-_tld_extractor = tldextract.TLDExtract(cache_dir=None)
+# Single tldextract seam for the whole codebase. Empty suffix_list_urls
+# pins the bundled PSL snapshot: deterministic, offline, no first-call
+# network fetch (cache_dir=None alone disables caching, not the fetch).
+_tld_extractor = tldextract.TLDExtract(cache_dir=None, suffix_list_urls=())
 
 
 def registrable_domain(value: str) -> str:
@@ -68,10 +70,13 @@ def parse_destination(url: str | None) -> dict | None:
     if not host:
         return None
     if any(ord(ch) > 127 for ch in host):
-        # On IDNA failure keep the lowercased unicode form rather than
-        # dropping the host entirely.
-        with contextlib.suppress(UnicodeError):
-            host = host.encode("idna").decode("ascii")
+        # UTS-46 via the idna package — where a browser actually navigates.
+        # The stdlib codec is IDNA-2003 (maps ß to ss, rejects emoji
+        # labels), which would key some IDN hosts on a domain no browser
+        # resolves. On failure keep the lowercased unicode form rather
+        # than dropping the host entirely.
+        with contextlib.suppress(idna.IDNAError):
+            host = idna.encode(host, uts46=True).decode("ascii")
     ext = _tld_extractor(host)
     if ext.suffix:
         registrable = f"{ext.domain}.{ext.suffix}"

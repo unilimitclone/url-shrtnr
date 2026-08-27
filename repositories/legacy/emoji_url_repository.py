@@ -37,25 +37,28 @@ class EmojiUrlRepository(BaseRepository[EmojiUrlDoc]):
     # Mirrors LegacyUrlRepository (this class deliberately does not inherit
     # it); see there for the collect-then-flip ordering rationale.
 
-    async def list_unblocked_ids_by_dest_host(
-        self, host: str, *, limit: int = 50_000
-    ) -> list[str]:
-        """Aliases of not-yet-blocked emoji links pointing at *host*."""
-        cursor = self._col.find(
-            {"dest.host": host, "blocked": {"$ne": True}}, {"_id": 1}
-        ).limit(limit)
-        docs = await cursor.to_list(length=limit)
-        return [d["_id"] for d in docs]
-
-    async def list_unblocked_by_dest_host(
+    async def list_by_dest_host(
         self, host: str, *, limit: int = 50_000
     ) -> list[tuple[str, str]]:
-        """(alias, url) of not-yet-blocked emoji links pointing at *host*."""
-        cursor = self._col.find(
-            {"dest.host": host, "blocked": {"$ne": True}}, {"_id": 1, "url": 1}
-        ).limit(limit)
+        """(alias, url) of every emoji link pointing at *host*, regardless
+        of blocked state — see LegacyUrlRepository.list_by_dest_host."""
+        cursor = self._col.find({"dest.host": host}, {"_id": 1, "url": 1}).limit(limit)
         docs = await cursor.to_list(length=limit)
+        if len(docs) >= limit:
+            log.warning("dest_host_listing_truncated", host=host, limit=limit)
         return [(d["_id"], d.get("url", "")) for d in docs]
+
+    async def unblock_by_dest_host(self, host: str) -> int:
+        """Reverse a safety host block on emoji links. Stamps stay,
+        ``unblocked_at`` records the reversal."""
+        result = await self._col.update_many(
+            {"dest.host": host, "blocked": True},
+            {
+                "$unset": {"blocked": ""},
+                "$set": {"unblocked_at": datetime.now(timezone.utc)},
+            },
+        )
+        return int(result.modified_count)
 
     async def block_by_ids(self, aliases: list[str], *, reason: str) -> int:
         """Flip specific not-yet-blocked emoji links by alias."""
@@ -88,11 +91,16 @@ class EmojiUrlRepository(BaseRepository[EmojiUrlDoc]):
         return int(result.modified_count)
 
     async def unblock(self, alias: str) -> bool:
-        """Reverse a safety block on one emoji link. The caller owns cache
-        eviction (canonical VS16 key), same contract as the legacy repo."""
+        """Reverse a safety block on one emoji link. Only the flag goes;
+        the stamps stay and ``unblocked_at`` records the reversal. The
+        caller owns cache eviction (canonical VS16 key), same contract as
+        the legacy repo."""
         result = await self._col.update_one(
             {"_id": alias, "blocked": True},
-            {"$unset": {"blocked": "", "blocked_at": "", "blocked_reason": ""}},
+            {
+                "$unset": {"blocked": ""},
+                "$set": {"unblocked_at": datetime.now(timezone.utc)},
+            },
         )
         return bool(result.modified_count)
 

@@ -29,22 +29,43 @@ def _redis(used: int = 1) -> AsyncMock:
 
 class TestAlwaysAdmitted:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("trigger", ["report", "edit"])
-    async def test_reports_and_edits_never_consult_the_budget(self, trigger):
+    async def test_edits_never_consult_the_budget(self):
         redis = _redis()
         policy = AdmissionPolicy(redis, daily_budget=1)
-        decision = await policy.decide(_event(trigger))
+        decision = await policy.decide(_event("edit"))
         assert decision.admitted and decision.reason == "always"
         redis.incr.assert_not_awaited()
 
+
+class TestReportBudget:
+    """Reports get their own, larger budget — the only trigger an outsider
+    can pull cannot be unbudgeted, and it never competes with patterns."""
+
     @pytest.mark.asyncio
-    async def test_p0_lane_survives_redis_being_down(self):
-        """A report must reach investigation even when the budget counter
-        is unreachable — its admission consults nothing."""
+    async def test_report_admitted_within_its_own_pool(self):
+        redis = _redis(used=1)
+        policy = AdmissionPolicy(redis, daily_budget=1, report_daily_budget=200)
+        decision = await policy.decide(_event("report"))
+        assert decision.admitted and decision.reason == "within_budget"
+        key = redis.incr.await_args.args[0]
+        assert ":report:" in key
+
+    @pytest.mark.asyncio
+    async def test_report_flood_hits_its_ceiling(self):
+        redis = _redis(used=201)
+        policy = AdmissionPolicy(redis, daily_budget=50, report_daily_budget=200)
+        decision = await policy.decide(_event("report"))
+        assert not decision.admitted and decision.reason == "budget_exhausted"
+
+    @pytest.mark.asyncio
+    async def test_report_budget_fails_closed_when_redis_is_down(self):
+        """We couldn't count, so we don't spend — the denied report still
+        reaches the human review embed downstream."""
         redis = AsyncMock()
         redis.incr = AsyncMock(side_effect=ConnectionError("down"))
         policy = AdmissionPolicy(redis, daily_budget=1)
-        assert (await policy.decide(_event("report"))).admitted
+        decision = await policy.decide(_event("report"))
+        assert not decision.admitted and decision.reason == "budget_unavailable"
 
 
 class TestBudgetedTriggers:
@@ -118,9 +139,9 @@ class TestEscalation:
         assert not d.admitted and d.reason == "budget_exhausted"
 
     @pytest.mark.asyncio
-    async def test_report_escalation_stays_free(self):
-        redis = _redis()
+    async def test_report_escalation_rides_the_report_pool(self):
+        redis = _redis(used=1)
         policy = AdmissionPolicy(redis, daily_budget=5)
         d = await policy.decide(_event("report"), escalation=True)
-        assert d.admitted and d.reason == "always"
-        redis.incr.assert_not_awaited()
+        assert d.admitted and d.reason == "within_budget"
+        assert ":report:" in redis.incr.await_args.args[0]

@@ -169,12 +169,15 @@ class TestEmojiSafetyBlockSurface:
         assert ops["$set"]["blocked_reason"] == "phish"
 
     @pytest.mark.asyncio
-    async def test_list_unblocked_ids_by_dest_host(self):
+    async def test_list_by_dest_host_is_status_blind(self):
         col = make_collection()
-        col.find.return_value.to_list = AsyncMock(return_value=[{"_id": "⭐️🎉"}])
-        assert await self._repo(col).list_unblocked_ids_by_dest_host("evil.com") == [
-            "⭐️🎉"
+        col.find.return_value.to_list = AsyncMock(
+            return_value=[{"_id": "⭐️🎉", "url": "https://evil.com/a"}]
+        )
+        assert await self._repo(col).list_by_dest_host("evil.com") == [
+            ("⭐️🎉", "https://evil.com/a")
         ]
+        assert col.find.call_args.args[0] == {"dest.host": "evil.com"}
 
     @pytest.mark.asyncio
     async def test_unblock(self):

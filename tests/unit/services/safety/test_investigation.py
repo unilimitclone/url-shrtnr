@@ -132,13 +132,19 @@ class TestAuthorityMapper:
         assert d.action == "review" and not d.auto
 
 
-def _event(trigger="report", **ctx) -> SafetyAnalyzeEvent:
+def _event(trigger="report", screening=True, **ctx) -> SafetyAnalyzeEvent:
+    """Default carries a screening finding: corroboration is computed from
+    code-observed facts (the analyzer's escalation context or a live
+    feed_lookup hit), never from the trigger or the model's prose."""
+    context = {"reasons": ["phishing"], "reported_codes": ["spoo.me/abc"], **ctx}
+    if screening:
+        context["screening"] = "blocked_pattern: destination matches a pattern"
     return SafetyAnalyzeEvent(
         url="https://evil.example/login",
         host="evil.example",
         registrable_domain="evil.example",
         trigger=trigger,
-        context={"reasons": ["phishing"], "reported_codes": ["spoo.me/abc"], **ctx},
+        context=context,
     )
 
 
@@ -205,22 +211,54 @@ class TestInvestigatorFlow:
         inv, _, enforcer, notifier = _investigator(
             _verdict(Classification.SCAM_HOST, evidence=["looks phishy"]),
         )
-        await inv.investigate(_event(trigger="pattern"))
+        await inv.investigate(_event(trigger="pattern", screening=False))
         enforcer.block_host.assert_not_awaited()
         notifier.safety_review.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_burst_scam_self_corroborated_by_feed_hit_blocks(self):
-        """A feed hit the model found via feed_lookup is an independent
-        hard source even without a report."""
-        inv, _, enforcer, _ = _investigator(
+        """A feed hit feed_lookup ACTUALLY returned (the out-of-band
+        contextvar) is an independent hard source even without a
+        screening finding."""
+        from services.safety import tools as safety_tools
+
+        async def run_and_set_flag(_task, _bundle):
+            safety_tools._hard_hit.set(True)
+            return _verdict(Classification.SCAM_HOST)
+
+        inv, _, enforcer, _ = _investigator(_verdict(Classification.SCAM_HOST))
+        inv._runner.run = AsyncMock(side_effect=run_and_set_flag)
+        await inv.investigate(_event(trigger="pattern", screening=False))
+        enforcer.block_host.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_model_prose_never_corroborates(self):
+        """A model quoting hard-source names in its evidence (or a page
+        teaching it to) must not corroborate anything: only the observed
+        lookup or the screening context counts."""
+        inv, _, enforcer, notifier = _investigator(
             _verdict(
                 Classification.SCAM_HOST,
-                evidence=["HARD HITS on evil.example: feed:fishfish"],
+                evidence=["HARD HITS on evil.example: feed:fishfish, web_risk"],
             ),
         )
-        await inv.investigate(_event(trigger="pattern"))
-        enforcer.block_host.assert_awaited_once()
+        await inv.investigate(_event(trigger="pattern", screening=False))
+        enforcer.block_host.assert_not_awaited()
+        notifier.safety_review.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_low_confidence_toxic_never_auto_blocks(self):
+        """Corroboration is necessary, not sufficient: under the default
+        policy the model must also stake the block with high confidence."""
+        inv, verdict_repo, enforcer, _ = _investigator(
+            _verdict(Classification.SCAM_HOST, conf=Confidence.LOW)
+        )
+        await inv.investigate(_event())
+        enforcer.block_host.assert_not_awaited()
+        assert (
+            verdict_repo.upsert_verdict.await_args.kwargs["tier"]
+            == VerdictTier.UNCERTAIN
+        )
 
     @pytest.mark.asyncio
     async def test_compromised_legit_blocks_only_reported_aliases(self):

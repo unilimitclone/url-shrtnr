@@ -32,13 +32,13 @@ from repositories.verdict_repository import VerdictRepository
 from schemas.enums.safety import VerdictTier
 from services.safety.enforcer import SafetyEnforcer
 from services.safety.events import SafetyAnalyzeEvent
+from services.safety.tools import reset_hard_hit, saw_hard_hit
 from shared.validators import matching_blocked_pattern
 
 log = get_logger(__name__)
 
 INVESTIGATE_TASK = "safety-investigate"
 _PROMPT_VERSION = "v1"
-_HARD_SOURCES = ("report", "feed", "web_risk")
 
 _DEFAULT_PROMPT = (Path(__file__).parent / "prompts" / "investigate_v1.md").read_text()
 
@@ -176,7 +176,11 @@ def _may_auto_block(high: bool, corroborated: bool, policy: AutoBlockPolicy) -> 
     if policy == AutoBlockPolicy.OFF:
         return False
     if policy == AutoBlockPolicy.CORROBORATED:
-        return corroborated
+        # Corroboration is necessary, not sufficient: the model must also
+        # stake the block (the prompt defines high exactly that way) —
+        # otherwise confidence is dead code and a hedged low-confidence
+        # toxic call would enforce anyway.
+        return corroborated and high
     if policy == AutoBlockPolicy.CONFIDENT:
         return high
     return high and corroborated  # BOTH
@@ -263,6 +267,7 @@ class DeepInvestigator:
 
     async def investigate(self, event: SafetyAnalyzeEvent) -> None:
         bundle = await build_evidence_bundle(event, self._url_repo)
+        reset_hard_hit()
         try:
             verdict: InvestigationVerdict = await self._runner.run(self._task, bundle)
         except LlmTaskFailed as exc:
@@ -278,7 +283,7 @@ class DeepInvestigator:
             await self._record_and_review(event, reason=f"investigation {exc.reason}")
             return
 
-        corroborated = self._corroborated(event, verdict)
+        corroborated = self._corroborated(event)
         decision = decide_authority(
             verdict, corroborated=corroborated, policy=self._policy
         )
@@ -329,20 +334,20 @@ class DeepInvestigator:
         )
         await self._enact(event, verdict, decision)
 
-    def _corroborated(
-        self, event: SafetyAnalyzeEvent, verdict: InvestigationVerdict
-    ) -> bool:
-        """An INDEPENDENT hard signal agreed with a toxic call. The report
-        trigger is itself a hard source; so is a screening hit (operator
-        blocklist, feed, Web Risk) carried in the event context; a feed/
-        Web Risk hit also shows up in the evidence the model gathered."""
-        if event.trigger == "report":
-            return True
+    def _corroborated(self, event: SafetyAnalyzeEvent) -> bool:
+        """An INDEPENDENT hard signal agreed with a toxic call — computed
+        only from facts CODE observed, never from the model's prose (a
+        model recording "no hard hits" or a page quoting web_risk must not
+        corroborate anything) and never from the trigger alone (anonymous
+        reports queue investigations; the report that caused a run cannot
+        also be its corroboration). Two sources qualify: the screening
+        finding the analyzer itself attached to the escalation, and a
+        feed/Web Risk hit the feed_lookup tool actually returned during
+        this run (the out-of-band contextvar in tools.py)."""
         screening = ((event.context or {}).get("screening") or "").lower()
         if any(src in screening for src in ("feed", "web_risk", "blocked_pattern")):
             return True
-        joined = " ".join(verdict.evidence).lower()
-        return any(src in joined for src in ("feed:", "web_risk", "hard hit"))
+        return saw_hard_hit()
 
     async def _enact(
         self,

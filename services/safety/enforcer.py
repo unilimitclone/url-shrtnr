@@ -77,12 +77,17 @@ class SafetyEnforcer:
         self._system_domain = system_default_domain
 
     async def block_host(self, host: str, *, reason: str) -> EnforcementResult:
-        # 1. Collect BEFORE the flip: the invalidation sets and the owned
-        #    docs for events all filter on not-yet-blocked state.
-        pairs = await self._url_repo.list_active_alias_domain_by_dest_host(host)
+        # 1. Collect BEFORE the flip. The eviction sets are status-blind
+        #    on purpose: a re-delivered block (the consumer's normal retry
+        #    path) must still evict entries the first attempt flipped but
+        #    failed to evict, or cached ACTIVE responses keep serving for
+        #    the full cache TTL. Only the owned-docs event set filters on
+        #    ACTIVE (an already-blocked link owes no second event).
+        triples = await self._url_repo.list_by_dest_host_with_urls(host)
+        pairs = [(alias, domain) for alias, domain, _ in triples]
         owned = await self._url_repo.list_active_owned_by_dest_host(host)
-        legacy_ids = await self._legacy_repo.list_unblocked_ids_by_dest_host(host)
-        emoji_ids = await self._emoji_repo.list_unblocked_ids_by_dest_host(host)
+        legacy_ids = [c for c, _ in await self._legacy_repo.list_by_dest_host(host)]
+        emoji_ids = [a for a, _ in await self._emoji_repo.list_by_dest_host(host)]
 
         # 2. Flip — all three collections.
         blocked = await self._url_repo.block_active_by_dest_host(host, reason=reason)
@@ -127,16 +132,16 @@ class SafetyEnforcer:
         collections, and leave the rest of the host serving. The narrow
         sibling of ``block_host`` — same collect → flip → evict → notify
         order, same idempotence, host verdict deliberately NOT implied."""
-        triples = await self._url_repo.list_active_by_dest_host_with_urls(host)
+        triples = await self._url_repo.list_by_dest_host_with_urls(host)
         pairs = [(alias, domain) for alias, domain, url in triples if matcher(url)]
         legacy_hits = [
             (code, url)
-            for code, url in await self._legacy_repo.list_unblocked_by_dest_host(host)
+            for code, url in await self._legacy_repo.list_by_dest_host(host)
             if matcher(url)
         ]
         emoji_hits = [
             (alias, url)
-            for alias, url in await self._emoji_repo.list_unblocked_by_dest_host(host)
+            for alias, url in await self._emoji_repo.list_by_dest_host(host)
             if matcher(url)
         ]
 
@@ -169,6 +174,40 @@ class SafetyEnforcer:
         return EnforcementResult(
             host=host,
             blocked_count=blocked,
+            legacy_count=legacy,
+            cache_invalidated=evicted,
+        )
+
+    async def unblock_host(self, host: str) -> EnforcementResult:
+        """Reverse a wrong host-wide block across all three collections:
+        flip back everything carrying the safety stamp, then evict so
+        cached 451s stop serving. Flip-then-evict (the reverse of the
+        block's order) so a rebuilt cache entry always sees the restored
+        state. Manual per-link operator bans (no ``blocked_reason``) are
+        never touched."""
+        unblocked = await self._url_repo.unblock_by_dest_host(host)
+        legacy_ids = [c for c, _ in await self._legacy_repo.list_by_dest_host(host)]
+        emoji_ids = [a for a, _ in await self._emoji_repo.list_by_dest_host(host)]
+        legacy = await self._legacy_repo.unblock_by_dest_host(host)
+        legacy += await self._emoji_repo.unblock_by_dest_host(host)
+        triples = await self._url_repo.list_by_dest_host_with_urls(host)
+        evicted = await self._evict(
+            [(alias, domain) for alias, domain, _ in triples],
+            system_extra=[
+                *legacy_ids,
+                *(v2_lookup_code(alias) for alias in emoji_ids),
+            ],
+        )
+        log.info(
+            "safety_host_unblocked",
+            host=host,
+            unblocked_count=unblocked,
+            legacy_count=legacy,
+            cache_invalidated=evicted,
+        )
+        return EnforcementResult(
+            host=host,
+            blocked_count=unblocked,
             legacy_count=legacy,
             cache_invalidated=evicted,
         )

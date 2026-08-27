@@ -293,34 +293,56 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         return doc is not None
 
     # ── Safety enforcement surface ────────────────────────────────────────
-    # All three ride the sparse dest_registrable/dest.host paths stamped at
-    # create time; docs that predate the backfill simply don't match, which
-    # is why the backfill runs before enforcement is enabled.
+    # Equality matches on dest.host, served by the sparse dest_host index
+    # (dest_registrable covers the domain-keyed sweep pivots). Docs that
+    # predate the backfill simply don't match, which is why the backfill
+    # runs before enforcement is enabled.
 
-    async def list_active_alias_domain_by_dest_host(
-        self, host: str, *, limit: int = 50_000
-    ) -> list[tuple[str, str]]:
-        """(alias, domain) of every ACTIVE link pointing at *host* — the
-        cache-invalidation set for a block."""
-        cursor = self._col.find(
-            {"dest.host": host, "status": UrlStatus.ACTIVE.value},
-            {"alias": 1, "domain": 1},
-        ).limit(limit)
-        docs = await cursor.to_list(length=limit)
-        return [(d["alias"], d.get("domain", "")) for d in docs]
-
-    async def list_active_by_dest_host_with_urls(
+    async def list_by_dest_host_with_urls(
         self, host: str, *, limit: int = 50_000
     ) -> list[tuple[str, str, str]]:
-        """(alias, domain, long_url) of every ACTIVE link pointing at
-        *host* — the candidate set for scoped enforcement, where the
-        caller keeps only the long_urls its pattern actually matches."""
+        """(alias, domain, long_url) of every link pointing at *host*,
+        regardless of status — the enforcement candidate and
+        cache-invalidation set. Deliberately status-blind: a re-delivered
+        block must still evict the entries its first attempt flipped but
+        failed to evict, or cached ACTIVE responses keep serving for the
+        full cache TTL."""
         cursor = self._col.find(
-            {"dest.host": host, "status": UrlStatus.ACTIVE.value},
+            {"dest.host": host},
             {"alias": 1, "domain": 1, "long_url": 1},
         ).limit(limit)
         docs = await cursor.to_list(length=limit)
+        if len(docs) >= limit:
+            log.warning(
+                "dest_host_listing_truncated",
+                collection=self._collection_name,
+                host=host,
+                limit=limit,
+            )
         return [(d["alias"], d.get("domain", ""), d.get("long_url", "")) for d in docs]
+
+    async def unblock_by_dest_host(self, host: str) -> int:
+        """Reverse a safety block: flip BLOCKED links pointing at *host*
+        back to ACTIVE. Scoped to docs carrying ``blocked_reason`` (the
+        safety stamp) so a manual operator ban is never undone by a
+        verdict reversal. The stamps stay — ``unblocked_at`` records the
+        reversal, and the doc remembers both events."""
+        now = datetime.now(timezone.utc)
+        result = await self._col.update_many(
+            {
+                "dest.host": host,
+                "status": UrlStatus.BLOCKED.value,
+                "blocked_reason": {"$exists": True},
+            },
+            {
+                "$set": {
+                    "status": UrlStatus.ACTIVE.value,
+                    "unblocked_at": now,
+                    "updated_at": now,
+                }
+            },
+        )
+        return int(result.modified_count)
 
     async def list_active_owned_by_dest_host(
         self, host: str, *, limit: int = 1_000
@@ -359,6 +381,15 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             {"$limit": limit},
         ]
         docs = await self._aggregate(pipeline)
+        if len(docs) >= limit:
+            # Same loud-truncation contract as the recent-screen sweep: a
+            # newly listed domain with more hosts than the cap is partially
+            # swept, and silence would read as full coverage.
+            log.warning(
+                "feed_delta_hosts_truncated",
+                registrable_domain=registrable_domain,
+                limit=limit,
+            )
         return [(d["_id"], d.get("sample_url", "")) for d in docs if d.get("_id")]
 
     async def list_recent_destination_hosts(

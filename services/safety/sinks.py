@@ -13,6 +13,7 @@ redirect regardless of the safety pipeline's health.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Protocol
 
 from infrastructure.logging import get_logger
@@ -32,14 +33,31 @@ class NullSafetySink:
 
 
 class InlineSafetySink:
-    """Runs the analyzer in-process. The full analysis (Mongo lookups +
-    Discord embed) rides the request that triggered it, which is the
-    accepted cost of the no-worker rung."""
+    """Runs the analyzer in-process.
 
-    def __init__(self, analyzer: SafetyAnalyzer) -> None:
+    ``background=True`` (the app's no-worker rung) detaches the analysis
+    onto its own task so a report POST never waits on Mongo scans, regex
+    passes and Discord webhooks — a multi-host report would otherwise
+    time out at the gateway after storage already succeeded. The worker's
+    own sweeps keep the default synchronous form, which is what bounds a
+    feed delta to one analysis at a time."""
+
+    def __init__(self, analyzer: SafetyAnalyzer, *, background: bool = False) -> None:
         self._analyzer = analyzer
+        self._background = background
+        # Strong refs: a bare create_task result can be garbage-collected
+        # mid-flight.
+        self._tasks: set[asyncio.Task] = set()
 
     async def emit(self, event: SafetyAnalyzeEvent) -> None:
+        if not self._background:
+            await self._run(event)
+            return
+        task = asyncio.create_task(self._run(event))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _run(self, event: SafetyAnalyzeEvent) -> None:
         try:
             await self._analyzer.analyze(event)
         except Exception as exc:

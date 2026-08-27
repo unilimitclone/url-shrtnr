@@ -2265,19 +2265,13 @@ class TestUrlServiceGeoRules:
         max_emoji_alias_length."""
         import pycountry
 
-        from services.url_service import _validate_geo_rules
+        from services.url_service import _validate_geo_rules_shape
 
         codes = [c.alpha_2 for c in pycountry.countries][:51]
         rules = {code: "https://example.com/x" for code in codes}
 
         with pytest.raises(ValidationError) as exc:
-            _validate_geo_rules(
-                rules,
-                blocked_self_domains=(SYSTEM_DEFAULT_DOMAIN,),
-                patterns=[],
-                timeout=0.2,
-                max_countries=50,
-            )
+            _validate_geo_rules_shape(rules, max_countries=50)
         assert exc.value.field == "geo_rules"
 
     @pytest.mark.asyncio
@@ -2338,10 +2332,10 @@ class TestUrlServiceGeoRules:
             },
         )
         await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
-        # One fetch by the L0 gate (whose provider caches with a TTL in
-        # production; ttl=0 in this helper) + ONE shared fetch for all
-        # three geo destinations — never a fetch per destination.
-        assert blocked_url_repo.get_patterns.await_count == 2
+        # Every geo destination runs the FULL gate: one fetch for the
+        # long_url check plus one per destination (the gate's provider
+        # caches with a TTL in production; ttl=0 in this helper).
+        assert blocked_url_repo.get_patterns.await_count == 4
 
     @pytest.mark.asyncio
     async def test_update_sets_geo_rules(self):
