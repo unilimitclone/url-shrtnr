@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
+from pymongo.errors import PyMongoError
 
 from schemas.models.scheduled_task import ScheduledTaskDoc
 from services.scheduler.registry import ScheduledTask, TaskRegistry
@@ -19,13 +21,44 @@ def _repo() -> AsyncMock:
     return repo
 
 
-def _row(name: str, schedule: str | None = "0 * * * *") -> ScheduledTaskDoc:
+def _row(
+    name: str,
+    schedule: str | None = "0 * * * *",
+    claim_token: str | None = None,
+) -> ScheduledTaskDoc:
     return ScheduledTaskDoc(
         _id=name,
         schedule=schedule,
         enabled=True,
         next_run_at=datetime.now(timezone.utc),
+        claim_token=claim_token,
     )
+
+
+def _registry_with(name: str, schedule: str | None = "0 * * * *") -> TaskRegistry:
+    reg = TaskRegistry()
+
+    async def fn() -> dict | None:
+        return None
+
+    reg.register(ScheduledTask(name=name, fn=fn, schedule=schedule))
+    return reg
+
+
+async def _run_until_first_claim(sched: TaskScheduler, repo: AsyncMock) -> None:
+    """Drive run() until claim_due has been polled once, then cancel."""
+    task = asyncio.create_task(sched.run())
+    try:
+
+        async def _wait() -> None:
+            while not repo.claim_due.await_count:
+                await asyncio.sleep(0.005)
+
+        await asyncio.wait_for(_wait(), timeout=2)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 class TestSyncRegistry:
@@ -57,6 +90,33 @@ class TestSyncRegistry:
         await TaskScheduler(repo, reg).sync_registry()
 
         repo.delete_by_id.assert_not_awaited()
+
+
+class TestRun:
+    @pytest.mark.asyncio
+    async def test_boot_sync_retries_until_success(self):
+        """A transient Mongo error during boot-time sync must not escape
+        run() and kill the scheduler — retry until it lands."""
+        repo = _repo()
+        repo.ensure_task = AsyncMock(side_effect=[PyMongoError("boot flake"), None])
+        repo.claim_due = AsyncMock(return_value=None)
+        sched = TaskScheduler(repo, _registry_with("a"), poll_interval=0.005)
+
+        await _run_until_first_claim(sched, repo)
+
+        assert repo.ensure_task.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_claim_scoped_to_registered_names(self):
+        """A runner only ever claims tasks it has a handler for, so a
+        deploy-overlap process can't swallow another process's occurrence."""
+        repo = _repo()
+        repo.claim_due = AsyncMock(return_value=None)
+        sched = TaskScheduler(repo, _registry_with("feed-sync"), poll_interval=0.005)
+
+        await _run_until_first_claim(sched, repo)
+
+        assert repo.claim_due.await_args.kwargs["names"] == ("feed-sync",)
 
 
 class TestExecute:
@@ -115,11 +175,22 @@ class TestExecute:
         assert repo.finish_run.await_args.kwargs["next_run_at"] is None
 
     @pytest.mark.asyncio
-    async def test_unknown_task_finishes_with_error_and_stored_schedule(self):
+    async def test_unknown_task_logged_not_finished(self):
+        """Defensive only — the names-scoped claim makes this unreachable.
+        Never finish_run: consuming the occurrence would swallow a run the
+        process WITH the handler should get; the lease expiry self-heals."""
         repo = _repo()
         await TaskScheduler(repo, TaskRegistry())._execute(_row("ghost"))
 
-        kwargs = repo.finish_run.await_args.kwargs
-        assert kwargs["result"].status == "error"
-        # Re-armed from the STORED schedule so a knowing process can claim it.
-        assert kwargs["next_run_at"] is not None
+        repo.finish_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_finish_is_fenced_to_claim_token(self):
+        """The claim token from claim_due is threaded through to finish_run
+        so a superseded run can't clobber the active claim."""
+        reg = _registry_with("feed-sync")
+        repo = _repo()
+
+        await TaskScheduler(repo, reg)._execute(_row("feed-sync", claim_token="tok-1"))
+
+        assert repo.finish_run.await_args.kwargs["claim_token"] == "tok-1"

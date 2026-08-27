@@ -44,15 +44,34 @@ class TaskScheduler:
 
     async def run(self) -> None:
         """Long-lived task; cancellation is the shutdown path."""
-        await self.sync_registry()
+        while True:
+            try:
+                await self.sync_registry()
+                break
+            except asyncio.CancelledError:
+                log.info("task_scheduler_stopped")
+                raise
+            except Exception as exc:
+                # Transient Mongo trouble at boot (or losing the ensure_task
+                # upsert race) must not kill the scheduler for the process
+                # lifetime — log and retry until cancelled.
+                log.error(
+                    "task_registry_sync_failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                await asyncio.sleep(self._poll_interval)
+        # Registrations are fixed before run() starts, so the claim scope
+        # is computed once.
+        names = tuple(t.name for t in self._registry.all())
         log.info(
             "task_scheduler_started",
             poll_interval=self._poll_interval,
-            tasks=[t.name for t in self._registry.all()],
+            tasks=list(names),
         )
         while True:
             try:
-                row = await self._repo.claim_due(lease_seconds=self._lease)
+                row = await self._repo.claim_due(names=names, lease_seconds=self._lease)
                 if row is None:
                     await asyncio.sleep(self._poll_interval)
                     continue
@@ -103,21 +122,11 @@ class TaskScheduler:
         name = row.id or ""
         task = self._registry.get(name)
         if task is None:
-            # Claimed a doc this process has no handler for (orphan or
-            # rollout skew). Record and re-arm from the STORED schedule so
-            # it stays claimable by a process that does know it, without
-            # hot-looping here.
+            # Defensive only — claim_due is scoped to registered names, so
+            # this should be unreachable. Never finish_run here: consuming
+            # the occurrence would swallow a run that belongs to a process
+            # WITH the handler; letting the lease expire self-heals.
             log.warning("task_unknown", task=name)
-            await self._repo.finish_run(
-                name,
-                result=TaskRunResult(
-                    at=datetime.now(timezone.utc),
-                    status="error",
-                    duration_ms=0,
-                    detail="no handler registered in this process",
-                ),
-                next_run_at=compute_next_run(row.schedule, datetime.now(timezone.utc)),
-            )
             return
 
         log.info("task_run_started", task=name)
@@ -138,6 +147,7 @@ class TaskScheduler:
         finished_at = datetime.now(timezone.utc)
         await self._repo.finish_run(
             name,
+            claim_token=row.claim_token,
             result=TaskRunResult(
                 at=finished_at, status=status, duration_ms=duration_ms, detail=detail
             ),
