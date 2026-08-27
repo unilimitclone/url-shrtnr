@@ -99,3 +99,28 @@ class TestUnknownTrigger:
         policy = AdmissionPolicy(_redis(), daily_budget=10)
         decision = await policy.decide(_event("mystery"))
         assert not decision.admitted and decision.reason == "unknown_trigger"
+
+
+class TestEscalation:
+    """A toxic screening finding asking for the host-wide decision: sweep
+    exclusion is lifted (into the budget), everything else is unchanged."""
+
+    @pytest.mark.asyncio
+    async def test_toxic_sweep_competes_for_the_budget(self):
+        policy = AdmissionPolicy(_redis(used=1), daily_budget=5, admit_sweeps=False)
+        d = await policy.decide(_event("sweep"), escalation=True)
+        assert d.admitted and d.reason == "within_budget"
+
+    @pytest.mark.asyncio
+    async def test_toxic_sweep_still_bounded_by_the_budget(self):
+        policy = AdmissionPolicy(_redis(used=6), daily_budget=5, admit_sweeps=False)
+        d = await policy.decide(_event("sweep"), escalation=True)
+        assert not d.admitted and d.reason == "budget_exhausted"
+
+    @pytest.mark.asyncio
+    async def test_report_escalation_stays_free(self):
+        redis = _redis()
+        policy = AdmissionPolicy(redis, daily_budget=5)
+        d = await policy.decide(_event("report"), escalation=True)
+        assert d.admitted and d.reason == "always"
+        redis.incr.assert_not_awaited()

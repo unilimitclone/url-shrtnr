@@ -27,6 +27,8 @@ class VerdictRepository(BaseRepository[VerdictDoc]):
         sample_url: str | None = None,
         context: dict | None = None,
         decided_by: str = "system",
+        scope: str | None = None,
+        path_pattern: str | None = None,
         provenance: dict | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
@@ -41,6 +43,13 @@ class VerdictRepository(BaseRepository[VerdictDoc]):
             "decided_by": decided_by,
             "updated_at": now,
         }
+        # Scope bounds what enforcement and the create gate may do with a
+        # toxic tier; a re-verdict that says nothing about scope must not
+        # silently erase (or resurrect) an earlier bound, so absent means
+        # untouched.
+        if scope is not None:
+            fields["scope"] = scope
+            fields["path_pattern"] = path_pattern
         # Deep-tier provenance (model, prompt_version, classification,
         # confidence, evidence, egress, corroborated) — merged only when an
         # investigation produced this verdict, so screening writes stay

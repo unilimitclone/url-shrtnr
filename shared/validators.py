@@ -189,10 +189,21 @@ def validate_blocked_url(
     Returns:
         True if the URL is allowed (no pattern matched), False if blocked.
     """
+    return matching_blocked_pattern(url, patterns, timeout=timeout) is None
+
+
+def matching_blocked_pattern(
+    url: str, patterns: Sequence[str], timeout: float = 0.2
+) -> str | None:
+    """Return the first blocked pattern that matches *url*, or None.
+
+    Same matching semantics as ``validate_blocked_url`` but keeps WHICH
+    pattern hit — safety enforcement scopes its action to that pattern.
+    """
     for pattern in patterns:
         try:
             if regex.search(pattern, url, timeout=timeout):
-                return False
+                return pattern
         except TimeoutError:
             # Fail open (a pathological pattern must not take down link
             # creation) but never silently: a timing-out pattern is an
@@ -200,7 +211,7 @@ def validate_blocked_url(
             log.warning(
                 "blocked_pattern_timeout", pattern=pattern, timeout_seconds=timeout
             )
-    return True
+    return None
 
 
 def validate_safe_redirect(url: str, fallback: str = "/dashboard") -> str:

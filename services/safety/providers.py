@@ -23,7 +23,7 @@ from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.feed_domain_repository import FeedDomainRepository
 from repositories.verdict_repository import VerdictRepository
 from schemas.enums.safety import VerdictTier
-from shared.validators import validate_blocked_url
+from shared.validators import matching_blocked_pattern
 
 log = get_logger(__name__)
 
@@ -32,6 +32,14 @@ log = get_logger(__name__)
 class ProviderVerdict:
     tier: VerdictTier
     reason: str
+    # How far the SIGNAL itself reaches — "host" (a domain feed lists the
+    # whole host), "links" (a URL lookup judged one exact URL), or
+    # "path_pattern" (a blocklist regex, carried in ``path_pattern``).
+    # Scope describes the evidence; the analyzer decides what authority
+    # it carries — screening never turns any of these into a host-wide
+    # block on its own.
+    scope: str = "host"
+    path_pattern: str | None = None
 
 
 class AnalysisProvider(Protocol):
@@ -128,6 +136,7 @@ class WebRiskProvider:
                 return ProviderVerdict(
                     tier=VerdictTier.TOXIC,
                     reason=f"flagged by Google Web Risk ({types})",
+                    scope="links",
                 )
         except Exception as exc:
             log.warning(
@@ -143,7 +152,12 @@ class ToxicVerdictProvider:
     has judged toxic (report-triggered today, deep/L2 later) refuses new
     link creation instantly — one verdict write powers analysis dedupe,
     click-time enforcement AND the create gate, with no copying into
-    other lists. One indexed point read per create."""
+    other lists. One indexed point read per create.
+
+    The verdict's SCOPE bounds the refusal: a host-scoped verdict refuses
+    everything on the host, a pattern-scoped one refuses only matching
+    URLs, and a links-scoped one only the exact judged URL — a toxic page
+    on a shared platform never turns the whole platform away."""
 
     name = "toxic_verdict"
 
@@ -155,7 +169,11 @@ class ToxicVerdictProvider:
     ) -> ProviderVerdict | None:
         try:
             verdict = await self._repo.find_by_host(host)
-            if verdict is not None and verdict.tier is VerdictTier.TOXIC:
+            if (
+                verdict is not None
+                and verdict.tier is VerdictTier.TOXIC
+                and self._covers(verdict, url)
+            ):
                 return ProviderVerdict(
                     tier=VerdictTier.TOXIC,
                     reason=(
@@ -166,6 +184,17 @@ class ToxicVerdictProvider:
         except Exception as exc:
             log.warning("safety_provider_failed", provider=self.name, error=str(exc))
         return None
+
+    @staticmethod
+    def _covers(verdict, url: str) -> bool:
+        scope = verdict.scope or "host"
+        if scope == "host":
+            return True
+        if scope == "path_pattern" and verdict.path_pattern:
+            return matching_blocked_pattern(url, (verdict.path_pattern,)) is not None
+        if scope == "links" and verdict.sample_url:
+            return url == verdict.sample_url
+        return False
 
 
 class BlockedPatternProvider:
@@ -211,11 +240,13 @@ class BlockedPatternProvider:
     ) -> ProviderVerdict | None:
         try:
             patterns = await self._patterns()
-            # validate_blocked_url returns True = ALLOWED (inverted name).
-            if not validate_blocked_url(url, patterns, timeout=self._timeout):
+            matched = matching_blocked_pattern(url, patterns, timeout=self._timeout)
+            if matched is not None:
                 return ProviderVerdict(
                     tier=VerdictTier.TOXIC,
                     reason="destination matches an operator blocklist pattern",
+                    scope="path_pattern",
+                    path_pattern=matched,
                 )
         except Exception as exc:
             log.warning("safety_provider_failed", provider=self.name, error=str(exc))

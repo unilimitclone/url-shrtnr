@@ -61,13 +61,21 @@ class AdmissionPolicy:
         self._daily_budget = daily_budget
         self._admit_sweeps = admit_sweeps
 
-    async def decide(self, event: SafetyAnalyzeEvent) -> AdmissionDecision:
+    async def decide(
+        self, event: SafetyAnalyzeEvent, *, escalation: bool = False
+    ) -> AdmissionDecision:
+        """*escalation* marks a toxic screening finding asking for the
+        host-wide decision (vs. an unresolved screening ending). Sweep
+        novelty stays excluded, but a sweep that actually HIT something
+        toxic competes for the budget: the deep tier is the only thing
+        allowed to widen that hit to a host block, so refusing it outright
+        would leave feed-listed hosts permanently half-enforced."""
         trigger = event.trigger
         if trigger in _ALWAYS_ADMITTED:
             return AdmissionDecision(True, "always")
-        if trigger == "sweep" and not self._admit_sweeps:
+        if trigger == "sweep" and not self._admit_sweeps and not escalation:
             return AdmissionDecision(False, "sweep_excluded")
-        if trigger in _BUDGETED or (trigger == "sweep" and self._admit_sweeps):
+        if trigger in _BUDGETED or trigger == "sweep":
             return await self._within_budget()
         # A trigger this policy has never heard of is a coding error
         # upstream; refuse rather than spend on it silently.

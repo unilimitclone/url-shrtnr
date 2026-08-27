@@ -199,3 +199,67 @@ class TestBlockAliases:
         result = await enforcer.block_aliases([], host="x.com", reason="r")
         assert result.blocked_count == 0
         url_cache.invalidate_many.assert_not_awaited()
+
+
+class TestBlockMatching:
+    @pytest.mark.asyncio
+    async def test_blocks_only_matching_urls_across_all_collections(self):
+        """Scoped enforcement: the matcher decides per long URL; the rest
+        of the host keeps serving in every collection."""
+        events = AsyncMock()
+        enforcer, url_repo, _url_cache, legacy_repo, emoji_repo = _build(
+            [], [], 0, events=events
+        )
+        url_repo.list_active_by_dest_host_with_urls = AsyncMock(
+            return_value=[
+                ("evil1", "spoo.me", "https://sites.google.com/view/evil/a"),
+                ("club", "spoo.me", "https://sites.google.com/view/school-club/x"),
+                ("evil2", "cust.om", "https://sites.google.com/view/evil/b"),
+            ]
+        )
+        url_repo.list_active_owned_by_aliases = AsyncMock(return_value=[])
+        url_repo.block_active_by_aliases = AsyncMock(return_value=2)
+        legacy_repo.list_unblocked_by_dest_host = AsyncMock(
+            return_value=[
+                ("old1", "https://sites.google.com/view/evil/c"),
+                ("old2", "https://sites.google.com/view/fine/d"),
+            ]
+        )
+        legacy_repo.block_by_ids = AsyncMock(return_value=1)
+        emoji_repo.list_unblocked_by_dest_host = AsyncMock(return_value=[])
+        emoji_repo.block_by_ids = AsyncMock(return_value=0)
+
+        result = await enforcer.block_matching(
+            "sites.google.com",
+            matcher=lambda u: "/view/evil/" in u,
+            reason="phishing kit",
+        )
+
+        pairs = url_repo.block_active_by_aliases.await_args.args[0]
+        assert pairs == [("evil1", "spoo.me"), ("evil2", "cust.om")]
+        assert legacy_repo.block_by_ids.await_args.args[0] == ["old1"]
+        # Host-wide flips never touched.
+        url_repo.block_active_by_dest_host.assert_not_awaited()
+        legacy_repo.block_by_dest_host.assert_not_awaited()
+        emoji_repo.block_by_dest_host.assert_not_awaited()
+        assert result.blocked_count == 2
+        assert result.legacy_count == 1
+
+    @pytest.mark.asyncio
+    async def test_nothing_matches_is_a_noop(self):
+        enforcer, url_repo, _cache, legacy_repo, emoji_repo = _build([], [], 0)
+        url_repo.list_active_by_dest_host_with_urls = AsyncMock(
+            return_value=[("a", "spoo.me", "https://ok.com/x")]
+        )
+        url_repo.list_active_owned_by_aliases = AsyncMock(return_value=[])
+        url_repo.block_active_by_aliases = AsyncMock(return_value=0)
+        legacy_repo.list_unblocked_by_dest_host = AsyncMock(return_value=[])
+        legacy_repo.block_by_ids = AsyncMock(return_value=0)
+        emoji_repo.list_unblocked_by_dest_host = AsyncMock(return_value=[])
+        emoji_repo.block_by_ids = AsyncMock(return_value=0)
+
+        result = await enforcer.block_matching(
+            "ok.com", matcher=lambda u: False, reason="r"
+        )
+        assert result.blocked_count == 0
+        assert result.legacy_count == 0

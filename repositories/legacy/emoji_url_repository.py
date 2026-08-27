@@ -47,6 +47,32 @@ class EmojiUrlRepository(BaseRepository[EmojiUrlDoc]):
         docs = await cursor.to_list(length=limit)
         return [d["_id"] for d in docs]
 
+    async def list_unblocked_by_dest_host(
+        self, host: str, *, limit: int = 50_000
+    ) -> list[tuple[str, str]]:
+        """(alias, url) of not-yet-blocked emoji links pointing at *host*."""
+        cursor = self._col.find(
+            {"dest.host": host, "blocked": {"$ne": True}}, {"_id": 1, "url": 1}
+        ).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        return [(d["_id"], d.get("url", "")) for d in docs]
+
+    async def block_by_ids(self, aliases: list[str], *, reason: str) -> int:
+        """Flip specific not-yet-blocked emoji links by alias."""
+        if not aliases:
+            return 0
+        result = await self._col.update_many(
+            {"_id": {"$in": aliases}, "blocked": {"$ne": True}},
+            {
+                "$set": {
+                    "blocked": True,
+                    "blocked_at": datetime.now(timezone.utc),
+                    "blocked_reason": reason,
+                }
+            },
+        )
+        return int(result.modified_count)
+
     async def block_by_dest_host(self, host: str, *, reason: str) -> int:
         """Flip every not-yet-blocked emoji link pointing at *host*."""
         result = await self._col.update_many(

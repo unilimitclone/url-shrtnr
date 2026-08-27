@@ -309,6 +309,19 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         docs = await cursor.to_list(length=limit)
         return [(d["alias"], d.get("domain", "")) for d in docs]
 
+    async def list_active_by_dest_host_with_urls(
+        self, host: str, *, limit: int = 50_000
+    ) -> list[tuple[str, str, str]]:
+        """(alias, domain, long_url) of every ACTIVE link pointing at
+        *host* — the candidate set for scoped enforcement, where the
+        caller keeps only the long_urls its pattern actually matches."""
+        cursor = self._col.find(
+            {"dest.host": host, "status": UrlStatus.ACTIVE.value},
+            {"alias": 1, "domain": 1, "long_url": 1},
+        ).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        return [(d["alias"], d.get("domain", ""), d.get("long_url", "")) for d in docs]
+
     async def list_active_owned_by_dest_host(
         self, host: str, *, limit: int = 1_000
     ) -> list[UrlV2Doc]:

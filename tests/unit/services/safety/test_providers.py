@@ -20,6 +20,8 @@ class TestBlockedPatternProvider:
         )
         assert verdict is not None
         assert verdict.tier == VerdictTier.TOXIC
+        assert verdict.scope == "path_pattern"
+        assert verdict.path_pattern == r"(?i)corr\.php"
 
     @pytest.mark.asyncio
     async def test_no_match_abstains(self):
@@ -223,4 +225,89 @@ class TestToxicVerdictProvider:
                 "https://ok.com/x", "ok.com", "ok.com"
             )
             is None
+        )
+
+
+class TestToxicVerdictScope:
+    """The gate honours the verdict's scope: a narrow judgment on a shared
+    platform refuses only what it actually covers."""
+
+    def _repo(self, **fields) -> AsyncMock:
+        from datetime import datetime, timezone
+
+        from schemas.models.verdict import VerdictDoc
+
+        repo = AsyncMock()
+        repo.find_by_host = AsyncMock(
+            return_value=VerdictDoc(
+                host="sites.google.com",
+                tier=VerdictTier.TOXIC,
+                reason="phishing kit on one site",
+                updated_at=datetime.now(timezone.utc),
+                **fields,
+            )
+        )
+        return repo
+
+    @pytest.mark.asyncio
+    async def test_pattern_scope_refuses_only_matching_urls(self):
+        from services.safety.providers import ToxicVerdictProvider
+
+        repo = self._repo(
+            scope="path_pattern",
+            path_pattern=r"^https://sites\.google\.com/view/evil/.*",
+        )
+        provider = ToxicVerdictProvider(repo)
+        hit = await provider.analyze(
+            "https://sites.google.com/view/evil/login",
+            "sites.google.com",
+            "google.com",
+        )
+        assert hit is not None and hit.tier == VerdictTier.TOXIC
+        assert (
+            await provider.analyze(
+                "https://sites.google.com/view/school-club/home",
+                "sites.google.com",
+                "google.com",
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_links_scope_refuses_only_the_judged_url(self):
+        from services.safety.providers import ToxicVerdictProvider
+
+        repo = self._repo(
+            scope="links", sample_url="https://sites.google.com/view/evil/login"
+        )
+        provider = ToxicVerdictProvider(repo)
+        assert (
+            await provider.analyze(
+                "https://sites.google.com/view/evil/login",
+                "sites.google.com",
+                "google.com",
+            )
+            is not None
+        )
+        assert (
+            await provider.analyze(
+                "https://sites.google.com/view/other/page",
+                "sites.google.com",
+                "google.com",
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_absent_scope_means_host_wide(self):
+        from services.safety.providers import ToxicVerdictProvider
+
+        repo = self._repo()
+        assert (
+            await ToxicVerdictProvider(repo).analyze(
+                "https://sites.google.com/anything",
+                "sites.google.com",
+                "google.com",
+            )
+            is not None
         )

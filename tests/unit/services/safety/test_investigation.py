@@ -166,6 +166,9 @@ def _investigator(verdict_or_exc, *, policy=AutoBlockPolicy.CORROBORATED):
         return_value=AsyncMock(blocked_count=3, legacy_count=1)
     )
     enforcer.block_aliases = AsyncMock(return_value=AsyncMock(blocked_count=1))
+    enforcer.block_matching = AsyncMock(
+        return_value=AsyncMock(blocked_count=2, legacy_count=0)
+    )
     notifier = AsyncMock()
     inv = DeepInvestigator(
         runner,
@@ -298,6 +301,31 @@ class TestScopeAuthority:
         )
         assert d.action == "block_host"
 
+    @pytest.mark.asyncio
+    async def test_review_pending_toxic_claim_is_stored_unenforceable(self):
+        """An unapproved toxic claim must not enforce itself through the
+        store: re-enforcement and the create gate act on tier TOXIC, so a
+        review-pending claim is stored UNCERTAIN until a human upgrades."""
+        v = _verdict(Classification.SCAM_HOST, conf=Confidence.MEDIUM)
+        inv, verdict_repo, enforcer, _n = _investigator(v, policy=AutoBlockPolicy.BOTH)
+        await inv.investigate(_event())
+
+        enforcer.block_host.assert_not_awaited()
+        kwargs = verdict_repo.upsert_verdict.await_args.kwargs
+        assert kwargs["tier"] == VerdictTier.UNCERTAIN
+        assert kwargs["provenance"]["classification"] == "scam_host"
+
+    @pytest.mark.asyncio
+    async def test_alias_scoped_enactment_never_stores_a_host_scope(self):
+        """compromised_legit keeps the model's default HOST scope claim but
+        is enacted at alias scope — the store must say what was enacted."""
+        v = _verdict(Classification.COMPROMISED_LEGIT)
+        inv, verdict_repo, _e, _n = _investigator(v)
+        await inv.investigate(_event())
+
+        prov = verdict_repo.upsert_verdict.await_args.kwargs["provenance"]
+        assert prov["scope"] == "links"
+
     def test_narrow_scope_never_widens_an_uncorroborated_verdict(self):
         d = decide_authority(
             _verdict(Classification.SCAM_HOST, scope=Scope.PATH_PATTERN),
@@ -318,7 +346,11 @@ class TestScopeAuthority:
         await inv.investigate(_event())
 
         enforcer.block_host.assert_not_awaited()
-        enforcer.block_aliases.assert_awaited_once()
+        enforcer.block_aliases.assert_not_awaited()
+        enforcer.block_matching.assert_awaited_once()
+        matcher = enforcer.block_matching.await_args.kwargs["matcher"]
+        assert matcher("https://sites.google.com/view/evil/login")
+        assert not matcher("https://sites.google.com/view/school-club/home")
         prov = verdict_repo.upsert_verdict.await_args.kwargs["provenance"]
         assert prov["scope"] == "path_pattern"
         assert "sites" in prov["path_pattern"]

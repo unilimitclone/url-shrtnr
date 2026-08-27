@@ -32,6 +32,7 @@ from repositories.verdict_repository import VerdictRepository
 from schemas.enums.safety import VerdictTier
 from services.safety.enforcer import SafetyEnforcer
 from services.safety.events import SafetyAnalyzeEvent
+from shared.validators import matching_blocked_pattern
 
 log = get_logger(__name__)
 
@@ -281,6 +282,19 @@ class DeepInvestigator:
         decision = decide_authority(
             verdict, corroborated=corroborated, policy=self._policy
         )
+        # The stored tier and scope drive enforcement (re-enforcement and
+        # the create gate read them), so they record what was ENACTED, not
+        # what was claimed: a toxic claim waiting on review must not
+        # enforce itself through the store, and a claim enacted at alias
+        # scope must never be readable as a host-wide verdict.
+        stored_tier = decision.tier
+        if decision.tier is VerdictTier.TOXIC and not decision.auto:
+            stored_tier = VerdictTier.UNCERTAIN
+        stored_scope = verdict.scope.value
+        if decision.action == "block_host":
+            stored_scope = Scope.HOST.value
+        elif decision.action == "block_aliases" and verdict.scope is Scope.HOST:
+            stored_scope = Scope.LINKS.value
         provenance = {
             "model": self._model,
             "prompt_version": self._task.versioned_prompt,
@@ -289,14 +303,14 @@ class DeepInvestigator:
             "evidence": verdict.evidence,
             "egress": None,  # set by fetch_page tool usage; recorded in evidence
             "corroborated": corroborated,
-            "scope": verdict.scope.value,
+            "scope": stored_scope,
             "path_pattern": verdict.path_pattern,
             "scope_justification": verdict.scope_justification,
         }
         await self._verdict_repo.upsert_verdict(
             event.host,
             registrable_domain=event.registrable_domain,
-            tier=decision.tier,
+            tier=stored_tier,
             reason=verdict.reason,
             source="llm",
             trigger=event.trigger,
@@ -319,9 +333,13 @@ class DeepInvestigator:
         self, event: SafetyAnalyzeEvent, verdict: InvestigationVerdict
     ) -> bool:
         """An INDEPENDENT hard signal agreed with a toxic call. The report
-        trigger is itself a hard source; a feed/Web Risk hit shows up in
-        the evidence the model gathered."""
+        trigger is itself a hard source; so is a screening hit (operator
+        blocklist, feed, Web Risk) carried in the event context; a feed/
+        Web Risk hit also shows up in the evidence the model gathered."""
         if event.trigger == "report":
+            return True
+        screening = ((event.context or {}).get("screening") or "").lower()
+        if any(src in screening for src in ("feed", "web_risk", "blocked_pattern")):
             return True
         joined = " ".join(verdict.evidence).lower()
         return any(src in joined for src in ("feed:", "web_risk", "hard hit"))
@@ -343,21 +361,37 @@ class DeepInvestigator:
                 sample_url=event.url,
             )
         elif decision.action == "block_aliases":
-            pairs = await self._aliases_to_block(event)
-            result = await self._enforcer.block_aliases(
-                pairs, host=event.host, reason=verdict.reason
-            )
-            scope_note = (
-                f"pattern proposed for the blocklist: {verdict.path_pattern}"
-                if verdict.scope == Scope.PATH_PATTERN and verdict.path_pattern
-                else "specific links only, host left serving"
-            )
+            if verdict.scope == Scope.PATH_PATTERN and verdict.path_pattern:
+                # Pattern scope kills every matching link (all three
+                # collections), not just the reported ones; the pattern
+                # itself still waits for a human before it can refuse
+                # future creates via the blocklist.
+                pattern = verdict.path_pattern
+                result = await self._enforcer.block_matching(
+                    event.host,
+                    matcher=lambda u: (
+                        matching_blocked_pattern(u, (pattern,)) is not None
+                    ),
+                    reason=verdict.reason,
+                )
+                blocked_count, legacy_count = (
+                    result.blocked_count,
+                    result.legacy_count,
+                )
+                scope_note = f"pattern proposed for the blocklist: {pattern}"
+            else:
+                pairs = await self._aliases_to_block(event)
+                alias_result = await self._enforcer.block_aliases(
+                    pairs, host=event.host, reason=verdict.reason
+                )
+                blocked_count, legacy_count = alias_result.blocked_count, 0
+                scope_note = "specific links only, host left serving"
             await self._notifier.safety_action(
                 host=event.host,
                 reason=f"{verdict.reason} ({scope_note})",
                 trigger=event.trigger,
-                blocked_count=result.blocked_count,
-                legacy_count=0,
+                blocked_count=blocked_count,
+                legacy_count=legacy_count,
                 sample_url=event.url,
             )
         elif decision.action in ("review", "propose"):

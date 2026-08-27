@@ -9,9 +9,11 @@ subscriber). v1/emoji links have no status machine — they carry a single
 audit stamp the v2 docs get, and reversible where the manual deletes this
 replaces never were.
 
-Two blast radii, one machine: ``block_host`` is the host-wide verdict
-path; ``block_aliases`` blocks specific links without a host verdict —
-a compromised legitimate site keeps serving while its abusive paths die.
+Three blast radii, one machine: ``block_host`` is the host-wide verdict
+path; ``block_matching`` blocks every link whose long URL a matcher
+accepts (pattern-scoped enforcement on shared platforms); ``block_aliases``
+blocks named links — a compromised legitimate site keeps serving while
+its abusive paths die.
 
 Idempotent by construction: re-enforcing an already-blocked host matches
 nothing and is free, which is what lets repeat reports re-run enforcement
@@ -104,6 +106,60 @@ class SafetyEnforcer:
 
         log.info(
             "safety_host_blocked",
+            host=host,
+            blocked_count=blocked,
+            legacy_count=legacy,
+            cache_invalidated=evicted,
+            reason=reason,
+        )
+        return EnforcementResult(
+            host=host,
+            blocked_count=blocked,
+            legacy_count=legacy,
+            cache_invalidated=evicted,
+        )
+
+    async def block_matching(
+        self, host: str, *, matcher, reason: str
+    ) -> EnforcementResult:
+        """Scoped enforcement: block every link to *host* whose long URL
+        satisfies *matcher* (a ``str -> bool`` callable), across all three
+        collections, and leave the rest of the host serving. The narrow
+        sibling of ``block_host`` — same collect → flip → evict → notify
+        order, same idempotence, host verdict deliberately NOT implied."""
+        triples = await self._url_repo.list_active_by_dest_host_with_urls(host)
+        pairs = [(alias, domain) for alias, domain, url in triples if matcher(url)]
+        legacy_hits = [
+            (code, url)
+            for code, url in await self._legacy_repo.list_unblocked_by_dest_host(host)
+            if matcher(url)
+        ]
+        emoji_hits = [
+            (alias, url)
+            for alias, url in await self._emoji_repo.list_unblocked_by_dest_host(host)
+            if matcher(url)
+        ]
+
+        owned = await self._url_repo.list_active_owned_by_aliases(pairs)
+        blocked = await self._url_repo.block_active_by_aliases(pairs, reason=reason)
+        legacy = await self._legacy_repo.block_by_ids(
+            [code for code, _ in legacy_hits], reason=reason
+        )
+        legacy += await self._emoji_repo.block_by_ids(
+            [alias for alias, _ in emoji_hits], reason=reason
+        )
+
+        evicted = await self._evict(
+            pairs,
+            system_extra=[
+                *(code for code, _ in legacy_hits),
+                *(v2_lookup_code(alias) for alias, _ in emoji_hits),
+            ],
+        )
+        await self._emit_blocked(owned, reason)
+
+        log.info(
+            "safety_matching_blocked",
             host=host,
             blocked_count=blocked,
             legacy_count=legacy,

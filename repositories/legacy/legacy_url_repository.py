@@ -122,6 +122,33 @@ class LegacyUrlRepository(BaseRepository[LegacyUrlDoc]):
         docs = await cursor.to_list(length=limit)
         return [d["_id"] for d in docs]
 
+    async def list_unblocked_by_dest_host(
+        self, host: str, *, limit: int = 50_000
+    ) -> list[tuple[str, str]]:
+        """(short_code, url) of not-yet-blocked links pointing at *host* —
+        the candidate set for scoped enforcement."""
+        cursor = self._col.find(
+            {"dest.host": host, "blocked": {"$ne": True}}, {"_id": 1, "url": 1}
+        ).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        return [(d["_id"], d.get("url", "")) for d in docs]
+
+    async def block_by_ids(self, short_codes: list[str], *, reason: str) -> int:
+        """Flip specific not-yet-blocked links by short code."""
+        if not short_codes:
+            return 0
+        result = await self._col.update_many(
+            {"_id": {"$in": short_codes}, "blocked": {"$ne": True}},
+            {
+                "$set": {
+                    "blocked": True,
+                    "blocked_at": datetime.now(timezone.utc),
+                    "blocked_reason": reason,
+                }
+            },
+        )
+        return int(result.modified_count)
+
     async def block_by_dest_host(self, host: str, *, reason: str) -> int:
         """Flip every not-yet-blocked link pointing at *host*. Returns the
         number flipped; idempotent like the v2 status flip. ``blocked_at``
