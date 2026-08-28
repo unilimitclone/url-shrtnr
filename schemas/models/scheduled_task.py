@@ -35,6 +35,10 @@ class ScheduledTaskDoc(MongoBaseModel):
     next_run_at: datetime | None = None
     # Lease: a claimed task is invisible to other runners until this passes.
     claimed_until: datetime | None = None
+    # Fence: stamped fresh by every claim, checked by finish_run — a run
+    # that outlived its lease and got superseded can't clobber the active
+    # claim's lease or run state.
+    claim_token: str | None = None
     # Ops-facing pause switch; initialized from the registration default,
     # never overwritten by registry sync.
     enabled: bool = True

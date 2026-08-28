@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from repositories.scheduled_task_repository import ScheduledTaskRepository
 from schemas.models.scheduled_task import TaskRunResult
@@ -40,6 +41,18 @@ class TestEnsureTask:
         # Runtime state must never be clobbered on existing docs.
         assert "$set" not in args[1]
 
+    @pytest.mark.asyncio
+    async def test_concurrent_upsert_race_is_success(self):
+        """Two processes racing the boot upsert on the unique _id: the
+        loser's E11000 means the doc exists — that's success, not failure."""
+        col = _col()
+        col.update_one = AsyncMock(side_effect=DuplicateKeyError("E11000 dup key"))
+        repo = ScheduledTaskRepository(col)
+
+        await repo.ensure_task(
+            "feed-sync", schedule="0 * * * *", enabled_default=True, next_run_at=None
+        )
+
 
 class TestClaimDue:
     @pytest.mark.asyncio
@@ -49,17 +62,35 @@ class TestClaimDue:
         repo = ScheduledTaskRepository(col)
 
         before = datetime.now(timezone.utc)
-        assert await repo.claim_due(lease_seconds=600) is None
+        assert await repo.claim_due(names=("feed-sync",), lease_seconds=600) is None
 
         args, kwargs = col.find_one_and_update.await_args
         query, update = args
         assert query["enabled"] is True
         assert "$lte" in query["next_run_at"]
         assert {"claimed_until": None} in query["$or"]
+        # Scoped to this runner's handlers — never claims a task it can't run.
+        assert query["_id"] == {"$in": ["feed-sync"]}
         lease = update["$set"]["claimed_until"]
         assert lease >= before + timedelta(seconds=599)
         assert kwargs["sort"] == [("next_run_at", 1)]
         assert kwargs["return_document"] == ReturnDocument.AFTER
+
+    @pytest.mark.asyncio
+    async def test_claim_stamps_fresh_token_each_claim(self):
+        col = _col()
+        col.find_one_and_update = AsyncMock(return_value=None)
+        repo = ScheduledTaskRepository(col)
+
+        await repo.claim_due(names=("feed-sync",), lease_seconds=60)
+        await repo.claim_due(names=("feed-sync",), lease_seconds=60)
+
+        tokens = [
+            c.args[1]["$set"]["claim_token"]
+            for c in col.find_one_and_update.await_args_list
+        ]
+        assert all(tokens)
+        assert tokens[0] != tokens[1]
 
     @pytest.mark.asyncio
     async def test_claim_returns_doc_model(self):
@@ -70,32 +101,108 @@ class TestClaimDue:
                 "schedule": "0 * * * *",
                 "enabled": True,
                 "next_run_at": datetime.now(timezone.utc),
+                "claim_token": "tok-1",
             }
         )
         repo = ScheduledTaskRepository(col)
-        doc = await repo.claim_due(lease_seconds=60)
+        doc = await repo.claim_due(names=("feed-sync",), lease_seconds=60)
         assert doc is not None
         assert doc.id == "feed-sync"
+        # The stamped token comes back on the doc so the runner can fence
+        # finish_run to this claim.
+        assert doc.claim_token == "tok-1"
 
 
 class TestFinishRun:
     @pytest.mark.asyncio
     async def test_records_result_and_releases_lease(self):
         col = _col()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=1))
         repo = ScheduledTaskRepository(col)
         result = TaskRunResult(
             at=datetime.now(timezone.utc), status="ok", duration_ms=42, detail=None
         )
         nxt = datetime.now(timezone.utc) + timedelta(hours=1)
 
-        await repo.finish_run("feed-sync", result=result, next_run_at=nxt)
+        finished = await repo.finish_run(
+            "feed-sync",
+            claim_token="tok-1",
+            result=result,
+            schedule="0 * * * *",
+            next_run_at=nxt,
+        )
 
+        assert finished is True
         args, _ = col.update_one.await_args
-        assert args[0] == {"_id": "feed-sync"}
-        st = args[1]["$set"]
-        assert st["last_run"]["status"] == "ok"
-        assert st["next_run_at"] == nxt
+        # Fenced to the executing claim, not just the task name.
+        assert args[0] == {"_id": "feed-sync", "claim_token": "tok-1"}
+        st = args[1][0]["$set"]
+        assert st["last_run"]["$literal"]["status"] == "ok"
+        assert st["next_run_at"] == {
+            "$cond": [{"$eq": ["$schedule", "0 * * * *"]}, nxt, "$next_run_at"]
+        }
         assert st["claimed_until"] is None
+        assert st["claim_token"] is None
+
+    @pytest.mark.asyncio
+    async def test_reconciled_schedule_keeps_its_next_run_at(self):
+        """Deploy reconciles the task to a new schedule mid-run (claim_token
+        untouched, so the fence still matches). The old runner's finish must
+        release the lease and record the run, but its next_run_at was
+        computed from the OLD schedule — the $cond keeps the stored value
+        whenever the stored schedule no longer equals the executed one."""
+        col = _col()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=1))
+        repo = ScheduledTaskRepository(col)
+        result = TaskRunResult(
+            at=datetime.now(timezone.utc), status="ok", duration_ms=42, detail=None
+        )
+        old_schedule = "0 0 1 1 *"
+        stale_next = datetime.now(timezone.utc) + timedelta(days=365)
+
+        finished = await repo.finish_run(
+            "feed-sync",
+            claim_token="tok-old",
+            result=result,
+            schedule=old_schedule,
+            next_run_at=stale_next,
+        )
+
+        assert finished is True
+        args, _ = col.update_one.await_args
+        assert args[0] == {"_id": "feed-sync", "claim_token": "tok-old"}
+        st = args[1][0]["$set"]
+        cond, then, otherwise = st["next_run_at"]["$cond"]
+        # Reconciled doc: stored schedule differs, stored next_run_at survives.
+        assert cond == {"$eq": ["$schedule", old_schedule]}
+        assert then == stale_next
+        assert otherwise == "$next_run_at"
+        # The lease is released unconditionally either way.
+        assert st["claimed_until"] is None
+        assert st["claim_token"] is None
+        assert st["last_run"]["$literal"]["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_stale_finisher_noops(self):
+        """A handler that outran its lease finishes AFTER a re-claim stamped
+        a new token: no match, no write — the active claim keeps its lease
+        and run state."""
+        col = _col()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=0))
+        repo = ScheduledTaskRepository(col)
+        result = TaskRunResult(
+            at=datetime.now(timezone.utc), status="ok", duration_ms=999, detail=None
+        )
+
+        finished = await repo.finish_run(
+            "feed-sync",
+            claim_token="stale",
+            result=result,
+            schedule="0 * * * *",
+            next_run_at=None,
+        )
+
+        assert finished is False
 
 
 class TestInvokeNow:
