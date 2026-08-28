@@ -1126,6 +1126,32 @@ class TestUrlServiceUpdate:
         assert written["dest"]["host"] == "b.new-dest.com"
 
     @pytest.mark.asyncio
+    async def test_update_unparseable_long_url_unsets_dest(self, monkeypatch):
+        """A new long_url that parses to no destination must remove dest, not
+        write null; create-path parity (the field is omitted there)."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        monkeypatch.setattr(
+            "services.url_service.UrlDestination.from_url",
+            classmethod(lambda cls, url: None),
+        )
+        req = UpdateUrlRequest(long_url="https://b.new-dest.com/x")
+        await svc.update(URL_OID, req, USER_OID)
+
+        written = url_repo.update.call_args[0][1]
+        assert "dest" not in written["$set"]
+        assert written["$unset"] == {"dest": ""}
+
+    @pytest.mark.asyncio
     async def test_update_meta_tags_stamps_client_ip(self):
         """A meta_tags write records the writer's IP for abuse forensics."""
         url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()

@@ -45,6 +45,12 @@ def test_validate_url_empty_blocked_list_allows_spoo():
     assert validate_url("https://spoo.me/x", blocked_self_domains=()) is True
 
 
+def test_validate_url_malformed_bracket_host_is_invalid_not_an_error():
+    # urlparse raises ValueError on "]" in the netloc; a malformed URL in a
+    # request must answer False, never escape as a 500.
+    assert validate_url("https://example.com]:80/x") is False
+
+
 @pytest.mark.parametrize(
     "url",
     [

@@ -79,9 +79,10 @@ async def ensure_indexes(
     await feed_domains_col.create_index([("feed", 1), ("synced_at", 1)])
 
     # ── destination decomposition (url-safety) ─────────────────────────────
-    # Sparse: docs written before scripts/backfill_url_dest.py lack `dest`,
-    # and unparseable destinations deliberately omit it. Covers all three
-    # url collections so takedown/sweep pivots never regex-scan long_url.
+    # Sparse: unparseable destinations are `dest: null` (backfill script) or
+    # absent (create/edit); neither shape yields the nested paths indexed
+    # here, so sparse excludes both. Covers all three url collections so
+    # takedown/sweep pivots never regex-scan long_url.
     for _url_col in (urls_v2_col, urls_legacy_col, emojis_col):
         await _url_col.create_index(
             [("dest.registrable_domain", 1)], name="dest_registrable", sparse=True

@@ -1089,8 +1089,14 @@ class UrlService:
 
         update_ops["updated_at"] = now
 
-        # 4. Persist
-        await self._url_repo.update(url_id, {"$set": update_ops})
+        # 4. Persist. A None dest is unset: absent-not-null parity with create.
+        update_doc: dict = {"$set": update_ops}
+        if "dest" in update_ops and update_ops["dest"] is None:
+            update_doc = {
+                "$set": {k: v for k, v in update_ops.items() if k != "dest"},
+                "$unset": {"dest": ""},
+            }
+        await self._url_repo.update(url_id, update_doc)
 
         # 5. Invalidate cache. Always clear the pre-change (alias, domain) so a
         # rename or move can't be served stale from the old key. When the new

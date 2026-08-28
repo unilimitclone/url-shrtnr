@@ -57,7 +57,7 @@ class TestFeedDomainProvider:
         verdict = await provider.analyze("https://evil.com/x", "evil.com", "evil.com")
         assert verdict is not None
         assert verdict.tier == VerdictTier.TOXIC
-        assert "fishfish.gg" in verdict.reason
+        assert verdict.reason == "host evil.com is listed by fishfish.gg"
         repo.contains.assert_awaited_once_with("fishfish", "evil.com")
 
     @pytest.mark.asyncio
@@ -71,7 +71,7 @@ class TestFeedDomainProvider:
             "https://a.evil.com/x", "a.evil.com", "evil.com"
         )
         assert verdict is not None
-        assert "evil.com" in verdict.reason
+        assert verdict.reason == "domain evil.com is listed by fishfish.gg"
 
     @pytest.mark.asyncio
     async def test_miss_and_error_abstain(self):

@@ -36,8 +36,14 @@ def validate_url(
             to prevent redirect loops.
     """
     # Scheme allowlist defends against ftp/file/data/etc even if the
-    # validators package widens its accepted schemes upstream.
-    if urlparse(url).scheme not in _ALLOWED_URL_SCHEMES:
+    # validators package widens its accepted schemes upstream. urlparse
+    # raises on malformed bracket hosts ("https://x]:80/") — invalid, not
+    # a 500.
+    try:
+        scheme = urlparse(url).scheme
+    except ValueError:
+        return False
+    if scheme not in _ALLOWED_URL_SCHEMES:
         return False
     if not _validators.url(url, skip_ipv4_addr=True, skip_ipv6_addr=True):
         return False
