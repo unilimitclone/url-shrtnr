@@ -34,8 +34,13 @@ from schemas.models.verdict import VerdictDoc
 from services.safety.admission import AdmissionPolicy
 from services.safety.enforcer import SafetyEnforcer
 from services.safety.events import SafetyAnalyzeEvent
-from services.safety.providers import AnalysisProvider, ProviderVerdict
+from services.safety.providers import (
+    AnalysisProvider,
+    ProviderVerdict,
+    verdict_covers,
+)
 from shared.datetime_utils import as_aware_utc
+from shared.url_utils import parse_destination
 from shared.validators import matching_blocked_pattern
 
 if TYPE_CHECKING:
@@ -48,7 +53,20 @@ log = get_logger(__name__)
 # A fresh verdict only short-circuits triggers of equal or lower
 # authority: a sweep screening must never swallow a user report that
 # arrives inside the re-verdict TTL. Unknown triggers rank lowest.
-_TRIGGER_AUTHORITY = {"sweep": 0, "pattern": 1, "edit": 2, "report": 2}
+_TRIGGER_AUTHORITY = {
+    "sweep": 0,
+    "hot": 1,
+    "redirect": 1,
+    "pattern": 1,
+    "edit": 2,
+    "report": 2,
+}
+
+# Machine-volume triggers whose unresolved endings stay silent: the
+# verdict is the record, and pinging review for every hot viral link or
+# every t.co share would drown the channel. Reports and bursts still ask
+# for human eyes.
+_SILENT_TRIGGERS = frozenset({"sweep", "hot", "redirect"})
 
 
 class SafetyAnalyzer:
@@ -72,6 +90,9 @@ class SafetyAnalyzer:
         self._deep_sink = deep_sink
 
     async def analyze(self, event: SafetyAnalyzeEvent) -> None:
+        if event.trigger == "redirect" and not (event.context or {}).get("terminal"):
+            await self._screen_redirect(event)
+            return
         existing = await self._verdict_repo.find_by_host(event.host)
         if existing is not None:
             if existing.tier == VerdictTier.TOXIC and await self._reenforce(
@@ -143,12 +164,9 @@ class SafetyAnalyzer:
         # exactly the spam the two-stage split exists to prevent.
         if await self._admit_deep(event):
             return
-        if event.trigger == "sweep":
+        if event.trigger in _SILENT_TRIGGERS:
             # Coverage screening: the uncertain verdict IS the record.
-            # Pinging review for every innocent new destination would make
-            # the sweeper a spam machine; only reports and anomalies ask
-            # for human eyes.
-            log.info("safety_screened", host=event.host)
+            log.info("safety_screened", host=event.host, trigger=event.trigger)
             return
         await self._notifier.safety_review(
             host=event.host,
@@ -237,6 +255,63 @@ class SafetyAnalyzer:
         # links scope: the judged links are already blocked and the create
         # gate refuses the exact URL; nothing host-side to re-run.
         return event.url == existing.sample_url
+
+    async def _screen_redirect(self, event: SafetyAnalyzeEvent) -> None:
+        """A created link whose destination is a known redirector: the
+        stored URL is a clean wrapper every destination check is blind
+        to, so judge where the chain actually LANDS. The wrapper host
+        itself is never judged and never gets a verdict — t.co is not
+        the abuse, its endpoint is."""
+        from services.safety.resolver import resolve_terminal_url
+
+        terminal = await resolve_terminal_url(event.url)
+        if terminal is None:
+            # Unresolved is not clean; it is also not evidence. The deep
+            # tier sees these when some other trigger surfaces the link.
+            log.info("safety_redirect_unresolved", host=event.host)
+            return
+        parts = parse_destination(terminal)
+        if parts is None or parts["host"] == event.host:
+            log.info("safety_redirect_screened", host=event.host)
+            return
+        # The terminal host takes the normal screening path (verdict,
+        # scoped enforcement, deep escalation) under the same trigger.
+        await self.analyze(
+            SafetyAnalyzeEvent(
+                url=terminal,
+                host=parts["host"],
+                registrable_domain=parts["registrable_domain"],
+                trigger="redirect",
+                context={
+                    **(event.context or {}),
+                    "terminal": True,
+                    "via": event.url,
+                },
+            )
+        )
+        # Wrapped links point at the wrapper, so terminal-host enforcement
+        # cannot see them — kill the ones carrying this exact wrapper URL
+        # when the terminal verdict covers it.
+        verdict = await self._verdict_repo.find_by_host(parts["host"])
+        if (
+            verdict is not None
+            and verdict.tier == VerdictTier.TOXIC
+            and verdict_covers(verdict, terminal)
+        ):
+            reason = verdict.reason or "redirect chain ends at a blocked host"
+            result = await self._enforcer.block_matching(
+                event.host,
+                matcher=lambda u: u == event.url,
+                reason=f"{reason} (via {event.host})",
+            )
+            await self._notifier.safety_action(
+                host=parts["host"],
+                reason=f"{reason} (reached through {event.host})",
+                trigger=event.trigger,
+                blocked_count=result.blocked_count,
+                legacy_count=result.legacy_count,
+                sample_url=event.url,
+            )
 
     async def _notify_reenforced(self, event, result, reason: str) -> None:
         """A re-enforcement that actually blocked something is a real

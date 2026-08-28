@@ -151,6 +151,19 @@ class WebRiskProvider:
         return None
 
 
+def verdict_covers(verdict, url: str) -> bool:
+    """Does this verdict's scope cover *url*? Shared by the create gate
+    and the redirect screener — one scope semantics, two readers."""
+    scope = verdict.scope or "host"
+    if scope == "host":
+        return True
+    if scope == "path_pattern" and verdict.path_pattern:
+        return matching_blocked_pattern(url, (verdict.path_pattern,)) is not None
+    if scope == "links" and verdict.sample_url:
+        return url == verdict.sample_url
+    return False
+
+
 class ToxicVerdictProvider:
     """The verdict store as a gate source: a destination ANY analysis tier
     has judged toxic (report-triggered today, deep/L2 later) refuses new
@@ -176,7 +189,7 @@ class ToxicVerdictProvider:
             if (
                 verdict is not None
                 and verdict.tier is VerdictTier.TOXIC
-                and self._covers(verdict, url)
+                and verdict_covers(verdict, url)
             ):
                 return ProviderVerdict(
                     tier=VerdictTier.TOXIC,
@@ -188,17 +201,6 @@ class ToxicVerdictProvider:
         except Exception as exc:
             log.warning("safety_provider_failed", provider=self.name, error=str(exc))
         return None
-
-    @staticmethod
-    def _covers(verdict, url: str) -> bool:
-        scope = verdict.scope or "host"
-        if scope == "host":
-            return True
-        if scope == "path_pattern" and verdict.path_pattern:
-            return matching_blocked_pattern(url, (verdict.path_pattern,)) is not None
-        if scope == "links" and verdict.sample_url:
-            return url == verdict.sample_url
-        return False
 
 
 class BlockedPatternProvider:

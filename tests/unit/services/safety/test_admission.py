@@ -145,3 +145,19 @@ class TestEscalation:
         d = await policy.decide(_event("report"), escalation=True)
         assert d.admitted and d.reason == "within_budget"
         assert ":report:" in redis.incr.await_args.args[0]
+
+
+class TestMachineTriggers:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("trigger", ["hot", "redirect"])
+    async def test_hot_and_redirect_ride_the_shared_budget(self, trigger):
+        policy = AdmissionPolicy(_redis(used=1), daily_budget=5)
+        d = await policy.decide(_event(trigger))
+        assert d.admitted and d.reason == "within_budget"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("trigger", ["hot", "redirect"])
+    async def test_hot_and_redirect_respect_the_ceiling(self, trigger):
+        policy = AdmissionPolicy(_redis(used=6), daily_budget=5)
+        d = await policy.decide(_event(trigger))
+        assert not d.admitted and d.reason == "budget_exhausted"

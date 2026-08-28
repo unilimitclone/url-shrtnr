@@ -95,9 +95,20 @@ class TestFeedSeeds:
 
         await ensure_feed_seeds(repo)
 
-        # Only the shorteners feed declares a seed today.
-        repo.replace_feed.assert_awaited_once()
-        assert repo.replace_feed.await_args.args[0] == "shorteners"
+        # Two seeds today: the shortener refuse list and the redirector
+        # resolve class.
+        assert repo.replace_feed.await_count == 2
+        seeded = {call.args[0] for call in repo.replace_feed.await_args_list}
+        assert seeded == {"shorteners", "redirectors"}
+        shortener_call = next(
+            c for c in repo.replace_feed.await_args_list if c.args[0] == "shorteners"
+        )
+        domains = shortener_call.args[1]
+        assert "bit.ly" in domains and "l24.im" in domains
+        redirector_call = next(
+            c for c in repo.replace_feed.await_args_list if c.args[0] == "redirectors"
+        )
+        assert "t.co" in redirector_call.args[1]
 
     @pytest.mark.asyncio
     async def test_never_reseeds_a_curated_feed(self):

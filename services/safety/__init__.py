@@ -18,6 +18,7 @@ from services.safety.events import SAFETY_STREAM, SafetyAnalyzeEvent
 from services.safety.feeds import (
     FISHFISH_FEED,
     MANUAL_FEED,
+    REDIRECTOR_FEED,
     SHORTENER_FEED,
     FishFishClient,
     build_feed_providers,
@@ -26,6 +27,7 @@ from services.safety.feeds import (
     fishfish_sync_task,
     load_shortener_seed,
 )
+from services.safety.hot import HotLinkScreen
 from services.safety.investigation import (
     AutoBlockPolicy,
     DeepInvestigator,
@@ -42,6 +44,7 @@ from services.safety.providers import (
     ToxicVerdictProvider,
     WebRiskProvider,
 )
+from services.safety.resolver import resolve_terminal_url
 from services.safety.scoring import CreationPatternScorer
 from services.safety.sinks import (
     DeepAnalysisSink,
@@ -61,6 +64,7 @@ from services.safety.tools import (
 __all__ = [
     "FISHFISH_FEED",
     "MANUAL_FEED",
+    "REDIRECTOR_FEED",
     "SAFETY_STREAM",
     "SHORTENER_FEED",
     "AdmissionDecision",
@@ -77,6 +81,7 @@ __all__ = [
     "FeedDeltaSweeper",
     "FeedDomainProvider",
     "FishFishClient",
+    "HotLinkScreen",
     "InlineSafetySink",
     "InvestigationToolDeps",
     "InvestigationVerdict",
@@ -103,4 +108,5 @@ __all__ = [
     "ensure_feed_seeds",
     "fishfish_sync_task",
     "load_shortener_seed",
+    "resolve_terminal_url",
 ]

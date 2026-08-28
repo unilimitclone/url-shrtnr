@@ -167,3 +167,40 @@ class TestPublicMessageOverride:
         )
         rejection = await gate.check("https://evil.com/x")
         assert rejection.public_message == "URL is blocked"
+
+
+class TestRedirectProbe:
+    def _policy(self, *, contains: bool):
+        from services.safety.policy import UrlPolicyService
+
+        feed_repo = AsyncMock()
+        feed_repo.contains = AsyncMock(return_value=contains)
+        sink = AsyncMock()
+        policy = UrlPolicyService(
+            [],
+            blocked_self_domains=["spoo.me"],
+            redirect_feed_repo=feed_repo,
+            redirect_sink=sink,
+        )
+        return policy, sink
+
+    @pytest.mark.asyncio
+    async def test_redirector_destination_emits_a_redirect_event(self):
+        policy, sink = self._policy(contains=True)
+        await policy.record_create("https://t.co/AbCdEf")
+        event = sink.emit.await_args.args[0]
+        assert event.trigger == "redirect"
+        assert event.host == "t.co"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_destination_emits_nothing(self):
+        policy, sink = self._policy(contains=False)
+        await policy.record_create("https://example.com/x")
+        sink.emit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_deps_degrade_to_a_noop(self):
+        from services.safety.policy import UrlPolicyService
+
+        policy = UrlPolicyService([], blocked_self_domains=["spoo.me"])
+        await policy.record_create("https://t.co/AbCdEf")

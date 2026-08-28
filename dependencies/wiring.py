@@ -430,6 +430,10 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         blocked_self_domains=settings.blocked_self_domains,
         public_messages=feed_messages,
         scorer=pattern_scorer,
+        # Redirect probe: creates to known redirectors get their terminal
+        # host screened. Off with the safety master switch (Null sink).
+        redirect_feed_repo=feed_domain_repo if sf_settings.enabled else None,
+        redirect_sink=safety_sink if sf_settings.enabled else None,
     )
     app.state.url_policy = url_policy
     # ── Scheduled tasks ──────────────────────────────────────────────

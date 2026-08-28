@@ -56,6 +56,8 @@ class UrlPolicyService:
         blocked_self_domains: Sequence[str],
         public_messages: dict[str, str] | None = None,
         scorer: CreationPatternScorer | None = None,
+        redirect_feed_repo=None,
+        redirect_sink=None,
     ) -> None:
         """``public_messages`` maps provider name -> wire message for
         PUBLISHED policies (e.g. the shortener-chain refusal, which is.gd
@@ -68,6 +70,12 @@ class UrlPolicyService:
         self._self_domains = list(blocked_self_domains)
         self._public_messages = public_messages or {}
         self._scorer = scorer
+        # The resolve class: creates whose destination is a known
+        # redirector (platform wrappers, shorteners that slipped the
+        # gate) get a "redirect" screening event so the chain's TERMINAL
+        # host is judged. Either dep absent degrades to a no-op.
+        self._redirect_feed_repo = redirect_feed_repo
+        self._redirect_sink = redirect_sink
 
     async def check(self, url: str) -> PolicyRejection | None:
         """Return the rejection for *url*, or None when it may be written."""
@@ -98,14 +106,50 @@ class UrlPolicyService:
         return None
 
     async def record_create(self, url: str) -> None:
-        """L1 accumulation for one SUCCESSFUL create. Called by every
-        creation path after its insert; best-effort by contract (the
-        scorer never raises, never blocks the write)."""
-        if self._scorer is None:
-            return
+        """Post-insert accounting for one SUCCESSFUL create: L1
+        accumulation plus the redirect probe. Best-effort by contract —
+        neither ever raises or blocks the write, and each degrades to a
+        no-op when its dependencies are absent."""
         parts = parse_destination(url)
         if parts is None:
             return
-        await self._scorer.record_create(
-            url, parts["host"], parts["registrable_domain"]
-        )
+        if self._scorer is not None:
+            await self._scorer.record_create(
+                url, parts["host"], parts["registrable_domain"]
+            )
+        await self._maybe_probe_redirect(url, parts)
+
+    async def _maybe_probe_redirect(self, url: str, parts: dict) -> None:
+        if self._redirect_feed_repo is None or self._redirect_sink is None:
+            return
+        try:
+            from services.safety.feeds import REDIRECTOR_FEED, SHORTENER_FEED
+
+            is_redirector = False
+            for feed in (REDIRECTOR_FEED, SHORTENER_FEED):
+                if await self._redirect_feed_repo.contains(feed, parts["host"]) or (
+                    parts["registrable_domain"] != parts["host"]
+                    and await self._redirect_feed_repo.contains(
+                        feed, parts["registrable_domain"]
+                    )
+                ):
+                    is_redirector = True
+                    break
+            if not is_redirector:
+                return
+            from services.safety.events import SafetyAnalyzeEvent
+
+            await self._redirect_sink.emit(
+                SafetyAnalyzeEvent(
+                    url=url,
+                    host=parts["host"],
+                    registrable_domain=parts["registrable_domain"],
+                    trigger="redirect",
+                )
+            )
+        except Exception as exc:
+            log.warning(
+                "safety_redirect_probe_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )

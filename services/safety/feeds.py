@@ -55,15 +55,34 @@ _SHORTENER_SEED_PATH = os.path.join(
     "shortener_domains.txt",
 )
 
+# The RESOLVE class: platform share wrappers users carry involuntarily
+# (t.co, lnkd.in) — never refused, never a judgment source; membership
+# only marks a created link for terminal-URL resolution, so the chain's
+# ENDPOINT gets judged instead of the wrapper. The deep tier's
+# redirector_service verdicts propose additions here.
+REDIRECTOR_FEED = "redirectors"
+_REDIRECTOR_SEED_PATH = os.path.join(
+    os.path.dirname(_SHORTENER_SEED_PATH),
+    "redirector_domains.txt",
+)
 
-def load_shortener_seed() -> tuple[str, ...]:
-    """Parse the seed file: one domain per line, ``#`` comments."""
-    with open(_SHORTENER_SEED_PATH, encoding="utf-8") as fh:
+
+def _load_seed(path: str) -> tuple[str, ...]:
+    """Parse a seed file: one domain per line, ``#`` comments."""
+    with open(path, encoding="utf-8") as fh:
         return tuple(
             line.strip()
             for line in fh
             if line.strip() and not line.lstrip().startswith("#")
         )
+
+
+def load_shortener_seed() -> tuple[str, ...]:
+    return _load_seed(_SHORTENER_SEED_PATH)
+
+
+def load_redirector_seed() -> tuple[str, ...]:
+    return _load_seed(_REDIRECTOR_SEED_PATH)
 
 
 # A feed this small is suspicious (fishfish carries thousands of domains):
@@ -140,6 +159,17 @@ FEED_REGISTRY: tuple[FeedSpec, ...] = (
         enabled=lambda s: s.shorteners_enabled,
         public_message="Links to other URL shorteners are not allowed",
         seed=load_shortener_seed,
+    ),
+    FeedSpec(
+        name=REDIRECTOR_FEED,
+        reason_label="a platform share wrapper (resolved, never refused)",
+        # Neither a gate nor an analyzer source: no provider is ever built
+        # from it; the create path reads membership to mark links for
+        # terminal-URL resolution.
+        gate=False,
+        analyzer=False,
+        enabled=lambda s: s.enabled,
+        seed=load_redirector_seed,
     ),
     FeedSpec(
         name=FISHFISH_FEED,

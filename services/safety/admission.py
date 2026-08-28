@@ -16,9 +16,10 @@ behavior:
 - ``edit``               — always admitted. A destination edited after
   creation is the bait-and-switch shape; the trigger only exists for
   authenticated links.
-- ``pattern``            — admitted within the shared daily budget.
-  Bursts are anomalies worth spending on, but a counter, not a blank
-  check.
+- ``pattern`` / ``hot`` / ``redirect`` — admitted within the shared
+  daily budget. Bursts, activation spikes and resolved redirect
+  endpoints are anomalies worth spending on, but a counter, not a
+  blank check.
 - ``sweep``              — never admitted by default. Sweep novelty keeps
   its uncertain verdict; coverage is screening's job, not the deep
   tier's. ``SAFETY_DEEP_ADMIT_SWEEPS`` opts sweeps into the same budget.
@@ -42,7 +43,7 @@ from services.safety.events import SafetyAnalyzeEvent
 log = get_logger(__name__)
 
 _ALWAYS_ADMITTED = frozenset({"edit"})
-_BUDGETED = frozenset({"pattern"})
+_BUDGETED = frozenset({"pattern", "hot", "redirect"})
 _BUDGET_KEY_PREFIX = "safety:deep:budget:"
 # Two days: the window key outlives its day so a process straddling
 # midnight never resurrects an expired counter, then Redis reaps it.

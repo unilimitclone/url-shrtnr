@@ -86,6 +86,7 @@ from services.safety import (
     DeepAnalysisConsumer,
     DeepInvestigator,
     FeedDeltaSweeper,
+    HotLinkScreen,
     InlineSafetySink,
     InvestigationToolDeps,
     RedisStreamDeepAnalysisSink,
@@ -436,6 +437,21 @@ async def _build_runtime(
         # second raw queue-redis client just to re-enter our own stream.
         worker_safety_sink = InlineSafetySink(safety_analyzer)
         log.info("safety_worker_registered", stream=sf.stream)
+
+        # Hot-link screening: the hotness detector's abuse consumer. Only
+        # when this process also runs the hotness group — the actions list
+        # is shared by reference with the already-built detector.
+        if "hotness" in groups and runtime.consumers.get("hotness") is not None:
+            actions.append(
+                HotLinkScreen(
+                    UrlRepository(db["urlsV2"]),
+                    LegacyUrlRepository(db["urls"]),
+                    VerdictRepository(db["safety_verdicts"]),
+                    worker_safety_sink,
+                    system_default_domain=settings.system_default_domain,
+                )
+            )
+            log.info("safety_hot_screen_registered")
 
         # Deep tier consumer: its own stream, own consumer beside the
         # render sandbox. Requires both the deep queue AND the LLM

@@ -524,3 +524,132 @@ class TestReenforcementNotify:
         await analyzer.analyze(_event())
 
         notifier.safety_action.assert_not_awaited()
+
+
+class TestRedirectScreening:
+    """trigger="redirect": judge where the chain LANDS, never the wrapper."""
+
+    def _wrapper_event(self):
+        return SafetyAnalyzeEvent(
+            url="https://t.co/AbCdEf",
+            host="t.co",
+            registrable_domain="t.co",
+            trigger="redirect",
+        )
+
+    @pytest.mark.asyncio
+    async def test_toxic_terminal_blocks_the_wrapped_link_too(self):
+        from unittest.mock import patch
+
+        provider = _Provider(
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="feed hit"),
+            name="feed_fishfish",
+        )
+        verdict_repo = AsyncMock()
+        # First read: terminal host has no verdict (fresh analysis runs);
+        # after the toxic write the wrapper-kill read sees it.
+        stored = VerdictDoc(
+            host="evil-landing.com",
+            tier=VerdictTier.TOXIC,
+            reason="feed hit",
+            scope="links",
+            sample_url="https://evil-landing.com/kit",
+            updated_at=datetime.now(timezone.utc),
+        )
+        verdict_repo.find_by_host = AsyncMock(side_effect=[None, stored])
+        enforcer = AsyncMock()
+        enforcer.block_matching = AsyncMock(
+            return_value=AsyncMock(blocked_count=1, legacy_count=0)
+        )
+        notifier = AsyncMock()
+        analyzer = SafetyAnalyzer(
+            [provider], verdict_repo, enforcer, notifier, reverdict_ttl_hours=24
+        )
+
+        with patch(
+            "services.safety.resolver.resolve_terminal_url",
+            AsyncMock(return_value="https://evil-landing.com/kit"),
+        ):
+            await analyzer.analyze(self._wrapper_event())
+
+        # The terminal host got the normal toxic treatment...
+        assert (
+            verdict_repo.upsert_verdict.await_args.kwargs["sample_url"]
+            == "https://evil-landing.com/kit"
+        )
+        # ...and the wrapped link (whose long_url is the t.co URL that
+        # terminal-host enforcement cannot see) died as well.
+        wrapper_call = enforcer.block_matching.await_args_list[-1]
+        assert wrapper_call.args[0] == "t.co"
+        matcher = wrapper_call.kwargs["matcher"]
+        assert matcher("https://t.co/AbCdEf")
+        assert not matcher("https://t.co/other")
+        # The wrapper host itself never gets a verdict.
+        hosts_written = [c.args[0] for c in verdict_repo.upsert_verdict.await_args_list]
+        assert "t.co" not in hosts_written
+
+    @pytest.mark.asyncio
+    async def test_clean_terminal_stays_silent(self):
+        from unittest.mock import patch
+
+        verdict_repo = AsyncMock()
+        verdict_repo.find_by_host = AsyncMock(return_value=None)
+        enforcer = AsyncMock()
+        notifier = AsyncMock()
+        analyzer = SafetyAnalyzer(
+            [_Provider(None)], verdict_repo, enforcer, notifier, reverdict_ttl_hours=24
+        )
+
+        with patch(
+            "services.safety.resolver.resolve_terminal_url",
+            AsyncMock(return_value="https://normal-blog.example/post"),
+        ):
+            await analyzer.analyze(self._wrapper_event())
+
+        enforcer.block_matching.assert_not_awaited()
+        enforcer.block_host.assert_not_awaited()
+        # Machine-volume trigger: unresolved screening pings nobody.
+        notifier.safety_review.assert_not_awaited()
+        # The TERMINAL host got the uncertain record, not the wrapper.
+        assert verdict_repo.upsert_verdict.await_args.kwargs["tier"] == (
+            VerdictTier.UNCERTAIN
+        )
+        assert verdict_repo.upsert_verdict.await_args.args[0] == "normal-blog.example"
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_chain_does_nothing(self):
+        from unittest.mock import patch
+
+        verdict_repo = AsyncMock()
+        verdict_repo.find_by_host = AsyncMock(return_value=None)
+        enforcer = AsyncMock()
+        analyzer = SafetyAnalyzer(
+            [], verdict_repo, enforcer, AsyncMock(), reverdict_ttl_hours=24
+        )
+
+        with patch(
+            "services.safety.resolver.resolve_terminal_url",
+            AsyncMock(return_value=None),
+        ):
+            await analyzer.analyze(self._wrapper_event())
+
+        verdict_repo.upsert_verdict.assert_not_awaited()
+        enforcer.block_matching.assert_not_awaited()
+
+
+class TestHotTrigger:
+    @pytest.mark.asyncio
+    async def test_hot_unresolved_screening_is_silent(self):
+        analyzer, verdict_repo, _e, notifier = _build([_Provider(None)])
+
+        await analyzer.analyze(
+            SafetyAnalyzeEvent(
+                url="https://viral.example/post",
+                host="viral.example",
+                registrable_domain="viral.example",
+                trigger="hot",
+            )
+        )
+
+        verdict_repo.upsert_verdict.assert_awaited_once()
+        notifier.safety_review.assert_not_awaited()
