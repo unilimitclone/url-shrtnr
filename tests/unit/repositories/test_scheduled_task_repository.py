@@ -125,18 +125,62 @@ class TestFinishRun:
         nxt = datetime.now(timezone.utc) + timedelta(hours=1)
 
         finished = await repo.finish_run(
-            "feed-sync", claim_token="tok-1", result=result, next_run_at=nxt
+            "feed-sync",
+            claim_token="tok-1",
+            result=result,
+            schedule="0 * * * *",
+            next_run_at=nxt,
         )
 
         assert finished is True
         args, _ = col.update_one.await_args
         # Fenced to the executing claim, not just the task name.
         assert args[0] == {"_id": "feed-sync", "claim_token": "tok-1"}
-        st = args[1]["$set"]
-        assert st["last_run"]["status"] == "ok"
-        assert st["next_run_at"] == nxt
+        st = args[1][0]["$set"]
+        assert st["last_run"]["$literal"]["status"] == "ok"
+        assert st["next_run_at"] == {
+            "$cond": [{"$eq": ["$schedule", "0 * * * *"]}, nxt, "$next_run_at"]
+        }
         assert st["claimed_until"] is None
         assert st["claim_token"] is None
+
+    @pytest.mark.asyncio
+    async def test_reconciled_schedule_keeps_its_next_run_at(self):
+        """Deploy reconciles the task to a new schedule mid-run (claim_token
+        untouched, so the fence still matches). The old runner's finish must
+        release the lease and record the run, but its next_run_at was
+        computed from the OLD schedule — the $cond keeps the stored value
+        whenever the stored schedule no longer equals the executed one."""
+        col = _col()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=1))
+        repo = ScheduledTaskRepository(col)
+        result = TaskRunResult(
+            at=datetime.now(timezone.utc), status="ok", duration_ms=42, detail=None
+        )
+        old_schedule = "0 0 1 1 *"
+        stale_next = datetime.now(timezone.utc) + timedelta(days=365)
+
+        finished = await repo.finish_run(
+            "feed-sync",
+            claim_token="tok-old",
+            result=result,
+            schedule=old_schedule,
+            next_run_at=stale_next,
+        )
+
+        assert finished is True
+        args, _ = col.update_one.await_args
+        assert args[0] == {"_id": "feed-sync", "claim_token": "tok-old"}
+        st = args[1][0]["$set"]
+        cond, then, otherwise = st["next_run_at"]["$cond"]
+        # Reconciled doc: stored schedule differs, stored next_run_at survives.
+        assert cond == {"$eq": ["$schedule", old_schedule]}
+        assert then == stale_next
+        assert otherwise == "$next_run_at"
+        # The lease is released unconditionally either way.
+        assert st["claimed_until"] is None
+        assert st["claim_token"] is None
+        assert st["last_run"]["$literal"]["status"] == "ok"
 
     @pytest.mark.asyncio
     async def test_stale_finisher_noops(self):
@@ -151,7 +195,11 @@ class TestFinishRun:
         )
 
         finished = await repo.finish_run(
-            "feed-sync", claim_token="stale", result=result, next_run_at=None
+            "feed-sync",
+            claim_token="stale",
+            result=result,
+            schedule="0 * * * *",
+            next_run_at=None,
         )
 
         assert finished is False

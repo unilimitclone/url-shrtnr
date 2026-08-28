@@ -139,6 +139,8 @@ class TestExecute:
         kwargs = repo.finish_run.await_args.kwargs
         assert kwargs["result"].status == "ok"
         assert "synced" in (kwargs["result"].detail or "")
+        # The executed schedule rides along so finish_run can fence the rearm.
+        assert kwargs["schedule"] == "0 * * * *"
         assert kwargs["next_run_at"] is not None
         assert kwargs["next_run_at"] > datetime.now(timezone.utc)
 

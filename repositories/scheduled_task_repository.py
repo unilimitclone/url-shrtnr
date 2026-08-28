@@ -117,6 +117,7 @@ class ScheduledTaskRepository(BaseRepository[ScheduledTaskDoc]):
         *,
         claim_token: str | None,
         result: TaskRunResult,
+        schedule: str | None,
         next_run_at: datetime | None,
     ) -> bool:
         """Record the outcome, release the lease, arm the next occurrence.
@@ -125,18 +126,30 @@ class ScheduledTaskRepository(BaseRepository[ScheduledTaskDoc]):
         longer matches (the run outlived its lease and another runner
         re-claimed), this is a no-op returning False — the superseded
         finisher must not clear the active claim's lease or overwrite its
-        run state."""
+        run state.
+
+        *next_run_at* was computed from *schedule*; a pipeline $cond only
+        applies it while the stored schedule still matches, so a deploy that
+        reconciled the doc mid-run keeps its reconciled next_run_at."""
         write = await self._col.update_one(
             {"_id": name, "claim_token": claim_token},
-            {
-                "$set": {
-                    "last_run": result.model_dump(),
-                    "next_run_at": next_run_at,
-                    "claimed_until": None,
-                    "claim_token": None,
-                    "updated_at": datetime.now(timezone.utc),
+            [
+                {
+                    "$set": {
+                        "last_run": {"$literal": result.model_dump()},
+                        "next_run_at": {
+                            "$cond": [
+                                {"$eq": ["$schedule", schedule]},
+                                next_run_at,
+                                "$next_run_at",
+                            ]
+                        },
+                        "claimed_until": None,
+                        "claim_token": None,
+                        "updated_at": datetime.now(timezone.utc),
+                    }
                 }
-            },
+            ],
         )
         if not write.modified_count:
             log.info("task_finish_superseded", task=name)

@@ -151,6 +151,7 @@ class TaskScheduler:
             result=TaskRunResult(
                 at=finished_at, status=status, duration_ms=duration_ms, detail=detail
             ),
+            schedule=task.schedule,
             next_run_at=compute_next_run(task.schedule, finished_at),
         )
         if status == "ok":
