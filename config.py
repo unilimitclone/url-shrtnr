@@ -530,8 +530,6 @@ class SafetySettings(BaseSettings):
     l1_burst_window_seconds: int = Field(default=600, ge=60)
     l1_domain_burst_threshold: int = Field(default=50, ge=2)
     l1_domain_daily_threshold: int = Field(default=300, ge=2)
-    l1_ip_burst_threshold: int = Field(default=40, ge=2)
-    l1_ip_daily_threshold: int = Field(default=200, ge=2)
 
     # L3 recent-screening sweep: every destination created in the window
     # gets screened by the cheap providers (silently) so nothing sits

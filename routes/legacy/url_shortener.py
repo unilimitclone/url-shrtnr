@@ -31,7 +31,6 @@ from repositories.url_repository import UrlRepository
 from routes.legacy.helpers import humanize_number, is_positive_integer
 from shared.emoji_policy import canonicalize_emoji_alias, check_emoji_alias
 from shared.generators import generate_emoji_alias, generate_short_code
-from shared.ip_utils import get_client_ip
 from shared.url_utils import parse_destination, split_destination
 from shared.validators import (
     is_emoji_alias,
@@ -229,11 +228,7 @@ async def shorten_url(
 
     legacy_repo = LegacyUrlRepository(db["urls"])
     await legacy_repo.insert(short_code, data)
-    # get_client_ip, not request.client.host: behind Caddy + Cloudflare the
-    # socket peer is the proxy, one constant value for every anonymous
-    # create, which would collapse the L1 per-creator counters into a
-    # single always-bursting bucket.
-    await url_policy.record_create(url, get_client_ip(request))
+    await url_policy.record_create(url)
 
     log.info(
         "url_created",
@@ -384,11 +379,7 @@ async def emoji(
         data["block-bots"] = True
 
     await emoji_repo.insert(emojies, data)
-    # get_client_ip, not request.client.host: behind Caddy + Cloudflare the
-    # socket peer is the proxy, one constant value for every anonymous
-    # create, which would collapse the L1 per-creator counters into a
-    # single always-bursting bucket.
-    await url_policy.record_create(url, get_client_ip(request))
+    await url_policy.record_create(url)
 
     log.info(
         "url_created",

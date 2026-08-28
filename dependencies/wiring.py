@@ -418,8 +418,6 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
             burst_window_seconds=sf_settings.l1_burst_window_seconds,
             domain_burst_threshold=sf_settings.l1_domain_burst_threshold,
             domain_daily_threshold=sf_settings.l1_domain_daily_threshold,
-            ip_burst_threshold=sf_settings.l1_ip_burst_threshold,
-            ip_daily_threshold=sf_settings.l1_ip_daily_threshold,
         )
         log.info("safety_l1_scoring_enabled")
     elif sf_settings.enabled and sf_settings.l1_enabled:

@@ -97,7 +97,7 @@ class UrlPolicyService:
                 )
         return None
 
-    async def record_create(self, url: str, client_ip: str | None) -> None:
+    async def record_create(self, url: str) -> None:
         """L1 accumulation for one SUCCESSFUL create. Called by every
         creation path after its insert; best-effort by contract (the
         scorer never raises, never blocks the write)."""
@@ -107,5 +107,5 @@ class UrlPolicyService:
         if parts is None:
             return
         await self._scorer.record_create(
-            url, parts["host"], parts["registrable_domain"], client_ip
+            url, parts["host"], parts["registrable_domain"]
         )

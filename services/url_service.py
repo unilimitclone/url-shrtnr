@@ -921,7 +921,7 @@ class UrlService:
 
         # L1 accumulation: count the successful create (best-effort, the
         # policy service never raises from here).
-        await self._url_policy.record_create(request.long_url, client_ip)
+        await self._url_policy.record_create(request.long_url)
 
         _url_base = request.long_url.split("?")[0]
         _log_url = f"{_url_base}?[REDACTED]" if "?" in request.long_url else _url_base
