@@ -35,6 +35,8 @@ dependencies = [
     "validators>=0.35.0",
     "dnspython>=2.8.0",
     "faststream[redis]>=0.7.1",
+    "cronsim>=2.7",
+    "pydantic-ai-slim[anthropic,openai]>=2.31.0",
 ]
 
 [tool.pytest.ini_options]

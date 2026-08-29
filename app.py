@@ -47,6 +47,7 @@ from middleware.security import (
     configure_cors,
 )
 from middleware.tenant import TenantMiddleware
+from repositories.feed_domain_repository import FeedDomainRepository
 from repositories.indexes import ensure_indexes
 from routes.api_v1 import router as api_v1_router
 from routes.auth import router as auth_router
@@ -58,6 +59,7 @@ from routes.oauth_routes import router as oauth_router
 from routes.redirect_routes import router as redirect_router
 from routes.static_routes import router as static_router
 from schemas.models.app import AppStatus
+from services.safety.feeds import ensure_feed_seeds
 from shared.app_registry import load_app_registry
 
 log = get_logger(__name__)
@@ -146,6 +148,12 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             app.state.db,
             webhook_log_ttl_seconds=settings.webhooks.delivery_log_ttl_seconds,
         )
+        # First-boot feed seeds (empty feeds only): the live sets are owned
+        # by the DB — operators and (later) the deep-analysis tier add
+        # entries there, never in code.
+        await ensure_feed_seeds(
+            FeedDomainRepository(app.state.db["safety_feed_domains"])
+        )
 
         # App registry for the consent/apps system
         app.state.app_registry = load_app_registry()
@@ -205,9 +213,22 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             )
             log.info("webhook_executor_embedded_started")
 
+        # Embedded task scheduler: same Mongo-lease pattern — runs here
+        # when the deploy has no worker to host it.
+        task_scheduler_task: asyncio.Task | None = None
+        if getattr(app.state, "task_scheduler_embedded", False):
+            task_scheduler_task = asyncio.create_task(
+                app.state.task_scheduler.run(), name="task-scheduler"
+            )
+            log.info("task_scheduler_embedded_started")
+
         yield
 
         # ── Shutdown ─────────────────────────────────────────────────────────
+        if task_scheduler_task is not None:
+            task_scheduler_task.cancel()
+            with suppress(asyncio.CancelledError, asyncio.TimeoutError, TimeoutError):
+                await asyncio.wait_for(task_scheduler_task, timeout=10)
         if webhook_executor_task is not None:
             webhook_executor_task.cancel()
             # Bounded: a delivery attempt mid-flight has a 15s HTTP timeout;
