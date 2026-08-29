@@ -21,11 +21,13 @@ from services.account_erasure_service import (
 )
 from services.image_ingest import owner_key_prefix
 from services.scheduler.tasks import build_task_registry
+from services.url_service import OwnerUrlErasure
 
 UID = ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")
 UID2 = ObjectId("bbbbbbbbbbbbbbbbbbbbbbbb")
 EMAIL = "user@example.com"
 SECRET = "test-secret"
+URL_IDS = [ObjectId("cccccccccccccccccccccccc"), ObjectId("dddddddddddddddddddddddd")]
 
 
 def _user_doc(user_id=UID, email=EMAIL):
@@ -52,12 +54,16 @@ class Stubs:
         self.user_repo.find_purge_due = AsyncMock(return_value=[])
 
         self.url_service = MagicMock()
-        self.url_service.delete_all_by_owner = self._tracked("urls", 3)
+        self.url_service.delete_all_by_owner = self._tracked(
+            "urls",
+            OwnerUrlErasure(deleted=3, blocked_retained=1, url_ids=list(URL_IDS)),
+        )
 
         self.domain_service = MagicMock()
         self.domain_service.delete_all_for_owner = self._tracked("domains", 1)
 
         self.click_repo = MagicMock()
+        self.click_repo.delete_by_url_ids = self._tracked("clicks.by_url_ids", 4)
         self.click_repo.delete_by_owner = self._tracked("clicks", 2)
 
         self.api_key_repo = MagicMock()
@@ -162,8 +168,10 @@ def _service(
 
 EXPECTED_COUNTS = {
     "urlsV2": 3,
+    "urls_blocked_retained": 1,
     "custom_domains": 1,
-    "clicks": 2,
+    # url_id-chunk pass (4, pre-claim clicks included) + owner mop-up (2).
+    "clicks": 6,
     "api_keys": 1,
     "verification_tokens": 4,
     "page_layouts": 1,
@@ -204,6 +212,8 @@ async def test_erase_follows_cascade_order_user_doc_last():
         "users.claim",
         "urls",
         "domains",
+        # url_id-chunk deletes FIRST (pre-claim clicks), owner mop-up second.
+        "clicks.by_url_ids",
         "clicks",
         "api_keys",
         "tokens",
@@ -246,6 +256,7 @@ async def test_erase_missing_user_after_claim_returns_empty():
 async def test_erase_uses_the_right_predicates():
     stubs = Stubs()
     await _service(stubs).erase(UID)
+    stubs.click_repo.delete_by_url_ids.assert_awaited_once_with(URL_IDS)
     stubs.click_repo.delete_by_owner.assert_awaited_once_with(UID)
     stubs.token_repo.delete_by_user_or_email.assert_awaited_once_with(UID, EMAIL)
     stubs.report_submission_repo.delete_by_reporter.assert_awaited_once_with(UID, EMAIL)
@@ -319,6 +330,37 @@ async def test_erase_noop_externals_by_default():
     assert counts == EXPECTED_COUNTS
     assert isinstance(svc._posthog, NoopPostHogEraser)
     assert isinstance(svc._mailer, NoopErasureMailer)
+
+
+@pytest.mark.asyncio
+async def test_erase_chunks_click_deletes_by_url_id():
+    """A six-figure link set must never push one giant $in at the
+    time-series collection — 1001 ids ⇒ ceil(1001/500) = 3 chunk calls."""
+    stubs = Stubs()
+    many_ids = [ObjectId() for _ in range(1001)]
+    stubs.url_service.delete_all_by_owner = AsyncMock(
+        return_value=OwnerUrlErasure(deleted=1001, blocked_retained=0, url_ids=many_ids)
+    )
+    stubs.click_repo.delete_by_url_ids = AsyncMock(return_value=10)
+    counts = await _service(stubs).erase(UID)
+    chunks = [c.args[0] for c in stubs.click_repo.delete_by_url_ids.await_args_list]
+    assert [len(c) for c in chunks] == [500, 500, 1]
+    assert [i for chunk in chunks for i in chunk] == many_ids
+    # 3 chunk deletes (10 each) + owner mop-up (2 from the stub).
+    assert counts["clicks"] == 32
+
+
+@pytest.mark.asyncio
+async def test_erase_with_no_links_skips_url_id_click_pass():
+    stubs = Stubs()
+    stubs.url_service.delete_all_by_owner = AsyncMock(
+        return_value=OwnerUrlErasure(deleted=0, blocked_retained=0, url_ids=[])
+    )
+    counts = await _service(stubs).erase(UID)
+    stubs.click_repo.delete_by_url_ids.assert_not_awaited()
+    # Owner-based mop-up still runs — clicks on long-deleted links.
+    stubs.click_repo.delete_by_owner.assert_awaited_once_with(UID)
+    assert counts["clicks"] == 2
 
 
 # ── erase: R2 sweep ──────────────────────────────────────────────────────────

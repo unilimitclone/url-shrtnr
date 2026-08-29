@@ -242,16 +242,56 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             raise
 
     async def delete_by_owner(self, owner_id: ObjectId) -> int:
-        """Bulk-delete ALL URLs the owner has, across every domain.
+        """Bulk-delete the owner's URLs across every domain — except BLOCKED.
 
         Account-erasure only — unlike the domain-scoped bulk deletes there
-        is deliberately no domain guard. Refuses the anonymous sentinel so
-        a bug can never mass-delete unclaimed links. Returns the number of
-        documents deleted.
+        is deliberately no domain guard. BLOCKED docs are excluded: they are
+        the abuse audit trail and the alias reservation (see
+        ``scrub_blocked_owner_pii``), and deleting them would free aliases
+        still circulating in phishing mail. Refuses the anonymous sentinel
+        so a bug can never mass-delete unclaimed links. Returns the number
+        of documents deleted.
         """
         if not owner_id or owner_id == ANONYMOUS_OWNER_ID:
             raise ValueError("owner_id must be a real account id")
-        return await self._delete_many({"owner_id": owner_id})
+        return await self._delete_many(
+            {"owner_id": owner_id, "status": {"$ne": UrlStatus.BLOCKED.value}}
+        )
+
+    async def scrub_blocked_owner_pii(self, owner_id: ObjectId) -> int:
+        """Strip creator PII off the owner's BLOCKED docs, in place.
+
+        Erasure retains BLOCKED links under GDPR Art. 17(3) (abuse
+        prevention): ``owner_id``, status, alias, and the ``blocked_*``
+        audit fields stay so the enforcement record survives and the alias
+        can never be re-registered by the next phisher. Everything that
+        identifies the creator as a person goes: ``creation_ip``, the
+        ``meta_tags.updated_ip`` audit mirror, and the link ``password``.
+        Returns the number of BLOCKED docs retained (matched, not
+        modified — an already-scrubbed doc still counts as retained).
+        """
+        if not owner_id or owner_id == ANONYMOUS_OWNER_ID:
+            raise ValueError("owner_id must be a real account id")
+        try:
+            result = await self._col.update_many(
+                {"owner_id": owner_id, "status": UrlStatus.BLOCKED.value},
+                {
+                    "$unset": {
+                        "creation_ip": "",
+                        "meta_tags.updated_ip": "",
+                        "password": "",
+                    }
+                },
+            )
+            return int(result.matched_count or 0)
+        except PyMongoError as exc:
+            log.error(
+                "repo_scrub_blocked_pii_failed",
+                collection=self._collection_name,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise
 
     async def find_by_ids_and_owner(
         self, url_ids: list[ObjectId], owner_id: ObjectId

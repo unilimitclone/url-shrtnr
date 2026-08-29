@@ -51,6 +51,10 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+# One $in per click delete — bounded so an account with six figures of links
+# can never push a 16MB query document at the time-series collection.
+_CLICK_ID_CHUNK = 500
+
 
 class PostHogEraser(Protocol):
     """Deletes a PostHog person (and their events) by distinct_id."""
@@ -180,14 +184,26 @@ class AccountErasureService:
         r2_prefix = owner_key_prefix(user_id, self._key_secret)
 
         counts: dict[str, int] = {}
-        # 1. Links first — per-link cache/edge purge, then bulk delete.
-        counts["urlsV2"] = await self._url_service.delete_all_by_owner(user_id)
+        # 1. Links first — per-link cache/edge purge, then bulk delete. BLOCKED
+        # links come back retained+scrubbed (Art. 17(3) abuse retention).
+        url_result = await self._url_service.delete_all_by_owner(user_id)
+        counts["urlsV2"] = url_result.deleted
+        counts["urls_blocked_retained"] = url_result.blocked_retained
         # 2. Custom domains — CF/edge cascade + doc removal.
         counts["custom_domains"] = await self._domain_service.delete_all_for_owner(
             user_id
         )
-        # 3. Clicks — time-series, metaField-only predicate.
-        counts["clicks"] = await self._click_repo.delete_by_owner(user_id)
+        # 3. Clicks — time-series, metaField-only predicates (both). url_id
+        # chunks first: pre-claim clicks still carry the anonymous sentinel.
+        clicks_deleted = 0
+        for start in range(0, len(url_result.url_ids), _CLICK_ID_CHUNK):
+            clicks_deleted += await self._click_repo.delete_by_url_ids(
+                url_result.url_ids[start : start + _CLICK_ID_CHUNK]
+            )
+        # Owner-based mop-up: clicks on links deleted before erasure. The two
+        # passes are physical deletes, so the sum can never double-count.
+        clicks_deleted += await self._click_repo.delete_by_owner(user_id)
+        counts["clicks"] = clicks_deleted
         # 4. Satellites — hard deletes, soft-delete flags ignored.
         counts["api_keys"] = await self._api_key_repo.delete_by_user(user_id)
         counts["verification_tokens"] = await self._token_repo.delete_by_user_or_email(

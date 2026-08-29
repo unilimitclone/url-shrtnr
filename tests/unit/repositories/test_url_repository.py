@@ -609,13 +609,17 @@ class TestUrlRepositoryOwnerErasure:
         return UrlRepository(col or make_collection())
 
     @pytest.mark.asyncio
-    async def test_delete_by_owner_deletes_across_domains(self):
+    async def test_delete_by_owner_deletes_across_domains_except_blocked(self):
         col = make_collection()
         result = MagicMock()
         result.deleted_count = 4
         col.delete_many = AsyncMock(return_value=result)
         count = await self._repo(col).delete_by_owner(USER_OID)
-        col.delete_many.assert_awaited_once_with({"owner_id": USER_OID})
+        # BLOCKED docs are the abuse audit trail + alias reservation — the
+        # erasure bulk delete must never touch them.
+        col.delete_many.assert_awaited_once_with(
+            {"owner_id": USER_OID, "status": {"$ne": "BLOCKED"}}
+        )
         assert count == 4
 
     @pytest.mark.asyncio
@@ -626,6 +630,35 @@ class TestUrlRepositoryOwnerErasure:
         with pytest.raises(ValueError):
             await self._repo(col).delete_by_owner(ANONYMOUS_OWNER_ID)
         col.delete_many.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_scrub_blocked_pii_unsets_only_creator_pii(self):
+        col = make_collection()
+        result = MagicMock()
+        result.matched_count = 2
+        col.update_many = AsyncMock(return_value=result)
+        retained = await self._repo(col).scrub_blocked_owner_pii(USER_OID)
+        col.update_many.assert_awaited_once_with(
+            {"owner_id": USER_OID, "status": "BLOCKED"},
+            {
+                "$unset": {
+                    "creation_ip": "",
+                    "meta_tags.updated_ip": "",
+                    "password": "",
+                }
+            },
+        )
+        # matched (not modified): an already-scrubbed doc is still retained.
+        assert retained == 2
+
+    @pytest.mark.asyncio
+    async def test_scrub_blocked_pii_refuses_anonymous_sentinel(self):
+        from schemas.models.base import ANONYMOUS_OWNER_ID
+
+        col = make_collection()
+        with pytest.raises(ValueError):
+            await self._repo(col).scrub_blocked_owner_pii(ANONYMOUS_OWNER_ID)
+        col.update_many.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_iter_by_owner_streams_models(self):

@@ -54,6 +54,22 @@ class ClickRepository(BaseRepository[None]):
             raise ValueError("owner_id must be a real account id")
         return await self._delete_many({"meta.owner_id": owner_id})
 
+    async def delete_by_url_ids(self, url_ids: list[ObjectId]) -> int:
+        """Delete every click on the given links (account erasure).
+
+        Complements ``delete_by_owner``: clicks stamp ``meta.owner_id`` at
+        click time, so clicks that landed before a link was claimed still
+        carry the anonymous sentinel — only the url_id ties them to the
+        erased account. ``meta.url_id`` lives in the metaField subdoc, so
+        the predicate satisfies the time-series delete restriction. An
+        empty list deletes nothing — same fail-closed spirit as the
+        sentinel guard above (an unguarded empty ``$in`` matches nothing in
+        Mongo, but returning early keeps the contract explicit).
+        """
+        if not url_ids:
+            return 0
+        return await self._delete_many({"meta.url_id": {"$in": url_ids}})
+
     async def aggregate(self, pipeline: list[dict]) -> list[dict[str, Any]]:
         """Run an aggregation pipeline against the clicks collection.
 

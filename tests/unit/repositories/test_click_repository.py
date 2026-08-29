@@ -107,3 +107,21 @@ class TestClickRepository:
         with pytest.raises(ValueError):
             await self._repo(col).delete_by_owner(ANONYMOUS_OWNER_ID)
         col.delete_many.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_by_url_ids_uses_metafield_only_predicate(self):
+        col = make_collection()
+        result = MagicMock()
+        result.deleted_count = 3
+        col.delete_many = AsyncMock(return_value=result)
+        count = await self._repo(col).delete_by_url_ids([URL_OID])
+        # meta.url_id lives in the metaField subdoc — still a legal
+        # time-series delete predicate.
+        col.delete_many.assert_awaited_once_with({"meta.url_id": {"$in": [URL_OID]}})
+        assert count == 3
+
+    @pytest.mark.asyncio
+    async def test_delete_by_url_ids_empty_list_is_a_noop(self):
+        col = make_collection()
+        assert await self._repo(col).delete_by_url_ids([]) == 0
+        col.delete_many.assert_not_awaited()

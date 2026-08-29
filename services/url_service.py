@@ -400,6 +400,20 @@ class ClaimResult:
     status: Literal["claimed", "already_yours", "invalid"]
 
 
+@dataclass(frozen=True)
+class OwnerUrlErasure:
+    """What ``delete_all_by_owner`` did — and the ids the cascade still needs.
+
+    ``url_ids`` covers every link the owner had, retained BLOCKED docs
+    included: their clicks are visitor data, not abuse audit, and must die
+    with the account even though the link doc survives.
+    """
+
+    deleted: int
+    blocked_retained: int
+    url_ids: list[ObjectId]
+
+
 class UrlService:
     def __init__(
         self,
@@ -1344,29 +1358,43 @@ class UrlService:
         )
         return deleted
 
-    async def delete_all_by_owner(self, owner_id: ObjectId) -> int:
-        """Erase every URL the owner has, across ALL domains.
+    async def delete_all_by_owner(self, owner_id: ObjectId) -> OwnerUrlErasure:
+        """Erase the owner's URLs across ALL domains — BLOCKED docs excepted.
 
         Account-erasure counterpart of ``delete_all_by_domain`` — no
         system-default guard here: nuking the user's spoo.me links is the
-        whole point. Per link, mirrors ``delete``'s cache/edge side
-        effects (url_cache invalidate, og write-through removal or edge-KV
-        purge), then one bulk delete. Returns the number deleted.
+        whole point. BLOCKED links are RETAINED with creator PII scrubbed
+        in place (GDPR Art. 17(3) abuse-prevention retention — the
+        enforcement audit trail and the alias reservation must outlive the
+        account; see ``UrlRepository.scrub_blocked_owner_pii``). Per link,
+        mirrors ``delete``'s cache/edge side effects (url_cache invalidate,
+        og write-through removal or edge-KV purge) — BLOCKED links
+        included: they only ever serve a 451, but the cached projection
+        carries the pre-scrub password hash, so purging is load-bearing,
+        not just tidy. Returns the per-status counts plus EVERY link's id
+        (retained BLOCKED included) so the erasure cascade can delete their
+        clicks by url_id.
         """
+        url_ids: list[ObjectId] = []
         async for existing in self._url_repo.iter_by_owner(owner_id):
+            url_ids.append(existing.id)
             await self._url_cache.invalidate(existing.alias, existing.domain)
             if existing.meta_tags is not None and self._og_writethrough:
                 await self._og_writethrough.remove(existing.domain, existing.alias)
             else:
                 self._purge_edge_key(existing.domain, existing.alias)
 
+        blocked_retained = await self._url_repo.scrub_blocked_owner_pii(owner_id)
         deleted = await self._url_repo.delete_by_owner(owner_id)
         log.info(
             "urls_owner_erased",
             user_id=str(owner_id),
             count=deleted,
+            blocked_retained=blocked_retained,
         )
-        return deleted
+        return OwnerUrlErasure(
+            deleted=deleted, blocked_retained=blocked_retained, url_ids=url_ids
+        )
 
     async def list_by_owner(
         self,
