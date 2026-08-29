@@ -13,7 +13,7 @@ address = "127.0.0.1:8686"
 
 [sources.docker]
 type = "docker_logs"
-include_containers = ["spoo_app", "spoo_qr", "spoo_click_worker"]
+include_containers = ["spoo_app", "spoo_qr", "spoo_click_worker", "spoo_next"]
 exclude_containers = ["spoo_vector", "spoo_redis_exporter"]
 
 [transforms.parse_and_clean]
