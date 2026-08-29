@@ -517,6 +517,9 @@ class AppSettings(BaseSettings):
 
     # Validator constraints (overridable by self-hosters via env vars)
     blocked_url_regex_timeout: float = 0.2
+    # Google Web Risk (URL expander verdicts). Empty = the check silently
+    # doesn't run; the tool shows facts it has, never a fake verdict.
+    web_risk_api_key: str = ""
     max_emoji_alias_length: int = 15
     # Newest Unicode emoji version accepted in custom emoji aliases.
     # 15.1 renders on iOS 17.4+ / Android 14+ / Windows 11 23H2+.

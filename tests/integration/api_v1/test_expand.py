@@ -30,7 +30,11 @@ def _app(patterns=None):
     repo = AsyncMock()
     repo.get_patterns = AsyncMock(return_value=patterns or [])
     app.state.url_expand_service = UrlExpandService(
-        repo, MetaFetchCache(None), regex_timeout=0.2, user_agent="test"
+        repo,
+        MetaFetchCache(None),
+        regex_timeout=0.2,
+        user_agent="test",
+        web_risk_api_key="",
     )
     return app
 
@@ -51,6 +55,7 @@ def test_expand_returns_chain_anonymously():
     assert data["hops"][1]["https"] is False
     assert data["blocklist_match"] is False
     assert data["truncated"] is False
+    assert data["web_risk"] is None
 
 
 def test_expand_flags_blocklisted_hop():

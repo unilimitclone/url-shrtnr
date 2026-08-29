@@ -17,6 +17,11 @@ class ChainHop(ResponseBase):
     https: bool
 
 
+class WebRiskVerdict(ResponseBase):
+    checked: bool
+    threats: list[str] = Field(default_factory=list)
+
+
 class ExpandResponse(ResponseBase):
     """A URL's redirect chain, every hop listed in order.
 
@@ -30,4 +35,8 @@ class ExpandResponse(ResponseBase):
     truncated: bool = Field(description="Chain stopped at the redirect cap.")
     hops: list[ChainHop]
     blocklist_match: bool
+    web_risk: WebRiskVerdict | None = Field(
+        default=None,
+        description="Google Web Risk verdict for the final URL; null when the check didn't run.",
+    )
     fetched_at: datetime

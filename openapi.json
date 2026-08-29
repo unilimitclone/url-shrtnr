@@ -6929,6 +6929,106 @@
         "security": []
       }
     },
+    "/api/v1/domain-intel": {
+      "get": {
+        "tags": [
+          "Metadata"
+        ],
+        "summary": "Domain Records",
+        "description": "DNS records, registration data, and TLS certificate of a host.\n\nRegistration comes from the registry's own RDAP server; ``age_days``\nis the strongest quick signal (freshly registered domains are the\nphishing tell). Results are cached ~24h server-side.\n\n**Authentication**: None required. Authenticated callers get the\nhigher per-account rate limit; anonymous calls are limited per IP.\n\n**Rate Limits**: 60/min, 2,000/day authenticated; 15/min, 300/day\nanonymous.",
+        "operationId": "getDomainIntel",
+        "parameters": [
+          {
+            "name": "host",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 253,
+              "description": "Hostname to look up (no scheme or path).",
+              "examples": [
+                "github.com"
+              ],
+              "title": "Host"
+            },
+            "description": "Hostname to look up (no scheme or path)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainIntelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request \u2014 invalid parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient permissions or scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
     "/api/v1/me/features": {
       "get": {
         "tags": [
@@ -10871,6 +10971,130 @@
         "title": "DnsRecord",
         "description": "One DNS record the user must publish to complete setup."
       },
+      "DomainIntelResponse": {
+        "properties": {
+          "host": {
+            "type": "string",
+            "title": "Host"
+          },
+          "registrable_domain": {
+            "type": "string",
+            "title": "Registrable Domain"
+          },
+          "dns": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Dns"
+          },
+          "whois": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DomainWhois"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ssl": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DomainSsl"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fetched At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "host",
+          "registrable_domain",
+          "dns",
+          "fetched_at"
+        ],
+        "title": "DomainIntelResponse",
+        "description": "Public records of a destination host: DNS, RDAP registration, TLS.\n\n``whois``/``ssl`` are null when the registry or handshake doesn't\nanswer \u2014 absence of data, never a verdict."
+      },
+      "DomainSsl": {
+        "properties": {
+          "issuer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          },
+          "days_left": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days Left"
+          },
+          "sans": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sans"
+          }
+        },
+        "type": "object",
+        "title": "DomainSsl"
+      },
       "DomainStatus": {
         "type": "string",
         "enum": [
@@ -10882,6 +11106,68 @@
         ],
         "title": "DomainStatus",
         "description": "Lifecycle state of a custom domain registration."
+      },
+      "DomainWhois": {
+        "properties": {
+          "registrar": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registrar"
+          },
+          "created": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
+          "updated": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated"
+          },
+          "expires": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires"
+          },
+          "age_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Days",
+            "description": "Days since registration; young = suspect."
+          }
+        },
+        "type": "object",
+        "title": "DomainWhois"
       },
       "EmojiEntry": {
         "properties": {
@@ -11093,6 +11379,17 @@
           "blocklist_match": {
             "type": "boolean",
             "title": "Blocklist Match"
+          },
+          "web_risk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WebRiskVerdict"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Google Web Risk verdict for the final URL; null when the check didn't run."
           },
           "fetched_at": {
             "type": "string",
@@ -14047,6 +14344,26 @@
         ],
         "title": "VerifyEmailResponse",
         "description": "Response body for POST /auth/verify-email (200)."
+      },
+      "WebRiskVerdict": {
+        "properties": {
+          "checked": {
+            "type": "boolean",
+            "title": "Checked"
+          },
+          "threats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Threats"
+          }
+        },
+        "type": "object",
+        "required": [
+          "checked"
+        ],
+        "title": "WebRiskVerdict"
       },
       "WebhookDeliveryResponse": {
         "properties": {

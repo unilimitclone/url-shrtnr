@@ -55,6 +55,7 @@ from services.click import ClickService, LegacyClickHandler, V2ClickHandler
 from services.click.sinks import InlineSink, RedisStreamSink
 from services.contact_service import ContactService
 from services.custom_domain_service import CustomDomainService
+from services.domain_intel_service import DomainIntelService
 from services.edge_cache.og_writethrough import OgEdgeWritethrough
 from services.events.sinks import (
     InlineDomainEventSink,
@@ -335,6 +336,10 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         MetaFetchCache(redis_client, prefix="url_expand"),
         regex_timeout=settings.blocked_url_regex_timeout,
         user_agent=settings.meta_tags.fetch_user_agent,
+        web_risk_api_key=settings.web_risk_api_key,
+    )
+    app.state.domain_intel_service = DomainIntelService(
+        MetaFetchCache(redis_client, prefix="domain_intel", ttl_seconds=86_400)
     )
     app.state.public_stats_service = PublicStatsService(
         public_link_resolver,
