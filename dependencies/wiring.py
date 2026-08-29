@@ -184,6 +184,39 @@ def build_click_service(
     )
 
 
+def build_r2_storage(settings: AppSettings, http_client) -> R2StorageClient | None:
+    """R2 client when fully configured; None otherwise — shared by the app
+    wiring and the worker's erasure factory.
+
+    The client's ``__init__`` rejects plain-http endpoints outside loopback
+    (SigV4 signs, never encrypts). A self-host compose pointing R2 at
+    ``http://minio:9000`` must still boot, so that rejection degrades here
+    to the same disabled state as unconfigured R2 — mirroring how every
+    other optional integration degrades — instead of crashing startup.
+    """
+    r2 = settings.r2
+    if not r2.enabled:
+        return None
+    try:
+        return R2StorageClient(
+            http_client=http_client,
+            account_id=r2.account_id,
+            access_key_id=r2.access_key_id,
+            secret_access_key=r2.secret_access_key,
+            bucket=r2.bucket,
+            public_base_url=r2.public_base_url,
+            endpoint_url=r2.endpoint_url,
+            request_timeout_seconds=r2.request_timeout_seconds,
+        )
+    except ValueError as exc:
+        log.warning(
+            "r2_storage_disabled_insecure_endpoint",
+            endpoint=r2.endpoint_url,
+            reason=str(exc),
+        )
+        return None
+
+
 def build_erasure_mailer(
     settings: AppSettings,
     http_client,
@@ -257,19 +290,7 @@ def build_account_erasure_service(
             ttl_seconds=edge.og_ttl_seconds,
         )
 
-    r2 = settings.r2
-    r2_storage = None
-    if r2.enabled:
-        r2_storage = R2StorageClient(
-            http_client=http_client,
-            account_id=r2.account_id,
-            access_key_id=r2.access_key_id,
-            secret_access_key=r2.secret_access_key,
-            bucket=r2.bucket,
-            public_base_url=r2.public_base_url,
-            endpoint_url=r2.endpoint_url,
-            request_timeout_seconds=r2.request_timeout_seconds,
-        )
+    r2_storage = build_r2_storage(settings, http_client)
 
     user_repo = UserRepository(db["users"])
     url_service = UrlService(
@@ -419,21 +440,11 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
 
     # R2 bucket for uploaded og:images. None when unconfigured (self-host):
     # data-URI uploads are rejected with a clear error, https URLs work.
-    r2_storage = None
     r2 = settings.r2
-    if r2.enabled:
-        r2_storage = R2StorageClient(
-            http_client=http_client,
-            account_id=r2.account_id,
-            access_key_id=r2.access_key_id,
-            secret_access_key=r2.secret_access_key,
-            bucket=r2.bucket,
-            public_base_url=r2.public_base_url,
-            endpoint_url=r2.endpoint_url,
-            request_timeout_seconds=r2.request_timeout_seconds,
-        )
+    r2_storage = build_r2_storage(settings, http_client)
+    if r2_storage is not None:
         log.info("r2_storage_enabled", bucket=r2.bucket)
-    elif any(
+    elif not r2.enabled and any(
         (
             r2.account_id,
             r2.access_key_id,

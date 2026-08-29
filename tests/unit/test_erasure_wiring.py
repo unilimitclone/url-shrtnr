@@ -8,7 +8,7 @@ same cascade) is probed the same way: env decides which side-effect
 clients get wired, primitives are fakes.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,6 +17,7 @@ from dependencies.wiring import (
     build_account_erasure_service,
     build_erasure_mailer,
     build_posthog_eraser,
+    build_r2_storage,
 )
 from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.email.zeptomail import ZeptoMailProvider
@@ -44,8 +45,17 @@ _SIDE_EFFECT_ENV = (
     "R2_SECRET_ACCESS_KEY",
     "R2_BUCKET",
     "R2_PUBLIC_BASE_URL",
+    "R2_ENDPOINT_URL",
     "CUSTOM_DOMAINS_MOCK_DCV",
 )
+
+
+def _full_r2_env(monkeypatch):
+    monkeypatch.setenv("R2_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("R2_BUCKET", "og-images")
+    monkeypatch.setenv("R2_PUBLIC_BASE_URL", "https://og.spoo.me")
 
 
 @pytest.fixture
@@ -110,6 +120,34 @@ class TestBuildPostHogEraser:
         assert eraser._host == "https://us.posthog.com"
 
 
+class TestBuildR2Storage:
+    """The shared R2 construction gate for the app and the worker."""
+
+    def test_unconfigured_yields_none(self, base_env):
+        assert build_r2_storage(AppSettings(), MagicMock()) is None
+
+    def test_configured_yields_client(self, base_env):
+        _full_r2_env(base_env)
+        assert isinstance(build_r2_storage(AppSettings(), MagicMock()), R2StorageClient)
+
+    def test_loopback_http_endpoint_yields_client(self, base_env):
+        _full_r2_env(base_env)
+        base_env.setenv("R2_ENDPOINT_URL", "http://localhost:9000")
+        assert isinstance(build_r2_storage(AppSettings(), MagicMock()), R2StorageClient)
+
+    def test_insecure_endpoint_degrades_to_none_with_warning(self, base_env):
+        """A compose self-host pointing at http://minio:9000 must boot with
+        uploads disabled — the same degraded state as unconfigured R2 —
+        instead of crashing on the client's https guard."""
+        _full_r2_env(base_env)
+        base_env.setenv("R2_ENDPOINT_URL", "http://minio:9000")
+        with patch("dependencies.wiring.log", new=MagicMock()) as mock_log:
+            assert build_r2_storage(AppSettings(), MagicMock()) is None
+        event = mock_log.warning.call_args.args[0]
+        assert event == "r2_storage_disabled_insecure_endpoint"
+        assert "https" in mock_log.warning.call_args.kwargs["reason"]
+
+
 class TestBuildAccountErasureService:
     """Worker-side composition root: same env gates as the app wiring."""
 
@@ -133,6 +171,13 @@ class TestBuildAccountErasureService:
         assert isinstance(service._mailer, NoopErasureMailer)
         assert isinstance(service._posthog, NoopPostHogEraser)
 
+    def test_insecure_r2_endpoint_degrades_like_unconfigured(self, base_env):
+        _full_r2_env(base_env)
+        base_env.setenv("R2_ENDPOINT_URL", "http://minio:9000")
+        service = self._build()
+        assert service._r2_storage is None
+        assert service._url_service._r2_storage is None
+
     def test_default_dcv_selects_cf_saas_backend(self, base_env):
         service = self._build()
         assert isinstance(service._domain_service._edge, CfSaasBackend)
@@ -146,11 +191,7 @@ class TestBuildAccountErasureService:
         base_env.setenv("EDGE_CACHE_CF_ACCOUNT_ID", "acct")
         base_env.setenv("EDGE_CACHE_CF_API_TOKEN", "kv-token")
         base_env.setenv("EDGE_CACHE_KV_NAMESPACE_ID", "ns")
-        base_env.setenv("R2_ACCOUNT_ID", "acct")
-        base_env.setenv("R2_ACCESS_KEY_ID", "key")
-        base_env.setenv("R2_SECRET_ACCESS_KEY", "secret")
-        base_env.setenv("R2_BUCKET", "og-images")
-        base_env.setenv("R2_PUBLIC_BASE_URL", "https://og.spoo.me")
+        _full_r2_env(base_env)
         service = self._build()
         url_service = service._url_service
         assert isinstance(url_service._edge_kv, CloudflareKVClient)
