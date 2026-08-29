@@ -129,6 +129,9 @@ class TestEnsureIndexes:
         tokens_col.create_index.assert_any_await(
             [("expires_at", 1)], expireAfterSeconds=0
         )
+        # Erasure's delete_by_user_or_email $or: the email branch needs its
+        # own index (user_id branch rides the existing user_id index).
+        tokens_col.create_index.assert_any_await([("email", 1)])
         app_grants_col.create_index.assert_any_await(
             [("user_id", 1), ("app_id", 1)], unique=True
         )

@@ -151,6 +151,9 @@ async def ensure_indexes(
 
     # ── verification-tokens ────────────────────────────────────────────────
     await tokens_col.create_index([("user_id", 1)])
+    # Erasure's delete_by_user_or_email is an $or over user_id and email —
+    # Mongo only skips the collection scan when EACH branch has its index.
+    await tokens_col.create_index([("email", 1)])
     await tokens_col.create_index([("token_hash", 1)])
     await tokens_col.create_index([("token_type", 1)])
     await tokens_col.create_index([("expires_at", 1)], expireAfterSeconds=0)
