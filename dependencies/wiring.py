@@ -500,6 +500,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         emoji_generate_max_version=settings.emoji_generate_max_version,
         emoji_generated_alias_length=settings.emoji_generated_alias_length,
         geo_rules_max_countries=settings.geo_rules_max_countries,
+        geo_rules_enabled=settings.geo_rules_enabled,
         og_writethrough=og_writethrough,
         edge_kv=edge_kv_client,
         r2_storage=r2_storage,

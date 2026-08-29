@@ -167,6 +167,7 @@ def make_service(
     url_cache,
     og_writethrough=None,
     edge_kv=None,
+    geo_rules_enabled=True,
 ):
     from services.url_service import UrlService
 
@@ -181,6 +182,7 @@ def make_service(
         url_policy=make_policy(blocked_url_repo),
         og_writethrough=og_writethrough,
         edge_kv=edge_kv,
+        geo_rules_enabled=geo_rules_enabled,
     )
 
 
@@ -2214,6 +2216,31 @@ class TestUrlServiceListByOwnerDomainFilter:
 # ─────────────────────────────────────────────────────────────────────────────
 # TestUrlServiceGeoRules
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestGeoRulesFeatureGate:
+    @pytest.mark.asyncio
+    async def test_geo_rules_refused_while_the_feature_is_dark(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo,
+            legacy_repo,
+            emoji_repo,
+            blocked_url_repo,
+            url_cache,
+            geo_rules_enabled=False,
+        )
+        blocked_url_repo.get_patterns.return_value = []
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com", geo_rules={"IN": "https://example.in/"}
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "geo_rules"
+        url_repo.insert.assert_not_awaited()
 
 
 class TestUrlServiceGeoRules:

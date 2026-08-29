@@ -112,6 +112,7 @@ def _validate_geo_rules_shape(
     rules: dict[str, str],
     *,
     max_countries: int,
+    enabled: bool = True,
 ) -> None:
     """Entry cap + real ISO codes. Destination URL safety is NOT here — geo
     targets go through the same ``url_policy.check`` gate as long_url.
@@ -119,6 +120,8 @@ def _validate_geo_rules_shape(
     Raises:
         ValidationError: with field paths like ``geo_rules.IN``.
     """
+    if not enabled:
+        raise ValidationError("geo targeting is not available yet", field="geo_rules")
     if len(rules) > max_countries:
         raise ValidationError(
             f"geo_rules cannot exceed {max_countries} country entries",
@@ -305,6 +308,7 @@ async def _handle_geo_rules(
     _validate_geo_rules_shape(
         request.geo_rules,
         max_countries=service._geo_rules_max_countries,
+        enabled=service._geo_rules_enabled,
     )
     for geo_code, geo_url in request.geo_rules.items():
         rejection = await service._url_policy.check(geo_url)
@@ -413,6 +417,7 @@ class UrlService:
         emoji_generate_max_version: float = 12.0,
         emoji_generated_alias_length: int = 3,
         geo_rules_max_countries: int = 50,
+        geo_rules_enabled: bool = False,
         og_writethrough: OgEdgeWritethrough | None = None,
         edge_kv: CloudflareKVClient | None = None,
         r2_storage: R2StorageClient | None = None,
@@ -440,6 +445,7 @@ class UrlService:
         self._emoji_generate_max_version = emoji_generate_max_version
         self._emoji_generated_alias_length = emoji_generated_alias_length
         self._geo_rules_max_countries = geo_rules_max_countries
+        self._geo_rules_enabled = geo_rules_enabled
         # Edge KV write-through for og-links; None when edge cache is
         # unconfigured (self-host) — origin then serves all previews.
         self._og_writethrough = og_writethrough
@@ -810,6 +816,7 @@ class UrlService:
             _validate_geo_rules_shape(
                 request.geo_rules,
                 max_countries=self._geo_rules_max_countries,
+                enabled=self._geo_rules_enabled,
             )
             for geo_code, geo_url in request.geo_rules.items():
                 geo_rejection = await self._url_policy.check(geo_url)

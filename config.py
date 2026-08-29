@@ -702,6 +702,10 @@ class AppSettings(BaseSettings):
     # must render everywhere.
     emoji_generate_max_version: float = 12.0
     emoji_generated_alias_length: int = 3
+    # Dark until geo destinations are visible to safety enforcement, which
+    # keys on dest.host and cannot see them. See the tripwire in
+    # tests/unit/test_geo_launch_guard.py.
+    geo_rules_enabled: bool = False
     geo_rules_max_countries: int = 50
     url_password_min_length: int = 8
     account_password_min_length: int = 8
