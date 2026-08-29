@@ -99,21 +99,27 @@ class TestWebRiskProvider:
 
     @pytest.mark.asyncio
     async def test_threat_match_is_toxic(self):
+        from infrastructure.web_risk import ENFORCEMENT_THREAT_TYPES, WebRiskClient
         from services.safety.providers import WebRiskProvider
 
         http = self._http(
             {"threat": {"threatTypes": ["SOCIAL_ENGINEERING"], "expireTime": "x"}}
         )
-        provider = WebRiskProvider(http, api_key="k123")
+        provider = WebRiskProvider(
+            WebRiskClient(http, api_key="k123", threat_types=ENFORCEMENT_THREAT_TYPES)
+        )
         verdict = await provider.analyze(
             "https://phish.com/x", "phish.com", "phish.com"
         )
         assert verdict is not None
         assert verdict.tier == VerdictTier.TOXIC
         assert "SOCIAL_ENGINEERING" in verdict.reason
-        # Request carries the uri, both threat types, and the key as params.
+        # Request carries the uri and both threat types, and the key
+        # never rides the query string.
         _, kwargs = http.get.await_args
         assert kwargs["params"]["uri"] == "https://phish.com/x"
+        assert kwargs["headers"]["X-Goog-Api-Key"] == "k123"
+        assert "key" not in kwargs["params"]
         assert set(kwargs["params"]["threatTypes"]) == {
             "MALWARE",
             "SOCIAL_ENGINEERING",
@@ -121,21 +127,35 @@ class TestWebRiskProvider:
 
     @pytest.mark.asyncio
     async def test_empty_response_abstains(self):
+        from infrastructure.web_risk import ENFORCEMENT_THREAT_TYPES, WebRiskClient
         from services.safety.providers import WebRiskProvider
 
-        provider = WebRiskProvider(self._http({}), api_key="k123")
+        provider = WebRiskProvider(
+            WebRiskClient(
+                self._http({}), api_key="k123", threat_types=ENFORCEMENT_THREAT_TYPES
+            )
+        )
         assert await provider.analyze("https://ok.com/x", "ok.com", "ok.com") is None
 
     @pytest.mark.asyncio
     async def test_http_error_and_exception_abstain(self):
+        from infrastructure.web_risk import ENFORCEMENT_THREAT_TYPES, WebRiskClient
         from services.safety.providers import WebRiskProvider
 
-        provider = WebRiskProvider(self._http({}, status=429), api_key="k123")
+        provider = WebRiskProvider(
+            WebRiskClient(
+                self._http({}, status=429),
+                api_key="k123",
+                threat_types=ENFORCEMENT_THREAT_TYPES,
+            )
+        )
         assert await provider.analyze("https://ok.com/x", "ok.com", "ok.com") is None
 
         http = AsyncMock()
         http.get = AsyncMock(side_effect=RuntimeError("boom"))
-        provider = WebRiskProvider(http, api_key="k123")
+        provider = WebRiskProvider(
+            WebRiskClient(http, api_key="k123", threat_types=ENFORCEMENT_THREAT_TYPES)
+        )
         assert await provider.analyze("https://ok.com/x", "ok.com", "ok.com") is None
 
 

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from dependencies import get_current_user
 from infrastructure.cache.meta_fetch_cache import MetaFetchCache
 from infrastructure.safe_fetch import ChainHop, ExpandedChain, FetchHardError
+from infrastructure.web_risk import DISPLAY_THREAT_TYPES, WebRiskClient
 from services.url_expand_service import UrlExpandService
 
 from .conftest import _build_test_app
@@ -25,7 +26,7 @@ CHAIN = ExpandedChain(
 )
 
 
-def _service(patterns=None, *, web_risk_key="", http=None, cache=None):
+def _service(patterns=None, *, web_risk_key="", http=None, cache=None, budget=None):
     repo = AsyncMock()
     repo.get_patterns = AsyncMock(return_value=patterns or [])
     return UrlExpandService(
@@ -33,8 +34,16 @@ def _service(patterns=None, *, web_risk_key="", http=None, cache=None):
         cache or MetaFetchCache(None),
         regex_timeout=0.2,
         user_agent="test",
-        http_client=http or MagicMock(get=AsyncMock()),
-        web_risk_api_key=web_risk_key,
+        web_risk=(
+            WebRiskClient(
+                http or MagicMock(get=AsyncMock()),
+                api_key=web_risk_key,
+                threat_types=DISPLAY_THREAT_TYPES,
+            )
+            if web_risk_key
+            else None
+        ),
+        web_risk_budget=budget,
     )
 
 
@@ -142,3 +151,47 @@ def test_a_failed_web_risk_call_is_not_cached_as_absence():
         resp = client.get("/api/v1/expand", params={"url": "https://bit.ly/x"})
     assert resp.json()["web_risk"] is None
     cache.set.assert_not_called()
+
+
+def test_a_spent_budget_stops_asking_google():
+    """The expander shares one project quota with the safety analyzer but
+    is the only public consumer, so it yields first: past its cap the
+    verdict is absent and no lookup leaves the box."""
+    http = MagicMock()
+    http.get = AsyncMock()
+    budget = AsyncMock()
+    budget.take = AsyncMock(return_value=False)
+    with (
+        patch(
+            "services.url_expand_service.expand_public",
+            new=AsyncMock(return_value=CHAIN),
+        ),
+        TestClient(
+            _app(web_risk_key="k", http=http, budget=budget),
+            raise_server_exceptions=True,
+        ) as client,
+    ):
+        resp = client.get("/api/v1/expand", params={"url": "https://bit.ly/x"})
+    assert resp.json()["web_risk"] is None
+    http.get.assert_not_awaited()
+
+
+def test_a_lookup_we_declined_to_make_is_still_cached():
+    """Unlike an unanswered ask, a spent budget is a sustained state — not
+    caching it would re-enter this path on every single request."""
+    cache = MetaFetchCache(None)
+    cache.set = AsyncMock()
+    budget = AsyncMock()
+    budget.take = AsyncMock(return_value=False)
+    with (
+        patch(
+            "services.url_expand_service.expand_public",
+            new=AsyncMock(return_value=CHAIN),
+        ),
+        TestClient(
+            _app(web_risk_key="k", cache=cache, budget=budget),
+            raise_server_exceptions=True,
+        ) as client,
+    ):
+        client.get("/api/v1/expand", params={"url": "https://bit.ly/x"})
+    cache.set.assert_awaited_once()

@@ -401,29 +401,6 @@ class MetaTagsSettings(BaseSettings):
     fetch_user_agent: str = "spoo.me-og-validator/1.0 (+https://spoo.me)"
 
 
-class WebRiskSettings(BaseSettings):
-    """Google Web Risk lookups for the URL expander's safety verdict.
-
-    Env vars are prefixed ``WEB_RISK_`` so a generic ``API_KEY`` set
-    elsewhere in the deploy environment can't configure this. Without a
-    key the check silently doesn't run and the verdict is absent — the
-    tool never shows a fabricated one.
-    """
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        extra="ignore",
-        env_prefix="WEB_RISK_",
-    )
-
-    api_key: str = ""
-    timeout_seconds: float = Field(default=4.0, gt=0)
-
-    @property
-    def enabled(self) -> bool:
-        return bool(self.api_key)
-
-
 class WebhookSettings(BaseSettings):
     """Webhooks system — real-time event deliveries to subscriber URLs.
 
@@ -601,6 +578,9 @@ class SafetySettings(BaseSettings):
     # sanctioned equivalent.)
     web_risk_api_key: str = ""
     web_risk_api_base: str = "https://webrisk.googleapis.com"
+    # The public expander shares this quota with the analyzer; its capped
+    # share keeps tool traffic from spending the ~3.3k/day free tier.
+    web_risk_expander_daily_budget: int = Field(default=1_000, ge=0)
 
     @property
     def web_risk_enabled(self) -> bool:
@@ -807,7 +787,6 @@ class AppSettings(BaseSettings):
     edge_cache: EdgeCacheSettings | None = None
     r2: R2StorageSettings | None = None
     meta_tags: MetaTagsSettings | None = None
-    web_risk: WebRiskSettings | None = None
     webhooks: WebhookSettings | None = None
     safety: SafetySettings | None = None
     scheduler: SchedulerSettings | None = None
@@ -851,8 +830,6 @@ class AppSettings(BaseSettings):
             self.r2 = R2StorageSettings()
         if self.meta_tags is None:
             self.meta_tags = MetaTagsSettings()
-        if self.web_risk is None:
-            self.web_risk = WebRiskSettings()
         if self.webhooks is None:
             self.webhooks = WebhookSettings()
         if self.llm is None:
