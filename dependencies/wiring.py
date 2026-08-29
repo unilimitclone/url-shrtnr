@@ -279,6 +279,11 @@ def build_account_erasure_service(
         url_cache,
         settings.blocked_self_domains,
         system_default_domain=settings.system_default_domain,
+        # Creation-side gate, unreachable from erasure's delete paths —
+        # provider-less keeps the safety stack out of the worker.
+        url_policy=UrlPolicyService(
+            [], blocked_self_domains=settings.blocked_self_domains
+        ),
         og_writethrough=og_writethrough,
         edge_kv=edge_kv_client,
         r2_storage=r2_storage,
