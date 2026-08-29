@@ -273,9 +273,11 @@ async def restore_account(
     the deletion notice email (the only path for OAuth-only accounts).
     Either flips the account back to ACTIVE, clears the purge deadline,
     and sends a cancellation notice to the account address. Only works
-    while the account is PENDING_DELETION (i.e. before `purge_after` from
-    ``DELETE /api/v1/me`` passes); once erasure has started, restore is
-    refused for good.
+    while the account is PENDING_DELETION. The hard boundary is the
+    erasure sweep claiming the account (typically within minutes of the
+    ``purge_after`` deadline from ``DELETE /api/v1/me``), so a restore in
+    the window between the deadline and the claim still succeeds; once
+    erasure has started, restore is refused for good.
 
     **Authentication**: Not required (public endpoint)
 

@@ -11,6 +11,7 @@ from pymongo.errors import DuplicateKeyError
 
 from config import CustomDomainSettings
 from errors import (
+    AppError,
     DomainAlreadyRegisteredError,
     DomainBlocklistedError,
     DomainNotVerifiedError,
@@ -1181,13 +1182,15 @@ class TestDeleteAllForOwner:
         edge.announce_revoked.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_failed_eviction_does_not_block_erasure(self):
+    async def test_failed_eviction_raises_and_keeps_the_doc(self):
         svc, repo, _, edge, _ = _build_service()
         edge.announce_revoked = AsyncMock(return_value=False)
         repo.count_by_owner = AsyncMock(return_value=1)
         repo.list_by_owner = AsyncMock(side_effect=[[_doc()], []])
-        assert await svc.delete_all_for_owner(USER_OID) == 1
-        repo.delete_by_id.assert_awaited_once_with(DOMAIN_OID)
+        with pytest.raises(AppError):
+            await svc.delete_all_for_owner(USER_OID)
+        # Doc survives so the re-queued sweep has something to retry against.
+        repo.delete_by_id.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_repo_failure_propagates(self):

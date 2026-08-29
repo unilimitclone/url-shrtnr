@@ -426,12 +426,15 @@ class CustomDomainService:
                         owner_id, doc.fqdn, retain_blocked=True
                     )
                 if not await self._edge.announce_revoked(doc.fqdn):
-                    log.warning(
+                    # Doc must survive so the re-queued sweep can retry the
+                    # eviction; deleting it would strand the edge entry.
+                    log.error(
                         "audit.domain.erase_eviction_failed",
                         fqdn=doc.fqdn,
                         domain_id=str(doc.id),
                         owner_id=str(owner_id),
                     )
+                    raise AppError("domain erasure edge revocation failed")
                 await self._invalidate_cache(doc.fqdn)
                 if not await self._repo.delete_by_id(doc.id):
                     # The doc was listed but didn't delete — repo drift or a
