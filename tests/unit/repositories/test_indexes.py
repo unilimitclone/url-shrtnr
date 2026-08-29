@@ -65,6 +65,14 @@ class TestEnsureIndexes:
 
         # Check a few critical indexes
         users_col.create_index.assert_any_await([("email", 1)], unique=True)
+        # Erasure sweep: partial — holds only PENDING_DELETION/ERASING docs.
+        users_col.create_index.assert_any_await(
+            [("status", 1), ("purge_after", 1)],
+            name="pending_deletion_sweep",
+            partialFilterExpression={
+                "status": {"$in": ["PENDING_DELETION", "ERASING"]}
+            },
+        )
         urls_v2_col.create_index.assert_any_await(
             [("owner_id", 1)],
             name="owner_claimed",
@@ -121,6 +129,9 @@ class TestEnsureIndexes:
         tokens_col.create_index.assert_any_await(
             [("expires_at", 1)], expireAfterSeconds=0
         )
+        # Erasure's delete_by_user_or_email $or: the email branch needs its
+        # own index (user_id branch rides the existing user_id index).
+        tokens_col.create_index.assert_any_await([("email", 1)])
         app_grants_col.create_index.assert_any_await(
             [("user_id", 1), ("app_id", 1)], unique=True
         )
@@ -137,7 +148,12 @@ class TestEnsureIndexes:
         )
         reports_col.create_index.assert_any_await([("last_reported_at", -1)])
         reports_col.create_index.assert_any_await([("status", 1)])
+        # Erasure-cascade predicates: pull_reporter (multikey) and the two
+        # $or branches of delete_by_reporter — each branch needs its index.
+        reports_col.create_index.assert_any_await([("reporter_ids", 1)])
         report_submissions_col.create_index.assert_any_await([("created_at", -1)])
+        report_submissions_col.create_index.assert_any_await([("reporter_id", 1)])
+        report_submissions_col.create_index.assert_any_await([("reporter_email", 1)])
         custom_domains_col.create_index.assert_any_await(
             [("fqdn", 1)],
             unique=True,
@@ -190,6 +206,114 @@ class TestEnsureIndexes:
         # Must not raise.
         await ensure_indexes(db)
         col.drop_index.assert_any_await("alias_1")
+
+    @pytest.mark.asyncio
+    async def test_sweep_index_recreated_on_options_conflict(self):
+        # Deploys carrying the old PENDING_DELETION-only partial filter hit
+        # code 85 — the index must be drop-recreated, not left stale.
+        from repositories.indexes import ensure_indexes
+
+        db = MagicMock()
+        col = AsyncMock()
+        conflict = OperationFailure("options conflict", code=85)
+
+        async def create_index(keys, **kwargs):
+            if (
+                kwargs.get("name") == "pending_deletion_sweep"
+                and not col.drop_index.await_count
+            ):
+                raise conflict
+            return None
+
+        col.create_index = AsyncMock(side_effect=create_index)
+        col.drop_index = AsyncMock()
+        db.__getitem__ = lambda self, name: col
+        db.create_collection = AsyncMock(side_effect=CollectionInvalid("clicks"))
+
+        await ensure_indexes(db)
+
+        col.drop_index.assert_any_await("pending_deletion_sweep")
+        # Recreated with the new $in filter after the drop.
+        col.create_index.assert_any_await(
+            [("status", 1), ("purge_after", 1)],
+            name="pending_deletion_sweep",
+            partialFilterExpression={
+                "status": {"$in": ["PENDING_DELETION", "ERASING"]}
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_sweep_index_recreate_tolerates_racing_drop(self):
+        """Rolling deploy: two instances hit code 85 together; the loser's
+        drop_index gets code 27 (IndexNotFound). Recreating is still correct,
+        so startup must swallow it (same guard as _ensure_ttl_index)."""
+        from repositories.indexes import ensure_indexes
+
+        db = MagicMock()
+        col = AsyncMock()
+        conflict = OperationFailure("options conflict", code=85)
+        not_found = OperationFailure("index not found", code=27)
+
+        async def create_index(keys, **kwargs):
+            if (
+                kwargs.get("name") == "pending_deletion_sweep"
+                and not col.drop_index.await_count
+            ):
+                raise conflict
+            return None
+
+        async def drop_index(name):
+            if name == "pending_deletion_sweep":
+                raise not_found
+            return None
+
+        col.create_index = AsyncMock(side_effect=create_index)
+        col.drop_index = AsyncMock(side_effect=drop_index)
+        db.__getitem__ = lambda self, name: col
+        db.create_collection = AsyncMock(side_effect=CollectionInvalid("clicks"))
+
+        # Must not raise.
+        await ensure_indexes(db)
+
+        col.drop_index.assert_any_await("pending_deletion_sweep")
+        # Recreated even though the racing instance won the drop.
+        col.create_index.assert_any_await(
+            [("status", 1), ("purge_after", 1)],
+            name="pending_deletion_sweep",
+            partialFilterExpression={
+                "status": {"$in": ["PENDING_DELETION", "ERASING"]}
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_sweep_index_drop_propagates_non_index_not_found(self):
+        # Only IndexNotFound is a benign race — anything else (permissions,
+        # connection loss) must fail startup, not be papered over.
+        from repositories.indexes import ensure_indexes
+
+        db = MagicMock()
+        col = AsyncMock()
+        conflict = OperationFailure("options conflict", code=85)
+        perm_err = OperationFailure("not authorized", code=13)  # Unauthorized
+
+        async def create_index(keys, **kwargs):
+            if kwargs.get("name") == "pending_deletion_sweep":
+                raise conflict
+            return None
+
+        async def drop_index(name):
+            if name == "pending_deletion_sweep":
+                raise perm_err
+            return None
+
+        col.create_index = AsyncMock(side_effect=create_index)
+        col.drop_index = AsyncMock(side_effect=drop_index)
+        db.__getitem__ = lambda self, name: col
+        db.create_collection = AsyncMock(side_effect=CollectionInvalid("clicks"))
+
+        with pytest.raises(OperationFailure) as exc_info:
+            await ensure_indexes(db)
+        assert exc_info.value.code == 13
 
     @pytest.mark.asyncio
     async def test_drop_alias_1_propagates_other_errors(self):

@@ -34,3 +34,10 @@ class WebhookEventRepository(BaseRepository[WebhookEventDoc]):
 
     async def find_by_oid(self, oid: ObjectId) -> WebhookEventDoc | None:
         return await self._find_one({"_id": oid})
+
+    async def delete_by_owner(self, owner_id: ObjectId) -> int:
+        """Delete every stored event fact for the owner (account erasure).
+
+        Returns the number of documents deleted.
+        """
+        return await self._delete_many({"owner_id": owner_id})

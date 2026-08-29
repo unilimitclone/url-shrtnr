@@ -37,6 +37,31 @@ async def ensure_indexes(
         sparse=True,
     )
     await users_col.create_index([("auth_providers.provider", 1)])
+    # THE erasure sweep's whole query shape. Partial — holds only
+    # PENDING_DELETION/ERASING docs ($in filter needs Mongo 6.0+; prod is 8.x).
+    _sweep_index_spec = {
+        "name": "pending_deletion_sweep",
+        "partialFilterExpression": {"status": {"$in": ["PENDING_DELETION", "ERASING"]}},
+    }
+    try:
+        await users_col.create_index(
+            [("status", 1), ("purge_after", 1)], **_sweep_index_spec
+        )
+    except OperationFailure as e:
+        if getattr(e, "code", None) != 85:  # IndexOptionsConflict
+            raise
+        # Mongo rejects option edits on an existing name: drop-recreate.
+        try:
+            await users_col.drop_index("pending_deletion_sweep")
+        except OperationFailure as drop_err:
+            # Code 27 = IndexNotFound: a racing instance (rolling deploy)
+            # already dropped it — recreating below is still correct.
+            if getattr(drop_err, "code", None) != 27:
+                raise
+        await users_col.create_index(
+            [("status", 1), ("purge_after", 1)], **_sweep_index_spec
+        )
+        log.info("pending_deletion_sweep_index_recreated")
 
     # ── urlsV2 ─────────────────────────────────────────────────────────────
     # Per-domain alias namespace via compound unique. Replaces the legacy
@@ -126,6 +151,9 @@ async def ensure_indexes(
 
     # ── verification-tokens ────────────────────────────────────────────────
     await tokens_col.create_index([("user_id", 1)])
+    # Erasure's delete_by_user_or_email is an $or over user_id and email —
+    # Mongo only skips the collection scan when EACH branch has its index.
+    await tokens_col.create_index([("email", 1)])
     await tokens_col.create_index([("token_hash", 1)])
     await tokens_col.create_index([("token_type", 1)])
     await tokens_col.create_index([("expires_at", 1)], expireAfterSeconds=0)
@@ -152,10 +180,17 @@ async def ensure_indexes(
     await reports_col.create_index([("domain", 1), ("code", 1)], unique=True)
     await reports_col.create_index([("last_reported_at", -1)])
     await reports_col.create_index([("status", 1)])
+    # Multikey, for the erasure cascade's $pull. Not sparse: nearly every
+    # report carries at least one reporter, so sparse would save nothing.
+    await reports_col.create_index([("reporter_ids", 1)])
 
     # ── report_submissions ─────────────────────────────────────────────
     report_submissions_col = db["report_submissions"]
     await report_submissions_col.create_index([("created_at", -1)])
+    # Erasure's delete_by_reporter is an $or over both fields — Mongo only
+    # skips the collection scan when EACH branch has its own index.
+    await report_submissions_col.create_index([("reporter_id", 1)])
+    await report_submissions_col.create_index([("reporter_email", 1)])
 
     # ── custom_domains ────────────────────────────────────────────────
     custom_domains_col = db["custom_domains"]

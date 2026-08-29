@@ -1,5 +1,6 @@
 """Unit tests for ZeptoMailProvider."""
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from config import EmailSettings
@@ -71,3 +72,103 @@ class TestZeptoMailProvider:
         _, kwargs = http.post.call_args
         auth = kwargs["headers"]["Authorization"]
         assert auth.count("Zoho-enczapikey") == 1
+
+
+class TestDeletionEmails:
+    """Account-deletion lifecycle mail — rendered against the REAL
+    templates (no Jinja patching) so the copy assertions mean something."""
+
+    PURGE_AFTER = datetime(2026, 8, 26, 14, 3, tzinfo=timezone.utc)
+
+    def _make(self):
+        settings = EmailSettings(
+            zepto_api_token="test-token",
+            zepto_from_email="noreply@spoo.me",
+            zepto_from_name="spoo.me",
+        )
+        http = MagicMock()
+        http.post = AsyncMock(return_value=MagicMock(status_code=200))
+        provider = ZeptoMailProvider(
+            settings=settings, http_client=http, app_url="https://spoo.me"
+        )
+        return provider, http
+
+    def _sent_payload(self, http) -> dict:
+        _, kwargs = http.post.call_args
+        return kwargs["json"]
+
+    async def test_deletion_requested_subject_and_copy(self):
+        provider, http = self._make()
+        result = await provider.send_deletion_requested(
+            "user@example.com", self.PURGE_AFTER
+        )
+        assert result is True
+        payload = self._sent_payload(http)
+        assert payload["subject"] == "Your spoo.me account is scheduled for deletion"
+        for body in (payload["htmlbody"], payload["textbody"]):
+            assert "August 26, 2026 at 14:03 UTC" in body
+            assert "support@spoo.me" in body
+            assert "restore option" in body
+            assert "Support Team, spoo.me" in body
+        # Restore path points at the frontend login page.
+        assert "https://spoo.me/login" in payload["htmlbody"]
+
+    async def test_deletion_requested_with_token_carries_cancel_link(self):
+        provider, http = self._make()
+        result = await provider.send_deletion_requested(
+            "user@example.com", self.PURGE_AFTER, restore_token="tok-secret-123"
+        )
+        assert result is True
+        payload = self._sent_payload(http)
+        cancel_url = "https://spoo.me/restore-account?token=tok-secret-123"
+        for body in (payload["htmlbody"], payload["textbody"]):
+            assert cancel_url in body
+        # The password fallback stays documented next to the link.
+        assert "https://spoo.me/login" in payload["textbody"]
+
+    async def test_deletion_requested_naive_datetime_treated_as_utc(self):
+        provider, http = self._make()
+        await provider.send_deletion_requested(
+            "user@example.com", datetime(2026, 8, 26, 14, 3)
+        )
+        assert "August 26, 2026 at 14:03 UTC" in self._sent_payload(http)["textbody"]
+
+    async def test_deletion_completed_subject_and_copy(self):
+        provider, http = self._make()
+        result = await provider.send_erasure_confirmation("user@example.com")
+        assert result is True
+        payload = self._sent_payload(http)
+        assert payload["subject"] == "Your spoo.me account has been deleted"
+        for body in (payload["htmlbody"], payload["textbody"]):
+            assert "permanently deleted" in body
+            assert "15 days" in body
+            assert "Support Team, spoo.me" in body
+
+    async def test_deletion_cancelled_subject_and_copy(self):
+        provider, http = self._make()
+        result = await provider.send_deletion_cancelled("user@example.com")
+        assert result is True
+        payload = self._sent_payload(http)
+        assert payload["subject"] == "Your spoo.me account deletion was cancelled"
+        for body in (payload["htmlbody"], payload["textbody"]):
+            assert "cancelled" in body
+            # The unauthorized-restore warning \u2014 a silent restore would
+            # hide an attacker cancelling a victim's deletion.
+            assert "support@spoo.me" in body
+            assert "Support Team, spoo.me" in body
+
+    async def test_no_em_dash_in_any_email(self):
+        provider, http = self._make()
+        payloads = []
+        await provider.send_deletion_requested(
+            "user@example.com", self.PURGE_AFTER, restore_token="tok"
+        )
+        payloads.append(self._sent_payload(http))
+        await provider.send_deletion_cancelled("user@example.com")
+        payloads.append(self._sent_payload(http))
+        await provider.send_erasure_confirmation("user@example.com")
+        payloads.append(self._sent_payload(http))
+        for payload in payloads:
+            for part in (payload["subject"], payload["htmlbody"], payload["textbody"]):
+                assert "\u2014" not in part  # em dash
+                assert "\u2013" not in part  # en dash

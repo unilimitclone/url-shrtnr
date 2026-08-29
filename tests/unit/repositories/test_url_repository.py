@@ -347,6 +347,23 @@ class TestUrlRepositoryBulkDelete:
         assert query == {"owner_id": USER_OID, "domain": "links.acme.com"}
 
     @pytest.mark.asyncio
+    async def test_delete_many_retain_blocked_excludes_blocked(self):
+        # Erasure mode: BLOCKED docs on the fqdn are the abuse audit trail —
+        # the domain cascade must not delete what the owner-wide step retained.
+        col = make_collection()
+        col.delete_many = AsyncMock(return_value=MagicMock(deleted_count=3))
+        count = await self._repo(col).delete_many_by_owner_and_domain(
+            USER_OID, "links.acme.com", retain_blocked=True
+        )
+        assert count == 3
+        query = col.delete_many.call_args[0][0]
+        assert query == {
+            "owner_id": USER_OID,
+            "domain": "links.acme.com",
+            "status": {"$ne": "BLOCKED"},
+        }
+
+    @pytest.mark.asyncio
     async def test_delete_many_refuses_missing_filters(self):
         repo = self._repo()
         with pytest.raises(ValueError):
@@ -598,3 +615,125 @@ class TestHostBreadth:
         col.aggregate.return_value.to_list = AsyncMock(return_value=[])
         b = await self._repo(col).host_breadth("nobody.example")
         assert b["total_links"] == 0 and b["sample_urls"] == []
+
+
+class TestUrlRepositoryOwnerErasure:
+    """iter_by_owner + delete_by_owner — the account-erasure pair."""
+
+    def _repo(self, col=None):
+        from repositories.url_repository import UrlRepository
+
+        return UrlRepository(col or make_collection())
+
+    @pytest.mark.asyncio
+    async def test_delete_by_owner_deletes_across_domains_except_blocked(self):
+        col = make_collection()
+        result = MagicMock()
+        result.deleted_count = 4
+        col.delete_many = AsyncMock(return_value=result)
+        count = await self._repo(col).delete_by_owner(USER_OID)
+        # BLOCKED docs are the abuse audit trail + alias reservation — the
+        # erasure bulk delete must never touch them.
+        col.delete_many.assert_awaited_once_with(
+            {"owner_id": USER_OID, "status": {"$ne": "BLOCKED"}}
+        )
+        assert count == 4
+
+    @pytest.mark.asyncio
+    async def test_delete_by_owner_refuses_anonymous_sentinel(self):
+        from schemas.models.base import ANONYMOUS_OWNER_ID
+
+        col = make_collection()
+        with pytest.raises(ValueError):
+            await self._repo(col).delete_by_owner(ANONYMOUS_OWNER_ID)
+        col.delete_many.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_scrub_blocked_pii_unsets_only_creator_pii(self):
+        col = make_collection()
+        result = MagicMock()
+        result.matched_count = 2
+        col.update_many = AsyncMock(return_value=result)
+        retained = await self._repo(col).scrub_blocked_owner_pii(USER_OID)
+        col.update_many.assert_awaited_once_with(
+            {"owner_id": USER_OID, "status": "BLOCKED"},
+            {
+                "$unset": {
+                    "creation_ip": "",
+                    "meta_tags.updated_ip": "",
+                    "password": "",
+                }
+            },
+        )
+        # matched (not modified): an already-scrubbed doc is still retained.
+        assert retained == 2
+
+    @pytest.mark.asyncio
+    async def test_scrub_blocked_pii_domain_scoped(self):
+        col = make_collection()
+        result = MagicMock()
+        result.matched_count = 1
+        col.update_many = AsyncMock(return_value=result)
+        retained = await self._repo(col).scrub_blocked_owner_pii(
+            USER_OID, domain="links.acme.com"
+        )
+        query = col.update_many.call_args[0][0]
+        assert query == {
+            "owner_id": USER_OID,
+            "status": "BLOCKED",
+            "domain": "links.acme.com",
+        }
+        assert retained == 1
+
+    @pytest.mark.asyncio
+    async def test_scrub_blocked_pii_refuses_anonymous_sentinel(self):
+        from schemas.models.base import ANONYMOUS_OWNER_ID
+
+        col = make_collection()
+        with pytest.raises(ValueError):
+            await self._repo(col).scrub_blocked_owner_pii(ANONYMOUS_OWNER_ID)
+        col.update_many.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_iter_by_owner_streams_models(self):
+        class _Cursor:
+            def __init__(self, docs):
+                self._docs = docs
+
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                for d in self._docs:
+                    yield d
+
+        col = make_collection()
+        col.find = MagicMock(return_value=_Cursor([_url_v2_doc()]))
+        docs = [d async for d in self._repo(col).iter_by_owner(USER_OID)]
+        col.find.assert_called_once_with({"owner_id": USER_OID})
+        assert [d.alias for d in docs] == ["abc1234"]
+
+    @pytest.mark.asyncio
+    async def test_iter_by_owner_refuses_anonymous_sentinel(self):
+        from schemas.models.base import ANONYMOUS_OWNER_ID
+
+        col = make_collection()
+        with pytest.raises(ValueError):
+            async for _ in self._repo(col).iter_by_owner(ANONYMOUS_OWNER_ID):
+                pass
+        col.find.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_iter_by_owner_propagates_pymongo_error(self):
+        class _DeadCursor:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise OperationFailure("cursor died mid-stream")
+
+        col = make_collection()
+        col.find = MagicMock(return_value=_DeadCursor())
+        with pytest.raises(OperationFailure):
+            async for _ in self._repo(col).iter_by_owner(USER_OID):
+                pass

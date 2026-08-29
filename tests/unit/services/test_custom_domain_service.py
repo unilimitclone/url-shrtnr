@@ -11,6 +11,7 @@ from pymongo.errors import DuplicateKeyError
 
 from config import CustomDomainSettings
 from errors import (
+    AppError,
     DomainAlreadyRegisteredError,
     DomainBlocklistedError,
     DomainNotVerifiedError,
@@ -1139,3 +1140,93 @@ class TestUpdateRouting:
             assert event_name == "audit.domain.routing_updated"
             kwargs = mock_log.info.call_args.kwargs
             assert kwargs["fields"] == ["not_found_redirect"]
+
+
+class TestDeleteAllForOwner:
+    """Account-erasure cascade — raw owner id, no enabled gate."""
+
+    @pytest.mark.asyncio
+    async def test_erases_every_domain_even_when_disabled(self):
+        url_service = MagicMock()
+        url_service.delete_all_by_domain = AsyncMock(return_value=0)
+        svc, repo, _, edge, tenant_resolver = _build_service(
+            enabled=False, url_service=url_service
+        )
+        d1 = _doc(fqdn="links.acme.com", domain_id=ObjectId())
+        d2 = _doc(fqdn="go.acme.com", domain_id=ObjectId())
+        repo.count_by_owner = AsyncMock(return_value=2)
+        repo.list_by_owner = AsyncMock(side_effect=[[d1, d2], []])
+
+        removed = await svc.delete_all_for_owner(USER_OID)
+
+        assert removed == 2
+        assert repo.delete_by_id.await_count == 2
+        # Erasure mode: BLOCKED links on the owner's own fqdns are retained
+        # (scrubbed by the URL layer) — unlike the interactive revoke cascade.
+        url_service.delete_all_by_domain.assert_any_await(
+            USER_OID, "links.acme.com", retain_blocked=True
+        )
+        url_service.delete_all_by_domain.assert_any_await(
+            USER_OID, "go.acme.com", retain_blocked=True
+        )
+        edge.announce_revoked.assert_any_await("links.acme.com")
+        tenant_resolver.invalidate.assert_any_await("go.acme.com")
+
+    @pytest.mark.asyncio
+    async def test_no_domains_is_a_noop(self):
+        svc, repo, _, edge, _ = _build_service()
+        repo.count_by_owner = AsyncMock(return_value=0)
+        repo.list_by_owner = AsyncMock(return_value=[])
+        assert await svc.delete_all_for_owner(USER_OID) == 0
+        repo.delete_by_id.assert_not_awaited()
+        edge.announce_revoked.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_eviction_raises_and_keeps_the_doc(self):
+        svc, repo, _, edge, _ = _build_service()
+        edge.announce_revoked = AsyncMock(return_value=False)
+        repo.count_by_owner = AsyncMock(return_value=1)
+        repo.list_by_owner = AsyncMock(side_effect=[[_doc()], []])
+        with pytest.raises(AppError):
+            await svc.delete_all_for_owner(USER_OID)
+        # Doc survives so the re-queued sweep has something to retry against.
+        repo.delete_by_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_repo_failure_propagates(self):
+        svc, repo, _, _, _ = _build_service()
+        repo.count_by_owner = AsyncMock(return_value=1)
+        repo.list_by_owner = AsyncMock(side_effect=[[_doc()], []])
+        repo.delete_by_id = AsyncMock(side_effect=RuntimeError("mongo down"))
+        with pytest.raises(RuntimeError):
+            await svc.delete_all_for_owner(USER_OID)
+
+    @pytest.mark.asyncio
+    async def test_noop_delete_raises_instead_of_spinning(self):
+        """A delete that removes nothing would re-list the same page forever
+        (page zero is re-read each pass) — it must raise, not loop."""
+        from errors import AppError
+
+        svc, repo, _, _, _ = _build_service()
+        repo.count_by_owner = AsyncMock(return_value=1)
+        repo.list_by_owner = AsyncMock(return_value=[_doc()])
+        repo.delete_by_id = AsyncMock(return_value=False)
+        with pytest.raises(AppError):
+            await svc.delete_all_for_owner(USER_OID)
+        # Exactly one attempt — the loop never got a second spin.
+        repo.delete_by_id.assert_awaited_once_with(DOMAIN_OID)
+
+    @pytest.mark.asyncio
+    async def test_pass_cap_raises_when_pages_never_drain(self):
+        """Deletes report success but the listing never shrinks (replica
+        lag, repo drift): the absolute pass cap turns it into a failure."""
+        from errors import AppError
+
+        svc, repo, _, _, _ = _build_service()
+        repo.count_by_owner = AsyncMock(return_value=1)
+        repo.list_by_owner = AsyncMock(return_value=[_doc()])
+        repo.delete_by_id = AsyncMock(return_value=True)
+        with pytest.raises(AppError):
+            await svc.delete_all_for_owner(USER_OID)
+        # count=1 ⇒ (1 // 50) + 2 = 2 passes, then the loud stop.
+        assert repo.list_by_owner.await_count == 2

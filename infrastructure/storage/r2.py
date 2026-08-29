@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 from typing import TYPE_CHECKING
 from urllib.parse import quote, urlparse
+from xml.etree import ElementTree
 
 from errors import R2StorageError
 from infrastructure.logging import get_logger
@@ -34,6 +35,28 @@ _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
 # doesn't guarantee echoing it) — this is the belt to that braces.
 _INLINE_DISPOSITION = "inline"
 _NOSNIFF = "nosniff"
+
+# Local MinIO-style dev endpoints may skip TLS; everything else must not.
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def _parse_list_objects(xml_text: str) -> tuple[list[str], bool, str | None]:
+    """Extract (keys, is_truncated, continuation_token) from a
+    ListObjectsV2 response. Namespace-agnostic — R2 sometimes omits the
+    S3 xmlns the AWS docs show."""
+    root = ElementTree.fromstring(xml_text)
+    keys: list[str] = []
+    truncated = False
+    token: str | None = None
+    for el in root.iter():
+        tag = el.tag.rsplit("}", 1)[-1]
+        if tag == "Key" and el.text:
+            keys.append(el.text)
+        elif tag == "IsTruncated":
+            truncated = (el.text or "").strip().lower() == "true"
+        elif tag == "NextContinuationToken":
+            token = el.text
+    return keys, truncated, token
 
 
 class R2StorageClient:
@@ -60,7 +83,15 @@ class R2StorageClient:
             if endpoint_url
             else f"https://{account_id}.r2.cloudflarestorage.com"
         )
-        self._host = urlparse(self._endpoint).netloc
+        parsed = urlparse(self._endpoint)
+        # SigV4 signs but never encrypts — a plain-http endpoint would put
+        # object bytes and credentials-derived signatures on the wire.
+        if parsed.scheme != "https" and parsed.hostname not in _LOOPBACK_HOSTS:
+            raise ValueError(
+                "R2 endpoint_url must be https:// (plain http is allowed "
+                "only for localhost MinIO-style dev endpoints)"
+            )
+        self._host = parsed.netloc
         self._timeout = request_timeout_seconds
 
     @property
@@ -116,6 +147,54 @@ class R2StorageClient:
             raise R2StorageError("Image upload failed")
         log.info("r2_put_succeeded", key=key, bytes=len(data))
         return self.public_url(key)
+
+    async def list_keys(self, prefix: str) -> list[str]:
+        """List every object key under *prefix* (paginated ListObjectsV2).
+
+        Powers the account-erasure R2 sweep. RAISES on failure like
+        ``put_object`` — a silent partial listing would let an erasure
+        claim completeness it doesn't have.
+        """
+        path = f"/{self._bucket}"
+        keys: list[str] = []
+        token: str | None = None
+        while True:
+            params = {"list-type": "2", "prefix": prefix}
+            if token:
+                params["continuation-token"] = token
+            # Canonical query string: key-sorted, strict URL-encoding.
+            query = "&".join(
+                f"{quote(k, safe='')}={quote(v, safe='')}"
+                for k, v in sorted(params.items())
+            )
+            signed = sigv4_headers(
+                method="GET",
+                host=self._host,
+                path=path,
+                query=query,
+                payload_hash=hashlib.sha256(b"").hexdigest(),
+                access_key_id=self._access_key_id or "",
+                secret_access_key=self._secret_access_key or "",
+            )
+            try:
+                resp = await self._http.request(
+                    "GET", f"{self._endpoint}{path}?{query}", headers=signed
+                )
+            except Exception as exc:
+                log.error("r2_list_failed", prefix=prefix, error=str(exc))
+                raise R2StorageError("Object listing failed") from exc
+            if resp.status_code >= 300:
+                log.error(
+                    "r2_list_failed",
+                    prefix=prefix,
+                    status=resp.status_code,
+                    body_preview=resp.text[:300],
+                )
+                raise R2StorageError("Object listing failed")
+            page, truncated, token = _parse_list_objects(resp.text)
+            keys.extend(page)
+            if not truncated or not token:
+                return keys
 
     async def delete_object(self, key: str) -> bool:
         """Best-effort delete (takedown tooling / future GC). 404 = success."""

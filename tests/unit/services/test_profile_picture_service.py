@@ -30,10 +30,11 @@ def _make_provider(provider="google", picture="https://img.example.com/pic.jpg")
     return p
 
 
-def _make_user_doc(pfp_url=None, providers=None):
+def _make_user_doc(pfp_url=None, providers=None, storage_prefix=None):
     doc = MagicMock()
     doc.id = ObjectId()
     doc.email = "user@example.com"
+    doc.storage_prefix = storage_prefix
     doc.email_verified = True
     doc.user_name = "testuser"
     doc.plan = "free"
@@ -52,6 +53,7 @@ def _make_service(user_doc=None, storage=None):
     repo = MagicMock()
     repo.find_by_id = AsyncMock(return_value=user_doc)
     repo.update = AsyncMock()
+    repo.set_storage_prefix_if_absent = AsyncMock(return_value=True)
     return ProfilePictureService(repo, r2_storage=storage), repo
 
 
@@ -241,6 +243,32 @@ async def test_upload_picture_stores_r2_url_with_upload_source():
     pfp = repo.update.call_args[0][1]["$set"]["pfp"]
     assert pfp["url"] == "https://og.spoo.me/profile-pictures/x/abc.png"
     assert pfp["source"] == "upload"
+
+
+@pytest.mark.asyncio
+async def test_upload_picture_pins_storage_prefix_on_first_use():
+    """First upload persists the computed prefix — a later SECRET_KEY
+    rotation must not orphan the objects for the erasure sweep."""
+    from services.image_ingest import owner_key_prefix
+
+    user = _make_user_doc()  # storage_prefix=None → first upload
+    svc, repo = _make_service(user, storage=_storage())
+    svc._key_secret = "sekret"
+    await svc.upload_picture(user.id, _data_uri(_png_bytes()))
+    expected = owner_key_prefix(user.id, "sekret")
+    repo.set_storage_prefix_if_absent.assert_awaited_once_with(user.id, expected)
+
+
+@pytest.mark.asyncio
+async def test_upload_picture_uses_the_pinned_prefix():
+    user = _make_user_doc(storage_prefix="p1nn3dpr3f1x0000")
+    storage = _storage()
+    svc, repo = _make_service(user, storage=storage)
+    await svc.upload_picture(user.id, _data_uri(_png_bytes()))
+    key = storage.put_object.call_args[0][0]
+    assert key.startswith("profile-pictures/p1nn3dpr3f1x0000/")
+    # Already pinned — no second write.
+    repo.set_storage_prefix_if_absent.assert_not_awaited()
 
 
 @pytest.mark.asyncio

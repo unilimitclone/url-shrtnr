@@ -25,12 +25,16 @@ class TokenType(str, Enum):
     EMAIL_VERIFY = "email_verify"
     PASSWORD_RESET = "password_reset"
     DEVICE_AUTH = "extension_auth"
+    # One-shot restore link mailed on deletion request — the only cancel
+    # path for OAuth-only accounts (no password to restore with).
+    DELETION_RESTORE = "deletion_restore"
 
 
 # Backward-compat aliases for existing imports
 TOKEN_TYPE_EMAIL_VERIFY = TokenType.EMAIL_VERIFY
 TOKEN_TYPE_PASSWORD_RESET = TokenType.PASSWORD_RESET
 TOKEN_TYPE_DEVICE_AUTH = TokenType.DEVICE_AUTH
+TOKEN_TYPE_DELETION_RESTORE = TokenType.DELETION_RESTORE
 
 
 class VerificationTokenDoc(MongoBaseModel):

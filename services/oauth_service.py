@@ -22,7 +22,13 @@ from typing import Any
 
 from bson import ObjectId
 
-from errors import AppError, ConflictError, NotFoundError, ValidationError
+from errors import (
+    AccountPendingDeletionError,
+    AppError,
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+)
 from infrastructure.email.protocol import EmailProvider
 from infrastructure.logging import get_logger
 from repositories.user_repository import UserRepository
@@ -213,6 +219,24 @@ class OAuthService:
         """Issue access + refresh tokens for an OAuth user."""
         return self._token_factory.issue_tokens(user, provider_key)
 
+    @staticmethod
+    def _ensure_not_pending_deletion(user: UserDoc, provider_key: str) -> None:
+        """Block token issuance for accounts scheduled for erasure.
+
+        Deliberately does NOT auto-restore: the error code routes the
+        frontend to the explicit restore flow, so a provider sign-in can
+        never silently cancel a deletion the user asked for. ERASING is
+        blocked identically — the cascade has claimed the account.
+        """
+        if user.status in (UserStatus.PENDING_DELETION, UserStatus.ERASING):
+            log.info(
+                "oauth_login_blocked",
+                reason="pending_deletion",
+                user_id=str(user.id),
+                provider=provider_key,
+            )
+            raise AccountPendingDeletionError("this account is scheduled for deletion")
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def handle_callback(
@@ -246,6 +270,9 @@ class OAuthService:
             ValidationError: Invalid linking request, email mismatch.
             NotFoundError:   User not found during linking.
             ConflictError:   Provider already linked, or email collision rejected.
+            AccountPendingDeletionError: The matched account is scheduled
+                for erasure — no auto-restore; the frontend offers the
+                explicit restore flow instead.
             AppError:        DB failure during linking or user creation.
         """
         provider_display = provider_key.title()
@@ -261,6 +288,9 @@ class OAuthService:
             current_user = await self._user_repo.find_by_id(ObjectId(link_user_id))
             if not current_user:
                 raise NotFoundError("user not found")
+
+            # This branch mints tokens like the login flows — same gate.
+            self._ensure_not_pending_deletion(current_user, provider_key)
 
             # Ensure provider not already linked to this user
             for entry in current_user.auth_providers:
@@ -323,6 +353,7 @@ class OAuthService:
             provider_key, provider_info.provider_user_id
         )
         if existing_oauth_user:
+            self._ensure_not_pending_deletion(existing_oauth_user, provider_key)
             await self._update_last_login(existing_oauth_user.id)
             log.info(
                 "oauth_login_success",
@@ -347,6 +378,9 @@ class OAuthService:
         existing_email_user = await self._user_repo.find_by_email(provider_info.email)
         if existing_email_user:
             if self._can_auto_link(existing_email_user, provider_info, provider_key):
+                # Only AFTER _can_auto_link proved the provider verified this
+                # email — unverified callbacks must not probe deletion state.
+                self._ensure_not_pending_deletion(existing_email_user, provider_key)
                 success = await self._link_provider(
                     existing_email_user.id, provider_info, provider_key
                 )

@@ -57,6 +57,13 @@ class WebhookEndpointRepository(BaseRepository[WebhookEndpointDoc]):
     async def delete_endpoint(self, endpoint_id: ObjectId, user_id: ObjectId) -> bool:
         return await self._delete({"_id": endpoint_id, "user_id": user_id})
 
+    async def delete_by_user(self, user_id: ObjectId) -> int:
+        """Delete every endpoint the user owns (account erasure).
+
+        Returns the number of documents deleted.
+        """
+        return await self._delete_many({"user_id": user_id})
+
     # ── Health counters (executor/dispatcher side) ───────────────────────
 
     async def record_success(self, endpoint_id: ObjectId) -> int:

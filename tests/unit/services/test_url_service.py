@@ -7,6 +7,7 @@ Tests verify behavior, not implementation details.
 
 from __future__ import annotations
 
+import asyncio
 import time as time_module
 import typing
 from datetime import datetime, timedelta, timezone
@@ -2162,11 +2163,46 @@ class TestUrlServiceBulkDelete:
         count = await svc.delete_all_by_domain(USER_OID, "links.acme.com")
 
         assert count == 3
+        # Interactive default: BLOCKED docs on the fqdn are deleted too,
+        # and nothing gets scrubbed.
         url_repo.delete_many_by_owner_and_domain.assert_awaited_once_with(
-            USER_OID, "links.acme.com"
+            USER_OID, "links.acme.com", retain_blocked=False
         )
+        url_repo.scrub_blocked_owner_pii.assert_not_called()
         url_cache.invalidate_many.assert_awaited_once_with(
             ["a", "b", "c"], "links.acme.com"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_retain_blocked_scrubs_then_excludes(self):
+        """Erasure's domain cascade: BLOCKED docs on the fqdn survive with
+        creator PII scrubbed; only the rest are deleted — so the
+        blocked-retained tally from the owner-wide step stays exact."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        url_repo.list_aliases_by_owner_and_domain = AsyncMock(
+            return_value=["a", "badbad1"]
+        )
+        url_repo.scrub_blocked_owner_pii = AsyncMock(return_value=1)
+        url_repo.delete_many_by_owner_and_domain = AsyncMock(return_value=1)
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        count = await svc.delete_all_by_domain(
+            USER_OID, "links.acme.com", retain_blocked=True
+        )
+
+        assert count == 1
+        url_repo.scrub_blocked_owner_pii.assert_awaited_once_with(
+            USER_OID, domain="links.acme.com"
+        )
+        url_repo.delete_many_by_owner_and_domain.assert_awaited_once_with(
+            USER_OID, "links.acme.com", retain_blocked=True
+        )
+        # Retained BLOCKED aliases still get their cache entries purged —
+        # the cached projection carries the pre-scrub password hash.
+        url_cache.invalidate_many.assert_awaited_once_with(
+            ["a", "badbad1"], "links.acme.com"
         )
 
 
@@ -3613,3 +3649,112 @@ class TestUrlServiceClaim:
             (str(mine_id), "already_yours"),
             (str(URL_OID), "claimed"),
         ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestUrlServiceDeleteAllByOwner (account erasure)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _owner_iter(docs):
+    """iter_by_owner is an async generator, not a coroutine — wire a
+    MagicMock returning one."""
+
+    async def gen(_owner_id):
+        for d in docs:
+            yield d
+
+    return MagicMock(side_effect=gen)
+
+
+class TestUrlServiceDeleteAllByOwner:
+    @pytest.mark.asyncio
+    async def test_erases_across_domains_with_per_link_side_effects(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        plain = make_url_v2_doc()
+        tenant = make_url_v2_doc(alias="xyz9876", domain="links.acme.com")
+        url_repo.iter_by_owner = _owner_iter([plain, tenant])
+        url_repo.scrub_blocked_owner_pii = AsyncMock(return_value=0)
+        url_repo.delete_by_owner = AsyncMock(return_value=2)
+        edge_kv = MagicMock()
+        edge_kv.delete = AsyncMock(return_value=True)
+        svc = make_service(
+            url_repo,
+            legacy_repo,
+            emoji_repo,
+            blocked_url_repo,
+            url_cache,
+            edge_kv=edge_kv,
+        )
+
+        result = await svc.delete_all_by_owner(USER_OID)
+        while svc._edge_purge_tasks:
+            await asyncio.gather(*list(svc._edge_purge_tasks))
+
+        assert result.deleted == 2
+        assert result.blocked_retained == 0
+        assert result.url_ids == [plain.id, tenant.id]
+        url_repo.delete_by_owner.assert_awaited_once_with(USER_OID)
+        invalidated = [c.args for c in url_cache.invalidate.await_args_list]
+        assert invalidated == [
+            (ALIAS, SYSTEM_DEFAULT_DOMAIN),
+            ("xyz9876", "links.acme.com"),
+        ]
+        # Only the system-default plain link gets an edge-KV purge.
+        edge_kv.delete.assert_awaited_once_with(
+            f"cache:{SYSTEM_DEFAULT_DOMAIN}:{ALIAS}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_og_links_go_through_the_writethrough(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        og_doc = make_url_v2_doc(meta_tags={"title": "T"})
+        url_repo.iter_by_owner = _owner_iter([og_doc])
+        url_repo.scrub_blocked_owner_pii = AsyncMock(return_value=0)
+        url_repo.delete_by_owner = AsyncMock(return_value=1)
+        og = MagicMock(remove=AsyncMock(), sync=AsyncMock())
+        edge_kv = MagicMock()
+        edge_kv.delete = AsyncMock(return_value=True)
+        svc = make_service(
+            url_repo,
+            legacy_repo,
+            emoji_repo,
+            blocked_url_repo,
+            url_cache,
+            og_writethrough=og,
+            edge_kv=edge_kv,
+        )
+
+        result = await svc.delete_all_by_owner(USER_OID)
+        while svc._edge_purge_tasks:
+            await asyncio.gather(*list(svc._edge_purge_tasks))
+
+        assert result.deleted == 1
+        og.remove.assert_awaited_once_with(SYSTEM_DEFAULT_DOMAIN, ALIAS)
+        edge_kv.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_blocked_links_are_retained_scrubbed_and_still_counted(self):
+        """The abuse audit trail survives erasure: BLOCKED docs are scrubbed
+        in place, never deleted, and their ids still feed the click cascade."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        active = make_url_v2_doc()
+        blocked = make_url_v2_doc(alias="badbad1", url_id=ObjectId(), status="BLOCKED")
+        url_repo.iter_by_owner = _owner_iter([active, blocked])
+        url_repo.scrub_blocked_owner_pii = AsyncMock(return_value=1)
+        url_repo.delete_by_owner = AsyncMock(return_value=1)
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        result = await svc.delete_all_by_owner(USER_OID)
+
+        assert result.deleted == 1
+        assert result.blocked_retained == 1
+        # The BLOCKED link's clicks still die — its id must be in the list.
+        assert result.url_ids == [active.id, blocked.id]
+        url_repo.scrub_blocked_owner_pii.assert_awaited_once_with(USER_OID)
+        # The cached projection carries the pre-scrub password hash, so the
+        # BLOCKED link's cache entry is purged like everyone else's.
+        invalidated = [c.args for c in url_cache.invalidate.await_args_list]
+        assert (blocked.alias, SYSTEM_DEFAULT_DOMAIN) in invalidated

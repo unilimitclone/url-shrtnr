@@ -17,13 +17,19 @@ from bson import ObjectId
 from fastapi import Depends, Request
 
 from dependencies.infra import get_db, get_settings
-from errors import AuthenticationError, EmailNotVerifiedError, ForbiddenError
+from errors import (
+    AccountPendingDeletionError,
+    AuthenticationError,
+    EmailNotVerifiedError,
+    ForbiddenError,
+)
 from infrastructure.crypto import hash_token
 from infrastructure.logging import get_logger
 from repositories.api_key_repository import ApiKeyRepository
 from repositories.user_repository import UserRepository
 from schemas.dto.requests.api_key import ApiKeyScope
 from schemas.models.api_key import ApiKeyDoc
+from schemas.models.user import UserStatus
 from shared.datetime_utils import as_aware_utc
 
 log = get_logger(__name__)
@@ -76,7 +82,11 @@ async def get_current_user(
       3. access_token cookie               →  JWT path
       4. None                              →  anonymous
 
-    Returns None for anonymous requests; never raises.
+    Returns None for anonymous requests. Never raises for malformed or
+    invalid credentials — the one exception is a VALID API key whose
+    account is pending deletion, which raises
+    ``AccountPendingDeletionError`` (403 + ``X-Error-Code``) so keys go
+    dark for the grace window instead of degrading to anonymous.
     """
     settings = get_settings(request)
     jwt_cfg = settings.jwt
@@ -128,6 +138,23 @@ async def get_current_user(
                 user = await UserRepository(db["users"]).find_by_id(key.user_id)
             except Exception:
                 return None
+
+            # Keys go dark during the deletion grace window — same error
+            # surface as the login gate (INACTIVE stays ungated: login parity).
+            if user is not None and user.status in (
+                UserStatus.PENDING_DELETION,
+                UserStatus.ERASING,
+            ):
+                log.warning(
+                    "api_key_auth_blocked",
+                    reason="pending_deletion",
+                    key_prefix=key.token_prefix,
+                    key_id=str(key.id),
+                    user_id=str(key.user_id),
+                )
+                raise AccountPendingDeletionError(
+                    "this account is scheduled for deletion"
+                )
 
             # Best-effort last-used stamp — debounced so a busy key costs at
             # most one extra write per hour, and never fails the request.

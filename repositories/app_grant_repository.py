@@ -117,6 +117,15 @@ class AppGrantRepository(BaseRepository[AppGrantDoc]):
             {"$set": {"revoked_at": datetime.now(timezone.utc)}},
         )
 
+    async def delete_by_user(self, user_id: ObjectId) -> int:
+        """Hard-delete ALL of a user's grants, revoked ones included.
+
+        Account-erasure path — ``revoked_at`` soft-deletes exist for
+        reconnect analytics, which don't survive the account. Returns the
+        number of documents deleted.
+        """
+        return await self._delete_many({"user_id": user_id})
+
     async def touch_last_used(self, user_id: ObjectId, app_id: str) -> None:
         """Update last_used_at on an active grant."""
         await self._update(

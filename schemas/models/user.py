@@ -26,6 +26,10 @@ class UserStatus(str, Enum):
 
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"
+    PENDING_DELETION = "PENDING_DELETION"
+    # Claimed by the erasure cascade — the point of no return: restore only
+    # matches PENDING_DELETION, so it can't resurrect a half-erased account.
+    ERASING = "ERASING"
 
 
 class OAuthAction(str, Enum):
@@ -99,7 +103,7 @@ class UserDoc(MongoBaseModel):
     """
     Document model for the `users` collection.
 
-    status: UserStatus enum (ACTIVE, INACTIVE)
+    status: UserStatus enum (ACTIVE, INACTIVE, PENDING_DELETION)
     plan: UserPlan enum (FREE)
     """
 
@@ -122,3 +126,13 @@ class UserDoc(MongoBaseModel):
     # HDYHAU attribution, captured once at onboarding completion.
     heard_from: str | None = None
     status: UserStatus = UserStatus.ACTIVE
+    # Account deletion (GDPR erasure): both set on PENDING_DELETION, both
+    # cleared on restore. Null on every account that never requested deletion.
+    deletion_requested_at: datetime | None = None
+    purge_after: datetime | None = None
+    # Stamped by every erasure claim (never set outside ERASING): older than
+    # the lease = crashed cascade (re-claimable), fresh = live (untouchable).
+    erasure_claimed_at: datetime | None = None
+    # R2 owner-key prefix, pinned on first upload so SECRET_KEY rotations
+    # can't hide the objects from erasure sweeps. Null until first upload.
+    storage_prefix: str | None = None

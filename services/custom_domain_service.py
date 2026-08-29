@@ -12,6 +12,7 @@ from pymongo.errors import DuplicateKeyError
 
 from config import CustomDomainSettings
 from errors import (
+    AppError,
     DomainAlreadyRegisteredError,
     DomainBlocklistedError,
     DomainNotVerifiedError,
@@ -45,6 +46,9 @@ if TYPE_CHECKING:
     from services.url_service import UrlService
 
 log = get_logger(__name__)
+
+# Erasure cascade page size — one repo read per pass of the drain loop.
+_ERASE_PAGE_SIZE = 50
 
 
 class CustomDomainService:
@@ -385,6 +389,79 @@ class CustomDomainService:
 
         refreshed = await self._repo.find_by_id(doc.id)
         return refreshed or doc, urls_deleted
+
+    async def delete_all_for_owner(self, owner_id: ObjectId) -> int:
+        """Erase every domain the owner has — the account-erasure cascade.
+
+        Deliberately NOT gated on ``settings.enabled``: erasure must work
+        even mid-rollback, and takes a raw owner id (there is no
+        authenticated caller by the time the sweep runs). Per domain:
+        cascade-delete its URLs when wired (a no-op after the erasure's
+        owner-wide URL delete) — with ``retain_blocked``, so BLOCKED links
+        the owner-wide step just retained and scrubbed survive this pass
+        too (the interactive revoke cascade deliberately differs and
+        deletes them), announce edge eviction (best-effort — the
+        doc deletion makes the tenant resolver 404 regardless), invalidate
+        the tenant cache, then hard-delete the doc. Repo failures propagate
+        so the sweep re-queues the whole user. Page zero is re-read because
+        deletions shift the pages, so every doc a pass sees MUST go — a
+        no-op delete raises rather than spinning the scheduler slot against
+        CF forever, and a pass cap bounds the loop absolutely. Returns
+        domains removed.
+        """
+        total = await self._repo.count_by_owner(owner_id)
+        # Each pass deletes a full page or raises, so the initial count
+        # bounds the passes; +2 absorbs the empty-page exit and rounding.
+        max_passes = (total // _ERASE_PAGE_SIZE) + 2
+        removed = 0
+        for _ in range(max_passes):
+            page = await self._repo.list_by_owner(
+                owner_id, skip=0, limit=_ERASE_PAGE_SIZE
+            )
+            if not page:
+                return removed
+            for doc in page:
+                if self._url_service is not None:
+                    await self._url_service.delete_all_by_domain(
+                        owner_id, doc.fqdn, retain_blocked=True
+                    )
+                if not await self._edge.announce_revoked(doc.fqdn):
+                    # Doc must survive so the re-queued sweep can retry the
+                    # eviction; deleting it would strand the edge entry.
+                    log.error(
+                        "audit.domain.erase_eviction_failed",
+                        fqdn=doc.fqdn,
+                        domain_id=str(doc.id),
+                        owner_id=str(owner_id),
+                    )
+                    raise AppError("domain erasure edge revocation failed")
+                await self._invalidate_cache(doc.fqdn)
+                if not await self._repo.delete_by_id(doc.id):
+                    # The doc was listed but didn't delete — repo drift or a
+                    # racing writer; raising re-queues the user for the sweep.
+                    log.error(
+                        "audit.domain.erase_delete_noop",
+                        fqdn=doc.fqdn,
+                        domain_id=str(doc.id),
+                        owner_id=str(owner_id),
+                        removed=removed,
+                    )
+                    raise AppError("domain erasure delete removed nothing")
+                removed += 1
+                log.info(
+                    "audit.domain.erased",
+                    fqdn=doc.fqdn,
+                    domain_id=str(doc.id),
+                    owner_id=str(owner_id),
+                )
+        log.error(
+            "audit.domain.erase_loop_exhausted",
+            owner_id=str(owner_id),
+            removed=removed,
+            initial_count=total,
+            max_passes=max_passes,
+        )
+        raise AppError("domain erasure did not drain the owner's domains")
 
     async def remove_revoked(
         self,

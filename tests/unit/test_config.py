@@ -138,6 +138,29 @@ def test_mock_dcv_refused_in_production(with_mongo, env, should_boot):
 
 
 @pytest.mark.parametrize(
+    "env, should_boot",
+    [("production", False), ("development", True)],
+    ids=["production_refuses", "development_allows"],
+)
+def test_zero_grace_days_refused_in_production(with_mongo, env, should_boot):
+    # Zero grace purges on the next sweep — fine for integration smoke,
+    # but in production it would void the whole restore window.
+    with_mongo.setenv("ENV", env)
+    with_mongo.setenv("ACCOUNT_DELETION_GRACE_DAYS", "0")
+    if should_boot:
+        assert AppSettings().account_deletion_grace_days == 0
+    else:
+        with pytest.raises(PydanticValidationError, match="GRACE_DAYS"):
+            AppSettings()
+
+
+def test_positive_grace_days_boots_in_production(with_mongo):
+    with_mongo.setenv("ENV", "production")
+    with_mongo.setenv("ACCOUNT_DELETION_GRACE_DAYS", "7")
+    assert AppSettings().account_deletion_grace_days == 7
+
+
+@pytest.mark.parametrize(
     "secret_key, flask_secret_key, expected",
     [
         (None, "flask-secret", "flask-secret"),  # falls back to FLASK_SECRET_KEY
@@ -255,3 +278,62 @@ class TestWebhookSettingsGuard:
         monkeypatch.setenv("WEBHOOKS_ENABLED", "true")
         settings = AppSettings(secret_key="a-real-secret")
         assert settings.webhooks.enabled is True
+
+
+class TestAccountDeletionSettings:
+    def test_defaults(self, with_mongo):
+        settings = AppSettings()
+        assert settings.account_deletion_grace_days == 7
+        assert settings.account_erasure_batch_limit == 25
+
+    def test_env_override(self, with_mongo):
+        with_mongo.setenv("ACCOUNT_DELETION_GRACE_DAYS", "30")
+        with_mongo.setenv("ACCOUNT_ERASURE_BATCH_LIMIT", "100")
+        settings = AppSettings()
+        assert settings.account_deletion_grace_days == 30
+        assert settings.account_erasure_batch_limit == 100
+
+    def test_grace_zero_allowed_for_immediate_purge(self, with_mongo):
+        with_mongo.setenv("ACCOUNT_DELETION_GRACE_DAYS", "0")
+        assert AppSettings().account_deletion_grace_days == 0
+
+    def test_negative_grace_days_rejected(self, with_mongo):
+        with_mongo.setenv("ACCOUNT_DELETION_GRACE_DAYS", "-1")
+        with pytest.raises(PydanticValidationError):
+            AppSettings()
+
+    def test_zero_batch_limit_rejected(self, with_mongo):
+        with_mongo.setenv("ACCOUNT_ERASURE_BATCH_LIMIT", "0")
+        with pytest.raises(PydanticValidationError):
+            AppSettings()
+
+
+class TestPostHogErasureSettings:
+    def test_defaults_disabled(self, with_mongo):
+        settings = AppSettings()
+        assert settings.posthog_erasure.api_key == ""
+        assert settings.posthog_erasure.project_id == ""
+        assert settings.posthog_erasure.host == "https://eu.posthog.com"
+        assert settings.posthog_erasure.enabled is False
+
+    def test_enabled_requires_key_and_project(self, with_mongo):
+        with_mongo.setenv("POSTHOG_ERASURE_API_KEY", "phx_secret")
+        assert AppSettings().posthog_erasure.enabled is False
+        with_mongo.setenv("POSTHOG_ERASURE_PROJECT_ID", "12345")
+        assert AppSettings().posthog_erasure.enabled is True
+
+    def test_env_prefix(self, with_mongo):
+        with_mongo.setenv("POSTHOG_ERASURE_API_KEY", "phx_secret")
+        with_mongo.setenv("POSTHOG_ERASURE_PROJECT_ID", "12345")
+        with_mongo.setenv("POSTHOG_ERASURE_HOST", "https://us.posthog.com")
+        settings = AppSettings()
+        assert settings.posthog_erasure.api_key == "phx_secret"
+        assert settings.posthog_erasure.project_id == "12345"
+        assert settings.posthog_erasure.host == "https://us.posthog.com"
+
+    def test_plain_http_host_is_a_boot_error(self, with_mongo):
+        """The key is person-deletion-scoped — a typo'd http host must fail
+        at boot, never send it over plaintext mid-sweep."""
+        with_mongo.setenv("POSTHOG_ERASURE_HOST", "http://eu.posthog.com")
+        with pytest.raises(PydanticValidationError, match="https"):
+            AppSettings()

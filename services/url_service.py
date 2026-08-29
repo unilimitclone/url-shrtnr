@@ -70,6 +70,7 @@ from shared.generators import generate_secure_token
 if TYPE_CHECKING:
     from infrastructure.cloudflare_kv import CloudflareKVClient
     from infrastructure.storage.r2 import R2StorageClient
+    from repositories.user_repository import UserRepository
     from services.meta_tags.sinks import MetaImageValidationSink
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
@@ -400,6 +401,20 @@ class ClaimResult:
     status: Literal["claimed", "already_yours", "invalid"]
 
 
+@dataclass(frozen=True)
+class OwnerUrlErasure:
+    """What ``delete_all_by_owner`` did — and the ids the cascade still needs.
+
+    ``url_ids`` covers every link the owner had, retained BLOCKED docs
+    included: their clicks are visitor data, not abuse audit, and must die
+    with the account even though the link doc survives.
+    """
+
+    deleted: int
+    blocked_retained: int
+    url_ids: list[ObjectId]
+
+
 class UrlService:
     def __init__(
         self,
@@ -425,6 +440,7 @@ class UrlService:
         meta_image_sink: MetaImageValidationSink | None = None,
         meta_key_secret: str = "",
         events: DomainEventSink | None = None,
+        user_repo: UserRepository | None = None,
     ) -> None:
         self._url_repo = url_repo
         self._legacy_repo = legacy_repo
@@ -464,6 +480,9 @@ class UrlService:
         # HMAC pepper for storage-key owner prefixes (public URLs must not
         # carry raw ObjectIds). Wired from settings.secret_key.
         self._meta_key_secret = meta_key_secret
+        # Lets og-image uploads pin the owner's storage prefix on first use
+        # (rotation-proofing the erasure sweep); None degrades to bare HMAC.
+        self._user_repo = user_repo
         # Domain-event sink (webhooks backbone). Null default: producers
         # never carry conditionals and tests need no wiring changes.
         self._events = events or NullDomainEventSink()
@@ -733,6 +752,7 @@ class UrlService:
             storage=self._r2_storage,
             max_bytes=self._meta_image_max_bytes,
             key_secret=self._meta_key_secret,
+            user_repo=self._user_repo,
         )
         if ingested.r2_hosted:
             return meta.model_copy(update={"image": ingested.url}), ingested.image_meta
@@ -1309,13 +1329,21 @@ class UrlService:
         self,
         owner_id: ObjectId,
         domain: str,
+        *,
+        retain_blocked: bool = False,
     ) -> int:
         """Bulk-delete all URLs owned by *owner_id* under *domain*.
 
         Refuses the system default — that would nuke all of a user's spoo.me
         URLs in one call. Returns number of URLs deleted.
 
-        Used by:
+        ``retain_blocked`` is the account-erasure mode
+        (``CustomDomainService.delete_all_for_owner``): BLOCKED docs on the
+        fqdn are scrubbed of creator PII and RETAINED — the same Art. 17(3)
+        retention as ``delete_all_by_owner`` — instead of hard-deleted,
+        so the domain cascade can never undo what the owner-wide erasure
+        step just retained. The interactive callers keep the default
+        (delete everything on the fqdn, BLOCKED included):
           - `DELETE /api/v1/urls?domain=` (standalone bulk delete)
           - `CustomDomainService.delete(cascade=True)` (domain revoke cascade)
         """
@@ -1331,7 +1359,11 @@ class UrlService:
         if not aliases:
             return 0
 
-        deleted = await self._url_repo.delete_many_by_owner_and_domain(owner_id, domain)
+        if retain_blocked:
+            await self._url_repo.scrub_blocked_owner_pii(owner_id, domain=domain)
+        deleted = await self._url_repo.delete_many_by_owner_and_domain(
+            owner_id, domain, retain_blocked=retain_blocked
+        )
 
         # Best-effort cache cleanup; cache miss after delete is correct anyway.
         await self._url_cache.invalidate_many(aliases, domain)
@@ -1343,6 +1375,44 @@ class UrlService:
             count=deleted,
         )
         return deleted
+
+    async def delete_all_by_owner(self, owner_id: ObjectId) -> OwnerUrlErasure:
+        """Erase the owner's URLs across ALL domains — BLOCKED docs excepted.
+
+        Account-erasure counterpart of ``delete_all_by_domain`` — no
+        system-default guard here: nuking the user's spoo.me links is the
+        whole point. BLOCKED links are RETAINED with creator PII scrubbed
+        in place (GDPR Art. 17(3) abuse-prevention retention — the
+        enforcement audit trail and the alias reservation must outlive the
+        account; see ``UrlRepository.scrub_blocked_owner_pii``). Per link,
+        mirrors ``delete``'s cache/edge side effects (url_cache invalidate,
+        og write-through removal or edge-KV purge) — BLOCKED links
+        included: they only ever serve a 451, but the cached projection
+        carries the pre-scrub password hash, so purging is load-bearing,
+        not just tidy. Returns the per-status counts plus EVERY link's id
+        (retained BLOCKED included) so the erasure cascade can delete their
+        clicks by url_id.
+        """
+        url_ids: list[ObjectId] = []
+        async for existing in self._url_repo.iter_by_owner(owner_id):
+            url_ids.append(existing.id)
+            await self._url_cache.invalidate(existing.alias, existing.domain)
+            if existing.meta_tags is not None and self._og_writethrough:
+                await self._og_writethrough.remove(existing.domain, existing.alias)
+            else:
+                self._purge_edge_key(existing.domain, existing.alias)
+
+        blocked_retained = await self._url_repo.scrub_blocked_owner_pii(owner_id)
+        deleted = await self._url_repo.delete_by_owner(owner_id)
+        log.info(
+            "urls_owner_erased",
+            user_id=str(owner_id),
+            count=deleted,
+            blocked_retained=blocked_retained,
+        )
+        return OwnerUrlErasure(
+            deleted=deleted, blocked_retained=blocked_retained, url_ids=url_ids
+        )
 
     async def list_by_owner(
         self,

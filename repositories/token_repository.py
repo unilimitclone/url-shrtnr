@@ -38,6 +38,26 @@ class TokenRepository(BaseRepository[VerificationTokenDoc]):
             }
         )
 
+    async def find_valid_by_hash(
+        self, token_hash: str, token_type: str
+    ) -> VerificationTokenDoc | None:
+        """Read an unused, non-expired token WITHOUT consuming it.
+
+        Same liveness filter as ``consume_by_hash``, no write — the
+        look-before-flip half of the deletion-restore path, where burning
+        the single-use token before the guarded status flip would make a
+        transient flip failure terminal for OAuth-only accounts.
+        """
+        now = datetime.now(timezone.utc)
+        return await self._find_one(
+            {
+                "token_hash": token_hash,
+                "token_type": token_type,
+                "used_at": None,
+                "expires_at": {"$gt": now},
+            }
+        )
+
     async def consume_by_hash(
         self, token_hash: str, token_type: str
     ) -> VerificationTokenDoc | None:
@@ -138,6 +158,31 @@ class TokenRepository(BaseRepository[VerificationTokenDoc]):
         if app_id is not None:
             query["app_id"] = app_id
         return await self._delete_many(query)
+
+    async def delete_by_hash(self, token_hash: str, token_type: str) -> int:
+        """Delete the token with this exact hash — precision cleanup for a
+        mint whose follow-up write failed. Never touches sibling tokens, so
+        a concurrent request's freshly-minted token always survives.
+        Returns the number of documents deleted (0 or 1).
+        """
+        return await self._delete_many(
+            {"token_hash": token_hash, "token_type": token_type}
+        )
+
+    async def delete_by_user_or_email(self, user_id: ObjectId, email: str) -> int:
+        """Delete every token tied to the user id OR the email address.
+
+        Account-erasure path: pre-signup flows key tokens by email alone,
+        so an id-only sweep would leave the address behind. A falsy email
+        drops that clause — ``{"email": ""}`` would match OTHER accounts'
+        tokens stored with an empty address; the user_id clause always
+        stays. Returns the number of documents deleted.
+        """
+        if not email:
+            return await self._delete_many({"user_id": user_id})
+        return await self._delete_many(
+            {"$or": [{"user_id": user_id}, {"email": email}]}
+        )
 
     async def count_recent(
         self, user_id: ObjectId, token_type: str, minutes: int = 60

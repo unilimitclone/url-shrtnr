@@ -87,6 +87,39 @@ class EmailSettings(BaseSettings):
     zepto_from_name: str = "spoo.me"
 
 
+class PostHogErasureSettings(BaseSettings):
+    """PostHog person deletion for the account-erasure cascade (GDPR Art. 17).
+
+    Off unless both ``api_key`` and ``project_id`` are set — the cascade
+    then skips the step via the Noop eraser. The key is a personal API key
+    with person-deletion scope, NOT the public project key. Env vars
+    prefixed ``POSTHOG_ERASURE_`` (same convention as ``R2_``).
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="POSTHOG_ERASURE_",
+    )
+
+    api_key: str = ""
+    project_id: str = ""
+    host: str = "https://eu.posthog.com"
+
+    @field_validator("host")
+    @classmethod
+    def _host_must_be_https(cls, v: str) -> str:
+        # The key is a person-deletion-scoped personal API key — a config
+        # typo must never send it over plaintext. Fail at boot, not mid-sweep.
+        if not v.startswith("https://"):
+            raise ValueError("POSTHOG_ERASURE_HOST must be an https:// URL")
+        return v
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key and self.project_id)
+
+
 class LoggingSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -694,6 +727,18 @@ class AppSettings(BaseSettings):
     max_active_api_keys: int = 20
     max_date_range_days: int = 90
     http_client_timeout: float = 5.0
+    # Account deletion (GDPR Art. 17): days between the deletion request
+    # and the erasure sweep purging the account (0 = purge on the next
+    # sweep — integration smoke only), and how many due accounts one
+    # sweep run erases (the */10 cron drains any backlog).
+    account_deletion_grace_days: int = 7
+    account_erasure_batch_limit: int = 25
+    # Sweep-run budget: stop STARTING erasures past this (80% of the 600s
+    # scheduler lease) so a batch of heavy cascades never outruns the lease.
+    account_erasure_time_budget_seconds: int = 480
+    # Erasure-claim lease: ERASING accounts re-claim only after this — must
+    # exceed the sweep budget plus one heavy cascade (prod whale ~305s).
+    account_erasure_claim_lease_seconds: int = 900
 
     # Validator constraints (overridable by self-hosters via env vars)
     blocked_url_regex_timeout: float = 0.2
@@ -723,11 +768,22 @@ class AppSettings(BaseSettings):
         "max_emoji_alias_length",
         "emoji_generated_alias_length",
         "geo_rules_max_countries",
+        "account_erasure_batch_limit",
+        "account_erasure_time_budget_seconds",
+        "account_erasure_claim_lease_seconds",
     )
     @classmethod
     def _must_be_positive_int(cls, v: int, info) -> int:
         if v < 1:
             raise ValueError(f"{info.field_name} must be >= 1, got {v}")
+        return v
+
+    @field_validator("account_deletion_grace_days")
+    @classmethod
+    def _grace_days_non_negative(cls, v: int) -> int:
+        # 0 is legal (purge on the next sweep) — negatives are not.
+        if v < 0:
+            raise ValueError(f"account_deletion_grace_days must be >= 0, got {v}")
         return v
 
     @field_validator("emoji_accept_max_version", "emoji_generate_max_version")
@@ -791,6 +847,7 @@ class AppSettings(BaseSettings):
     safety: SafetySettings | None = None
     scheduler: SchedulerSettings | None = None
     llm: LlmSettings | None = None
+    posthog_erasure: PostHogErasureSettings | None = None
 
     @model_validator(mode="after")
     def _populate_sub_configs_and_secret(self) -> AppSettings:
@@ -838,6 +895,8 @@ class AppSettings(BaseSettings):
             self.safety = SafetySettings()
         if self.scheduler is None:
             self.scheduler = SchedulerSettings()
+        if self.posthog_erasure is None:
+            self.posthog_erasure = PostHogErasureSettings()
         if self.webhooks.enabled and not self.secret_key:
             # Signing secrets are encrypted with a key derived from
             # SECRET_KEY; an empty master would mean a predictable key.
@@ -850,6 +909,11 @@ class AppSettings(BaseSettings):
             raise ValueError(
                 "CUSTOM_DOMAINS_MOCK_DCV must not be enabled in production"
             )
+
+        # Zero grace purges on the next sweep — a smoke-test convenience
+        # that in production would void the restore window. Refuse to boot.
+        if self.env == "production" and self.account_deletion_grace_days < 1:
+            raise ValueError("ACCOUNT_DELETION_GRACE_DAYS must be >= 1 in production")
 
         return self
 

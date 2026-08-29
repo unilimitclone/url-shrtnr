@@ -1,8 +1,9 @@
 """AWS Signature Version 4 signing — pure stdlib, no boto.
 
 Covers exactly what the R2 client needs: single-request signing with a
-known payload hash, no query params, no chunked uploads. R2 accepts
-region "auto". Test vectors: AWS SigV4 test suite (see the unit tests).
+known payload hash and an optional pre-canonicalized query string, no
+chunked uploads. R2 accepts region "auto". Test vectors: AWS SigV4 test
+suite (see the unit tests).
 """
 
 from __future__ import annotations
@@ -27,15 +28,18 @@ def sigv4_headers(
     access_key_id: str,
     secret_access_key: str,
     headers: dict[str, str] | None = None,
+    query: str = "",
     region: str = "auto",
     service: str = "s3",
     now: datetime | None = None,
 ) -> dict[str, str]:
     """Return the headers to attach to the request.
 
-    ``path`` must already be URL-encoded with a leading slash.
-    ``payload_hash`` is the sha256 hexdigest of the request body (of
-    ``b""`` for bodiless requests). ``now`` is injectable for tests.
+    ``path`` must already be URL-encoded with a leading slash. ``query``
+    is the canonical query string — key-sorted, URL-encoded, no leading
+    ``?`` — or empty for no params. ``payload_hash`` is the sha256
+    hexdigest of the request body (of ``b""`` for bodiless requests).
+    ``now`` is injectable for tests.
     """
     ts = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
     date = ts[:8]
@@ -51,7 +55,7 @@ def sigv4_headers(
         f"{k}:{all_headers[k].strip()}\n" for k in sorted(all_headers)
     )
     canonical_request = "\n".join(
-        [method.upper(), path, "", canonical_headers, signed_names, payload_hash]
+        [method.upper(), path, query, canonical_headers, signed_names, payload_hash]
     )
 
     scope = f"{date}/{region}/{service}/aws4_request"

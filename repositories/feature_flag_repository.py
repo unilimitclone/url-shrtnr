@@ -12,9 +12,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from bson import ObjectId
+from pymongo.errors import PyMongoError
 
+from infrastructure.logging import get_logger
 from repositories.base import BaseRepository
 from schemas.models.feature_flag import FeatureFlagDoc
+
+log = get_logger(__name__)
 
 
 class FeatureFlagRepository(BaseRepository[FeatureFlagDoc]):
@@ -48,6 +52,34 @@ class FeatureFlagRepository(BaseRepository[FeatureFlagDoc]):
                 f"feature flag {name!r} vanished between upsert and read"
             )
         return doc["_id"]
+
+    async def pull_allowlisted(self, user_id: ObjectId, email: str) -> int:
+        """``$pull`` the user's id and email out of every flag allowlist.
+
+        Account erasure. Emails are stored lowercased by convention but
+        rollout edits happen via raw mongosh, so both casings are pulled.
+        Returns the number of flag documents modified.
+        """
+        try:
+            result = await self._col.update_many(
+                {},
+                {
+                    "$pull": {
+                        "allowlist_user_ids": user_id,
+                        "allowlist_emails": {"$in": [email, email.lower()]},
+                    }
+                },
+            )
+            return result.modified_count
+        except PyMongoError as exc:
+            log.error(
+                "repo_pull_allowlisted_failed",
+                collection=self._collection_name,
+                user_id=str(user_id),
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise
 
     async def list_all(self) -> list[FeatureFlagDoc]:
         """Return all registered flags. Used by admin scripts + tests."""

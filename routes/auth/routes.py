@@ -8,6 +8,7 @@ POST /auth/login
 POST /auth/register
 POST /auth/refresh
 POST /auth/logout
+POST /auth/restore
 GET  /auth/me
 PATCH /auth/me
 POST /auth/set-password
@@ -20,6 +21,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from dependencies import (
+    AccountDeletionSvc,
     AuthUser,
     CredentialSvc,
     JwtConfig,
@@ -34,6 +36,7 @@ from infrastructure.logging import get_logger
 from middleware.openapi import AUTH_RESPONSES, ERROR_RESPONSES, PUBLIC_SECURITY
 from middleware.rate_limiter import Limits, limiter
 from routes.cookie_helpers import clear_auth_cookies, set_auth_cookies
+from schemas.dto.requests.account import RestoreAccountRequest
 from schemas.dto.requests.auth import (
     LoginRequest,
     RegisterRequest,
@@ -48,7 +51,7 @@ from schemas.dto.responses.auth import (
     RegisterResponse,
     UserProfileResponse,
 )
-from schemas.dto.responses.common import MessageResponse
+from schemas.dto.responses.common import ErrorResponse, MessageResponse
 from shared.ip_utils import get_client_ip
 
 log = get_logger(__name__)
@@ -235,6 +238,61 @@ async def logout(
     """
     clear_auth_cookies(response, jwt_cfg)
     return LogoutResponse(success=True)
+
+
+@router.post(
+    "/auth/restore",
+    responses={
+        **ERROR_RESPONSES,
+        # The uniform anti-enumeration failure (see the docstring) — the
+        # generic "insufficient permissions" text would misdocument it.
+        403: {
+            "description": (
+                "Forbidden — invalid credentials, unknown email or token, "
+                "or account is not pending deletion"
+            ),
+            "model": ErrorResponse,
+        },
+    },
+    openapi_extra=PUBLIC_SECURITY,
+    operation_id="restoreAccount",
+    summary="Restore Account",
+)
+# Tightest account-security budget (3/hour) — an unauthenticated
+# credential check, same guessing surface as a password reset.
+@limiter.limit(Limits.PASSWORD_RESET_REQUEST)
+async def restore_account(
+    request: Request,
+    body: RestoreAccountRequest,
+    deletion_service: AccountDeletionSvc,
+) -> MessageResponse:
+    """Cancel a pending account deletion during the grace period.
+
+    Two mutually exclusive proofs: ``email`` + ``password`` validates the
+    account credentials, ``restore_token`` consumes the one-shot link from
+    the deletion notice email (the only path for OAuth-only accounts).
+    Either flips the account back to ACTIVE, clears the purge deadline,
+    and sends a cancellation notice to the account address. Only works
+    while the account is PENDING_DELETION. The hard boundary is the
+    erasure sweep claiming the account (typically within minutes of the
+    ``purge_after`` deadline from ``DELETE /api/v1/me``), so a restore in
+    the window between the deadline and the claim still succeeds; once
+    erasure has started, restore is refused for good.
+
+    **Authentication**: Not required (public endpoint)
+
+    **Rate Limits**: 3/hour
+
+    **Security**: Returns a uniform 403 for wrong credentials, unknown
+    email, invalid or spent tokens, and accounts not pending deletion —
+    prevents account enumeration and state probing.
+    """
+    if body.restore_token is not None:
+        await deletion_service.restore_with_token(body.restore_token)
+    else:
+        # The DTO guarantees both are present on this branch.
+        await deletion_service.restore(str(body.email), str(body.password))
+    return MessageResponse(success=True, message="account restored")
 
 
 @router.get(

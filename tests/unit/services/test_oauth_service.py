@@ -42,6 +42,7 @@ def make_user_doc(
     email_verified=True,
     password_set=False,
     auth_providers=None,
+    status="ACTIVE",
 ):
     doc: dict[str, Any] = {
         "_id": oid,
@@ -53,7 +54,7 @@ def make_user_doc(
         "pfp": None,
         "auth_providers": auth_providers or [],
         "plan": "free",
-        "status": "ACTIVE",
+        "status": status,
         "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
         "updated_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
     }
@@ -143,6 +144,93 @@ class TestHandleCallbackExistingOAuthUser:
             issuer=settings.jwt_issuer,
         )
         assert payload["amr"] == ["github"]
+
+
+# ── handle_callback: pending-deletion accounts are blocked ───────────────────
+
+
+class TestHandleCallbackPendingDeletion:
+    @pytest.mark.asyncio
+    async def test_existing_oauth_user_login_blocked_when_pending_deletion(self):
+        from errors import AccountPendingDeletionError
+
+        svc = make_oauth_service()
+        user = make_user_doc(status="PENDING_DELETION")
+        svc._user_repo.find_by_oauth_provider.return_value = user
+
+        with pytest.raises(AccountPendingDeletionError) as exc_info:
+            await svc.handle_callback(
+                provider_key="google",
+                provider_info=make_provider_info(),
+                action="login",
+                state_data={"action": "login"},
+            )
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.error_code == "ACCOUNT_PENDING_DELETION"
+        # No auto-restore, no session bookkeeping — the account is untouched.
+        svc._user_repo.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_existing_oauth_user_login_blocked_when_erasing(self):
+        """ERASING is gated identically — the cascade claimed the account."""
+        from errors import AccountPendingDeletionError
+
+        svc = make_oauth_service()
+        user = make_user_doc(status="ERASING")
+        svc._user_repo.find_by_oauth_provider.return_value = user
+
+        with pytest.raises(AccountPendingDeletionError):
+            await svc.handle_callback(
+                provider_key="google",
+                provider_info=make_provider_info(),
+                action="login",
+                state_data={"action": "login"},
+            )
+        svc._user_repo.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auto_link_blocked_when_pending_deletion(self):
+        from errors import AccountPendingDeletionError
+
+        svc = make_oauth_service()
+        svc._user_repo.find_by_oauth_provider.return_value = None
+        svc._user_repo.find_by_email.return_value = make_user_doc(
+            status="PENDING_DELETION"
+        )
+
+        with pytest.raises(AccountPendingDeletionError):
+            await svc.handle_callback(
+                provider_key="google",
+                provider_info=make_provider_info(email_verified=True),
+                action="login",
+                state_data={"action": "login"},
+            )
+        svc._user_repo.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unverified_callback_cannot_probe_deletion_state(self):
+        """An unverified provider email is an unauthenticated GET — a
+        pending-deletion address must answer EXACTLY like any other
+        registered address (the generic email collision), never with the
+        pending-deletion error that leaks the account's deletion state."""
+
+        async def collide(status):
+            svc = make_oauth_service()
+            svc._user_repo.find_by_oauth_provider.return_value = None
+            svc._user_repo.find_by_email.return_value = make_user_doc(status=status)
+            with pytest.raises(ConflictError) as exc_info:
+                await svc.handle_callback(
+                    provider_key="google",
+                    provider_info=make_provider_info(email_verified=False),
+                    action="login",
+                    state_data={"action": "login"},
+                )
+            return exc_info.value
+
+        pending = await collide("PENDING_DELETION")
+        active = await collide("ACTIVE")
+        assert type(pending) is type(active)
+        assert str(pending) == str(active)
 
 
 # ── handle_callback: new user (flow 4) ───────────────────────────────────────
@@ -294,6 +382,26 @@ class TestHandleCallbackLink:
             state_data={"action": "link", "user_id": str(USER_OID)},
         )
         assert result.user is updated_user
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["PENDING_DELETION", "ERASING"])
+    async def test_link_flow_blocked_when_pending_deletion(self, status):
+        """The LINK branch mints tokens like the login paths, so it gets the
+        same status gate — a still-valid access token must not mint fresh
+        tokens (or link a provider) for an account scheduled for erasure."""
+        from errors import AccountPendingDeletionError
+
+        svc = make_oauth_service()
+        svc._user_repo.find_by_id.return_value = make_user_doc(status=status)
+
+        with pytest.raises(AccountPendingDeletionError):
+            await svc.handle_callback(
+                provider_key="google",
+                provider_info=make_provider_info(),
+                action="link",
+                state_data={"action": "link", "user_id": str(USER_OID)},
+            )
+        svc._user_repo.update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_link_flow_missing_user_id_raises(self):

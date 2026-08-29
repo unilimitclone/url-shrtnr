@@ -7,6 +7,7 @@ Ported from utils/email_service.py:
 """
 
 import os
+from datetime import datetime, timezone
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -22,6 +23,16 @@ _DEFAULT_TEMPLATE_DIR = os.path.join(
     "templates",
     "emails",
 )
+
+
+def _format_utc(dt: datetime) -> str:
+    """Human-readable UTC timestamp, e.g. ``August 26, 2026 at 14:03 UTC``.
+
+    Naive datetimes are treated as UTC — that is how Mongo hands them back.
+    """
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)
+    return f"{dt:%B} {dt.day}, {dt.year} at {dt:%H:%M} UTC"
 
 
 class ZeptoMailProvider:
@@ -129,6 +140,85 @@ class ZeptoMailProvider:
             f"© 2025 spoo.me. All rights reserved."
         )
         return await self._send(email, user_name, subject, html_body, text_body)
+
+    async def send_deletion_requested(
+        self, email: str, purge_after: datetime, restore_token: str | None = None
+    ) -> bool:
+        subject = "Your spoo.me account is scheduled for deletion"
+        purge_date = _format_utc(purge_after)
+        # The one-shot cancel link — the only restore path for OAuth-only
+        # accounts (no password to restore with at the login page).
+        restore_url = (
+            f"{self._app_url}/restore-account?token={restore_token}"
+            if restore_token
+            else None
+        )
+        template = self._jinja.get_template("deletion_requested.html")
+        html_body = template.render(
+            purge_date=purge_date, app_url=self._app_url, restore_url=restore_url
+        )
+        if restore_url:
+            cancel_copy = (
+                f"Changed your mind? You can cancel the deletion any time before\n"
+                f"the date above by clicking this link:\n{restore_url}\n\n"
+                f"If your account has a password, you can also cancel by logging\n"
+                f"back in via the restore option at {self._app_url}/login\n\n"
+            )
+        else:
+            cancel_copy = (
+                f"Changed your mind? Signing in normally is blocked while the deletion\n"
+                f"is pending, but you can cancel it any time before the date above:\n"
+                f"log back in via the restore option at {self._app_url}/login\n\n"
+            )
+        text_body = (
+            f"Account Scheduled for Deletion - spoo.me\n\n"
+            f"Hello,\n\n"
+            f"We received a request to permanently delete your spoo.me account.\n"
+            f"The deletion is scheduled for: {purge_date}\n\n"
+            f"Once that date passes, your account, your short links, and all of\n"
+            f"their analytics data will be permanently erased. This cannot be undone.\n\n"
+            f"{cancel_copy}"
+            f"If you didn't request this, email support@spoo.me immediately.\n\n"
+            f"Support Team, spoo.me\n\n"
+            f"© 2026 spoo.me. All rights reserved."
+        )
+        return await self._send(email, None, subject, html_body, text_body)
+
+    async def send_deletion_cancelled(self, email: str) -> bool:
+        subject = "Your spoo.me account deletion was cancelled"
+        template = self._jinja.get_template("deletion_cancelled.html")
+        html_body = template.render(app_url=self._app_url)
+        text_body = (
+            "Account Deletion Cancelled - spoo.me\n\n"
+            "Hello,\n\n"
+            "The scheduled deletion of your spoo.me account has been cancelled.\n"
+            "Your account is active again and nothing was deleted.\n\n"
+            "If you did not cancel this deletion yourself, someone else may have\n"
+            "access to your account or inbox. Change your password and email\n"
+            "support@spoo.me immediately.\n\n"
+            "Support Team, spoo.me\n\n"
+            "© 2026 spoo.me. All rights reserved."
+        )
+        return await self._send(email, None, subject, html_body, text_body)
+
+    async def send_erasure_confirmation(self, email: str) -> bool:
+        subject = "Your spoo.me account has been deleted"
+        template = self._jinja.get_template("deletion_completed.html")
+        html_body = template.render(app_url=self._app_url)
+        text_body = (
+            "Account Deleted - spoo.me\n\n"
+            "Hello,\n\n"
+            "Your spoo.me account has been permanently deleted, as requested.\n"
+            "Your account details, your short links, and all of their analytics\n"
+            "data have been erased from our systems.\n\n"
+            "Copies in our automated backups age out on their own within 15 days.\n"
+            "There is nothing more you need to do.\n\n"
+            "Thank you for using spoo.me. We're sorry to see you go, and you're\n"
+            "welcome back any time.\n\n"
+            "Support Team, spoo.me\n\n"
+            "© 2026 spoo.me. All rights reserved."
+        )
+        return await self._send(email, None, subject, html_body, text_body)
 
     async def send_password_reset_email(
         self, email: str, user_name: str | None, otp_code: str

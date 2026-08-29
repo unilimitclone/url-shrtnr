@@ -22,7 +22,7 @@ from errors import ValidationError
 from infrastructure.logging import get_logger
 from services.image_ingest import (
     decode_image_data_uri,
-    owner_key_prefix,
+    resolve_owner_prefix,
     split_image_data_uri,
 )
 from shared.image_sniff import EXT
@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from bson import ObjectId
 
     from infrastructure.storage.r2 import R2StorageClient
+    from repositories.user_repository import UserRepository
 
 log = get_logger(__name__)
 
@@ -49,8 +50,14 @@ async def ingest_meta_image(
     storage: R2StorageClient | None,
     max_bytes: int,
     key_secret: str = "",
+    user_repo: UserRepository | None = None,
 ) -> IngestedImage:
-    """Resolve a client-supplied image value to a stored https URL."""
+    """Resolve a client-supplied image value to a stored https URL.
+
+    ``user_repo`` lets the upload path pin the owner's storage prefix on
+    first use (see ``resolve_owner_prefix``); None degrades to the bare
+    HMAC computation.
+    """
     if value.startswith("https://"):
         return IngestedImage(url=value, r2_hosted=False, image_meta=None)
 
@@ -76,7 +83,7 @@ async def ingest_meta_image(
     # Content-addressed + owner-scoped: idempotent re-uploads dedupe, and
     # abuse takedowns can prefix-sweep og/{prefix}/. Old objects are not
     # deleted on replace (orphan GC is future work; orphans are pennies).
-    prefix = owner_key_prefix(owner_id, key_secret)
+    prefix = await resolve_owner_prefix(owner_id, key_secret, user_repo)
     digest = hashlib.sha256(decoded.data).hexdigest()
     key = f"og/{prefix}/{digest}.{EXT[decoded.info.format]}"
     url = await storage.put_object(key, decoded.data, content_type=decoded.content_type)

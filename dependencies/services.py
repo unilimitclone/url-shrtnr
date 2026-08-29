@@ -17,6 +17,7 @@ from errors import NotFoundError
 from repositories.app_grant_repository import AppGrantRepository
 from repositories.user_repository import UserRepository
 from schemas.models.user import UserDoc
+from services.account_deletion_service import AccountDeletionService
 from services.api_key_service import ApiKeyService
 from services.auth.credentials import CredentialService
 from services.auth.device import DeviceAuthService
@@ -93,6 +94,10 @@ def get_device_auth_service(request: Request) -> DeviceAuthService:
 
 def get_user_repo(request: Request) -> UserRepository:
     return request.app.state.user_repo
+
+
+def get_account_deletion_service(request: Request) -> AccountDeletionService:
+    return request.app.state.account_deletion_service
 
 
 async def fetch_user_profile(user_repo: UserRepository, user_id: ObjectId) -> UserDoc:
@@ -174,6 +179,9 @@ VerificationSvc = Annotated[EmailVerificationService, Depends(get_verification_s
 PasswordSvc = Annotated[PasswordService, Depends(get_password_service)]
 DeviceAuthSvc = Annotated[DeviceAuthService, Depends(get_device_auth_service)]
 UserRepo = Annotated[UserRepository, Depends(get_user_repo)]
+AccountDeletionSvc = Annotated[
+    AccountDeletionService, Depends(get_account_deletion_service)
+]
 OAuthSvc = Annotated[OAuthService, Depends(get_oauth_service)]
 ProfilePictureSvc = Annotated[
     ProfilePictureService, Depends(get_profile_picture_service)

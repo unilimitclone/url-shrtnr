@@ -13,7 +13,12 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
-from errors import AuthenticationError, ConflictError, ValidationError
+from errors import (
+    AccountPendingDeletionError,
+    AuthenticationError,
+    ConflictError,
+    ValidationError,
+)
 from infrastructure.crypto import hash_password, verify_password
 from infrastructure.email.protocol import EmailProvider
 from infrastructure.logging import get_logger
@@ -79,6 +84,17 @@ class CredentialService:
                 "login_failed", reason="invalid_password", user_id=str(user.id)
             )
             raise AuthenticationError("invalid credentials")
+
+        # Checked AFTER password proof so strangers can't probe account
+        # state; the owner gets the restore-flow error code instead of a
+        # session (POST /auth/restore cancels the pending deletion).
+        # ERASING gets the same answer: the cascade has claimed the account
+        # and a fresh session must never outlive it.
+        if user.status in (UserStatus.PENDING_DELETION, UserStatus.ERASING):
+            svc_log.info(
+                "login_blocked", reason="pending_deletion", user_id=str(user.id)
+            )
+            raise AccountPendingDeletionError("this account is scheduled for deletion")
 
         svc_log.info("login_success", user_id=str(user.id), auth_method="password")
         access_token, refresh_token = self._tokens.issue_tokens(user, "pwd")

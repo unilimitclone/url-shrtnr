@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from bson import ObjectId
+from pymongo.errors import PyMongoError
 
 from .conftest import make_collection
 
@@ -87,3 +88,40 @@ class TestFeatureFlagRepository:
         col.find.return_value.to_list = AsyncMock(return_value=[])
         result = await self._repo(col).list_all()
         assert result == []
+
+
+class TestPullAllowlisted:
+    def _repo(self, col=None):
+        from repositories.feature_flag_repository import FeatureFlagRepository
+
+        return FeatureFlagRepository(col or make_collection())
+
+    @pytest.mark.asyncio
+    async def test_pulls_id_and_both_email_casings_from_every_flag(self):
+        col = make_collection()
+        result = MagicMock()
+        result.modified_count = 2
+        col.update_many = AsyncMock(return_value=result)
+        uid = ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")
+        count = await self._repo(col).pull_allowlisted(uid, "User@Example.com")
+        col.update_many.assert_awaited_once_with(
+            {},
+            {
+                "$pull": {
+                    "allowlist_user_ids": uid,
+                    "allowlist_emails": {
+                        "$in": ["User@Example.com", "user@example.com"]
+                    },
+                }
+            },
+        )
+        assert count == 2
+
+    @pytest.mark.asyncio
+    async def test_propagates_pymongo_error(self):
+        col = make_collection()
+        col.update_many = AsyncMock(side_effect=PyMongoError("conn lost"))
+        with pytest.raises(PyMongoError):
+            await self._repo(col).pull_allowlisted(
+                ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa"), "user@example.com"
+            )
