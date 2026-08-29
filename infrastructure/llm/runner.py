@@ -128,12 +128,14 @@ class LlmTaskRunner:
         timeout = task.run_timeout_seconds or self._settings.run_timeout_seconds
         started = time.perf_counter()
         try:
-            async with asyncio.timeout(timeout):
-                result = await self._agent(task).run(prompt, usage_limits=limits)
+            # wait_for, not asyncio.timeout: 3.10 support (see safe_fetch).
+            result = await asyncio.wait_for(
+                self._agent(task).run(prompt, usage_limits=limits), timeout=timeout
+            )
         except UsageLimitExceeded as exc:
             self._log_failure(task, "usage_limit", exc, started)
             raise LlmTaskFailed(task.name, "usage_limit", str(exc)) from exc
-        except TimeoutError as exc:
+        except (asyncio.TimeoutError, TimeoutError) as exc:
             self._log_failure(task, "timeout", exc, started)
             raise LlmTaskFailed(task.name, "timeout", f"{timeout}s") from exc
         except ModelAPIError as exc:

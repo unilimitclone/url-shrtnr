@@ -95,67 +95,71 @@ async def resolve_chain_impl(url: str) -> str:
     """Walk redirects hop by hop (redirects OFF, max 10, bodyless)."""
     lines: list[str] = []
     current = url
-    try:
-        async with asyncio.timeout(_CHAIN_TIMEOUT):
-            async with httpx.AsyncClient(
-                follow_redirects=False, timeout=_HOP_TIMEOUT
-            ) as client:
-                for hop in range(1, _MAX_HOPS + 1):
-                    parsed = urlparse(current)
-                    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-                        lines.append(f"hop {hop}: {current} — unsupported URL, stop")
-                        break
-                    # safe_fetch is the one SSRF guard; the connection is
-                    # pinned to the vetted IP so DNS cannot rebind after it.
-                    try:
-                        hop_ip = await resolve_public_ip(parsed.hostname)
-                    except (FetchHardError, FetchTransientError):
-                        lines.append(
-                            f"hop {hop}: {current} — resolves to a private or "
-                            "unresolvable address, refused"
-                        )
-                        break
-                    pinned = httpx.URL(current).copy_with(host=bracket_ip(hop_ip))
-                    hop_headers = {"Host": parsed.hostname}
-                    hop_ext = {"sni_hostname": parsed.hostname}
-                    try:
-                        response = await client.head(
-                            pinned, headers=hop_headers, extensions=hop_ext
-                        )
-                        if response.status_code in (405, 501):
-                            # Bodyless by contract: stream and close before
-                            # any body bytes are read.
-                            get_req = client.build_request(
-                                "GET", pinned, headers=hop_headers, extensions=hop_ext
-                            )
-                            response = await client.send(get_req, stream=True)
-                            await response.aclose()
-                    except httpx.HTTPError as exc:
-                        lines.append(
-                            f"hop {hop}: {current} — request failed "
-                            f"({type(exc).__name__})"
-                        )
-                        break
-                    location = response.headers.get("location")
-                    if response.is_redirect and location:
-                        nxt = urljoin(current, location)
-                        cross = registrable_domain(
-                            parsed.hostname or ""
-                        ) != registrable_domain(urlparse(nxt).hostname or "")
-                        lines.append(
-                            f"hop {hop}: {current} → {response.status_code} → "
-                            f"{nxt}{' [cross-domain]' if cross else ''}"
-                        )
-                        current = nxt
-                        continue
+
+    async def _walk() -> None:
+        nonlocal current
+        async with httpx.AsyncClient(
+            follow_redirects=False, timeout=_HOP_TIMEOUT
+        ) as client:
+            for hop in range(1, _MAX_HOPS + 1):
+                parsed = urlparse(current)
+                if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                    lines.append(f"hop {hop}: {current} — unsupported URL, stop")
+                    break
+                # safe_fetch is the one SSRF guard; the connection is
+                # pinned to the vetted IP so DNS cannot rebind after it.
+                try:
+                    hop_ip = await resolve_public_ip(parsed.hostname)
+                except (FetchHardError, FetchTransientError):
                     lines.append(
-                        f"final: {current} → HTTP {response.status_code} "
-                        f"(content-type: {response.headers.get('content-type', '?')})"
+                        f"hop {hop}: {current} — resolves to a private or "
+                        "unresolvable address, refused"
                     )
                     break
-                else:
-                    lines.append(f"stopped: exceeded {_MAX_HOPS} hops")
-    except TimeoutError:
+                pinned = httpx.URL(current).copy_with(host=bracket_ip(hop_ip))
+                hop_headers = {"Host": parsed.hostname}
+                hop_ext = {"sni_hostname": parsed.hostname}
+                try:
+                    response = await client.head(
+                        pinned, headers=hop_headers, extensions=hop_ext
+                    )
+                    if response.status_code in (405, 501):
+                        # Bodyless by contract: stream and close before
+                        # any body bytes are read.
+                        get_req = client.build_request(
+                            "GET", pinned, headers=hop_headers, extensions=hop_ext
+                        )
+                        response = await client.send(get_req, stream=True)
+                        await response.aclose()
+                except httpx.HTTPError as exc:
+                    lines.append(
+                        f"hop {hop}: {current} — request failed ({type(exc).__name__})"
+                    )
+                    break
+                location = response.headers.get("location")
+                if response.is_redirect and location:
+                    nxt = urljoin(current, location)
+                    cross = registrable_domain(
+                        parsed.hostname or ""
+                    ) != registrable_domain(urlparse(nxt).hostname or "")
+                    lines.append(
+                        f"hop {hop}: {current} → {response.status_code} → "
+                        f"{nxt}{' [cross-domain]' if cross else ''}"
+                    )
+                    current = nxt
+                    continue
+                lines.append(
+                    f"final: {current} → HTTP {response.status_code} "
+                    f"(content-type: {response.headers.get('content-type', '?')})"
+                )
+                break
+            else:
+                lines.append(f"stopped: exceeded {_MAX_HOPS} hops")
+
+    # wait_for, not asyncio.timeout: 3.10 support (see safe_fetch).
+    try:
+        await asyncio.wait_for(_walk(), timeout=_CHAIN_TIMEOUT)
+    except (asyncio.TimeoutError, TimeoutError):
         lines.append("stopped: chain resolution timed out")
     lines.append(
         "note: HTTP redirects only — JS and meta redirects are invisible "
