@@ -42,6 +42,7 @@ import os
 import sys
 
 from pymongo import MongoClient, UpdateOne
+from pymongo.errors import PyMongoError
 
 # {"storage_prefix": None} matches both a null field and a missing one.
 _FILTER = {"pfp": {"$ne": None}, "storage_prefix": None}
@@ -52,6 +53,15 @@ _BATCH_SIZE = 500
 def _owner_key_prefix(user_id, secret: str) -> str:
     digest = hmac.new(secret.encode(), str(user_id).encode(), hashlib.sha256)
     return digest.hexdigest()[:16]
+
+
+def _flush(coll, batch, stamped: int, failed: int) -> tuple[int, int]:
+    # Rerun-safe: the storage_prefix None filter skips anything stamped.
+    try:
+        return stamped + coll.bulk_write(batch).modified_count, failed
+    except PyMongoError as exc:
+        print(f"batch of {len(batch)} failed ({exc}); continuing", file=sys.stderr)
+        return stamped, failed + 1
 
 
 def main() -> None:
@@ -89,6 +99,7 @@ def main() -> None:
         return
 
     stamped = 0
+    failed_batches = 0
     batch: list[UpdateOne] = []
     for doc in coll.find(_FILTER, projection={"_id": 1}):
         user_id = doc["_id"]
@@ -101,17 +112,21 @@ def main() -> None:
             )
         )
         if len(batch) >= _BATCH_SIZE:
-            stamped += coll.bulk_write(batch).modified_count
+            stamped, failed_batches = _flush(coll, batch, stamped, failed_batches)
             batch = []
     if batch:
-        stamped += coll.bulk_write(batch).modified_count
+        stamped, failed_batches = _flush(coll, batch, stamped, failed_batches)
 
     print(f"Stamped storage_prefix on {stamped} users.")
+    if failed_batches:
+        print(f"{failed_batches} batch(es) failed transiently; rerun to finish.")
 
     remaining = coll.count_documents(_FILTER)
     print(f"Remaining un-stamped (expect 0): {remaining}")
 
     client.close()
+    if failed_batches:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
