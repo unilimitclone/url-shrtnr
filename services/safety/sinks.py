@@ -35,12 +35,9 @@ class NullSafetySink:
 class InlineSafetySink:
     """Runs the analyzer in-process.
 
-    ``background=True`` (the app's no-worker rung) detaches the analysis
-    onto its own task so a report POST never waits on Mongo scans, regex
-    passes and Discord webhooks — a multi-host report would otherwise
-    time out at the gateway after storage already succeeded. The worker's
-    own sweeps keep the default synchronous form, which is what bounds a
-    feed delta to one analysis at a time."""
+    ``background=True`` (the app's no-worker rung) detaches analysis onto
+    its own task so a report POST never waits on scans and webhooks; the
+    worker's sweeps keep the synchronous form."""
 
     def __init__(self, analyzer: SafetyAnalyzer, *, background: bool = False) -> None:
         self._analyzer = analyzer

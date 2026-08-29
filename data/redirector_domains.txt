@@ -1,7 +1,5 @@
-# Platform share wrappers: redirectors users carry involuntarily (a platform
-# stamps them onto shared links), so the create gate deliberately allows
-# them. Links to these get their redirect chain resolved after create and
-# the TERMINAL destination judged instead. Never a refuse list.
+# Platform share wrappers users carry involuntarily. Never a refuse list:
+# creates are allowed and the chain's terminal destination is judged instead.
 t.co
 lnkd.in
 buff.ly

@@ -88,13 +88,23 @@ class LlmTaskRunner:
     def _agent(self, task: LlmTask) -> Agent:
         agent = self._agents.get(task.name)
         if agent is None:
+            model_settings: dict = {"timeout": self._settings.request_timeout_seconds}
+            if self._settings.model.startswith("anthropic:"):
+                # Every tool round resends the whole conversation; the moving
+                # breakpoint cuts loop input cost ~3-4x. Other providers
+                # ignore anthropic_* keys.
+                model_settings.update(
+                    anthropic_cache=True,
+                    anthropic_cache_instructions=True,
+                    anthropic_cache_tool_definitions=True,
+                )
             agent = Agent(
                 self._build_model(),
                 instructions=task.system_prompt,
                 output_type=task.output_type,
                 tools=list(task.tools),
                 name=task.name,
-                model_settings={"timeout": self._settings.request_timeout_seconds},
+                model_settings=model_settings,
             )
             self._agents[task.name] = agent
         return agent

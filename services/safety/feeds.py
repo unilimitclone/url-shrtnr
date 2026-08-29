@@ -55,11 +55,8 @@ _SHORTENER_SEED_PATH = os.path.join(
     "shortener_domains.txt",
 )
 
-# The RESOLVE class: platform share wrappers users carry involuntarily
-# (t.co, lnkd.in) — never refused, never a judgment source; membership
-# only marks a created link for terminal-URL resolution, so the chain's
-# ENDPOINT gets judged instead of the wrapper. The deep tier's
-# redirector_service verdicts propose additions here.
+# The RESOLVE class: never refused, never a judgment source — membership only
+# marks a created link for terminal-URL resolution of the chain's endpoint.
 REDIRECTOR_FEED = "redirectors"
 _REDIRECTOR_SEED_PATH = os.path.join(
     os.path.dirname(_SHORTENER_SEED_PATH),
@@ -141,8 +138,7 @@ FEED_REGISTRY: tuple[FeedSpec, ...] = (
         reason_label="the operator blocklist",
         gate=True,
         analyzer=True,
-        # Operator-curated entries; on by default but switchable — every
-        # change to published create behavior needs an env rollback path.
+        # On by default but switchable: published create behavior needs a rollback.
         enabled=lambda s: s.manual_feed_enabled,
     ),
     FeedSpec(
@@ -152,10 +148,7 @@ FEED_REGISTRY: tuple[FeedSpec, ...] = (
         # Gate-only: existing links to shorteners are the deep tier's
         # chain-resolution problem, never a mass-block.
         analyzer=False,
-        # Off by default: refusing shortener destinations changes the
-        # published behavior of the public anonymous API, so it rolls out
-        # (and back) by env flag like everything else instead of being
-        # live the moment the code merges.
+        # Off by default: changes published API behavior, rolls out by env flag.
         enabled=lambda s: s.shorteners_enabled,
         public_message="Links to other URL shorteners are not allowed",
         seed=load_shortener_seed,
@@ -163,9 +156,6 @@ FEED_REGISTRY: tuple[FeedSpec, ...] = (
     FeedSpec(
         name=REDIRECTOR_FEED,
         reason_label="a platform share wrapper (resolved, never refused)",
-        # Neither a gate nor an analyzer source: no provider is ever built
-        # from it; the create path reads membership to mark links for
-        # terminal-URL resolution.
         gate=False,
         analyzer=False,
         enabled=lambda s: s.enabled,

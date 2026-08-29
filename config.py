@@ -474,9 +474,7 @@ class LlmSettings(BaseSettings):
     # Hard ceilings applied to every task unless the task declares tighter
     # ones. Requests = model round-trips in one task run (tool loop
     # included); tokens = total across the run.
-    # Measured on the 167-row eval: dead destinations and redirect chains
-    # legitimately use 8-10 rounds before concluding; 8 cut off 10 of 167
-    # real investigations mid-flight.
+    # Measured: 8 cut off 10 of 167 eval investigations mid-flight.
     max_requests_per_run: int = Field(default=12, ge=1)
     # Measured: a clean investigation uses 4-5 tool calls; one whose
     # destination is dead legitimately explores more (root, variants,
@@ -524,8 +522,7 @@ class SafetySettings(BaseSettings):
     # Thresholds fire once per window on exact equality; production values
     # are PRIVATE tuning set via env, calibrated by replaying past
     # campaigns — the defaults here are deliberately conservative.
-    # Published-policy gates: each one changes what the public create API
-    # refuses, so each has its own rollout/rollback switch.
+    # Each changes what the public create API refuses, so each has its own switch.
     manual_feed_enabled: bool = True
     shorteners_enabled: bool = False
 
@@ -552,10 +549,8 @@ class SafetySettings(BaseSettings):
     deep_maxlen: int = Field(default=5_000, ge=100)
     deep_batch_size: int = Field(default=4, ge=1)
     deep_block_ms: int = Field(default=5000, ge=100)
-    # Must exceed the LLM run timeout (LLM_RUN_TIMEOUT_SECONDS, 300s) with
-    # real headroom: at parity the claimer re-claims an investigation at
-    # the exact moment its slowest, most expensive runs are finishing —
-    # duplicate model spend and duplicate outbound calls.
+    # Must exceed LLM_RUN_TIMEOUT_SECONDS (300s) with headroom, or the claimer
+    # re-claims runs that are still finishing — duplicate model spend.
     deep_claim_idle_ms: int = Field(default=900_000, ge=1000)
     deep_max_deliveries: int = Field(default=3, ge=1)
     deep_report_daily_budget: int = Field(default=200, ge=1)

@@ -229,8 +229,7 @@ class TestToxicVerdictProvider:
 
 
 class TestToxicVerdictScope:
-    """The gate honours the verdict's scope: a narrow judgment on a shared
-    platform refuses only what it actually covers."""
+    """The gate honours the verdict's scope: narrow judgments refuse narrowly."""
 
     def _repo(self, **fields) -> AsyncMock:
         from datetime import datetime, timezone

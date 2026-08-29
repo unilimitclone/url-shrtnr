@@ -90,10 +90,8 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
     done = 0
     failed = 0
     last_id = None
-    # Cursor pagination: the filter has no usable index, so restarting the
-    # scan each batch would be O(N^2) over a 20M-doc collection. Riding _id
-    # makes it one pass, and it also carries the scan past any doc whose
-    # update fails (see below) instead of dying on it forever.
+    # Ride _id: the filter has no usable index, and this also carries the scan
+    # past any doc whose update fails instead of dying on it forever.
     while True:
         query = dict(_FILTER)
         if last_id is not None:
@@ -112,9 +110,8 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
         try:
             coll.bulk_write(ops, ordered=False)
         except BulkWriteError as exc:
-            # Known failure class: v1 docs at the 16MB ceiling (unbounded ip
-            # arrays) reject any $set. One oversized doc costs one skipped
-            # row, never the migration.
+            # v1 docs at the 16MB ceiling reject any $set: one skipped row,
+            # never the migration.
             errors = exc.details.get("writeErrors", [])
             failed += len(errors)
             for err in errors[:10]:

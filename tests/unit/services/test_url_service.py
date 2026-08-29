@@ -1127,8 +1127,7 @@ class TestUrlServiceUpdate:
 
     @pytest.mark.asyncio
     async def test_update_unparseable_long_url_unsets_dest(self, monkeypatch):
-        """A new long_url that parses to no destination must remove dest, not
-        write null; create-path parity (the field is omitted there)."""
+        """An unparseable new long_url removes dest, never writes null."""
         url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
         svc = make_service(
             url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
@@ -2358,9 +2357,7 @@ class TestUrlServiceGeoRules:
             },
         )
         await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
-        # Every geo destination runs the FULL gate: one fetch for the
-        # long_url check plus one per destination (the gate's provider
-        # caches with a TTL in production; ttl=0 in this helper).
+        # One pattern fetch for long_url plus one per geo destination (ttl=0 here).
         assert blocked_url_repo.get_patterns.await_count == 4
 
     @pytest.mark.asyncio

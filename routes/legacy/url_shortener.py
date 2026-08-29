@@ -124,8 +124,7 @@ async def shorten_url(
                 },
                 status_code=400,
             )
-        # Published policies (the shortener refusal) get their descriptive
-        # message; security blocks keep the coarse default. Frozen key name.
+        # Published policies get their message; security stays coarse. Frozen key.
         return JSONResponse(
             {"BlockedUrlError": rejection.public_message}, status_code=403
         )

@@ -438,9 +438,8 @@ async def _build_runtime(
         worker_safety_sink = InlineSafetySink(safety_analyzer)
         log.info("safety_worker_registered", stream=sf.stream)
 
-        # Hot-link screening: the hotness detector's abuse consumer. Only
-        # when this process also runs the hotness group — the actions list
-        # is shared by reference with the already-built detector.
+        # Only when this process also runs the hotness group — the actions
+        # list is shared by reference with the already-built detector.
         if "hotness" in groups and runtime.consumers.get("hotness") is not None:
             actions.append(
                 HotLinkScreen(

@@ -74,12 +74,9 @@ class AdmissionPolicy:
     async def decide(
         self, event: SafetyAnalyzeEvent, *, escalation: bool = False
     ) -> AdmissionDecision:
-        """*escalation* marks a toxic screening finding asking for the
-        host-wide decision (vs. an unresolved screening ending). Sweep
-        novelty stays excluded, but a sweep that actually HIT something
-        toxic competes for the budget: the deep tier is the only thing
-        allowed to widen that hit to a host block, so refusing it outright
-        would leave feed-listed hosts permanently half-enforced."""
+        """*escalation* marks a toxic screening hit asking for the host-wide
+        decision; a sweep escalating a real hit competes for the budget
+        instead of being excluded."""
         trigger = event.trigger
         if trigger in _ALWAYS_ADMITTED:
             return AdmissionDecision(True, "always")

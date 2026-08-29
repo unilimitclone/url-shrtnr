@@ -208,8 +208,7 @@ class TestBlockAliases:
 class TestBlockMatching:
     @pytest.mark.asyncio
     async def test_blocks_only_matching_urls_across_all_collections(self):
-        """Scoped enforcement: the matcher decides per long URL; the rest
-        of the host keeps serving in every collection."""
+        """The matcher decides per long URL; the rest of the host keeps serving."""
         events = AsyncMock()
         enforcer, url_repo, _url_cache, legacy_repo, emoji_repo = _build(
             [], [], 0, events=events
@@ -242,7 +241,6 @@ class TestBlockMatching:
         pairs = url_repo.block_active_by_aliases.await_args.args[0]
         assert pairs == [("evil1", "spoo.me"), ("evil2", "cust.om")]
         assert legacy_repo.block_by_ids.await_args.args[0] == ["old1"]
-        # Host-wide flips never touched.
         url_repo.block_active_by_dest_host.assert_not_awaited()
         legacy_repo.block_by_dest_host.assert_not_awaited()
         emoji_repo.block_by_dest_host.assert_not_awaited()

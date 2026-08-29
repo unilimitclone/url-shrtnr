@@ -7,10 +7,7 @@ counter crossing its threshold pushes the destination into the same
 analyzer the reports feed (`trigger="pattern"`).
 
 There is deliberately NO per-IP counter: the rate limiter already bounds
-per-IP volume, real campaigns concentrate on destination domains (the
-92-day replay confirmed it), and an IP is a terrible creator identity
-(CGNAT/VPNs) with no reviewable object behind it — a creator-level
-signal belongs to an account ban ladder, not to IP counters.
+per-IP volume and an IP is a terrible creator identity (CGNAT/VPNs).
 
 Counters live on the QUEUE Redis (noeviction): the cache Redis runs
 allkeys-lru and would silently evict them. No queue Redis means scoring
@@ -73,9 +70,7 @@ class CreationPatternScorer:
             )
             return
         for window, count in counts.items():
-            # At-or-past threshold plus a SET NX fired marker: each window
-            # fires exactly once; a sustained campaign re-fires each new
-            # window.
+            # Each window fires once; a sustained campaign re-fires each new window.
             if count < self._thresholds[window]:
                 continue
             if not await self._mark_fired(window, registrable_domain):
@@ -83,10 +78,8 @@ class CreationPatternScorer:
             await self._on_domain_burst(url, host, registrable_domain, window, count)
 
     async def _mark_fired(self, window: int, registrable_domain: str) -> bool:
-        """SET NX on a fired marker — fire-once that survives redis-py
-        retries. Exact-equality could not: a retried pipeline re-applies
-        the INCRs server-side, the counter jumps past the threshold in one
-        logical create, and the window never fires."""
+        """SET NX fire-once that survives redis-py retries: a retried pipeline
+        re-applies the INCRs, jumping the counter past exact equality."""
         bucket = int(time.time()) // window
         key = f"l1:fired:dom:{window}:{registrable_domain}:{bucket}"
         try:

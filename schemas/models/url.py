@@ -208,8 +208,7 @@ class UrlV2Doc(MongoBaseModel):
     # deliberately write no host-wide verdict.
     blocked_at: datetime | None = None
     blocked_reason: str | None = None
-    # Stamped on reversal; blocked_at/blocked_reason stay, so the doc
-    # remembers both the block and the unblock.
+    # Stamped on reversal; blocked_at/blocked_reason stay.
     unblocked_at: datetime | None = None
     private_stats: bool | None = True  # None for anonymous/unowned URLs
     meta_tags: LinkMetaTags | None = None

@@ -133,9 +133,7 @@ class TestAuthorityMapper:
 
 
 def _event(trigger="report", screening=True, **ctx) -> SafetyAnalyzeEvent:
-    """Default carries a screening finding: corroboration is computed from
-    code-observed facts (the analyzer's escalation context or a live
-    feed_lookup hit), never from the trigger or the model's prose."""
+    """Default carries a screening finding so corroboration can be computed."""
     context = {"reasons": ["phishing"], "reported_codes": ["spoo.me/abc"], **ctx}
     if screening:
         context["screening"] = "blocked_pattern: destination matches a pattern"
@@ -217,9 +215,7 @@ class TestInvestigatorFlow:
 
     @pytest.mark.asyncio
     async def test_burst_scam_self_corroborated_by_feed_hit_blocks(self):
-        """A feed hit feed_lookup ACTUALLY returned (the out-of-band
-        contextvar) is an independent hard source even without a
-        screening finding."""
+        """A feed hit feed_lookup actually returned corroborates on its own."""
         from services.safety import tools as safety_tools
 
         async def run_and_set_flag(_task, _bundle):
@@ -233,9 +229,7 @@ class TestInvestigatorFlow:
 
     @pytest.mark.asyncio
     async def test_model_prose_never_corroborates(self):
-        """A model quoting hard-source names in its evidence (or a page
-        teaching it to) must not corroborate anything: only the observed
-        lookup or the screening context counts."""
+        """A model quoting hard-source names must not corroborate anything."""
         inv, _, enforcer, notifier = _investigator(
             _verdict(
                 Classification.SCAM_HOST,
@@ -248,8 +242,7 @@ class TestInvestigatorFlow:
 
     @pytest.mark.asyncio
     async def test_low_confidence_toxic_never_auto_blocks(self):
-        """Corroboration is necessary, not sufficient: under the default
-        policy the model must also stake the block with high confidence."""
+        """Corroboration is necessary, not sufficient: high confidence too."""
         inv, verdict_repo, enforcer, _ = _investigator(
             _verdict(Classification.SCAM_HOST, conf=Confidence.LOW)
         )
@@ -341,9 +334,7 @@ class TestScopeAuthority:
 
     @pytest.mark.asyncio
     async def test_review_pending_toxic_claim_is_stored_unenforceable(self):
-        """An unapproved toxic claim must not enforce itself through the
-        store: re-enforcement and the create gate act on tier TOXIC, so a
-        review-pending claim is stored UNCERTAIN until a human upgrades."""
+        """A review-pending toxic claim is stored UNCERTAIN, unenforceable."""
         v = _verdict(Classification.SCAM_HOST, conf=Confidence.MEDIUM)
         inv, verdict_repo, enforcer, _n = _investigator(v, policy=AutoBlockPolicy.BOTH)
         await inv.investigate(_event())
@@ -355,8 +346,7 @@ class TestScopeAuthority:
 
     @pytest.mark.asyncio
     async def test_alias_scoped_enactment_never_stores_a_host_scope(self):
-        """compromised_legit keeps the model's default HOST scope claim but
-        is enacted at alias scope — the store must say what was enacted."""
+        """The store says what was enacted (alias scope), not what was claimed."""
         v = _verdict(Classification.COMPROMISED_LEGIT)
         inv, verdict_repo, _e, _n = _investigator(v)
         await inv.investigate(_event())

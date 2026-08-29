@@ -176,10 +176,7 @@ def _may_auto_block(high: bool, corroborated: bool, policy: AutoBlockPolicy) -> 
     if policy == AutoBlockPolicy.OFF:
         return False
     if policy == AutoBlockPolicy.CORROBORATED:
-        # Corroboration is necessary, not sufficient: the model must also
-        # stake the block (the prompt defines high exactly that way) —
-        # otherwise confidence is dead code and a hedged low-confidence
-        # toxic call would enforce anyway.
+        # Necessary, not sufficient: a hedged toxic call must not enforce.
         return corroborated and high
     if policy == AutoBlockPolicy.CONFIDENT:
         return high
@@ -287,11 +284,8 @@ class DeepInvestigator:
         decision = decide_authority(
             verdict, corroborated=corroborated, policy=self._policy
         )
-        # The stored tier and scope drive enforcement (re-enforcement and
-        # the create gate read them), so they record what was ENACTED, not
-        # what was claimed: a toxic claim waiting on review must not
-        # enforce itself through the store, and a claim enacted at alias
-        # scope must never be readable as a host-wide verdict.
+        # Store what was ENACTED, not claimed: re-enforcement and the create
+        # gate read these, and an unapproved claim must not enforce itself.
         stored_tier = decision.tier
         if decision.tier is VerdictTier.TOXIC and not decision.auto:
             stored_tier = VerdictTier.UNCERTAIN
@@ -335,15 +329,9 @@ class DeepInvestigator:
         await self._enact(event, verdict, decision)
 
     def _corroborated(self, event: SafetyAnalyzeEvent) -> bool:
-        """An INDEPENDENT hard signal agreed with a toxic call — computed
-        only from facts CODE observed, never from the model's prose (a
-        model recording "no hard hits" or a page quoting web_risk must not
-        corroborate anything) and never from the trigger alone (anonymous
-        reports queue investigations; the report that caused a run cannot
-        also be its corroboration). Two sources qualify: the screening
-        finding the analyzer itself attached to the escalation, and a
-        feed/Web Risk hit the feed_lookup tool actually returned during
-        this run (the out-of-band contextvar in tools.py)."""
+        """An INDEPENDENT hard signal agreed with a toxic call — computed only
+        from facts code observed (the screening context or the feed_lookup
+        contextvar), never from the model's prose or the trigger alone."""
         screening = ((event.context or {}).get("screening") or "").lower()
         if any(src in screening for src in ("feed", "web_risk", "blocked_pattern")):
             return True
@@ -367,10 +355,7 @@ class DeepInvestigator:
             )
         elif decision.action == "block_aliases":
             if verdict.scope == Scope.PATH_PATTERN and verdict.path_pattern:
-                # Pattern scope kills every matching link (all three
-                # collections), not just the reported ones; the pattern
-                # itself still waits for a human before it can refuse
-                # future creates via the blocklist.
+                # The pattern still waits for a human before it can refuse creates.
                 pattern = verdict.path_pattern
                 result = await self._enforcer.block_matching(
                     event.host,

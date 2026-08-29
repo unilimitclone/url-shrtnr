@@ -32,12 +32,8 @@ log = get_logger(__name__)
 class ProviderVerdict:
     tier: VerdictTier
     reason: str
-    # How far the SIGNAL itself reaches — "host" (a domain feed lists the
-    # whole host), "links" (a URL lookup judged one exact URL), or
-    # "path_pattern" (a blocklist regex, carried in ``path_pattern``).
-    # Scope describes the evidence; the analyzer decides what authority
-    # it carries — screening never turns any of these into a host-wide
-    # block on its own.
+    # "host", "links" (one exact URL) or "path_pattern" (regex in
+    # ``path_pattern``): how far the evidence reaches, not what it enforces.
     scope: str = "host"
     path_pattern: str | None = None
 
@@ -92,8 +88,7 @@ class WebRiskProvider:
     (100k/month free tier covers report-triggered volume by orders of
     magnitude); the local hash-DB variant is a later create-gate concern.
 
-    Network or quota failures abstain. The API key rides the
-    ``X-Goog-Api-Key`` header so it never appears in logged URLs.
+    Network or quota failures abstain.
     """
 
     name = "web_risk"
@@ -115,9 +110,7 @@ class WebRiskProvider:
         self, url: str, host: str, registrable_domain: str
     ) -> ProviderVerdict | None:
         try:
-            # Key rides a header, never the query string: httpx logs full
-            # request URLs, so a ?key= param would land in stdout and the
-            # log sink on every lookup.
+            # Key rides a header: httpx logs full request URLs at INFO.
             response = await self._http.get(
                 f"{self._api_base}/v1/uris:search",
                 params={
@@ -152,8 +145,7 @@ class WebRiskProvider:
 
 
 def verdict_covers(verdict, url: str) -> bool:
-    """Does this verdict's scope cover *url*? Shared by the create gate
-    and the redirect screener — one scope semantics, two readers."""
+    """Does this verdict's scope cover *url*?"""
     scope = verdict.scope or "host"
     if scope == "host":
         return True
@@ -171,10 +163,8 @@ class ToxicVerdictProvider:
     click-time enforcement AND the create gate, with no copying into
     other lists. One indexed point read per create.
 
-    The verdict's SCOPE bounds the refusal: a host-scoped verdict refuses
-    everything on the host, a pattern-scoped one refuses only matching
-    URLs, and a links-scoped one only the exact judged URL — a toxic page
-    on a shared platform never turns the whole platform away."""
+    The verdict's scope bounds the refusal — a toxic page on a shared
+    platform never turns the whole platform away."""
 
     name = "toxic_verdict"
 

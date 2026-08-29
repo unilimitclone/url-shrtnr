@@ -9,12 +9,6 @@ subscriber). v1/emoji links have no status machine — they carry a single
 audit stamp the v2 docs get, and reversible where the manual deletes this
 replaces never were.
 
-Three blast radii, one machine: ``block_host`` is the host-wide verdict
-path; ``block_matching`` blocks every link whose long URL a matcher
-accepts (pattern-scoped enforcement on shared platforms); ``block_aliases``
-blocks named links — a compromised legitimate site keeps serving while
-its abusive paths die.
-
 Idempotent by construction: re-enforcing an already-blocked host matches
 nothing and is free, which is what lets repeat reports re-run enforcement
 instead of reasoning about state.
@@ -77,12 +71,8 @@ class SafetyEnforcer:
         self._system_domain = system_default_domain
 
     async def block_host(self, host: str, *, reason: str) -> EnforcementResult:
-        # 1. Collect BEFORE the flip. The eviction sets are status-blind
-        #    on purpose: a re-delivered block (the consumer's normal retry
-        #    path) must still evict entries the first attempt flipped but
-        #    failed to evict, or cached ACTIVE responses keep serving for
-        #    the full cache TTL. Only the owned-docs event set filters on
-        #    ACTIVE (an already-blocked link owes no second event).
+        # 1. Collect BEFORE the flip, status-blind: a re-delivered block must
+        #    still evict entries the first attempt flipped but failed to evict.
         triples = await self._url_repo.list_by_dest_host_with_urls(host)
         pairs = [(alias, domain) for alias, domain, _ in triples]
         owned = await self._url_repo.list_active_owned_by_dest_host(host)
@@ -127,11 +117,9 @@ class SafetyEnforcer:
     async def block_matching(
         self, host: str, *, matcher, reason: str
     ) -> EnforcementResult:
-        """Scoped enforcement: block every link to *host* whose long URL
-        satisfies *matcher* (a ``str -> bool`` callable), across all three
-        collections, and leave the rest of the host serving. The narrow
-        sibling of ``block_host`` — same collect → flip → evict → notify
-        order, same idempotence, host verdict deliberately NOT implied."""
+        """Block every link to *host* whose long URL satisfies *matcher*,
+        across all three collections; a host verdict is deliberately NOT
+        implied."""
         triples = await self._url_repo.list_by_dest_host_with_urls(host)
         pairs = [(alias, domain) for alias, domain, url in triples if matcher(url)]
         legacy_hits = [
@@ -179,12 +167,9 @@ class SafetyEnforcer:
         )
 
     async def unblock_host(self, host: str) -> EnforcementResult:
-        """Reverse a wrong host-wide block across all three collections:
-        flip back everything carrying the safety stamp, then evict so
-        cached 451s stop serving. Flip-then-evict (the reverse of the
-        block's order) so a rebuilt cache entry always sees the restored
-        state. Manual per-link operator bans (no ``blocked_reason``) are
-        never touched."""
+        """Reverse a wrong host-wide block: flip everything carrying the
+        safety stamp, then evict so a rebuilt entry sees the restored state.
+        Manual operator bans (no ``blocked_reason``) are never touched."""
         unblocked = await self._url_repo.unblock_by_dest_host(host)
         legacy_ids = [c for c, _ in await self._legacy_repo.list_by_dest_host(host)]
         emoji_ids = [a for a, _ in await self._emoji_repo.list_by_dest_host(host)]

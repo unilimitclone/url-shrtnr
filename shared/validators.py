@@ -35,10 +35,8 @@ def validate_url(
             URL marks it as self-referential. Defaults to ``("spoo.me",)``
             to prevent redirect loops.
     """
-    # Scheme allowlist defends against ftp/file/data/etc even if the
-    # validators package widens its accepted schemes upstream. urlparse
-    # raises on malformed bracket hosts ("https://x]:80/") — invalid, not
-    # a 500.
+    # Scheme allowlist defends against the validators package widening upstream;
+    # urlparse raises on malformed bracket hosts ("https://x]:80/") — not a 500.
     try:
         scheme = urlparse(url).scheme
     except ValueError:
@@ -201,11 +199,8 @@ def validate_blocked_url(
 def matching_blocked_pattern(
     url: str, patterns: Sequence[str], timeout: float = 0.2
 ) -> str | None:
-    """Return the first blocked pattern that matches *url*, or None.
-
-    Same matching semantics as ``validate_blocked_url`` but keeps WHICH
-    pattern hit — safety enforcement scopes its action to that pattern.
-    """
+    """Return the first blocked pattern that matches *url*, or None; safety
+    enforcement scopes its action to that pattern."""
     for pattern in patterns:
         try:
             if regex.search(pattern, url, timeout=timeout):

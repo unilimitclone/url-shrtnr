@@ -301,9 +301,7 @@ def test_shorten_url_blocked_url_returns_403():
 
 
 def test_shorten_url_published_policy_message_reaches_the_wire():
-    """A shortener refusal is a PUBLISHED policy: its descriptive message
-    must survive the legacy route instead of collapsing into the opaque
-    malice flag (frozen key names stay)."""
+    """The published shortener-refusal message survives the legacy route."""
     from services.safety.feeds import SHORTENER_FEED
     from services.safety.policy import UrlPolicyService
     from services.safety.providers import FeedDomainProvider

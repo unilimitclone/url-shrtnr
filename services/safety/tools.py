@@ -56,11 +56,8 @@ from shared.url_utils import registrable_domain
 
 log = get_logger(__name__)
 
-# Set by feed_lookup when a hard external source ACTUALLY returned a hit;
-# the investigator reads it to compute corroboration out-of-band. Never
-# derived from the model's prose — a page quoting "web_risk" or a model
-# recording a negative check must not count as corroboration. ContextVar:
-# task-local, so concurrent investigations cannot cross-contaminate.
+# Set by feed_lookup only when a hard source ACTUALLY hit, never derived from
+# the model's prose; task-local so concurrent runs cannot cross-contaminate.
 _hard_hit = contextvars.ContextVar("safety_hard_hit", default=False)
 
 
@@ -97,11 +94,8 @@ async def resolve_chain_impl(url: str) -> str:
                     if parsed.scheme not in ("http", "https") or not parsed.hostname:
                         lines.append(f"hop {hop}: {current} — unsupported URL, stop")
                         break
-                    # safe_fetch's resolver is the one SSRF guard (NAT64,
-                    # multicast and rebinding rules live there); the
-                    # connection is then PINNED to the vetted IP — Host
-                    # header and SNI carry the name — so DNS cannot
-                    # rebind between the check and the connect.
+                    # safe_fetch is the one SSRF guard; the connection is
+                    # pinned to the vetted IP so DNS cannot rebind after it.
                     try:
                         hop_ip = await resolve_public_ip(parsed.hostname)
                     except (FetchHardError, FetchTransientError):
@@ -160,9 +154,8 @@ async def resolve_chain_impl(url: str) -> str:
 
 
 def _one_line(value: str, cap: int) -> str:
-    """Collapse all whitespace (including entity-decoded newlines) and cap
-    the TOTAL length — attacker-authored page fields must never be able to
-    fabricate line structure inside the evidence."""
+    """Collapse all whitespace and cap the TOTAL length — attacker-authored
+    fields must not fabricate line structure inside the evidence."""
     return " ".join(str(value).split())[:cap]
 
 
@@ -231,10 +224,7 @@ class _EvidenceHTMLParser(HTMLParser):
         if self._skip_depth:
             return
         if self._in_title:
-            # TOTAL cap and newline collapse: convert_charrefs turns
-            # &#10; into real newlines, and an uncapped accumulating
-            # title is exactly where a hostile page would forge a fake
-            # tool-result block.
+            # convert_charrefs turns &#10; into real newlines; cap and collapse.
             self.title = _one_line(f"{self.title} {data}", 200)
             return
         text = " ".join(data.split())
@@ -278,17 +268,12 @@ async def domain_intel_impl(host: str) -> str:
     """RDAP age + registrar, TLS issuer + cert age, MX presence. All
     best-effort and independently timeboxed — partial results are fine.
 
-    *host* is a raw model-supplied argument: every network touch goes
-    through the safe_fetch guard (resolve, refuse non-public, pin the
-    vetted IP), and failures collapse to one flat "unavailable" — error
-    flavors would make this an internal port oracle reported back into
-    the model's context."""
+    Failures collapse to one flat "unavailable": error flavors would be an
+    internal port oracle reported back into the model's context."""
     apex = registrable_domain(host) or host
     lines: list[str] = [f"domain: {apex}"]
 
-    # RDAP via the bootstrap aggregator; rdap.org answers with a redirect
-    # to the registry's server, and fetch_public re-validates and pins
-    # every hop.
+    # rdap.org redirects to the registry; fetch_public re-pins every hop.
     try:
         body = await fetch_public(
             f"https://rdap.org/domain/{apex}",
@@ -314,8 +299,7 @@ async def domain_intel_impl(host: str) -> str:
     except Exception:
         lines.append("rdap: unavailable")
 
-    # TLS certificate (issuer + notBefore): handshake against the vetted
-    # IP only, name carried via SNI.
+    # TLS handshake against the vetted IP only; SNI carries the name.
     def _tls(ip: str) -> str:
         ctx = ssl.create_default_context()
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -357,16 +341,12 @@ class InvestigationToolDeps:
     feed_repo: FeedDomainRepository
     web_risk: WebRiskProvider | None = None
     url_repo: UrlRepository | None = None
-    # Our own serving domains: fetch_page refuses them, so a hostile page
-    # cannot steer the loop into resolving spoo's own short links (burning
-    # clicks) or probing the app through its public name.
+    # fetch_page refuses these: a hostile page must not steer the loop into spoo.
     own_domains: tuple[str, ...] = ()
 
 
 def _wrap_untrusted(fn: Callable) -> Callable:
-    """Fence every tool result in per-call nonce markers. Page content
-    cannot forge a marker it cannot predict, so a fake "tool result"
-    embedded in a title is visibly page text, not tool output."""
+    """Fence every tool result in per-call nonce markers a page cannot forge."""
 
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
@@ -464,8 +444,7 @@ def build_investigation_tools(deps: InvestigationToolDeps) -> list[Callable]:
             except Exception as exc:
                 log.warning("web_risk_lookup_failed", error=str(exc))
         if hits:
-            # The out-of-band corroboration flag: authority decisions read
-            # THIS, never the model's restatement of it.
+            # Authority decisions read THIS flag, never the model's restatement.
             _hard_hit.set(True)
             return f"HARD HITS on {host}: {', '.join(hits)}"
         return f"no feed or Web Risk hits on {host}"
@@ -492,6 +471,12 @@ def build_investigation_tools(deps: InvestigationToolDeps) -> list[Callable]:
         if b["sample_urls"]:
             lines.append("sample of the URLs used:")
             lines.extend(f"  - {u}" for u in b["sample_urls"])
+        if b.get("sample_aliases"):
+            # Personal-name aliases on throwaway pages: the identity-abuse signature.
+            lines.append(
+                "sample of the ALIASES chosen by creators: "
+                + ", ".join(b["sample_aliases"])
+            )
         return "\n".join(lines)
 
     return [

@@ -79,10 +79,7 @@ class TestThresholds:
 
     @pytest.mark.asyncio
     async def test_fires_once_per_window(self):
-        """SET NX fired marker: over the threshold with the marker already
-        taken means the window already fired — no event storm from a
-        sustained campaign, and a redis-py retry that double-applies the
-        INCRs (counter jumps past the threshold) cannot disarm it."""
+        """Marker already taken means the window already fired: no event storm."""
         sink = AsyncMock()
         redis, _ = _redis([4, 5])  # burst already past threshold
         redis.set = AsyncMock(return_value=None)  # NX lost: already fired
@@ -93,9 +90,7 @@ class TestThresholds:
 
     @pytest.mark.asyncio
     async def test_counter_jump_past_threshold_still_fires(self):
-        """The retry pathology: increments applied twice, the counter
-        lands beyond the threshold without ever equalling it. The marker
-        makes the crossing fire anyway."""
+        """Double-applied INCRs skip exact equality; the marker still fires."""
         sink = AsyncMock()
         redis, _ = _redis([5, 1])  # jumped from 3 straight to 5
         await _scorer(redis, sink=sink).record_create(

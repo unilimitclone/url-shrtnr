@@ -52,8 +52,7 @@ def _build(providers, existing=None):
 class TestAnalyze:
     @pytest.mark.asyncio
     async def test_toxic_provider_blocks_narrowly_and_notifies(self):
-        """A fresh toxic screening hit never host-blocks: it kills only
-        the judged URL's links and stores a links-scoped verdict."""
+        """A fresh toxic screening hit never host-blocks: links scope only."""
         provider = _Provider(
             ProviderVerdict(tier=VerdictTier.TOXIC, reason="blocklist hit"),
             name="blocked_domain",
@@ -331,8 +330,7 @@ class TestDeepAdmission:
 
     @pytest.mark.asyncio
     async def test_toxic_escalates_the_host_decision_to_investigation(self):
-        """A screening hit blocks narrowly and hands the host-wide question
-        to the deep tier, carrying the finding as corroborating context."""
+        """A screening hit blocks narrowly and escalates the host question."""
         from services.safety.admission import AdmissionDecision
 
         provider = _Provider(
@@ -385,8 +383,7 @@ class TestDeepAdmission:
 
 
 class TestScopedReenforcement:
-    """Stored verdicts re-enforce within their scope, never wider — the
-    deep tier's narrow call on a shared platform survives later events."""
+    """Stored verdicts re-enforce within their scope, never wider."""
 
     @pytest.mark.asyncio
     async def test_pattern_scoped_verdict_covers_a_matching_url(self):
@@ -448,9 +445,7 @@ class TestScopedReenforcement:
 class TestTriggerAuthority:
     @pytest.mark.asyncio
     async def test_report_reanalyzes_a_sweep_screened_host(self):
-        """The regression that mattered: a sweep writes an uncertain
-        verdict, then a user report arrives inside the re-verdict TTL —
-        the report MUST re-analyze, not be swallowed by freshness."""
+        """A report inside the re-verdict TTL must re-analyze, not be swallowed."""
         provider = _Provider(None)
         existing = VerdictDoc(
             host="evil.com",
@@ -546,8 +541,7 @@ class TestRedirectScreening:
             name="feed_fishfish",
         )
         verdict_repo = AsyncMock()
-        # First read: terminal host has no verdict (fresh analysis runs);
-        # after the toxic write the wrapper-kill read sees it.
+        # First read: no verdict; the wrapper-kill read then sees the toxic write.
         stored = VerdictDoc(
             host="evil-landing.com",
             tier=VerdictTier.TOXIC,
@@ -572,19 +566,15 @@ class TestRedirectScreening:
         ):
             await analyzer.analyze(self._wrapper_event())
 
-        # The terminal host got the normal toxic treatment...
         assert (
             verdict_repo.upsert_verdict.await_args.kwargs["sample_url"]
             == "https://evil-landing.com/kit"
         )
-        # ...and the wrapped link (whose long_url is the t.co URL that
-        # terminal-host enforcement cannot see) died as well.
         wrapper_call = enforcer.block_matching.await_args_list[-1]
         assert wrapper_call.args[0] == "t.co"
         matcher = wrapper_call.kwargs["matcher"]
         assert matcher("https://t.co/AbCdEf")
         assert not matcher("https://t.co/other")
-        # The wrapper host itself never gets a verdict.
         hosts_written = [c.args[0] for c in verdict_repo.upsert_verdict.await_args_list]
         assert "t.co" not in hosts_written
 
@@ -610,7 +600,6 @@ class TestRedirectScreening:
         enforcer.block_host.assert_not_awaited()
         # Machine-volume trigger: unresolved screening pings nobody.
         notifier.safety_review.assert_not_awaited()
-        # The TERMINAL host got the uncertain record, not the wrapper.
         assert verdict_repo.upsert_verdict.await_args.kwargs["tier"] == (
             VerdictTier.UNCERTAIN
         )

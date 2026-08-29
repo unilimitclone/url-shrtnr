@@ -91,10 +91,8 @@ class EmojiUrlRepository(BaseRepository[EmojiUrlDoc]):
         return int(result.modified_count)
 
     async def unblock(self, alias: str) -> bool:
-        """Reverse a safety block on one emoji link. Only the flag goes;
-        the stamps stay and ``unblocked_at`` records the reversal. The
-        caller owns cache eviction (canonical VS16 key), same contract as
-        the legacy repo."""
+        """Reverse a safety block on one emoji link; stamps stay. The caller
+        owns cache eviction (canonical VS16 key)."""
         result = await self._col.update_one(
             {"_id": alias, "blocked": True},
             {

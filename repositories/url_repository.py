@@ -293,20 +293,15 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         return doc is not None
 
     # ── Safety enforcement surface ────────────────────────────────────────
-    # Equality matches on dest.host, served by the sparse dest_host index
-    # (dest_registrable covers the domain-keyed sweep pivots). Docs that
-    # predate the backfill simply don't match, which is why the backfill
-    # runs before enforcement is enabled.
+    # Equality matches on dest.host (sparse index). Docs predating the backfill
+    # don't match — the backfill runs before enforcement is enabled.
 
     async def list_by_dest_host_with_urls(
         self, host: str, *, limit: int = 50_000
     ) -> list[tuple[str, str, str]]:
         """(alias, domain, long_url) of every link pointing at *host*,
-        regardless of status — the enforcement candidate and
-        cache-invalidation set. Deliberately status-blind: a re-delivered
-        block must still evict the entries its first attempt flipped but
-        failed to evict, or cached ACTIVE responses keep serving for the
-        full cache TTL."""
+        deliberately status-blind: a re-delivered block must still evict
+        entries the first attempt flipped but failed to evict."""
         cursor = self._col.find(
             {"dest.host": host},
             {"alias": 1, "domain": 1, "long_url": 1},
@@ -322,11 +317,9 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         return [(d["alias"], d.get("domain", ""), d.get("long_url", "")) for d in docs]
 
     async def unblock_by_dest_host(self, host: str) -> int:
-        """Reverse a safety block: flip BLOCKED links pointing at *host*
-        back to ACTIVE. Scoped to docs carrying ``blocked_reason`` (the
-        safety stamp) so a manual operator ban is never undone by a
-        verdict reversal. The stamps stay — ``unblocked_at`` records the
-        reversal, and the doc remembers both events."""
+        """Flip BLOCKED links pointing at *host* back to ACTIVE, scoped to
+        docs carrying ``blocked_reason`` so a manual operator ban is never
+        undone. Stamps stay; ``unblocked_at`` records the reversal."""
         now = datetime.now(timezone.utc)
         result = await self._col.update_many(
             {
@@ -382,9 +375,7 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         ]
         docs = await self._aggregate(pipeline)
         if len(docs) >= limit:
-            # Same loud-truncation contract as the recent-screen sweep: a
-            # newly listed domain with more hosts than the cap is partially
-            # swept, and silence would read as full coverage.
+            # Loud truncation: silence would read as full coverage.
             log.warning(
                 "feed_delta_hosts_truncated",
                 registrable_domain=registrable_domain,
@@ -541,6 +532,7 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
                     },
                     "paths": {"$addToSet": "$long_url"},
                     "creators": {"$addToSet": "$owner_id"},
+                    "aliases": {"$addToSet": "$alias"},
                 }
             },
         ]
@@ -552,15 +544,19 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
                 "distinct_urls": 0,
                 "distinct_creators": 0,
                 "sample_urls": [],
+                "sample_aliases": [],
             }
         d = docs[0]
         urls = d.get("paths", []) or []
+        aliases = [a for a in (d.get("aliases", []) or []) if a]
         return {
             "total_links": d.get("total", 0),
             "blocked_links": d.get("blocked", 0),
             "distinct_urls": len(urls),
             "distinct_creators": len(d.get("creators", []) or []),
             "sample_urls": urls[:sample],
+            # Personal-name aliases on throwaway pages: the identity-abuse signature.
+            "sample_aliases": aliases[:sample],
         }
 
     async def block_active_by_dest_host(self, host: str, *, reason: str) -> int:

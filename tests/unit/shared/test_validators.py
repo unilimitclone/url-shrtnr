@@ -46,8 +46,7 @@ def test_validate_url_empty_blocked_list_allows_spoo():
 
 
 def test_validate_url_malformed_bracket_host_is_invalid_not_an_error():
-    # urlparse raises ValueError on "]" in the netloc; a malformed URL in a
-    # request must answer False, never escape as a 500.
+    # urlparse raises on "]" in the netloc; must answer False, never a 500.
     assert validate_url("https://example.com]:80/x") is False
 
 

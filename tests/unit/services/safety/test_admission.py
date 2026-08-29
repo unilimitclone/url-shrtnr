@@ -38,8 +38,7 @@ class TestAlwaysAdmitted:
 
 
 class TestReportBudget:
-    """Reports get their own, larger budget — the only trigger an outsider
-    can pull cannot be unbudgeted, and it never competes with patterns."""
+    """Reports get their own, larger budget and never compete with patterns."""
 
     @pytest.mark.asyncio
     async def test_report_admitted_within_its_own_pool(self):
@@ -59,8 +58,7 @@ class TestReportBudget:
 
     @pytest.mark.asyncio
     async def test_report_budget_fails_closed_when_redis_is_down(self):
-        """We couldn't count, so we don't spend — the denied report still
-        reaches the human review embed downstream."""
+        """We couldn't count, so we don't spend."""
         redis = AsyncMock()
         redis.incr = AsyncMock(side_effect=ConnectionError("down"))
         policy = AdmissionPolicy(redis, daily_budget=1)
@@ -123,8 +121,7 @@ class TestUnknownTrigger:
 
 
 class TestEscalation:
-    """A toxic screening finding asking for the host-wide decision: sweep
-    exclusion is lifted (into the budget), everything else is unchanged."""
+    """Escalation lifts the sweep exclusion into the budget; all else unchanged."""
 
     @pytest.mark.asyncio
     async def test_toxic_sweep_competes_for_the_budget(self):

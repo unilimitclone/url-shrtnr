@@ -5,17 +5,13 @@ process hosts it (worker consumer or inline sink). Semantics:
 
 - A verdict fresher than ``reverdict_ttl`` short-circuits analysis; an
   existing TOXIC verdict re-runs enforcement idempotently instead (new
-  links to an already-judged destination die without re-analysis) —
-  bounded by the verdict's SCOPE, so a pattern-scoped judgment on a
-  shared platform never widens into a host block.
+  links to an already-judged destination die without re-analysis),
+  bounded by the verdict's scope.
 - First non-abstaining provider wins. No provider judging means tier
   UNCERTAIN and a human review embed — BENIGN is never inferred from
   absence of evidence.
-- Screening never ORIGINATES a host-wide block. A fresh toxic signal
-  blocks only the links its evidence actually covers (the matched
-  pattern, or the judged URL), then escalates the host-wide question to
-  the investigation tier — a host block is the most destructive action
-  in the system and requires the deep tier's evidence or a human.
+- Screening never originates a host-wide block: it blocks only the links
+  its evidence covers and escalates the host question to the deep tier.
 - Everything is best-effort: analysis failures log and drop, they never
   propagate into the trigger path (a report must store even when analysis
   is broken).
@@ -50,9 +46,7 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
-# A fresh verdict only short-circuits triggers of equal or lower
-# authority: a sweep screening must never swallow a user report that
-# arrives inside the re-verdict TTL. Unknown triggers rank lowest.
+# A sweep screening must never swallow a user report inside the re-verdict TTL.
 _TRIGGER_AUTHORITY = {
     "sweep": 0,
     "hot": 1,
@@ -62,10 +56,7 @@ _TRIGGER_AUTHORITY = {
     "report": 2,
 }
 
-# Machine-volume triggers whose unresolved endings stay silent: the
-# verdict is the record, and pinging review for every hot viral link or
-# every t.co share would drown the channel. Reports and bursts still ask
-# for human eyes.
+# Unresolved machine-volume triggers stay silent; review pings would drown the channel.
 _SILENT_TRIGGERS = frozenset({"sweep", "hot", "redirect"})
 
 
@@ -99,14 +90,9 @@ class SafetyAnalyzer:
                 event, existing
             ):
                 return
-            # A narrow toxic verdict that does not cover this URL falls
-            # through: the event is evidence about a DIFFERENT path on the
-            # same host and gets the same gates as any other known host.
+            # A narrow verdict not covering this URL falls through for a fresh look.
             if existing.decided_by != "system":
-                # A human's call never goes stale — this is the allowlist:
-                # mark a popular domain benign (or its bad path toxic) once
-                # and recurring events stay silent until a human says
-                # otherwise.
+                # A human's call never goes stale — this is the allowlist.
                 log.info(
                     "safety_analysis_skipped",
                     host=event.host,
@@ -178,10 +164,7 @@ class SafetyAnalyzer:
     async def _handle_toxic(
         self, event: SafetyAnalyzeEvent, verdict: ProviderVerdict, source: str
     ) -> None:
-        """Enforce exactly as far as the signal reaches, never wider. The
-        stored scope is what the create gate and later re-enforcement will
-        honor; the host-wide question goes to the deep tier, whose
-        authority mapper may widen the verdict with real evidence."""
+        """Enforce exactly as far as the signal reaches, never wider."""
         if verdict.scope == "path_pattern" and verdict.path_pattern:
             scope, path_pattern = "path_pattern", verdict.path_pattern
 
@@ -190,9 +173,7 @@ class SafetyAnalyzer:
 
             scope_note = f"scoped to pattern {path_pattern}"
         else:
-            # URL-scoped and host-scoped signals both enforce on the judged
-            # URL only: a host-wide claim (a feed listing) is exactly what
-            # the deep tier exists to confirm before anyone acts on it.
+            # Host-scoped claims wait for the deep tier; enforce the judged URL only.
             scope, path_pattern = "links", None
 
             def matcher(u: str, _u: str = event.url) -> bool:
@@ -231,15 +212,12 @@ class SafetyAnalyzer:
         )
 
     async def _reenforce(self, event: SafetyAnalyzeEvent, existing: VerdictDoc) -> bool:
-        """Idempotent re-enforcement of a stored toxic verdict, bounded by
-        its scope. Returns True when the verdict covers this event's URL
-        (nothing left to analyze); a narrow verdict that does not cover it
-        returns False so the event gets a fresh look."""
+        """Idempotent re-enforcement bounded by the verdict's scope; True when
+        the verdict covers this event's URL (nothing left to analyze)."""
         reason = existing.reason or "previous toxic verdict"
         scope = existing.scope or "host"
         if scope == "host":
-            # Already judged bad host-wide (deep tier or human): cheap,
-            # idempotent, and covers links created after the original block.
+            # Idempotent, and covers links created after the original block.
             result = await self._enforcer.block_host(event.host, reason=reason)
             await self._notify_reenforced(event, result, reason)
             return True
@@ -252,30 +230,23 @@ class SafetyAnalyzer:
             )
             await self._notify_reenforced(event, result, reason)
             return matching_blocked_pattern(event.url, (pattern,)) is not None
-        # links scope: the judged links are already blocked and the create
-        # gate refuses the exact URL; nothing host-side to re-run.
+        # links scope: already blocked and the create gate refuses the exact URL.
         return event.url == existing.sample_url
 
     async def _screen_redirect(self, event: SafetyAnalyzeEvent) -> None:
-        """A created link whose destination is a known redirector: the
-        stored URL is a clean wrapper every destination check is blind
-        to, so judge where the chain actually LANDS. The wrapper host
-        itself is never judged and never gets a verdict — t.co is not
-        the abuse, its endpoint is."""
+        """Judge where the redirect chain LANDS; the wrapper host itself is
+        never judged and never gets a verdict."""
         from services.safety.resolver import resolve_terminal_url
 
         terminal = await resolve_terminal_url(event.url)
         if terminal is None:
-            # Unresolved is not clean; it is also not evidence. The deep
-            # tier sees these when some other trigger surfaces the link.
+            # Unresolved is not clean; it is also not evidence.
             log.info("safety_redirect_unresolved", host=event.host)
             return
         parts = parse_destination(terminal)
         if parts is None or parts["host"] == event.host:
             log.info("safety_redirect_screened", host=event.host)
             return
-        # The terminal host takes the normal screening path (verdict,
-        # scoped enforcement, deep escalation) under the same trigger.
         await self.analyze(
             SafetyAnalyzeEvent(
                 url=terminal,
@@ -289,9 +260,7 @@ class SafetyAnalyzer:
                 },
             )
         )
-        # Wrapped links point at the wrapper, so terminal-host enforcement
-        # cannot see them — kill the ones carrying this exact wrapper URL
-        # when the terminal verdict covers it.
+        # Wrapped links point at the wrapper; terminal enforcement can't see them.
         verdict = await self._verdict_repo.find_by_host(parts["host"])
         if (
             verdict is not None
@@ -314,10 +283,7 @@ class SafetyAnalyzer:
             )
 
     async def _notify_reenforced(self, event, result, reason: str) -> None:
-        """A re-enforcement that actually blocked something is a real
-        action and the operator hears about it — otherwise a partial
-        failure retried through this path would mass-block silently.
-        Zero new blocks stays quiet (the routine idempotent case)."""
+        """Blocked something: the operator hears about it. Zero blocks stays quiet."""
         if result.blocked_count + result.legacy_count == 0:
             return
         await self._notifier.safety_action(
@@ -332,9 +298,8 @@ class SafetyAnalyzer:
     async def _escalate(
         self, event: SafetyAnalyzeEvent, verdict: ProviderVerdict, source: str
     ) -> bool:
-        """Hand the host-wide question to the investigation tier, carrying
-        the screening finding as context (it is the corroborating hard
-        signal the deep tier's authority mapper gates auto-block on)."""
+        """Hand the host-wide question to the deep tier; the screening finding
+        rides along as the corroborating hard signal."""
         if self._admission is None or self._deep_sink is None:
             return False
         decision = await self._admission.decide(event, escalation=True)

@@ -114,9 +114,8 @@ def _bracket(ip: str) -> str:
     return f"[{ip}]" if ":" in ip else ip
 
 
-# Public seam: the ONE SSRF resolver. Other outbound callers (the safety
-# evidence tools) reuse these instead of maintaining a second guard that
-# drifts from this one's rebinding/NAT64/multicast rules.
+# The ONE SSRF resolver: outbound callers reuse these instead of growing a
+# second guard that drifts from the rebinding/NAT64/multicast rules here.
 resolve_public_ip = _resolve_public_ip
 bracket_ip = _bracket
 

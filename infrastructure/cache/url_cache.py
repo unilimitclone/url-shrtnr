@@ -157,12 +157,8 @@ class UrlCache:
 
     async def invalidate_many(self, short_codes: list[str], domain: str) -> None:
         """Bulk-invalidate cache entries for a list of aliases on one domain.
-
-        Chunked: a host-wide safety block can hand this six figures of
-        keys, and one unbounded DELETE against the redirect hot path's
-        Redis would block it (and a rejected oversized command would leave
-        every entry serving until TTL). Same treatment as the edge KV
-        client's 10k chunks."""
+        Chunked: one unbounded DELETE with six figures of keys would block
+        the redirect hot path's Redis."""
         if not short_codes or self._redis is None:
             return
         keys = [self._key(c, domain) for c in short_codes]

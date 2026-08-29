@@ -38,10 +38,8 @@ class FeedDomainRepository(BaseRepository[None]):
         domains that were NOT in the feed before this sync, which is the
         feed-delta sweep's input: existing links pointing at a domain the
         world just listed."""
-        # distinct() returns one BSON array capped at 16MB — fine for
-        # fishfish (~43k domains, well under a megabyte) but a feed in the
-        # URLhaus size class (~1M domains) would throw here; switch to a
-        # projected find cursor before adding one.
+        # distinct() returns one BSON array capped at 16MB — fine for fishfish
+        # (~43k domains); a URLhaus-size feed needs a projected find cursor.
         existing = set(await self._col.distinct("domain", {"feed": feed}))
         now = datetime.now(timezone.utc)
         kept = 0

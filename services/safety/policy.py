@@ -70,10 +70,7 @@ class UrlPolicyService:
         self._self_domains = list(blocked_self_domains)
         self._public_messages = public_messages or {}
         self._scorer = scorer
-        # The resolve class: creates whose destination is a known
-        # redirector (platform wrappers, shorteners that slipped the
-        # gate) get a "redirect" screening event so the chain's TERMINAL
-        # host is judged. Either dep absent degrades to a no-op.
+        # Redirect probe deps; either absent degrades the probe to a no-op.
         self._redirect_feed_repo = redirect_feed_repo
         self._redirect_sink = redirect_sink
 
@@ -106,10 +103,8 @@ class UrlPolicyService:
         return None
 
     async def record_create(self, url: str) -> None:
-        """Post-insert accounting for one SUCCESSFUL create: L1
-        accumulation plus the redirect probe. Best-effort by contract —
-        neither ever raises or blocks the write, and each degrades to a
-        no-op when its dependencies are absent."""
+        """Post-insert accounting for one successful create. Best-effort:
+        never raises or blocks the write."""
         parts = parse_destination(url)
         if parts is None:
             return

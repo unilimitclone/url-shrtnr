@@ -113,10 +113,8 @@ def _validate_geo_rules_shape(
     *,
     max_countries: int,
 ) -> None:
-    """Entry cap + real ISO codes. Destination URL safety is NOT here —
-    every geo target goes through the same ``url_policy.check`` gate as
-    long_url (feeds, shortener refusal and toxic verdicts included), or a
-    clean long_url could ship a blocked destination to one region only.
+    """Entry cap + real ISO codes. Destination URL safety is NOT here — geo
+    targets go through the same ``url_policy.check`` gate as long_url.
 
     Raises:
         ValidationError: with field paths like ``geo_rules.IN``.
@@ -807,9 +805,7 @@ class UrlService:
             log.info("url_create_rejected", reason=rejection.code)
             raise ValidationError(rejection.public_message, field="long_url")
 
-        # 2b. Geo rules — every destination runs the FULL gate, same as
-        # long_url, so a clean long_url can never ship a blocked
-        # destination to one targeted region.
+        # 2b. Every geo destination runs the FULL gate, same as long_url.
         if request.geo_rules:
             _validate_geo_rules_shape(
                 request.geo_rules,

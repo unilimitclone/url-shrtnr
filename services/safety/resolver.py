@@ -1,16 +1,7 @@
 """Terminal-URL resolution for redirector destinations.
 
-The create gate deliberately allows platform share wrappers (t.co,
-lnkd.in) — users carry those involuntarily — and cloak shorteners are the
-dominant observed evasion. Both make the stored long_url a clean
-redirector URL that every destination check is blind to. This walker
-finds where the chain actually lands so screening can judge THAT.
-
-Same outbound discipline as the deep tier's tools: every hop resolves
-through the shared safe_fetch guard and connects to the pinned IP, HEAD
-only (a bodyless GET fallback), redirects followed manually. JS and meta
-refresh redirects are invisible here by design — those stay the deep
-tier's problem.
+Every hop resolves through the shared safe_fetch guard and connects to
+the pinned IP; JS and meta-refresh redirects are invisible by design.
 """
 
 from __future__ import annotations

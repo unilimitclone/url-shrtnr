@@ -209,8 +209,7 @@ def configure_stdlib_logging() -> None:
 
     # Reduce noise from third-party libraries
     logging.getLogger("urllib3").setLevel(logging.WARNING)
-    # httpx logs "HTTP Request: GET <full url>" at INFO — outbound URLs
-    # (and anything embedded in them) must not land in the log sink.
+    # httpx logs full request URLs at INFO; those must not land in the log sink.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
     logging.getLogger("botocore").setLevel(logging.WARNING)

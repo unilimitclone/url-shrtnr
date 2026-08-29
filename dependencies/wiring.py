@@ -430,8 +430,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         blocked_self_domains=settings.blocked_self_domains,
         public_messages=feed_messages,
         scorer=pattern_scorer,
-        # Redirect probe: creates to known redirectors get their terminal
-        # host screened. Off with the safety master switch (Null sink).
+        # Redirect probe; off with the safety master switch.
         redirect_feed_repo=feed_domain_repo if sf_settings.enabled else None,
         redirect_sink=safety_sink if sf_settings.enabled else None,
     )
@@ -475,10 +474,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         and not app.state.task_scheduler_embedded
         and sch_settings.runtime in ("auto", "worker")
     ):
-        # Queue Redis present resolves auto/worker to "the worker hosts
-        # it" — but the worker only boots for its OWN features (clicks
-        # stream, meta, webhooks, safety), never for the scheduler alone.
-        # Say so at boot instead of silently scheduling nothing.
+        # The worker only boots for its OWN features, never for the scheduler alone.
         log.warning(
             "task_scheduler_delegated_to_worker",
             runtime=sch_settings.runtime,

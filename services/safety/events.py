@@ -36,9 +36,7 @@ class SafetyAnalyzeEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     url: str
-    # The worker's trust boundary: an empty host would upsert a "" row
-    # into the unique-host verdict index and run {"dest.host": ""}
-    # enforcement across the collections.
+    # An empty host would upsert a "" verdict row and enforce {"dest.host": ""}.
     host: str = Field(min_length=1)
     registrable_domain: str = ""
     # What surfaced the destination: "report" today; "hot" / "pattern" /

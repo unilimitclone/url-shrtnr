@@ -95,8 +95,7 @@ class TestFeedSeeds:
 
         await ensure_feed_seeds(repo)
 
-        # Two seeds today: the shortener refuse list and the redirector
-        # resolve class.
+        # Two seeds today: the shortener refuse list and the redirector class.
         assert repo.replace_feed.await_count == 2
         seeded = {call.args[0] for call in repo.replace_feed.await_args_list}
         assert seeded == {"shorteners", "redirectors"}
@@ -153,10 +152,7 @@ class TestFeedRegistry:
         return SafetySettings(**overrides)
 
     def test_each_published_policy_has_its_own_switch(self):
-        """Every gate that changes what the public create API refuses gets
-        an env rollout/rollback switch: manual defaults on, the shortener
-        refusal defaults OFF (dark until flipped), fishfish rides the
-        master flag."""
+        """Every gate that changes public create behavior has its own env switch."""
         from services.safety.feeds import build_feed_providers
 
         repo = AsyncMock()

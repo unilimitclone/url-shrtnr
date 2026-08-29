@@ -43,10 +43,8 @@ class VerdictRepository(BaseRepository[VerdictDoc]):
             "decided_by": decided_by,
             "updated_at": now,
         }
-        # Scope bounds what enforcement and the create gate may do with a
-        # toxic tier; a re-verdict that says nothing about scope must not
-        # silently erase (or resurrect) an earlier bound, so absent means
-        # untouched.
+        # A re-verdict saying nothing about scope must not erase (or resurrect)
+        # an earlier bound, so absent means untouched.
         if scope is not None:
             fields["scope"] = scope
             fields["path_pattern"] = path_pattern

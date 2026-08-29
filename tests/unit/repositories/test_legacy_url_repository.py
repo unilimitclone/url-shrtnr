@@ -164,8 +164,7 @@ class TestSafetyBlockSurface:
             ("aaa111", "https://evil.com/a"),
             ("bbb222", "https://evil.com/b"),
         ]
-        # No blocked filter: this doubles as the eviction set, and a
-        # re-delivered block must still evict already-flipped entries.
+        # No blocked filter: this doubles as the eviction set.
         assert col.find.call_args.args[0] == {"dest.host": "evil.com"}
 
     @pytest.mark.asyncio
@@ -188,7 +187,6 @@ class TestSafetyBlockSurface:
         assert await self._repo(col).unblock("aaa111") is True
         flt, ops = col.update_one.await_args.args
         assert flt == {"_id": "aaa111", "blocked": True}
-        # Only the flag goes: the audit stamps survive the reversal and
-        # unblocked_at records it.
+        # Only the flag goes; the audit stamps survive the reversal.
         assert set(ops["$unset"]) == {"blocked"}
         assert "unblocked_at" in ops["$set"]

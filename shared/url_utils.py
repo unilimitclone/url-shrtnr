@@ -21,9 +21,8 @@ _HOSTNAME_RE = re.compile(
 )
 _FORBIDDEN_CHARS = re.compile(r"[\x00-\x1F\x7F-\x9F<>\"'`\\]")
 
-# Single tldextract seam for the whole codebase. Empty suffix_list_urls
-# pins the bundled PSL snapshot: deterministic, offline, no first-call
-# network fetch (cache_dir=None alone disables caching, not the fetch).
+# Empty suffix_list_urls pins the bundled PSL snapshot — offline, deterministic
+# (cache_dir=None alone disables caching, not the first-call network fetch).
 _tld_extractor = tldextract.TLDExtract(cache_dir=None, suffix_list_urls=())
 
 
@@ -70,11 +69,8 @@ def parse_destination(url: str | None) -> dict | None:
     if not host:
         return None
     if any(ord(ch) > 127 for ch in host):
-        # UTS-46 via the idna package — where a browser actually navigates.
-        # The stdlib codec is IDNA-2003 (maps ß to ss, rejects emoji
-        # labels), which would key some IDN hosts on a domain no browser
-        # resolves. On failure keep the lowercased unicode form rather
-        # than dropping the host entirely.
+        # UTS-46 via idna (where a browser navigates); the stdlib codec is
+        # IDNA-2003 and would mis-key some IDN hosts. Failure keeps the host.
         with contextlib.suppress(idna.IDNAError):
             host = idna.encode(host, uts46=True).decode("ascii")
     ext = _tld_extractor(host)

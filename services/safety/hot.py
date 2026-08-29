@@ -1,14 +1,8 @@
 """Hot-link screening — the abuse consumer of the hotness detector.
 
-The same click burst that promotes a link to the edge cache asks whether
-that link should be serving at all: a hot link whose destination host has
-no verdict yet gets a screening event (trigger ``hot``). This is the
-activation-time catch for pre-seeded campaigns — links created quietly
-and distributed later, after every create-time check has come and gone.
-
-Verdicted hosts are skipped here (re-screening cadence belongs to the
-analyzer's TTL rules, not to click volume), so a sustained-hot legit
-destination costs one lookup per hot window and nothing more.
+A hot link on an unverdicted destination host gets a screening event:
+the activation-time catch for campaigns seeded quietly and distributed
+after every create-time check has come and gone.
 """
 
 from __future__ import annotations

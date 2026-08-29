@@ -79,18 +79,13 @@ async def ensure_indexes(
     await feed_domains_col.create_index([("feed", 1), ("synced_at", 1)])
 
     # ── destination decomposition (url-safety) ─────────────────────────────
-    # Sparse: unparseable destinations are `dest: null` (backfill script) or
-    # absent (create/edit); neither shape yields the nested paths indexed
-    # here, so sparse excludes both. Covers all three url collections so
-    # takedown/sweep pivots never regex-scan long_url.
+    # Sparse: unparseable destinations are `dest: null` (backfill) or absent
+    # (create/edit); neither yields the nested paths, so sparse excludes both.
     for _url_col in (urls_v2_col, urls_legacy_col, emojis_col):
         await _url_col.create_index(
             [("dest.registrable_domain", 1)], name="dest_registrable", sparse=True
         )
-        # Every enforcement query (block, unblock, eviction-set collection)
-        # is an equality match on dest.host; without this each host block
-        # is six unindexed scans across the three collections, on the box
-        # serving the redirect path.
+        # Every enforcement query is an equality match on dest.host.
         await _url_col.create_index([("dest.host", 1)], name="dest_host", sparse=True)
 
     # ── clicks (time-series) ───────────────────────────────────────────────
