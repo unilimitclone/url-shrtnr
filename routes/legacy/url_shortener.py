@@ -29,6 +29,7 @@ from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
 from routes.legacy.helpers import humanize_number, is_positive_integer
+from schemas.models.url import UrlStatus
 from shared.emoji_policy import canonicalize_emoji_alias, check_emoji_alias
 from shared.generators import generate_emoji_alias, generate_short_code
 from shared.url_utils import parse_destination, split_destination
@@ -451,8 +452,9 @@ async def preview_url(
 ) -> Response:
     """Show a preview of where a short URL redirects to.
 
-    Accesses repos directly (bypassing resolve() status checks) so that
-    blocked/expired URLs can still show preview information.
+    Accesses repos directly so an EXPIRED link still previews, but a
+    blocked one reveals nothing: destination, geo destinations and meta
+    tags are all withheld behind the same 451 the redirect serves.
     """
     short_code = unquote(short_code)
     host_url = str(request.base_url)
@@ -465,7 +467,12 @@ async def preview_url(
         emoji_repo = EmojiUrlRepository(db["emojis"])
         doc = await emoji_repo.find_by_id(short_code)
         if doc:
-            url_data = {"_id": short_code, "url": doc.url, "password": doc.password}
+            url_data = {
+                "_id": short_code,
+                "url": doc.url,
+                "password": doc.password,
+                "blocked": doc.effective_status() is UrlStatus.BLOCKED,
+            }
             schema_type = "emoji"
     else:
         url_repo = UrlRepository(db["urlsV2"])
@@ -476,7 +483,12 @@ async def preview_url(
             # v1 first
             doc = await legacy_repo.find_by_id(short_code)
             if doc:
-                url_data = {"_id": short_code, "url": doc.url, "password": doc.password}
+                url_data = {
+                    "_id": short_code,
+                    "url": doc.url,
+                    "password": doc.password,
+                    "blocked": doc.effective_status() is UrlStatus.BLOCKED,
+                }
                 schema_type = "v1"
             else:
                 v2 = await url_repo.find_by_alias(
@@ -491,6 +503,7 @@ async def preview_url(
                         "meta_tags": v2.meta_tags.model_dump()
                         if v2.meta_tags
                         else None,
+                        "blocked": v2.effective_status() is UrlStatus.BLOCKED,
                     }
                     schema_type = "v2"
         else:
@@ -505,6 +518,7 @@ async def preview_url(
                     "password": v2.password,
                     "geo_rules": v2.geo_rules,
                     "meta_tags": v2.meta_tags.model_dump() if v2.meta_tags else None,
+                    "blocked": v2.effective_status() is UrlStatus.BLOCKED,
                 }
                 schema_type = "v2"
             else:
@@ -527,6 +541,19 @@ async def preview_url(
                 "host_url": host_url,
             },
             status_code=404,
+        )
+
+    if url_data.get("blocked"):
+        log.info("legacy_preview_blocked", short_code=short_code)
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {
+                "error_code": "451",
+                "error_message": "This link has been disabled",
+                "host_url": host_url,
+            },
+            status_code=451,
         )
 
     if schema_type == "v2":

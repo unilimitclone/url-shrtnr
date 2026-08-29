@@ -277,6 +277,14 @@ class LegacyUrlDoc(MongoBaseModel):
     blocked_reason: str | None = None
     unblocked_at: datetime | None = None
 
+    def effective_status(self) -> UrlStatus:
+        """v1 has no status machine, so the flag IS the state. Every wire
+        path reads this, never ``blocked`` raw, so a new surface cannot
+        forget the check the way six of them already did."""
+        if self.blocked:
+            return UrlStatus.BLOCKED
+        return UrlStatus.ACTIVE
+
     # Hyphenated field names — use aliases matching exact MongoDB keys
     max_clicks: int | None = Field(default=None, alias="max-clicks")
     total_clicks: int = Field(default=0, alias="total-clicks")
