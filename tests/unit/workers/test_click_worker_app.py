@@ -8,6 +8,7 @@ import pytest
 
 from config import AppSettings, ClickEventsSettings
 from workers.click_worker import (
+    _build_runtime,
     _first_message_id,
     create_worker_app,
     enabled_groups,
@@ -190,3 +191,40 @@ class TestRuntimeWiring:
             build.assert_awaited_once()
             await app._on_shutdown_calling[0]()  # type: ignore[attr-defined]
             fake_runtime.aclose.assert_awaited_once()
+
+
+class TestSafetyRuntime:
+    """The worker builds its own safety providers instead of sharing the
+    app's wiring, so a provider signature change lands here silently. This
+    boots the safety branch to make that a red test, not a crash loop."""
+
+    @pytest.mark.asyncio
+    async def test_builds_safety_consumer_with_web_risk(self):
+        settings = _settings()
+        settings.safety.enabled = True
+        settings.safety.web_risk_api_key = "k123"
+
+        with patch(
+            "workers.click_worker.create_redis_client", new=AsyncMock()
+        ) as redis_factory:
+            redis_factory.return_value = MagicMock()
+            runtime = await _build_runtime(settings, ["stats"], run_safety=True)
+
+        assert runtime.safety_consumer is not None
+
+    @pytest.mark.asyncio
+    async def test_builds_deep_consumer_when_investigation_is_on(self):
+        settings = _settings()
+        settings.safety.enabled = True
+        settings.safety.deep_enabled = True
+        settings.safety.web_risk_api_key = "k123"
+        settings.llm.enabled = True
+        settings.llm.api_key = "k456"
+
+        with patch(
+            "workers.click_worker.create_redis_client", new=AsyncMock()
+        ) as redis_factory:
+            redis_factory.return_value = MagicMock()
+            runtime = await _build_runtime(settings, ["stats"], run_safety=True)
+
+        assert runtime.deep_consumer is not None

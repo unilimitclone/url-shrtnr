@@ -55,6 +55,7 @@ from infrastructure.http_client import HttpClient
 from infrastructure.llm import LlmTaskRunner
 from infrastructure.logging import get_logger, setup_logging
 from infrastructure.ops_notify import DiscordOpsNotifier
+from infrastructure.web_risk import ENFORCEMENT_THREAT_TYPES, WebRiskClient
 from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.click_repository import ClickRepository
 from repositories.feed_domain_repository import FeedDomainRepository
@@ -393,9 +394,12 @@ async def _build_runtime(
         if sf.web_risk_enabled:
             safety_providers.append(
                 WebRiskProvider(
-                    runtime.http_client,
-                    api_key=sf.web_risk_api_key,
-                    api_base=sf.web_risk_api_base,
+                    WebRiskClient(
+                        runtime.http_client,
+                        api_key=sf.web_risk_api_key,
+                        api_base=sf.web_risk_api_base,
+                        threat_types=ENFORCEMENT_THREAT_TYPES,
+                    )
                 )
             )
         # Deep tier: unresolved screenings this worker judges get handed
@@ -473,9 +477,12 @@ async def _build_runtime(
                     own_domains=settings.blocked_self_domains,
                     web_risk=(
                         WebRiskProvider(
-                            runtime.http_client,
-                            api_key=sf.web_risk_api_key,
-                            api_base=sf.web_risk_api_base,
+                            WebRiskClient(
+                                runtime.http_client,
+                                api_key=sf.web_risk_api_key,
+                                api_base=sf.web_risk_api_base,
+                                threat_types=ENFORCEMENT_THREAT_TYPES,
+                            )
                         )
                         if sf.web_risk_enabled
                         else None
