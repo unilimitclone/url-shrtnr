@@ -289,6 +289,9 @@ class OAuthService:
             if not current_user:
                 raise NotFoundError("user not found")
 
+            # This branch mints tokens like the login flows — same gate.
+            self._ensure_not_pending_deletion(current_user, provider_key)
+
             # Ensure provider not already linked to this user
             for entry in current_user.auth_providers:
                 if entry.provider == provider_key:

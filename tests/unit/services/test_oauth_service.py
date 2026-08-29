@@ -384,6 +384,26 @@ class TestHandleCallbackLink:
         assert result.user is updated_user
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["PENDING_DELETION", "ERASING"])
+    async def test_link_flow_blocked_when_pending_deletion(self, status):
+        """The LINK branch mints tokens like the login paths, so it gets the
+        same status gate — a still-valid access token must not mint fresh
+        tokens (or link a provider) for an account scheduled for erasure."""
+        from errors import AccountPendingDeletionError
+
+        svc = make_oauth_service()
+        svc._user_repo.find_by_id.return_value = make_user_doc(status=status)
+
+        with pytest.raises(AccountPendingDeletionError):
+            await svc.handle_callback(
+                provider_key="google",
+                provider_info=make_provider_info(),
+                action="link",
+                state_data={"action": "link", "user_id": str(USER_OID)},
+            )
+        svc._user_repo.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_link_flow_missing_user_id_raises(self):
         svc = make_oauth_service()
 
