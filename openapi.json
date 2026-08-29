@@ -6727,7 +6727,7 @@
           "Metadata"
         ],
         "summary": "Fetch Destination Meta Tags",
-        "description": "Fetch a destination page and return its existing meta tags.\n\nUse this to prefill ``meta_tags`` before customizing a link's social\npreview. Returns normalized best-pick fields (og \u2192 twitter \u2192 html\nfallbacks) plus the raw ``og``/``twitter`` tag families.\n\n**Authentication**: Required. **API Key Scope**: `urls:read`,\n`urls:manage`, or `admin:all`.\n\n**Feature gate**: `custom_meta_tags` must be enabled for the calling\naccount \u2014 this endpoint only exists to feed that feature.\n\n**Rate Limits**: 20/min, 500/day \u2014 results are cached ~1h server-side,\nso repeat calls for the same URL are cheap and don't refetch.",
+        "description": "Fetch a destination page and return its existing meta tags.\n\nUse this to prefill ``meta_tags`` before customizing a link's social\npreview, or to check how a page will unfurl. Returns normalized\nbest-pick fields (og \u2192 twitter \u2192 html fallbacks) plus the raw\n``og``/``twitter`` tag families.\n\n**Authentication**: Optional. Authenticated callers get the higher\nper-account limit; anonymous calls are limited per IP. **API Key\nScope** (when authenticating): `urls:read`, `urls:manage`, or\n`admin:all`.\n\n**Rate Limits**: 60/min, 2,000/day authenticated; 15/min, 300/day\nanonymous \u2014 results are cached ~1h server-side, so repeat calls for\nthe same URL are cheap and don't refetch.",
         "operationId": "getUrlMetadata",
         "parameters": [
           {
@@ -6807,16 +6807,6 @@
               }
             }
           },
-          "409": {
-            "description": "Conflict \u2014 resource already exists",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -6827,7 +6817,16 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {},
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "JWTAuth": []
+          }
+        ]
       }
     },
     "/api/v1/me/features": {
@@ -11470,6 +11469,42 @@
               }
             ],
             "title": "Site Name"
+          },
+          "html_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Html Title",
+            "description": "Raw <title> text, before og/twitter fallbacks."
+          },
+          "html_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Html Description",
+            "description": "Plain <meta name=description>, unnormalized."
+          },
+          "favicon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Favicon",
+            "description": "Best declared icon (or /favicon.ico); absolute https URL."
           },
           "og": {
             "additionalProperties": {
