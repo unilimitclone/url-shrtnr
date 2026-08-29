@@ -897,6 +897,11 @@ class AppSettings(BaseSettings):
                 "CUSTOM_DOMAINS_MOCK_DCV must not be enabled in production"
             )
 
+        # Zero grace purges on the next sweep — a smoke-test convenience
+        # that in production would void the restore window. Refuse to boot.
+        if self.env == "production" and self.account_deletion_grace_days < 1:
+            raise ValueError("ACCOUNT_DELETION_GRACE_DAYS must be >= 1 in production")
+
         return self
 
     @property

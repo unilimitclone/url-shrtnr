@@ -257,21 +257,28 @@ async def restore_account(
 ) -> MessageResponse:
     """Cancel a pending account deletion during the grace period.
 
-    Validates email + password against the account and flips it back to
-    ACTIVE, clearing the purge deadline. Only works while the account is
-    PENDING_DELETION (i.e. before `purge_after` from ``DELETE /api/v1/me``
-    passes); OAuth-only accounts restore via the frontend's OAuth restore
-    flow instead.
+    Two mutually exclusive proofs: ``email`` + ``password`` validates the
+    account credentials, ``restore_token`` consumes the one-shot link from
+    the deletion notice email (the only path for OAuth-only accounts).
+    Either flips the account back to ACTIVE, clears the purge deadline,
+    and sends a cancellation notice to the account address. Only works
+    while the account is PENDING_DELETION (i.e. before `purge_after` from
+    ``DELETE /api/v1/me`` passes); once erasure has started, restore is
+    refused for good.
 
     **Authentication**: Not required (public endpoint)
 
     **Rate Limits**: 3/hour
 
     **Security**: Returns a uniform 403 for wrong credentials, unknown
-    email, and accounts not pending deletion — prevents account
-    enumeration and state probing.
+    email, invalid or spent tokens, and accounts not pending deletion —
+    prevents account enumeration and state probing.
     """
-    await deletion_service.restore(body.email, body.password)
+    if body.restore_token is not None:
+        await deletion_service.restore_with_token(body.restore_token)
+    else:
+        # The DTO guarantees both are present on this branch.
+        await deletion_service.restore(str(body.email), str(body.password))
     return MessageResponse(success=True, message="account restored")
 
 

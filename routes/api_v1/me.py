@@ -72,8 +72,9 @@ async def delete_my_account(
     its links, and their analytics.
 
     During the grace period every login is blocked with error code
-    ``ACCOUNT_PENDING_DELETION``; ``POST /auth/restore`` (email +
-    password) cancels the deletion and reactivates the account.
+    ``ACCOUNT_PENDING_DELETION``; ``POST /auth/restore`` cancels the
+    deletion and reactivates the account — with email + password, or with
+    the one-shot link mailed on this request (the OAuth-only path).
 
     **Authentication**: Required (JWT only — API keys and app tokens
     cannot delete the account)

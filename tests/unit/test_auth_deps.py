@@ -132,6 +132,88 @@ class TestGetCurrentUser:
         assert result.email == "owner@example.com"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["PENDING_DELETION", "ERASING"])
+    async def test_api_key_blocked_while_account_deletion_pending(self, status):
+        """A valid key on a doomed account raises the same error the login
+        gate uses — keys must go dark for the whole grace window."""
+        from errors import AccountPendingDeletionError
+        from schemas.models.user import UserStatus
+
+        key_doc = make_key_doc()
+        user_mock = MagicMock(
+            email_verified=True,
+            email="owner@example.com",
+            status=UserStatus(status),
+        )
+
+        with (
+            patch("dependencies.auth.get_settings", return_value=make_settings()),
+            patch("dependencies.auth.ApiKeyRepository") as MockKeyRepo,
+            patch("dependencies.auth.UserRepository") as MockUserRepo,
+        ):
+            MockKeyRepo.return_value.find_by_hash = AsyncMock(return_value=key_doc)
+            MockUserRepo.return_value.find_by_id = AsyncMock(return_value=user_mock)
+
+            req = make_request(auth_header="Bearer spoo_testrawtoken123")
+            with pytest.raises(AccountPendingDeletionError) as exc_info:
+                await get_current_user(req, db=MagicMock())
+
+        assert exc_info.value.error_code == "ACCOUNT_PENDING_DELETION"
+        # The last-used stamp never ran — the request was rejected.
+        MockKeyRepo.return_value.touch_last_used.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_api_key_works_again_after_restore(self):
+        """ACTIVE (restored) accounts authenticate normally."""
+        from schemas.models.user import UserStatus
+
+        key_doc = make_key_doc()
+        user_mock = MagicMock(
+            email_verified=True,
+            email="owner@example.com",
+            status=UserStatus.ACTIVE,
+        )
+
+        with (
+            patch("dependencies.auth.get_settings", return_value=make_settings()),
+            patch("dependencies.auth.ApiKeyRepository") as MockKeyRepo,
+            patch("dependencies.auth.UserRepository") as MockUserRepo,
+        ):
+            MockKeyRepo.return_value.find_by_hash = AsyncMock(return_value=key_doc)
+            MockUserRepo.return_value.find_by_id = AsyncMock(return_value=user_mock)
+
+            req = make_request(auth_header="Bearer spoo_testrawtoken123")
+            result = await get_current_user(req, db=MagicMock())
+
+        assert result is not None
+        assert result.user_id == USER_OID
+
+    @pytest.mark.asyncio
+    async def test_api_key_inactive_account_not_gated(self):
+        """INACTIVE is deliberately NOT blocked here — parity with login."""
+        from schemas.models.user import UserStatus
+
+        key_doc = make_key_doc()
+        user_mock = MagicMock(
+            email_verified=True,
+            email="owner@example.com",
+            status=UserStatus.INACTIVE,
+        )
+
+        with (
+            patch("dependencies.auth.get_settings", return_value=make_settings()),
+            patch("dependencies.auth.ApiKeyRepository") as MockKeyRepo,
+            patch("dependencies.auth.UserRepository") as MockUserRepo,
+        ):
+            MockKeyRepo.return_value.find_by_hash = AsyncMock(return_value=key_doc)
+            MockUserRepo.return_value.find_by_id = AsyncMock(return_value=user_mock)
+
+            req = make_request(auth_header="Bearer spoo_testrawtoken123")
+            result = await get_current_user(req, db=MagicMock())
+
+        assert result is not None
+
+    @pytest.mark.asyncio
     async def test_api_key_revoked_returns_none(self):
         key_doc = make_key_doc(revoked=True)
 

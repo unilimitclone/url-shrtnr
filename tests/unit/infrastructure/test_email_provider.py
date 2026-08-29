@@ -113,6 +113,19 @@ class TestDeletionEmails:
         # Restore path points at the frontend login page.
         assert "https://spoo.me/login" in payload["htmlbody"]
 
+    async def test_deletion_requested_with_token_carries_cancel_link(self):
+        provider, http = self._make()
+        result = await provider.send_deletion_requested(
+            "user@example.com", self.PURGE_AFTER, restore_token="tok-secret-123"
+        )
+        assert result is True
+        payload = self._sent_payload(http)
+        cancel_url = "https://spoo.me/restore-account?token=tok-secret-123"
+        for body in (payload["htmlbody"], payload["textbody"]):
+            assert cancel_url in body
+        # The password fallback stays documented next to the link.
+        assert "https://spoo.me/login" in payload["textbody"]
+
     async def test_deletion_requested_naive_datetime_treated_as_utc(self):
         provider, http = self._make()
         await provider.send_deletion_requested(
@@ -131,13 +144,31 @@ class TestDeletionEmails:
             assert "15 days" in body
             assert "Support Team, spoo.me" in body
 
-    async def test_no_em_dash_in_either_email(self):
+    async def test_deletion_cancelled_subject_and_copy(self):
         provider, http = self._make()
-        await provider.send_deletion_requested("user@example.com", self.PURGE_AFTER)
-        requested = self._sent_payload(http)
+        result = await provider.send_deletion_cancelled("user@example.com")
+        assert result is True
+        payload = self._sent_payload(http)
+        assert payload["subject"] == "Your spoo.me account deletion was cancelled"
+        for body in (payload["htmlbody"], payload["textbody"]):
+            assert "cancelled" in body
+            # The unauthorized-restore warning \u2014 a silent restore would
+            # hide an attacker cancelling a victim's deletion.
+            assert "support@spoo.me" in body
+            assert "Support Team, spoo.me" in body
+
+    async def test_no_em_dash_in_any_email(self):
+        provider, http = self._make()
+        payloads = []
+        await provider.send_deletion_requested(
+            "user@example.com", self.PURGE_AFTER, restore_token="tok"
+        )
+        payloads.append(self._sent_payload(http))
+        await provider.send_deletion_cancelled("user@example.com")
+        payloads.append(self._sent_payload(http))
         await provider.send_erasure_confirmation("user@example.com")
-        completed = self._sent_payload(http)
-        for payload in (requested, completed):
+        payloads.append(self._sent_payload(http))
+        for payload in payloads:
             for part in (payload["subject"], payload["htmlbody"], payload["textbody"]):
                 assert "\u2014" not in part  # em dash
                 assert "\u2013" not in part  # en dash

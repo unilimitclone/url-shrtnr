@@ -72,19 +72,62 @@ def make_user_doc(
 
 
 class RecordingMailer:
-    """ErasureMailer stand-in that records the grace-period notices."""
+    """ErasureMailer stand-in recording notices and cancellations."""
 
     def __init__(self):
-        self.requested: list[tuple[str, datetime]] = []
+        self.requested: list[tuple[str, datetime, str | None]] = []
+        self.cancelled: list[str] = []
 
-    async def send_deletion_requested(self, email, purge_after):
-        self.requested.append((email, purge_after))
+    async def send_deletion_requested(self, email, purge_after, restore_token=None):
+        self.requested.append((email, purge_after, restore_token))
+
+    async def send_deletion_cancelled(self, email):
+        self.cancelled.append(email)
 
     async def send_erasure_confirmation(self, email):
         return None
 
 
-def make_service(user, *, mailer=None, mark_result=True):
+class FakeTokenRepo:
+    """In-memory verification-tokens repo — real hash matching so the
+    one-shot restore token's single-use/expiry semantics are exercised."""
+
+    def __init__(self):
+        self.docs: list[dict] = []
+
+    async def delete_by_user(self, user_id, token_type=None, app_id=None):
+        before = len(self.docs)
+        self.docs = [
+            d
+            for d in self.docs
+            if not (
+                d["user_id"] == user_id
+                and (token_type is None or d["token_type"] == token_type)
+            )
+        ]
+        return before - len(self.docs)
+
+    async def create(self, data):
+        self.docs.append(dict(data))
+        return ObjectId()
+
+    async def consume_by_hash(self, token_hash, token_type):
+        from types import SimpleNamespace
+
+        now = datetime.now(timezone.utc)
+        for d in self.docs:
+            if (
+                d["token_hash"] == token_hash
+                and d["token_type"] == token_type
+                and d["used_at"] is None
+                and d["expires_at"] > now
+            ):
+                d["used_at"] = now
+                return SimpleNamespace(**d)
+        return None
+
+
+def make_service(user, *, mailer=None, mark_result=True, token_repo=None):
     """Real AccountDeletionService over a mocked user repository.
 
     ``find_by_id`` answers *user* first (the re-auth fetch), then the
@@ -102,7 +145,12 @@ def make_service(user, *, mailer=None, mark_result=True):
     repo.find_by_email.return_value = user
     repo.mark_pending_deletion.return_value = mark_result
     repo.restore.return_value = True
-    svc = AccountDeletionService(repo, mailer=mailer, grace_days=GRACE_DAYS)
+    svc = AccountDeletionService(
+        repo,
+        token_repo=token_repo if token_repo is not None else FakeTokenRepo(),
+        mailer=mailer,
+        grace_days=GRACE_DAYS,
+    )
     return svc, repo
 
 
@@ -165,8 +213,11 @@ def test_delete_me_correct_password_200_with_purge_after():
     assert resp.json() == {"purge_after": PURGE_AFTER.isoformat()}
     # The flip used the configured grace period.
     assert repo.mark_pending_deletion.await_args.args == (USER_OID, GRACE_DAYS)
-    # The grace-period notice went out with the stored deadline.
-    assert mailer.requested == [(user.email, PURGE_AFTER)]
+    # The grace-period notice went out with the stored deadline and the
+    # one-shot cancel link's token.
+    (sent_email, sent_deadline, sent_token) = mailer.requested[0]
+    assert (sent_email, sent_deadline) == (user.email, PURGE_AFTER)
+    assert sent_token is not None
 
 
 def test_delete_me_confirm_email_rejected_for_password_account():
@@ -304,7 +355,8 @@ def _pending_user(password_hash):
 
 def test_restore_happy_path_reactivates_account():
     hashed = hash_password(PASSWORD)
-    svc, repo = make_service(_pending_user(hashed))
+    mailer = RecordingMailer()
+    svc, repo = make_service(_pending_user(hashed), mailer=mailer)
     repo.find_by_email.return_value = _pending_user(hashed)
     client = _auth_client(svc)
 
@@ -315,6 +367,9 @@ def test_restore_happy_path_reactivates_account():
     assert resp.status_code == 200
     assert resp.json()["success"] is True
     assert repo.restore.await_args.args == (USER_OID,)
+    # The account address hears about the cancellation — a silent restore
+    # would hide an attacker cancelling a victim's deletion.
+    assert mailer.cancelled == ["test@example.com"]
 
 
 def test_restore_failures_are_uniform_403():
@@ -387,11 +442,232 @@ def test_restore_oauth_only_account_403():
     repo.restore.assert_not_awaited()
 
 
+# ── POST /auth/restore — one-shot token path (OAuth-only accounts) ───────────
+
+
+def _oauth_pending_service(mailer=None, token_repo=None):
+    """OAuth-only account already PENDING_DELETION, with a shared fake
+    token repo so minted tokens are consumable across requests."""
+    token_repo = token_repo or FakeTokenRepo()
+    user = make_user_doc(password_set=False, password_hash=None)
+    svc, repo = make_service(user, mailer=mailer, token_repo=token_repo)
+    return svc, repo, token_repo
+
+
+def test_restore_with_token_full_loop_for_oauth_only_account():
+    """The loop a stolen session could previously make irreversible:
+    request deletion via confirm_email, cancel via the emailed link."""
+    mailer = RecordingMailer()
+    svc, repo, _tokens = _oauth_pending_service(mailer=mailer)
+
+    resp = _client(svc).request(
+        "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
+    )
+    assert resp.status_code == 200
+    (_email, _deadline, token) = mailer.requested[0]
+    assert token is not None
+
+    resp = _auth_client(svc).post("/auth/restore", json={"restore_token": token})
+
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    assert repo.restore.await_args.args == (USER_OID,)
+    assert mailer.cancelled == ["test@example.com"]
+
+
+def test_restore_token_is_single_use():
+    mailer = RecordingMailer()
+    svc, repo, _tokens = _oauth_pending_service(mailer=mailer)
+    _client(svc).request(
+        "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
+    )
+    token = mailer.requested[0][2]
+    client = _auth_client(svc)
+
+    assert (
+        client.post("/auth/restore", json={"restore_token": token}).status_code == 200
+    )
+    resp = client.post("/auth/restore", json={"restore_token": token})
+
+    assert resp.status_code == 403
+    assert repo.restore.await_count == 1
+
+
+def test_restore_token_expired_403():
+    mailer = RecordingMailer()
+    svc, repo, tokens = _oauth_pending_service(mailer=mailer)
+    _client(svc).request(
+        "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
+    )
+    token = mailer.requested[0][2]
+    # The grace period ended — expiry rides purge_after.
+    tokens.docs[0]["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    resp = _auth_client(svc).post("/auth/restore", json={"restore_token": token})
+
+    assert resp.status_code == 403
+    repo.restore.assert_not_awaited()
+
+
+def test_restore_token_for_erasing_account_403():
+    """Token consumed but the cascade already claimed the account — the
+    guarded restore refuses and the answer stays the uniform 403."""
+    mailer = RecordingMailer()
+    svc, repo, _tokens = _oauth_pending_service(mailer=mailer)
+    _client(svc).request(
+        "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
+    )
+    token = mailer.requested[0][2]
+    repo.restore.return_value = False
+
+    resp = _auth_client(svc).post("/auth/restore", json={"restore_token": token})
+
+    assert resp.status_code == 403
+    assert mailer.cancelled == []
+
+
+def test_restore_unknown_token_403():
+    svc, repo, _tokens = _oauth_pending_service()
+
+    resp = _auth_client(svc).post("/auth/restore", json={"restore_token": "x" * 43})
+
+    assert resp.status_code == 403
+    repo.restore.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"email": "test@example.com"},
+        {"password": PASSWORD},
+        {
+            "email": "test@example.com",
+            "password": PASSWORD,
+            "restore_token": "x" * 43,
+        },
+        {"email": "test@example.com", "restore_token": "x" * 43},
+    ],
+    ids=["empty", "email_only", "password_only", "both_proofs", "email_plus_token"],
+)
+def test_restore_wrong_shape_rejected_422(body):
+    """Mixed or incomplete proofs are a validation error — they never
+    reach the service, so they can't probe account state."""
+    svc, repo = make_service(_pending_user(hash_password(PASSWORD)))
+
+    resp = _auth_client(svc).post("/auth/restore", json=body)
+
+    assert resp.status_code == 422
+    repo.restore.assert_not_awaited()
+
+
+def test_restore_token_deleted_after_credential_restore():
+    """A credential restore invalidates the emailed link — the one-shot
+    token must not survive the deletion it was minted to cancel."""
+    hashed = hash_password(PASSWORD)
+    mailer = RecordingMailer()
+    user = make_user_doc(
+        password_set=True,
+        password_hash=hashed,
+        status="PENDING_DELETION",
+        purge_after=PURGE_AFTER,
+    )
+    tokens = FakeTokenRepo()
+    tokens.docs.append(
+        {
+            "user_id": USER_OID,
+            "email": user.email,
+            "token_hash": "h" * 64,
+            "token_type": "deletion_restore",
+            "expires_at": PURGE_AFTER,
+            "used_at": None,
+        }
+    )
+    svc, repo = make_service(user, mailer=mailer, token_repo=tokens)
+    repo.find_by_email.return_value = user
+
+    resp = _auth_client(svc).post(
+        "/auth/restore", json={"email": user.email, "password": PASSWORD}
+    )
+
+    assert resp.status_code == 200
+    assert tokens.docs == []
+
+
+# ── Re-auth fail-closed — password_set without a hash ────────────────────────
+
+
+def test_delete_me_password_set_without_hash_fails_closed():
+    """An inconsistent doc (flag set, hash missing) must 403 — falling
+    through to typed-email would let a hijacked session skip the password."""
+    user = make_user_doc(password_set=True, password_hash=None)
+    svc, repo = make_service(user)
+
+    resp = _client(svc).request(
+        "DELETE", "/api/v1/me", json={"confirm_email": user.email}
+    )
+
+    assert resp.status_code == 403
+    repo.mark_pending_deletion.assert_not_awaited()
+
+
+# ── Timing equalization (CWE-203) ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_restore_unknown_email_burns_dummy_verify(monkeypatch):
+    """Early-failure paths run a verify against the module's dummy hash so
+    timing can't distinguish "no such account" from "wrong password"."""
+    import services.account_deletion_service as ads
+
+    verified_hashes = []
+    monkeypatch.setattr(
+        ads,
+        "verify_password",
+        lambda pwd, hsh: verified_hashes.append(hsh) or False,
+    )
+    svc, repo = make_service(_pending_user(hash_password(PASSWORD)))
+    repo.find_by_email.return_value = None
+
+    from errors import ForbiddenError
+
+    with pytest.raises(ForbiddenError):
+        await svc.restore("gone@example.com", PASSWORD)
+
+    assert verified_hashes == [ads._TIMING_DUMMY_HASH]
+
+
+@pytest.mark.asyncio
+async def test_restore_oauth_only_burns_dummy_verify(monkeypatch):
+    import services.account_deletion_service as ads
+
+    verified_hashes = []
+    monkeypatch.setattr(
+        ads,
+        "verify_password",
+        lambda pwd, hsh: verified_hashes.append(hsh) or False,
+    )
+    svc, repo = make_service(_pending_user(None))
+    repo.find_by_email.return_value = make_user_doc(
+        password_set=False, password_hash=None, status="PENDING_DELETION"
+    )
+
+    from errors import ForbiddenError
+
+    with pytest.raises(ForbiddenError):
+        await svc.restore("test@example.com", PASSWORD)
+
+    assert verified_hashes == [ads._TIMING_DUMMY_HASH]
+
+
 # ── Service seam — mail failure never blocks the request ────────────────────
 
 
 class ExplodingMailer(RecordingMailer):
-    async def send_deletion_requested(self, email, purge_after):
+    async def send_deletion_requested(self, email, purge_after, restore_token=None):
+        raise RuntimeError("smtp down")
+
+    async def send_deletion_cancelled(self, email):
         raise RuntimeError("smtp down")
 
 

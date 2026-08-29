@@ -66,13 +66,17 @@ class NoopPostHogEraser:
 
 
 class ErasureMailer(Protocol):
-    """Deletion lifecycle mail: the grace-period notice and the final
-    "your account was erased" confirmation. Returns whether the mail was
-    sent — callers treat both as best-effort and ignore it."""
+    """Deletion lifecycle mail: the grace-period notice (carrying the
+    one-shot cancel link when a restore token was minted), the "deletion
+    cancelled" notice on restore, and the final "your account was erased"
+    confirmation. Returns whether the mail was sent — callers treat all
+    three as best-effort and ignore it."""
 
     async def send_deletion_requested(
-        self, email: str, purge_after: datetime
+        self, email: str, purge_after: datetime, restore_token: str | None = None
     ) -> bool: ...
+
+    async def send_deletion_cancelled(self, email: str) -> bool: ...
 
     async def send_erasure_confirmation(self, email: str) -> bool: ...
 
@@ -80,7 +84,12 @@ class ErasureMailer(Protocol):
 class NoopErasureMailer:
     """Default when ZeptoMail is unconfigured — nothing gets sent."""
 
-    async def send_deletion_requested(self, email: str, purge_after: datetime) -> bool:
+    async def send_deletion_requested(
+        self, email: str, purge_after: datetime, restore_token: str | None = None
+    ) -> bool:
+        return False
+
+    async def send_deletion_cancelled(self, email: str) -> bool:
         return False
 
     async def send_erasure_confirmation(self, email: str) -> bool:

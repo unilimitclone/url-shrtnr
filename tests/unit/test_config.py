@@ -138,6 +138,29 @@ def test_mock_dcv_refused_in_production(with_mongo, env, should_boot):
 
 
 @pytest.mark.parametrize(
+    "env, should_boot",
+    [("production", False), ("development", True)],
+    ids=["production_refuses", "development_allows"],
+)
+def test_zero_grace_days_refused_in_production(with_mongo, env, should_boot):
+    # Zero grace purges on the next sweep — fine for integration smoke,
+    # but in production it would void the whole restore window.
+    with_mongo.setenv("ENV", env)
+    with_mongo.setenv("ACCOUNT_DELETION_GRACE_DAYS", "0")
+    if should_boot:
+        assert AppSettings().account_deletion_grace_days == 0
+    else:
+        with pytest.raises(PydanticValidationError, match="GRACE_DAYS"):
+            AppSettings()
+
+
+def test_positive_grace_days_boots_in_production(with_mongo):
+    with_mongo.setenv("ENV", "production")
+    with_mongo.setenv("ACCOUNT_DELETION_GRACE_DAYS", "7")
+    assert AppSettings().account_deletion_grace_days == 7
+
+
+@pytest.mark.parametrize(
     "secret_key, flask_secret_key, expected",
     [
         (None, "flask-secret", "flask-secret"),  # falls back to FLASK_SECRET_KEY

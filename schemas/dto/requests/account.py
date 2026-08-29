@@ -7,7 +7,7 @@ RestoreAccountRequest  — POST /auth/restore
 
 from __future__ import annotations
 
-from pydantic import EmailStr, Field
+from pydantic import EmailStr, Field, model_validator
 
 from schemas.dto.base import RequestBase
 
@@ -39,13 +39,43 @@ class DeleteAccountRequest(RequestBase):
 
 
 class RestoreAccountRequest(RequestBase):
-    """Request body for POST /auth/restore."""
+    """Request body for POST /auth/restore.
 
-    email: EmailStr = Field(
-        description="Account email address", examples=["user@example.com"]
+    Exactly one restore proof: ``email`` + ``password`` for accounts with
+    a password, or ``restore_token`` (the one-shot token from the
+    deletion notice email — the only path for OAuth-only accounts).
+    Mixing or omitting both is a validation error, not a 403.
+    """
+
+    email: EmailStr | None = Field(
+        default=None,
+        description="Account email address (credential restore)",
+        examples=["user@example.com"],
     )
-    password: str = Field(
+    password: str | None = Field(
+        default=None,
         max_length=255,
-        description="Account password",
+        description="Account password (credential restore)",
         examples=["MySecurePass123!"],
     )
+    restore_token: str | None = Field(
+        default=None,
+        min_length=16,
+        max_length=128,
+        description=(
+            "One-shot restore token from the deletion notice email "
+            "(token restore — OAuth-only accounts)"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one_proof(self) -> RestoreAccountRequest:
+        credentials = self.email is not None or self.password is not None
+        if self.restore_token is not None:
+            if credentials:
+                raise ValueError(
+                    "provide either email+password or restore_token, not both"
+                )
+        elif self.email is None or self.password is None:
+            raise ValueError("provide either email+password or restore_token")
+        return self

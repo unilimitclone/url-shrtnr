@@ -345,7 +345,7 @@
           "Authentication"
         ],
         "summary": "Restore Account",
-        "description": "Cancel a pending account deletion during the grace period.\n\nValidates email + password against the account and flips it back to\nACTIVE, clearing the purge deadline. Only works while the account is\nPENDING_DELETION (i.e. before `purge_after` from ``DELETE /api/v1/me``\npasses); OAuth-only accounts restore via the frontend's OAuth restore\nflow instead.\n\n**Authentication**: Not required (public endpoint)\n\n**Rate Limits**: 3/hour\n\n**Security**: Returns a uniform 403 for wrong credentials, unknown\nemail, and accounts not pending deletion \u2014 prevents account\nenumeration and state probing.",
+        "description": "Cancel a pending account deletion during the grace period.\n\nTwo mutually exclusive proofs: ``email`` + ``password`` validates the\naccount credentials, ``restore_token`` consumes the one-shot link from\nthe deletion notice email (the only path for OAuth-only accounts).\nEither flips the account back to ACTIVE, clears the purge deadline,\nand sends a cancellation notice to the account address. Only works\nwhile the account is PENDING_DELETION (i.e. before `purge_after` from\n``DELETE /api/v1/me`` passes); once erasure has started, restore is\nrefused for good.\n\n**Authentication**: Not required (public endpoint)\n\n**Rate Limits**: 3/hour\n\n**Security**: Returns a uniform 403 for wrong credentials, unknown\nemail, invalid or spent tokens, and accounts not pending deletion \u2014\nprevents account enumeration and state probing.",
         "operationId": "restoreAccount",
         "requestBody": {
           "content": {
@@ -7144,7 +7144,7 @@
           "Me"
         ],
         "summary": "Delete Account",
-        "description": "Request permanent account deletion (GDPR Art. 17).\n\nRe-authentication is required: accounts with a password send\n``password``; OAuth-only accounts confirm by typing their exact\naccount email as ``confirm_email``. On success the account enters a\ngrace period (7 days by default) and `purge_after` marks its end \u2014\nafter that instant a background sweep permanently erases the account,\nits links, and their analytics.\n\nDuring the grace period every login is blocked with error code\n``ACCOUNT_PENDING_DELETION``; ``POST /auth/restore`` (email +\npassword) cancels the deletion and reactivates the account.\n\n**Authentication**: Required (JWT only \u2014 API keys and app tokens\ncannot delete the account)\n\n**Rate Limits**: 3/hour\n\n**Errors**: 403 when re-authentication fails (never says which field\nwas wrong), 409 when deletion is already pending.",
+        "description": "Request permanent account deletion (GDPR Art. 17).\n\nRe-authentication is required: accounts with a password send\n``password``; OAuth-only accounts confirm by typing their exact\naccount email as ``confirm_email``. On success the account enters a\ngrace period (7 days by default) and `purge_after` marks its end \u2014\nafter that instant a background sweep permanently erases the account,\nits links, and their analytics.\n\nDuring the grace period every login is blocked with error code\n``ACCOUNT_PENDING_DELETION``; ``POST /auth/restore`` cancels the\ndeletion and reactivates the account \u2014 with email + password, or with\nthe one-shot link mailed on this request (the OAuth-only path).\n\n**Authentication**: Required (JWT only \u2014 API keys and app tokens\ncannot delete the account)\n\n**Rate Limits**: 3/hour\n\n**Errors**: 403 when re-authentication fails (never says which field\nwas wrong), 409 when deletion is already pending.",
         "operationId": "deleteMyAccount",
         "requestBody": {
           "content": {
@@ -13127,31 +13127,55 @@
       "RestoreAccountRequest": {
         "properties": {
           "email": {
-            "type": "string",
-            "format": "email",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "email"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Email",
-            "description": "Account email address",
+            "description": "Account email address (credential restore)",
             "examples": [
               "user@example.com"
             ]
           },
           "password": {
-            "type": "string",
-            "maxLength": 255,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Password",
-            "description": "Account password",
+            "description": "Account password (credential restore)",
             "examples": [
               "MySecurePass123!"
             ]
+          },
+          "restore_token": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 16
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Token",
+            "description": "One-shot restore token from the deletion notice email (token restore \u2014 OAuth-only accounts)"
           }
         },
         "type": "object",
-        "required": [
-          "email",
-          "password"
-        ],
         "title": "RestoreAccountRequest",
-        "description": "Request body for POST /auth/restore."
+        "description": "Request body for POST /auth/restore.\n\nExactly one restore proof: ``email`` + ``password`` for accounts with\na password, or ``restore_token`` (the one-shot token from the\ndeletion notice email \u2014 the only path for OAuth-only accounts).\nMixing or omitting both is a validation error, not a 403."
       },
       "SendVerificationResponse": {
         "properties": {

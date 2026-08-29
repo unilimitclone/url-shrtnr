@@ -764,6 +764,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     )
     app.state.account_deletion_service = AccountDeletionService(
         user_repo,
+        token_repo=token_repo,
         mailer=erasure_mailer,
         grace_days=settings.account_deletion_grace_days,
     )
