@@ -111,9 +111,7 @@ class FakeTokenRepo:
         self.docs.append(dict(data))
         return ObjectId()
 
-    async def consume_by_hash(self, token_hash, token_type):
-        from types import SimpleNamespace
-
+    def _find_live(self, token_hash, token_type):
         now = datetime.now(timezone.utc)
         for d in self.docs:
             if (
@@ -122,9 +120,23 @@ class FakeTokenRepo:
                 and d["used_at"] is None
                 and d["expires_at"] > now
             ):
-                d["used_at"] = now
-                return SimpleNamespace(**d)
+                return d
         return None
+
+    async def find_valid_by_hash(self, token_hash, token_type):
+        from types import SimpleNamespace
+
+        d = self._find_live(token_hash, token_type)
+        return SimpleNamespace(**d) if d else None
+
+    async def consume_by_hash(self, token_hash, token_type):
+        from types import SimpleNamespace
+
+        d = self._find_live(token_hash, token_type)
+        if d is None:
+            return None
+        d["used_at"] = datetime.now(timezone.utc)
+        return SimpleNamespace(**d)
 
     async def delete_by_hash(self, token_hash, token_type):
         before = len(self.docs)
@@ -633,10 +645,11 @@ def test_restore_token_expired_403():
 
 
 def test_restore_token_for_erasing_account_403():
-    """Token consumed but the cascade already claimed the account — the
-    guarded restore refuses and the answer stays the uniform 403."""
+    """The cascade already claimed the account — the guarded restore
+    refuses (uniform 403) and the token stays unconsumed but useless:
+    ERASING is terminal, and the cascade deletes the token doc anyway."""
     mailer = RecordingMailer()
-    svc, repo, _tokens = _oauth_pending_service(mailer=mailer)
+    svc, repo, tokens = _oauth_pending_service(mailer=mailer)
     _client(svc).request(
         "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
     )
@@ -647,6 +660,80 @@ def test_restore_token_for_erasing_account_403():
 
     assert resp.status_code == 403
     assert mailer.cancelled == []
+    assert tokens.docs[0]["used_at"] is None
+
+
+def test_restore_token_survives_transient_flip_failure():
+    """A transient error during the guarded flip must not burn the
+    single-use token — it is the ONLY cancel proof an OAuth-only account
+    has. Validate without consuming, flip, consume only on success."""
+    mailer = RecordingMailer()
+    svc, repo, tokens = _oauth_pending_service(mailer=mailer)
+    _client(svc).request(
+        "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
+    )
+    token = mailer.requested[0][2]
+    repo.restore.side_effect = [RuntimeError("mongo down"), True]
+    client = _auth_client(svc)
+
+    resp = client.post("/auth/restore", json={"restore_token": token})
+
+    assert resp.status_code == 500
+    # The token survived the outage — the retry restores the account.
+    assert tokens.docs[0]["used_at"] is None
+    retry = client.post("/auth/restore", json={"restore_token": token})
+    assert retry.status_code == 200
+    assert tokens.docs[0]["used_at"] is not None
+    assert mailer.cancelled == ["test@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_restore_token_double_restore_race_single_winner():
+    """Two racers both validate the token before either consumes it; the
+    guarded PENDING_DELETION-only flip picks one winner, the loser gets
+    the uniform 403, and only the winner consumes the token."""
+    from types import SimpleNamespace
+
+    from errors import ForbiddenError
+
+    token_repo = AsyncMock()
+    token_repo.find_valid_by_hash.return_value = SimpleNamespace(
+        user_id=USER_OID, email="test@example.com"
+    )
+    repo = AsyncMock()
+    repo.restore.side_effect = [True, False]
+    svc = AccountDeletionService(repo, token_repo=token_repo, grace_days=GRACE_DAYS)
+
+    await svc.restore_with_token("x" * 43)
+    with pytest.raises(ForbiddenError):
+        await svc.restore_with_token("x" * 43)
+
+    assert repo.restore.await_count == 2
+    token_repo.consume_by_hash.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_restore_token_consume_failure_after_restore_is_harmless():
+    """Consuming is best-effort AFTER a successful flip: replay of the
+    unburned token hits the PENDING_DELETION-only filter and 403s, so a
+    failed consume must not fail the restore the user already won."""
+    from types import SimpleNamespace
+
+    token_repo = AsyncMock()
+    token_repo.find_valid_by_hash.return_value = SimpleNamespace(
+        user_id=USER_OID, email="test@example.com"
+    )
+    token_repo.consume_by_hash.side_effect = RuntimeError("mongo down")
+    repo = AsyncMock()
+    repo.restore.return_value = True
+    mailer = RecordingMailer()
+    svc = AccountDeletionService(
+        repo, token_repo=token_repo, mailer=mailer, grace_days=GRACE_DAYS
+    )
+
+    await svc.restore_with_token("x" * 43)
+
+    assert mailer.cancelled == ["test@example.com"]
 
 
 def test_restore_unknown_token_403():

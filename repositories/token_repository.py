@@ -38,6 +38,26 @@ class TokenRepository(BaseRepository[VerificationTokenDoc]):
             }
         )
 
+    async def find_valid_by_hash(
+        self, token_hash: str, token_type: str
+    ) -> VerificationTokenDoc | None:
+        """Read an unused, non-expired token WITHOUT consuming it.
+
+        Same liveness filter as ``consume_by_hash``, no write — the
+        look-before-flip half of the deletion-restore path, where burning
+        the single-use token before the guarded status flip would make a
+        transient flip failure terminal for OAuth-only accounts.
+        """
+        now = datetime.now(timezone.utc)
+        return await self._find_one(
+            {
+                "token_hash": token_hash,
+                "token_type": token_type,
+                "used_at": None,
+                "expires_at": {"$gt": now},
+            }
+        )
+
     async def consume_by_hash(
         self, token_hash: str, token_type: str
     ) -> VerificationTokenDoc | None:

@@ -164,10 +164,14 @@ class AccountDeletionService:
     async def restore_with_token(self, restore_token: str) -> None:
         """Cancel a pending deletion with the one-shot emailed token.
 
-        The token is consumed atomically (single-use) before the status
-        flip, so a raced double-click cannot restore twice and a token
-        burned against an ERASING account stays burned — once the cascade
-        claims the account, erasure is final.
+        Order is load-bearing: validate the token WITHOUT consuming it,
+        attempt the guarded restore flip, consume only on success —
+        consuming first would let a transient flip error burn the only
+        cancel proof an OAuth-only account has. A raced double-click still
+        restores once: both racers validate, the PENDING_DELETION-only
+        flip picks one winner, the loser answers the uniform 403, and the
+        winner consumes. The consume itself is best-effort — replay of an
+        unburned token hits the not-pending filter and 403s.
 
         Raises:
             ForbiddenError: Uniform 403 for unknown, expired, consumed
@@ -180,8 +184,9 @@ class AccountDeletionService:
             svc_log.info("account_restore_failed", reason="token_repo_unconfigured")
             raise ForbiddenError(_RESTORE_FAILED)
 
-        token_doc = await self._token_repo.consume_by_hash(
-            hash_token(restore_token), TOKEN_TYPE_DELETION_RESTORE
+        token_hash = hash_token(restore_token)
+        token_doc = await self._token_repo.find_valid_by_hash(
+            token_hash, TOKEN_TYPE_DELETION_RESTORE
         )
         if token_doc is None:
             svc_log.info("account_restore_failed", reason="invalid_token")
@@ -194,6 +199,7 @@ class AccountDeletionService:
             )
             raise ForbiddenError(_RESTORE_FAILED)
 
+        await self._consume_restore_token(token_hash)
         svc_log.info("account_restored", user_id=str(token_doc.user_id))
         await self._notify_cancelled(token_doc.email)
 
@@ -378,6 +384,18 @@ class AccountDeletionService:
             )
         except Exception as exc:
             log.warning("account_deletion_token_cleanup_failed", error=str(exc))
+
+    async def _consume_restore_token(self, token_hash: str) -> None:
+        """Best-effort burn AFTER a successful restore flip. A failed
+        consume is harmless: the account is no longer PENDING_DELETION, so
+        a replay of the unburned token 403s on the guarded flip.
+        """
+        try:
+            await self._token_repo.consume_by_hash(
+                token_hash, TOKEN_TYPE_DELETION_RESTORE
+            )
+        except Exception as exc:
+            log.warning("account_restore_token_consume_failed", error=str(exc))
 
     async def _discard_restore_tokens(self, user_id: ObjectId) -> None:
         """Best-effort: a credential restore invalidates the emailed link."""

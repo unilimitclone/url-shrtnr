@@ -42,6 +42,22 @@ class TestTokenRepository:
         assert await self._repo(col).mark_as_used(TOKEN_OID) is False
 
     @pytest.mark.asyncio
+    async def test_find_valid_by_hash_reads_without_consuming(self):
+        # The look-before-flip half of restore_with_token: same liveness
+        # filter as consume_by_hash, but no write.
+        col = make_collection()
+        col.find_one = AsyncMock(return_value=None)
+        result = await self._repo(col).find_valid_by_hash("h" * 64, "deletion_restore")
+        assert result is None
+        query = col.find_one.call_args[0][0]
+        assert query["token_hash"] == "h" * 64
+        assert query["token_type"] == "deletion_restore"
+        assert query["used_at"] is None
+        assert isinstance(query["expires_at"]["$gt"], datetime)
+        col.find_one_and_update.assert_not_called()
+        col.update_one.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_delete_by_user_no_type_filter(self):
         col = make_collection()
         col.delete_many = AsyncMock(return_value=MagicMock(deleted_count=2))
