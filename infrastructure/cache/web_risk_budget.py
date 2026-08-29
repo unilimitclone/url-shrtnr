@@ -10,7 +10,10 @@ is simply absent, which is a state the tool already renders.
 Global, not per caller. Per-caller rate limits bound one IP; this bounds
 the bill and the analyzer's headroom.
 
-Without Redis the cap is unenforced, matching every other cache here.
+Unlike the caches here, it fails closed. It shares its Redis with the
+expander's result cache, so an outage removes the cache that absorbs
+lookups and the cap that bounds them at the same moment. Unable to count
+means unable to spend.
 """
 
 from __future__ import annotations
@@ -39,18 +42,18 @@ class WebRiskBudget:
         self._prefix = prefix
 
     async def take(self) -> bool:
-        """Claim one lookup. False once the day's cap is spent."""
+        """Claim one lookup. False once the day's cap is spent, and false
+        whenever the count is unavailable."""
         if self._redis is None:
-            return True
+            return False
         key = f"{self._prefix}:{datetime.now(timezone.utc):%Y-%m-%d}"
         try:
             used = await self._redis.incr(key)
             if used == 1:
                 await self._redis.expire(key, _KEY_TTL_SECONDS)
         except Exception as exc:
-            # A broken counter must not take the feature down with it.
             log.warning("web_risk_budget_error", error=str(exc))
-            return True
+            return False
         if used == self._limit + 1:
             log.warning("web_risk_budget_exhausted", limit=self._limit)
         return used <= self._limit

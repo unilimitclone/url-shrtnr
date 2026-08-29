@@ -44,12 +44,16 @@ async def test_the_daily_key_expires_so_it_self_clears():
 
 
 @pytest.mark.asyncio
-async def test_without_redis_the_cap_is_unenforced():
-    assert await WebRiskBudget(None, limit=0).take() is True
+async def test_without_redis_nothing_is_spent():
+    assert await WebRiskBudget(None, limit=1_000).take() is False
 
 
 @pytest.mark.asyncio
-async def test_a_broken_counter_does_not_take_the_feature_down():
+async def test_a_broken_counter_refuses_rather_than_waving_calls_through():
+    """The counter shares its Redis with the expander's result cache, so an
+    outage drops the cache and the cap together. Unable to count means
+    unable to spend, or the quota goes exactly when it is least affordable.
+    """
     redis = AsyncMock()
     redis.incr = AsyncMock(side_effect=RuntimeError("redis down"))
-    assert await WebRiskBudget(redis, limit=1).take() is True
+    assert await WebRiskBudget(redis, limit=1_000).take() is False
