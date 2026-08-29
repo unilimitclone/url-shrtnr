@@ -16,6 +16,7 @@ from infrastructure.cache.feature_flag_cache import FeatureFlagCache
 from infrastructure.cache.meta_fetch_cache import MetaFetchCache
 from infrastructure.cache.onboarding_cache import OnboardingCache
 from infrastructure.cache.url_cache import UrlCache
+from infrastructure.cache.web_risk_budget import WebRiskBudget
 from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.cloudflare_client import CloudflareClient
 from infrastructure.cloudflare_kv import CloudflareKVClient
@@ -23,7 +24,11 @@ from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from infrastructure.ops_notify import DiscordOpsNotifier
 from infrastructure.storage.r2 import R2StorageClient
-from infrastructure.web_risk import DEFAULT_THREAT_TYPES, WebRiskClient
+from infrastructure.web_risk import (
+    DISPLAY_THREAT_TYPES,
+    ENFORCEMENT_THREAT_TYPES,
+    WebRiskClient,
+)
 from repositories.api_key_repository import ApiKeyRepository
 from repositories.app_grant_repository import AppGrantRepository
 from repositories.blocked_domain_repository import BlockedDomainRepository
@@ -139,7 +144,7 @@ def build_expander_web_risk(
         http_client,
         api_key=safety.web_risk_api_key,
         api_base=safety.web_risk_api_base,
-        threat_types=(*DEFAULT_THREAT_TYPES, "UNWANTED_SOFTWARE"),
+        threat_types=DISPLAY_THREAT_TYPES,
         timeout=_EXPANDER_WEB_RISK_TIMEOUT,
     )
 
@@ -378,6 +383,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
                     http_client,
                     api_key=sf_settings.web_risk_api_key,
                     api_base=sf_settings.web_risk_api_base,
+                    threat_types=ENFORCEMENT_THREAT_TYPES,
                 )
             )
         )
@@ -568,6 +574,9 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         regex_timeout=settings.blocked_url_regex_timeout,
         user_agent=settings.meta_tags.fetch_user_agent,
         web_risk=build_expander_web_risk(settings, http_client),
+        web_risk_budget=WebRiskBudget(
+            redis_client, limit=settings.safety.web_risk_expander_daily_budget
+        ),
     )
     app.state.domain_intel_service = DomainIntelService(
         MetaFetchCache(redis_client, prefix="domain_intel", ttl_seconds=86_400),

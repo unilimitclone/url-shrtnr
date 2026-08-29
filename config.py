@@ -578,6 +578,9 @@ class SafetySettings(BaseSettings):
     # sanctioned equivalent.)
     web_risk_api_key: str = ""
     web_risk_api_base: str = "https://webrisk.googleapis.com"
+    # The public expander shares this quota with the analyzer; its capped
+    # share keeps tool traffic from spending the ~3.3k/day free tier.
+    web_risk_expander_daily_budget: int = Field(default=1_000, ge=0)
 
     @property
     def web_risk_enabled(self) -> bool:

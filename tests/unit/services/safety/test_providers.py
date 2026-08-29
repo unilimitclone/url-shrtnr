@@ -99,13 +99,15 @@ class TestWebRiskProvider:
 
     @pytest.mark.asyncio
     async def test_threat_match_is_toxic(self):
-        from infrastructure.web_risk import WebRiskClient
+        from infrastructure.web_risk import ENFORCEMENT_THREAT_TYPES, WebRiskClient
         from services.safety.providers import WebRiskProvider
 
         http = self._http(
             {"threat": {"threatTypes": ["SOCIAL_ENGINEERING"], "expireTime": "x"}}
         )
-        provider = WebRiskProvider(WebRiskClient(http, api_key="k123"))
+        provider = WebRiskProvider(
+            WebRiskClient(http, api_key="k123", threat_types=ENFORCEMENT_THREAT_TYPES)
+        )
         verdict = await provider.analyze(
             "https://phish.com/x", "phish.com", "phish.com"
         )
@@ -125,25 +127,35 @@ class TestWebRiskProvider:
 
     @pytest.mark.asyncio
     async def test_empty_response_abstains(self):
-        from infrastructure.web_risk import WebRiskClient
+        from infrastructure.web_risk import ENFORCEMENT_THREAT_TYPES, WebRiskClient
         from services.safety.providers import WebRiskProvider
 
-        provider = WebRiskProvider(WebRiskClient(self._http({}), api_key="k123"))
+        provider = WebRiskProvider(
+            WebRiskClient(
+                self._http({}), api_key="k123", threat_types=ENFORCEMENT_THREAT_TYPES
+            )
+        )
         assert await provider.analyze("https://ok.com/x", "ok.com", "ok.com") is None
 
     @pytest.mark.asyncio
     async def test_http_error_and_exception_abstain(self):
-        from infrastructure.web_risk import WebRiskClient
+        from infrastructure.web_risk import ENFORCEMENT_THREAT_TYPES, WebRiskClient
         from services.safety.providers import WebRiskProvider
 
         provider = WebRiskProvider(
-            WebRiskClient(self._http({}, status=429), api_key="k123")
+            WebRiskClient(
+                self._http({}, status=429),
+                api_key="k123",
+                threat_types=ENFORCEMENT_THREAT_TYPES,
+            )
         )
         assert await provider.analyze("https://ok.com/x", "ok.com", "ok.com") is None
 
         http = AsyncMock()
         http.get = AsyncMock(side_effect=RuntimeError("boom"))
-        provider = WebRiskProvider(WebRiskClient(http, api_key="k123"))
+        provider = WebRiskProvider(
+            WebRiskClient(http, api_key="k123", threat_types=ENFORCEMENT_THREAT_TYPES)
+        )
         assert await provider.analyze("https://ok.com/x", "ok.com", "ok.com") is None
 
 

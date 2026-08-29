@@ -14,7 +14,10 @@ from infrastructure.logging import get_logger
 
 log = get_logger(__name__)
 
-DEFAULT_THREAT_TYPES = ("MALWARE", "SOCIAL_ENGINEERING")
+# Enforcement drives auto-blocking, so widening it is a policy change and
+# never a side effect of touching the display list.
+ENFORCEMENT_THREAT_TYPES = ("MALWARE", "SOCIAL_ENGINEERING")
+DISPLAY_THREAT_TYPES = (*ENFORCEMENT_THREAT_TYPES, "UNWANTED_SOFTWARE")
 
 
 class WebRiskClient:
@@ -32,7 +35,7 @@ class WebRiskClient:
         *,
         api_key: str,
         api_base: str = "https://webrisk.googleapis.com",
-        threat_types: Sequence[str] = DEFAULT_THREAT_TYPES,
+        threat_types: Sequence[str],
         timeout: float = 10.0,
     ) -> None:
         self._http = http_client

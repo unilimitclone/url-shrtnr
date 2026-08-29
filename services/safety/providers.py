@@ -85,9 +85,12 @@ class FeedDomainProvider:
 
 
 class WebRiskProvider:
-    """Google Web Risk verdict for the full URL. Online lookup (100k/month
-    free tier covers report-triggered volume by orders of magnitude); the
-    local hash-DB variant is a later create-gate concern.
+    """Google Web Risk verdict for the full URL. Online lookup; the local
+    hash-DB variant is a later create-gate concern.
+
+    The 100k/month free tier no longer belongs to reports alone: the public
+    URL expander spends the same project quota, which is why its share is
+    capped and this consumer's is not.
 
     An unanswered lookup abstains.
     """
