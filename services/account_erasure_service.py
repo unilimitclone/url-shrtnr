@@ -134,6 +134,7 @@ class AccountErasureService:
         key_secret: str = "",
         batch_limit: int = 25,
         time_budget_seconds: float = 480,
+        claim_lease_seconds: int = 900,
     ) -> None:
         self._user_repo = user_repo
         self._url_service = url_service
@@ -160,6 +161,9 @@ class AccountErasureService:
         # Stop STARTING erasures once this much of a sweep run is spent —
         # default 80% of the scheduler's 600s lease (see sweep()).
         self._time_budget_seconds = time_budget_seconds
+        # How long a claim marks a cascade LIVE (not stealable) — must exceed
+        # the time budget plus one heavy cascade or runners double-erase.
+        self._claim_lease_seconds = claim_lease_seconds
 
     async def erase(self, user_id: ObjectId) -> dict[str, int]:
         """Run the full cascade for one account. Returns per-step counts.
@@ -168,14 +172,17 @@ class AccountErasureService:
         a failed claim returns ``{}`` — the account was restored mid-sweep,
         already erased, or is not purge-due — and nothing is touched. Once
         the claim holds, erasure is final: restore no longer matches.
-        Mongo/R2 failures propagate (the ERASING doc is still there, so the
-        next sweep re-claims and retries); PostHog and mail failures are
+        Mongo/R2 failures propagate (the ERASING doc is still there, so a
+        later sweep re-claims and retries once its claim lease expires);
+        PostHog and mail failures are
         swallowed — neither may park an account in ERASING forever.
         Deleted R2 objects may outlive origin deletion at the CDN edge
         until their cache TTL lapses — no CDN purge is attempted here.
         """
         claimed = await self._user_repo.claim_for_erasure(
-            user_id, now=datetime.now(timezone.utc)
+            user_id,
+            now=datetime.now(timezone.utc),
+            lease_seconds=self._claim_lease_seconds,
         )
         if not claimed:
             return {}
@@ -265,7 +272,9 @@ class AccountErasureService:
         """
         started = time.monotonic()
         due = await self._user_repo.find_purge_due(
-            now=datetime.now(timezone.utc), limit=self._batch_limit
+            now=datetime.now(timezone.utc),
+            limit=self._batch_limit,
+            lease_seconds=self._claim_lease_seconds,
         )
         erased = failed = skipped = deferred = 0
         for index, user in enumerate(due):

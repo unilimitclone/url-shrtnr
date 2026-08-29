@@ -351,6 +351,7 @@ def build_account_erasure_service(
         key_secret=settings.secret_key,
         batch_limit=settings.account_erasure_batch_limit,
         time_budget_seconds=settings.account_erasure_time_budget_seconds,
+        claim_lease_seconds=settings.account_erasure_claim_lease_seconds,
     )
 
 
@@ -989,6 +990,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         key_secret=settings.secret_key,
         batch_limit=settings.account_erasure_batch_limit,
         time_budget_seconds=settings.account_erasure_time_budget_seconds,
+        claim_lease_seconds=settings.account_erasure_claim_lease_seconds,
     )
 
     # ── Scheduled tasks ──────────────────────────────────────────────

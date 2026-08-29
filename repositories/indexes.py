@@ -51,7 +51,13 @@ async def ensure_indexes(
         if getattr(e, "code", None) != 85:  # IndexOptionsConflict
             raise
         # Mongo rejects option edits on an existing name: drop-recreate.
-        await users_col.drop_index("pending_deletion_sweep")
+        try:
+            await users_col.drop_index("pending_deletion_sweep")
+        except OperationFailure as drop_err:
+            # Code 27 = IndexNotFound: a racing instance (rolling deploy)
+            # already dropped it — recreating below is still correct.
+            if getattr(drop_err, "code", None) != 27:
+                raise
         await users_col.create_index(
             [("status", 1), ("purge_after", 1)], **_sweep_index_spec
         )

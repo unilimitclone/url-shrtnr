@@ -19,6 +19,26 @@ from schemas.models.user import UserDoc, UserStatus
 log = get_logger(__name__)
 
 
+def _purge_due_clauses(now: datetime, lease_seconds: int) -> list[dict]:
+    """The two ways an account can be purge-due, as ``$or`` branches:
+    PENDING_DELETION past its deadline, or ERASING whose claim lease has
+    expired (a crashed cascade). An ERASING doc inside its lease is a LIVE
+    cascade — deliberately never matched, so the sweep can't run it twice.
+    Shared by ``claim_for_erasure`` and ``find_purge_due`` so the sweep's
+    view and the claim's guard can never drift apart.
+    """
+    return [
+        {
+            "status": UserStatus.PENDING_DELETION.value,
+            "purge_after": {"$lte": now},
+        },
+        {
+            "status": UserStatus.ERASING.value,
+            "erasure_claimed_at": {"$lte": now - timedelta(seconds=lease_seconds)},
+        },
+    ]
+
+
 class UserRepository(BaseRepository[UserDoc]):
     async def find_by_email(self, email: str) -> UserDoc | None:
         """Find a user by email address."""
@@ -92,14 +112,19 @@ class UserRepository(BaseRepository[UserDoc]):
             {"$set": {"storage_prefix": prefix}},
         )
 
-    async def mark_pending_deletion(self, user_id: ObjectId, grace_days: int) -> bool:
+    async def mark_pending_deletion(
+        self, user_id: ObjectId, grace_days: int, *, now: datetime | None = None
+    ) -> bool:
         """Flip an ACTIVE account to PENDING_DELETION with a purge deadline.
 
         Guarded transition — the filter matches ACTIVE only, so a repeat
         request (or one against an INACTIVE account) is a no-op. Returns
-        True only when THIS call performed the flip.
+        True only when THIS call performed the flip. ``now`` lets the caller
+        pin the deadline to a timestamp it already committed elsewhere (the
+        OAuth-only restore token's expiry must equal the stored
+        ``purge_after`` exactly).
         """
-        now = datetime.now(timezone.utc)
+        now = now or datetime.now(timezone.utc)
         return await self._update_modified(
             {"_id": user_id, "status": UserStatus.ACTIVE.value},
             {
@@ -111,28 +136,31 @@ class UserRepository(BaseRepository[UserDoc]):
             },
         )
 
-    async def claim_for_erasure(self, user_id: ObjectId, now: datetime) -> bool:
+    async def claim_for_erasure(
+        self, user_id: ObjectId, now: datetime, lease_seconds: int
+    ) -> bool:
         """Atomically claim a purge-due account for the erasure cascade.
 
-        Guarded transition: only a PENDING_DELETION or ERASING doc whose
-        ``purge_after`` has passed matches, so a restore that landed after
-        sweep selection wins — the claim fails and the account survives.
-        ERASING is deliberately re-claimable: a crashed cascade retries on
-        the next sweep. ``purge_after`` is preserved (never unset) so that
-        re-claim still matches. Returns True when the claim holds.
+        Guarded transition: a PENDING_DELETION doc whose ``purge_after``
+        has passed matches, so a restore that landed after sweep selection
+        wins — the claim fails and the account survives. An ERASING doc is
+        re-claimable only once its ``erasure_claimed_at`` lease has expired
+        (a crashed cascade retries on the next sweep); a fresh claim marks
+        a LIVE cascade and can never be stolen by a second runner.
+        ``purge_after`` is preserved (never unset) so that re-claim still
+        matches. Returns True when the claim holds.
         """
         return await self._update(
             {
                 "_id": user_id,
-                "status": {
-                    "$in": [
-                        UserStatus.PENDING_DELETION.value,
-                        UserStatus.ERASING.value,
-                    ]
-                },
-                "purge_after": {"$lte": now},
+                "$or": _purge_due_clauses(now, lease_seconds),
             },
-            {"$set": {"status": UserStatus.ERASING.value}},
+            {
+                "$set": {
+                    "status": UserStatus.ERASING.value,
+                    "erasure_claimed_at": now,
+                }
+            },
         )
 
     async def restore(self, user_id: ObjectId) -> bool:
@@ -148,31 +176,34 @@ class UserRepository(BaseRepository[UserDoc]):
             {"_id": user_id, "status": UserStatus.PENDING_DELETION.value},
             {
                 "$set": {"status": UserStatus.ACTIVE.value},
-                "$unset": {"deletion_requested_at": "", "purge_after": ""},
+                # erasure_claimed_at only exists on ERASING docs (unreachable
+                # here) — cleared as hygiene against manual ops status edits.
+                "$unset": {
+                    "deletion_requested_at": "",
+                    "purge_after": "",
+                    "erasure_claimed_at": "",
+                },
             },
         )
 
-    async def find_purge_due(self, now: datetime, limit: int) -> list[UserDoc]:
-        """Return purge-due users — PENDING_DELETION plus ERASING retries.
+    async def find_purge_due(
+        self, now: datetime, limit: int, lease_seconds: int
+    ) -> list[UserDoc]:
+        """Return purge-due users — PENDING_DELETION past their deadline
+        plus expired-claim ERASING retries (crashed cascades). ERASING docs
+        inside their claim lease are LIVE cascades and stay out of the
+        sweep's view. Oldest deadline first, capped at *limit*.
 
-        ERASING docs are crashed cascades awaiting re-claim, so they stay in
-        the sweep's view. Oldest deadline first, capped at *limit* — the
-        erasure sweep's whole query shape, served by the
-        ``pending_deletion_sweep`` partial index.
+        Still served by the ``pending_deletion_sweep`` partial index: its
+        partialFilterExpression (status $in [PENDING_DELETION, ERASING])
+        subsumes both $or branches' status equalities, and the first branch
+        also bounds the indexed ``purge_after`` key; the ERASING branch's
+        ``erasure_claimed_at`` filters residually over the handful of
+        ERASING entries the partial index holds.
         """
         try:
             cursor = (
-                self._col.find(
-                    {
-                        "status": {
-                            "$in": [
-                                UserStatus.PENDING_DELETION.value,
-                                UserStatus.ERASING.value,
-                            ]
-                        },
-                        "purge_after": {"$lte": now},
-                    }
-                )
+                self._col.find({"$or": _purge_due_clauses(now, lease_seconds)})
                 .sort("purge_after", 1)
                 .limit(limit)
             )

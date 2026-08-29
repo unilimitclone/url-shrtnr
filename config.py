@@ -736,6 +736,9 @@ class AppSettings(BaseSettings):
     # Sweep-run budget: stop STARTING erasures past this (80% of the 600s
     # scheduler lease) so a batch of heavy cascades never outruns the lease.
     account_erasure_time_budget_seconds: int = 480
+    # Erasure-claim lease: ERASING accounts re-claim only after this — must
+    # exceed the sweep budget plus one heavy cascade (prod whale ~305s).
+    account_erasure_claim_lease_seconds: int = 900
 
     # Validator constraints (overridable by self-hosters via env vars)
     blocked_url_regex_timeout: float = 0.2
@@ -767,6 +770,7 @@ class AppSettings(BaseSettings):
         "geo_rules_max_countries",
         "account_erasure_batch_limit",
         "account_erasure_time_budget_seconds",
+        "account_erasure_claim_lease_seconds",
     )
     @classmethod
     def _must_be_positive_int(cls, v: int, info) -> int:

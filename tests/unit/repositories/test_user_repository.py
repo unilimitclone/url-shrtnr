@@ -233,7 +233,13 @@ class TestUserRepository:
         # Guarded transition: only a PENDING_DELETION doc may flip back.
         assert query == {"_id": USER_OID, "status": "PENDING_DELETION"}
         assert ops["$set"] == {"status": "ACTIVE"}
-        assert set(ops["$unset"]) == {"deletion_requested_at", "purge_after"}
+        # erasure_claimed_at can only be set on ERASING docs (unreachable
+        # from PENDING_DELETION) — unset anyway as claim-lease hygiene.
+        assert set(ops["$unset"]) == {
+            "deletion_requested_at",
+            "purge_after",
+            "erasure_claimed_at",
+        }
 
     @pytest.mark.asyncio
     async def test_restore_rejected_when_not_pending(self):
@@ -245,26 +251,55 @@ class TestUserRepository:
 
     # ── Erasure claim ─────────────────────────────────────────────────────────
 
+    LEASE = 900
+
+    def _purge_due_filter(self, now):
+        """The $or both claim_for_erasure and find_purge_due must emit."""
+        return [
+            {"status": "PENDING_DELETION", "purge_after": {"$lte": now}},
+            {
+                "status": "ERASING",
+                "erasure_claimed_at": {"$lte": now - timedelta(seconds=self.LEASE)},
+            },
+        ]
+
+    @staticmethod
+    def _matches(query: dict, doc: dict) -> bool:
+        """Minimal Mongo-filter evaluator for the operators the claim uses
+        ($or, equality, $lte) — proves match semantics, not just shape."""
+
+        def field_matches(value, cond):
+            if isinstance(cond, dict) and "$lte" in cond:
+                return value is not None and value <= cond["$lte"]
+            return value == cond
+
+        for key, cond in query.items():
+            if key == "$or":
+                if not any(TestUserRepository._matches(c, doc) for c in cond):
+                    return False
+            elif not field_matches(doc.get(key), cond):
+                return False
+        return True
+
     @pytest.mark.asyncio
     async def test_claim_for_erasure_query_shape_and_success(self):
-        """The claim matches only purge-due PENDING_DELETION/ERASING docs
-        and flips to ERASING without ever touching purge_after."""
+        """The claim matches purge-due PENDING_DELETION docs and
+        expired-claim ERASING docs, flips to ERASING, and stamps the claim
+        lease — without ever touching purge_after."""
         col = make_collection()
         col.update_one = AsyncMock(
             return_value=MagicMock(matched_count=1, modified_count=1)
         )
         now = datetime.now(timezone.utc)
 
-        ok = await self._repo(col).claim_for_erasure(USER_OID, now=now)
+        ok = await self._repo(col).claim_for_erasure(
+            USER_OID, now=now, lease_seconds=self.LEASE
+        )
 
         assert ok is True
         query, ops = col.update_one.await_args.args
-        assert query == {
-            "_id": USER_OID,
-            "status": {"$in": ["PENDING_DELETION", "ERASING"]},
-            "purge_after": {"$lte": now},
-        }
-        assert ops == {"$set": {"status": "ERASING"}}
+        assert query == {"_id": USER_OID, "$or": self._purge_due_filter(now)}
+        assert ops == {"$set": {"status": "ERASING", "erasure_claimed_at": now}}
         # purge_after survives the claim — a crashed cascade must stay
         # re-claimable on the next sweep.
         assert "$unset" not in ops
@@ -278,26 +313,85 @@ class TestUserRepository:
             return_value=MagicMock(matched_count=0, modified_count=0)
         )
         ok = await self._repo(col).claim_for_erasure(
-            USER_OID, now=datetime.now(timezone.utc)
+            USER_OID, now=datetime.now(timezone.utc), lease_seconds=self.LEASE
         )
         assert ok is False
 
     @pytest.mark.asyncio
-    async def test_claim_for_erasure_reclaims_erasing_doc(self):
-        """A crashed cascade left the doc ERASING: the re-claim matches but
-        modifies nothing — it must still count as claimed."""
+    async def test_claim_for_erasure_rejects_live_cascade(self):
+        """THE lease's whole point: an ERASING doc with a fresh
+        erasure_claimed_at is a cascade still running — a second runner's
+        claim filter must not match it, even though it is purge-due."""
         col = make_collection()
         col.update_one = AsyncMock(
-            return_value=MagicMock(matched_count=1, modified_count=0)
+            return_value=MagicMock(matched_count=1, modified_count=1)
         )
+        now = datetime.now(timezone.utc)
+        await self._repo(col).claim_for_erasure(
+            USER_OID, now=now, lease_seconds=self.LEASE
+        )
+        query, _ops = col.update_one.await_args.args
+
+        live = {
+            "_id": USER_OID,
+            "status": "ERASING",
+            "purge_after": now - timedelta(days=1),
+            # Claimed mid-lease — e.g. 500s into a 600s scheduler lease.
+            "erasure_claimed_at": now - timedelta(seconds=500),
+        }
+        assert self._matches(query, live) is False
+
+    @pytest.mark.asyncio
+    async def test_claim_for_erasure_reclaims_expired_claim(self):
+        """A crashed cascade (claim older than the lease) is re-claimable;
+        a legacy ERASING doc without the stamp is not silently matched."""
+        col = make_collection()
+        col.update_one = AsyncMock(
+            return_value=MagicMock(matched_count=1, modified_count=1)
+        )
+        now = datetime.now(timezone.utc)
         ok = await self._repo(col).claim_for_erasure(
-            USER_OID, now=datetime.now(timezone.utc)
+            USER_OID, now=now, lease_seconds=self.LEASE
         )
         assert ok is True
+        query, _ops = col.update_one.await_args.args
+
+        crashed = {
+            "_id": USER_OID,
+            "status": "ERASING",
+            "purge_after": now - timedelta(days=1),
+            "erasure_claimed_at": now - timedelta(seconds=self.LEASE + 1),
+        }
+        assert self._matches(query, crashed) is True
+
+    @pytest.mark.asyncio
+    async def test_claim_for_erasure_matches_due_pending_and_stamps_claim(self):
+        """A due PENDING_DELETION doc claims regardless of the lease, and
+        the winning update stamps erasure_claimed_at = now."""
+        col = make_collection()
+        col.update_one = AsyncMock(
+            return_value=MagicMock(matched_count=1, modified_count=1)
+        )
+        now = datetime.now(timezone.utc)
+        await self._repo(col).claim_for_erasure(
+            USER_OID, now=now, lease_seconds=self.LEASE
+        )
+        query, ops = col.update_one.await_args.args
+
+        due = {
+            "_id": USER_OID,
+            "status": "PENDING_DELETION",
+            "purge_after": now - timedelta(seconds=1),
+        }
+        not_due = due | {"purge_after": now + timedelta(days=1)}
+        assert self._matches(query, due) is True
+        assert self._matches(query, not_due) is False
+        assert ops["$set"]["erasure_claimed_at"] == now
 
     @pytest.mark.asyncio
     async def test_find_purge_due_query_shape_and_models(self):
-        """Only due PENDING_DELETION docs match; oldest deadline first, capped."""
+        """Same $or as the claim — due PENDING_DELETION plus expired-claim
+        ERASING; oldest deadline first, capped."""
         col = make_collection()
         now = datetime.now(timezone.utc)
         doc = self._user_doc() | {
@@ -308,14 +402,11 @@ class TestUserRepository:
         cursor = col.find.return_value
         cursor.to_list = AsyncMock(return_value=[doc])
 
-        due = await self._repo(col).find_purge_due(now=now, limit=25)
-
-        col.find.assert_called_once_with(
-            {
-                "status": {"$in": ["PENDING_DELETION", "ERASING"]},
-                "purge_after": {"$lte": now},
-            }
+        due = await self._repo(col).find_purge_due(
+            now=now, limit=25, lease_seconds=self.LEASE
         )
+
+        col.find.assert_called_once_with({"$or": self._purge_due_filter(now)})
         cursor.sort.assert_called_once_with("purge_after", 1)
         cursor.limit.assert_called_once_with(25)
         cursor.to_list.assert_awaited_once_with(length=25)
@@ -323,11 +414,34 @@ class TestUserRepository:
         assert due[0].purge_after == doc["purge_after"]
 
     @pytest.mark.asyncio
+    async def test_find_purge_due_excludes_in_flight_erasing(self):
+        """The sweep's view mirrors the claim: an in-flight cascade (fresh
+        claim) stays out; a crashed one (expired claim) comes back."""
+        col = make_collection()
+        now = datetime.now(timezone.utc)
+        cursor = col.find.return_value
+        cursor.to_list = AsyncMock(return_value=[])
+
+        await self._repo(col).find_purge_due(
+            now=now, limit=25, lease_seconds=self.LEASE
+        )
+        (query,) = col.find.call_args.args
+
+        base = {
+            "status": "ERASING",
+            "purge_after": now - timedelta(days=1),
+        }
+        in_flight = base | {"erasure_claimed_at": now - timedelta(seconds=10)}
+        crashed = base | {"erasure_claimed_at": now - timedelta(seconds=self.LEASE + 1)}
+        assert self._matches(query, in_flight) is False
+        assert self._matches(query, crashed) is True
+
+    @pytest.mark.asyncio
     async def test_find_purge_due_empty(self):
         col = make_collection()
         assert (
             await self._repo(col).find_purge_due(
-                now=datetime.now(timezone.utc), limit=25
+                now=datetime.now(timezone.utc), limit=25, lease_seconds=self.LEASE
             )
             == []
         )
@@ -340,7 +454,7 @@ class TestUserRepository:
         )
         with pytest.raises(OperationFailure):
             await self._repo(col).find_purge_due(
-                now=datetime.now(timezone.utc), limit=25
+                now=datetime.now(timezone.utc), limit=25, lease_seconds=self.LEASE
             )
 
     @pytest.mark.asyncio

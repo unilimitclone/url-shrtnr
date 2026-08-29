@@ -142,6 +142,7 @@ def _service(
     mailer=...,
     batch_limit=25,
     time_budget_seconds=480,
+    claim_lease_seconds=900,
 ):
     return AccountErasureService(
         user_repo=stubs.user_repo,
@@ -164,6 +165,7 @@ def _service(
         key_secret=SECRET,
         batch_limit=batch_limit,
         time_budget_seconds=time_budget_seconds,
+        claim_lease_seconds=claim_lease_seconds,
     )
 
 
@@ -463,6 +465,17 @@ async def test_sweep_respects_batch_limit():
 
 
 @pytest.mark.asyncio
+async def test_claim_lease_threaded_into_claim_and_sweep_view():
+    """The configured lease reaches both repo calls — the claim's guard
+    and the sweep's due-view must judge staleness by the same clock."""
+    stubs = Stubs()
+    stubs.user_repo.find_purge_due = AsyncMock(return_value=[_user_doc()])
+    await _service(stubs, claim_lease_seconds=1234).sweep()
+    assert stubs.user_repo.find_purge_due.await_args.kwargs["lease_seconds"] == 1234
+    assert stubs.user_repo.claim_for_erasure.await_args.kwargs["lease_seconds"] == 1234
+
+
+@pytest.mark.asyncio
 async def test_sweep_isolates_per_user_failures():
     stubs = Stubs()
     user_a, user_b = _user_doc(UID), _user_doc(UID2, email="b@example.com")
@@ -502,7 +515,7 @@ async def test_sweep_mid_sweep_restore_leaves_account_intact():
     )
     # user_a restored mid-sweep: its claim fails; user_b still erases.
     stubs.user_repo.claim_for_erasure = AsyncMock(
-        side_effect=lambda uid, now: uid != UID
+        side_effect=lambda uid, now, lease_seconds: uid != UID
     )
     result = await _service(stubs).sweep()
     assert result == {"erased": 1, "failed": 0, "skipped": 1, "deferred": 0}

@@ -240,6 +240,79 @@ class TestEnsureIndexes:
         )
 
     @pytest.mark.asyncio
+    async def test_sweep_index_recreate_tolerates_racing_drop(self):
+        """Rolling deploy: two instances hit code 85 together; the loser's
+        drop_index gets code 27 (IndexNotFound). Recreating is still correct,
+        so startup must swallow it (same guard as _ensure_ttl_index)."""
+        from repositories.indexes import ensure_indexes
+
+        db = MagicMock()
+        col = AsyncMock()
+        conflict = OperationFailure("options conflict", code=85)
+        not_found = OperationFailure("index not found", code=27)
+
+        async def create_index(keys, **kwargs):
+            if (
+                kwargs.get("name") == "pending_deletion_sweep"
+                and not col.drop_index.await_count
+            ):
+                raise conflict
+            return None
+
+        async def drop_index(name):
+            if name == "pending_deletion_sweep":
+                raise not_found
+            return None
+
+        col.create_index = AsyncMock(side_effect=create_index)
+        col.drop_index = AsyncMock(side_effect=drop_index)
+        db.__getitem__ = lambda self, name: col
+        db.create_collection = AsyncMock(side_effect=CollectionInvalid("clicks"))
+
+        # Must not raise.
+        await ensure_indexes(db)
+
+        col.drop_index.assert_any_await("pending_deletion_sweep")
+        # Recreated even though the racing instance won the drop.
+        col.create_index.assert_any_await(
+            [("status", 1), ("purge_after", 1)],
+            name="pending_deletion_sweep",
+            partialFilterExpression={
+                "status": {"$in": ["PENDING_DELETION", "ERASING"]}
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_sweep_index_drop_propagates_non_index_not_found(self):
+        # Only IndexNotFound is a benign race — anything else (permissions,
+        # connection loss) must fail startup, not be papered over.
+        from repositories.indexes import ensure_indexes
+
+        db = MagicMock()
+        col = AsyncMock()
+        conflict = OperationFailure("options conflict", code=85)
+        perm_err = OperationFailure("not authorized", code=13)  # Unauthorized
+
+        async def create_index(keys, **kwargs):
+            if kwargs.get("name") == "pending_deletion_sweep":
+                raise conflict
+            return None
+
+        async def drop_index(name):
+            if name == "pending_deletion_sweep":
+                raise perm_err
+            return None
+
+        col.create_index = AsyncMock(side_effect=create_index)
+        col.drop_index = AsyncMock(side_effect=drop_index)
+        db.__getitem__ = lambda self, name: col
+        db.create_collection = AsyncMock(side_effect=CollectionInvalid("clicks"))
+
+        with pytest.raises(OperationFailure) as exc_info:
+            await ensure_indexes(db)
+        assert exc_info.value.code == 13
+
+    @pytest.mark.asyncio
     async def test_drop_alias_1_propagates_other_errors(self):
         # Any drop_index failure that ISN'T IndexNotFound must propagate —
         # silent swallowing of e.g. permission errors would mask real bugs.
