@@ -111,6 +111,9 @@ class AccountErasureService:
 
     def __init__(
         self,
+        *,
+        # Keyword-only, repos included: a mis-ordered positional repo in a
+        # destructive cascade fails silently; this makes drift a type error.
         user_repo: UserRepository,
         url_service: UrlService,
         domain_service: CustomDomainService,
@@ -125,7 +128,6 @@ class AccountErasureService:
         report_repo: ReportRepository,
         report_submission_repo: ReportSubmissionRepository,
         feature_flag_repo: FeatureFlagRepository,
-        *,
         r2_storage: R2StorageClient | None = None,
         posthog: PostHogEraser | None = None,
         mailer: ErasureMailer | None = None,
@@ -193,17 +195,16 @@ class AccountErasureService:
             r2_prefixes = (stored_prefix or computed_prefix,)
 
         counts: dict[str, int] = {}
-        # 1. Links first — per-link cache/edge purge, then bulk delete. BLOCKED
-        # links come back retained+scrubbed (Art. 17(3) abuse retention).
+        # BLOCKED links come back retained + scrubbed, never deleted —
+        # Art. 17(3) abuse retention (audit trail + alias reservation).
         url_result = await self._url_service.delete_all_by_owner(user_id)
         counts["urlsV2"] = url_result.deleted
         counts["urls_blocked_retained"] = url_result.blocked_retained
-        # 2. Custom domains — CF/edge cascade + doc removal.
         counts["custom_domains"] = await self._domain_service.delete_all_for_owner(
             user_id
         )
-        # 3. Clicks — time-series, metaField-only predicates (both). url_id
-        # chunks first: pre-claim clicks still carry the anonymous sentinel.
+        # Clicks are time-series: both predicates must stay metaField-only.
+        # url_id chunks first — pre-claim clicks carry the anonymous sentinel.
         clicks_deleted = 0
         for start in range(0, len(url_result.url_ids), _CLICK_ID_CHUNK):
             clicks_deleted += await self._click_repo.delete_by_url_ids(
@@ -213,7 +214,7 @@ class AccountErasureService:
         # passes are physical deletes, so the sum can never double-count.
         clicks_deleted += await self._click_repo.delete_by_owner(user_id)
         counts["clicks"] = clicks_deleted
-        # 4. Satellites — hard deletes, soft-delete flags ignored.
+        # Satellites are hard deletes — soft-delete flags ignored.
         counts["api_keys"] = await self._api_key_repo.delete_by_user(user_id)
         counts["verification_tokens"] = await self._token_repo.delete_by_user_or_email(
             user_id, email
@@ -232,14 +233,13 @@ class AccountErasureService:
         counts[
             "report_submissions"
         ] = await self._report_submission_repo.delete_by_reporter(user_id, email)
-        # 5. Pulls — shared docs stay, the user's identifiers go.
+        # $pull, not delete — the shared docs stay, the user's identifiers go.
         counts["reports_pulled"] = await self._report_repo.pull_reporter(user_id)
         counts["feature_flags_pulled"] = await self._feature_flag_repo.pull_allowlisted(
             user_id, email
         )
-        # 6. R2 — profile pictures + og images under the owner prefix(es).
         counts["r2_objects"] = await self._sweep_r2(r2_prefixes)
-        # 7-8. External systems, then the doc itself — LAST among deletes.
+        # External systems, then the doc itself — LAST among deletes.
         await self._erase_posthog(user_id)
         deleted = await self._user_repo.delete_hard(user_id)
         # The mail is the one non-idempotent step: only after the doc is gone,
@@ -249,7 +249,7 @@ class AccountErasureService:
         else:
             log.warning("account_erase_doc_already_gone", user_id=str(user_id))
 
-        # D6: the one compliance record — user_id + counts, never email/IP.
+        # The one compliance record — user_id + counts, never email/IP.
         log.info("account_erased", user_id=str(user_id), **counts)
         return counts
 
@@ -339,7 +339,7 @@ class AccountErasureService:
 
         Propagating would let a mail outage park accounts in
         PENDING_DELETION past the GDPR deadline — worse than a missed
-        courtesy mail. Never log the address (D6).
+        courtesy mail. Never log the address.
         """
         try:
             await self._mailer.send_erasure_confirmation(email)

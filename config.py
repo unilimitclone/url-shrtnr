@@ -106,6 +106,15 @@ class PostHogErasureSettings(BaseSettings):
     project_id: str = ""
     host: str = "https://eu.posthog.com"
 
+    @field_validator("host")
+    @classmethod
+    def _host_must_be_https(cls, v: str) -> str:
+        # The key is a person-deletion-scoped personal API key — a config
+        # typo must never send it over plaintext. Fail at boot, not mid-sweep.
+        if not v.startswith("https://"):
+            raise ValueError("POSTHOG_ERASURE_HOST must be an https:// URL")
+        return v
+
     @property
     def enabled(self) -> bool:
         return bool(self.api_key and self.project_id)

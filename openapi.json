@@ -389,7 +389,7 @@
             }
           },
           "403": {
-            "description": "Forbidden \u2014 insufficient permissions or scope",
+            "description": "Forbidden \u2014 invalid credentials, unknown email or token, or account is not pending deletion",
             "content": {
               "application/json": {
                 "schema": {

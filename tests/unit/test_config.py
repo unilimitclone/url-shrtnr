@@ -330,3 +330,10 @@ class TestPostHogErasureSettings:
         assert settings.posthog_erasure.api_key == "phx_secret"
         assert settings.posthog_erasure.project_id == "12345"
         assert settings.posthog_erasure.host == "https://us.posthog.com"
+
+    def test_plain_http_host_is_a_boot_error(self, with_mongo):
+        """The key is person-deletion-scoped — a typo'd http host must fail
+        at boot, never send it over plaintext mid-sweep."""
+        with_mongo.setenv("POSTHOG_ERASURE_HOST", "http://eu.posthog.com")
+        with pytest.raises(PydanticValidationError, match="https"):
+            AppSettings()

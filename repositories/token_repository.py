@@ -143,9 +143,13 @@ class TokenRepository(BaseRepository[VerificationTokenDoc]):
         """Delete every token tied to the user id OR the email address.
 
         Account-erasure path: pre-signup flows key tokens by email alone,
-        so an id-only sweep would leave the address behind. Returns the
-        number of documents deleted.
+        so an id-only sweep would leave the address behind. A falsy email
+        drops that clause — ``{"email": ""}`` would match OTHER accounts'
+        tokens stored with an empty address; the user_id clause always
+        stays. Returns the number of documents deleted.
         """
+        if not email:
+            return await self._delete_many({"user_id": user_id})
         return await self._delete_many(
             {"$or": [{"user_id": user_id}, {"email": email}]}
         )

@@ -91,3 +91,15 @@ class TestTokenRepositoryErasure:
             {"$or": [{"user_id": USER_OID}, {"email": "user@example.com"}]}
         )
         assert count == 3
+
+    @pytest.mark.asyncio
+    async def test_delete_by_user_or_email_drops_empty_email_clause(self):
+        """{"email": ""} would match OTHER accounts' tokens stored with an
+        empty address — a falsy email keeps only the user_id clause."""
+        col = make_collection()
+        result = MagicMock()
+        result.deleted_count = 1
+        col.delete_many = AsyncMock(return_value=result)
+        count = await self._repo(col).delete_by_user_or_email(USER_OID, "")
+        col.delete_many.assert_awaited_once_with({"user_id": USER_OID})
+        assert count == 1

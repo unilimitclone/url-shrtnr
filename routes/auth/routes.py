@@ -51,7 +51,7 @@ from schemas.dto.responses.auth import (
     RegisterResponse,
     UserProfileResponse,
 )
-from schemas.dto.responses.common import MessageResponse
+from schemas.dto.responses.common import ErrorResponse, MessageResponse
 from shared.ip_utils import get_client_ip
 
 log = get_logger(__name__)
@@ -242,7 +242,18 @@ async def logout(
 
 @router.post(
     "/auth/restore",
-    responses=ERROR_RESPONSES,
+    responses={
+        **ERROR_RESPONSES,
+        # The uniform anti-enumeration failure (see the docstring) — the
+        # generic "insufficient permissions" text would misdocument it.
+        403: {
+            "description": (
+                "Forbidden — invalid credentials, unknown email or token, "
+                "or account is not pending deletion"
+            ),
+            "model": ErrorResponse,
+        },
+    },
     openapi_extra=PUBLIC_SECURITY,
     operation_id="restoreAccount",
     summary="Restore Account",

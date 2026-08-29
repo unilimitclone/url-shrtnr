@@ -36,6 +36,9 @@ _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
 _INLINE_DISPOSITION = "inline"
 _NOSNIFF = "nosniff"
 
+# Local MinIO-style dev endpoints may skip TLS; everything else must not.
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
 
 def _parse_list_objects(xml_text: str) -> tuple[list[str], bool, str | None]:
     """Extract (keys, is_truncated, continuation_token) from a
@@ -80,7 +83,15 @@ class R2StorageClient:
             if endpoint_url
             else f"https://{account_id}.r2.cloudflarestorage.com"
         )
-        self._host = urlparse(self._endpoint).netloc
+        parsed = urlparse(self._endpoint)
+        # SigV4 signs but never encrypts — a plain-http endpoint would put
+        # object bytes and credentials-derived signatures on the wire.
+        if parsed.scheme != "https" and parsed.hostname not in _LOOPBACK_HOSTS:
+            raise ValueError(
+                "R2 endpoint_url must be https:// (plain http is allowed "
+                "only for localhost MinIO-style dev endpoints)"
+            )
+        self._host = parsed.netloc
         self._timeout = request_timeout_seconds
 
     @property

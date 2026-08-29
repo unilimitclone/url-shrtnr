@@ -150,6 +150,23 @@ class TestR2StorageClient:
         client, _ = _client(endpoint_url="http://localhost:9000/")
         assert client._endpoint == "http://localhost:9000"
 
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://localhost:9000/",
+            "http://127.0.0.1:9000",
+            "http://[::1]:9000",
+        ],
+    )
+    def test_plain_http_allowed_only_for_loopback(self, endpoint):
+        client, _ = _client(endpoint_url=endpoint)
+        assert client._endpoint == endpoint.rstrip("/")
+
+    def test_plain_http_rejected_for_remote_hosts(self):
+        # SigV4 signs but never encrypts — non-loopback must be https.
+        with pytest.raises(ValueError, match="https"):
+            _client(endpoint_url="http://minio.internal:9000")
+
 
 class TestSigV4Query:
     def test_query_string_changes_the_signature(self):
