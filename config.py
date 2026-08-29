@@ -512,7 +512,8 @@ class SafetySettings(BaseSettings):
     maxlen: int = Field(default=10_000, ge=1000)
     batch_size: int = Field(default=16, ge=1)
     block_ms: int = Field(default=5000, ge=100)
-    claim_idle_ms: int = Field(default=60_000, ge=1000)
+    # Must exceed a large host block, or the claimer re-delivers it mid-flight.
+    claim_idle_ms: int = Field(default=600_000, ge=1000)
     max_deliveries: int = Field(default=5, ge=1)
     # A verdict younger than this short-circuits re-analysis of the same
     # destination host (repeat reports of one campaign are the norm).

@@ -471,7 +471,7 @@ async def preview_url(
                 "_id": short_code,
                 "url": doc.url,
                 "password": doc.password,
-                "blocked": doc.effective_status() is UrlStatus.BLOCKED,
+                "blocked": doc.effective_status is UrlStatus.BLOCKED,
             }
             schema_type = "emoji"
     else:
@@ -487,7 +487,7 @@ async def preview_url(
                     "_id": short_code,
                     "url": doc.url,
                     "password": doc.password,
-                    "blocked": doc.effective_status() is UrlStatus.BLOCKED,
+                    "blocked": doc.effective_status is UrlStatus.BLOCKED,
                 }
                 schema_type = "v1"
             else:
@@ -503,7 +503,7 @@ async def preview_url(
                         "meta_tags": v2.meta_tags.model_dump()
                         if v2.meta_tags
                         else None,
-                        "blocked": v2.effective_status() is UrlStatus.BLOCKED,
+                        "blocked": v2.effective_status is UrlStatus.BLOCKED,
                     }
                     schema_type = "v2"
         else:
@@ -518,7 +518,7 @@ async def preview_url(
                     "password": v2.password,
                     "geo_rules": v2.geo_rules,
                     "meta_tags": v2.meta_tags.model_dump() if v2.meta_tags else None,
-                    "blocked": v2.effective_status() is UrlStatus.BLOCKED,
+                    "blocked": v2.effective_status is UrlStatus.BLOCKED,
                 }
                 schema_type = "v2"
             else:
@@ -528,6 +528,7 @@ async def preview_url(
                         "_id": short_code,
                         "url": doc.url,
                         "password": doc.password,
+                        "blocked": doc.effective_status is UrlStatus.BLOCKED,
                     }
                     schema_type = "v1"
 

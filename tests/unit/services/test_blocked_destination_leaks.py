@@ -16,15 +16,15 @@ from services.public_link_resolver import ResolvedPublicLink, SchemaVersion
 class TestLegacyModelFunnel:
     def test_blocked_flag_reads_as_blocked_status(self):
         doc = LegacyUrlDoc(_id="abc123", url="https://evil.example/kit", blocked=True)
-        assert doc.effective_status() is UrlStatus.BLOCKED
+        assert doc.effective_status is UrlStatus.BLOCKED
 
     def test_absent_flag_is_active(self):
         doc = LegacyUrlDoc(_id="abc123", url="https://ok.example/")
-        assert doc.effective_status() is UrlStatus.ACTIVE
+        assert doc.effective_status is UrlStatus.ACTIVE
 
     def test_emoji_inherits_the_funnel(self):
         doc = EmojiUrlDoc(_id="⭐🎉", url="https://evil.example/kit", blocked=True)
-        assert doc.effective_status() is UrlStatus.BLOCKED
+        assert doc.effective_status is UrlStatus.BLOCKED
 
 
 class TestPublicResolverStatus:

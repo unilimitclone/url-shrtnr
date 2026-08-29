@@ -21,6 +21,18 @@ from schemas.models.url import UrlStatus, UrlV2Doc
 log = get_logger(__name__)
 
 
+# Mongo caps a single query document at 16MB; a host-wide block can name
+# tens of thousands of (alias, domain) pairs, so the $or is chunked.
+_ALIAS_CHUNK = 1_000
+
+
+def _alias_chunks(
+    pairs: list[tuple[str, str]],
+) -> list[list[dict[str, str]]]:
+    clauses = [{"alias": a, "domain": d} for a, d in pairs]
+    return [clauses[i : i + _ALIAS_CHUNK] for i in range(0, len(clauses), _ALIAS_CHUNK)]
+
+
 class UrlRepository(BaseRepository[UrlV2Doc]):
     async def find_by_alias(self, alias: str, domain: str) -> UrlV2Doc | None:
         """Find a URL by ``(alias, domain)``."""
@@ -350,6 +362,9 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             }
         ).limit(limit)
         docs = await cursor.to_list(length=limit)
+        if len(docs) >= limit:
+            # Owners past the cap get no link.blocked event at all.
+            log.warning("owned_event_set_truncated", host=host, limit=limit)
         return [UrlV2Doc.from_mongo(d) for d in docs]
 
     async def list_active_hosts_by_registrable(
@@ -410,14 +425,18 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         the link.blocked event set for a per-link block."""
         if not pairs:
             return []
-        cursor = self._col.find(
-            {
-                "$or": [{"alias": a, "domain": d} for a, d in pairs],
-                "status": UrlStatus.ACTIVE.value,
-                "owner_id": {"$ne": ANONYMOUS_OWNER_ID},
-            }
-        ).limit(limit)
-        docs = await cursor.to_list(length=limit)
+        docs: list[dict] = []
+        for chunk in _alias_chunks(pairs):
+            if len(docs) >= limit:
+                break
+            cursor = self._col.find(
+                {
+                    "$or": chunk,
+                    "status": UrlStatus.ACTIVE.value,
+                    "owner_id": {"$ne": ANONYMOUS_OWNER_ID},
+                }
+            ).limit(limit - len(docs))
+            docs.extend(await cursor.to_list(length=limit - len(docs)))
         return [UrlV2Doc.from_mongo(d) for d in docs]
 
     async def block_active_by_aliases(
@@ -431,21 +450,21 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         if not pairs:
             return 0
         now = datetime.now(timezone.utc)
-        result = await self._col.update_many(
-            {
-                "$or": [{"alias": a, "domain": d} for a, d in pairs],
-                "status": UrlStatus.ACTIVE.value,
-            },
-            {
-                "$set": {
-                    "status": UrlStatus.BLOCKED.value,
-                    "updated_at": now,
-                    "blocked_at": now,
-                    "blocked_reason": reason,
-                }
-            },
-        )
-        return int(result.modified_count)
+        modified = 0
+        for chunk in _alias_chunks(pairs):
+            result = await self._col.update_many(
+                {"$or": chunk, "status": UrlStatus.ACTIVE.value},
+                {
+                    "$set": {
+                        "status": UrlStatus.BLOCKED.value,
+                        "updated_at": now,
+                        "blocked_at": now,
+                        "blocked_reason": reason,
+                    }
+                },
+            )
+            modified += int(result.modified_count)
+        return modified
 
     async def destination_history(self, host: str) -> dict:
         """First-party history of a destination host — the deep tier's

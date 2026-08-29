@@ -16,6 +16,7 @@ instead of reasoning about state.
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -121,17 +122,19 @@ class SafetyEnforcer:
         across all three collections; a host verdict is deliberately NOT
         implied."""
         triples = await self._url_repo.list_by_dest_host_with_urls(host)
-        pairs = [(alias, domain) for alias, domain, url in triples if matcher(url)]
-        legacy_hits = [
-            (code, url)
-            for code, url in await self._legacy_repo.list_by_dest_host(host)
-            if matcher(url)
-        ]
-        emoji_hits = [
-            (alias, url)
-            for alias, url in await self._emoji_repo.list_by_dest_host(host)
-            if matcher(url)
-        ]
+        legacy_rows = await self._legacy_repo.list_by_dest_host(host)
+        emoji_rows = await self._emoji_repo.list_by_dest_host(host)
+
+        # Up to 150k regex evaluations, off the loop this process shares
+        # with clicks, webhooks and the scheduler.
+        def _select() -> tuple[list, list, list]:
+            return (
+                [(a, d) for a, d, url in triples if matcher(url)],
+                [(c, url) for c, url in legacy_rows if matcher(url)],
+                [(a, url) for a, url in emoji_rows if matcher(url)],
+            )
+
+        pairs, legacy_hits, emoji_hits = await asyncio.to_thread(_select)
 
         owned = await self._url_repo.list_active_owned_by_aliases(pairs)
         blocked = await self._url_repo.block_active_by_aliases(pairs, reason=reason)

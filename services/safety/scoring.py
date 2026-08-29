@@ -97,9 +97,9 @@ class CreationPatternScorer:
             bucket = now // window
             keys.append((window, f"l1:dom:{window}:{registrable_domain}:{bucket}"))
         pipe = self._redis.pipeline(transaction=False)
-        for _, key in keys:
+        for window, key in keys:
             pipe.incr(key)
-            # 2x window: inspectable after the window closes, self-decaying.
+            # 2x window: inspectable after it closes, self-decaying.
             pipe.expire(key, window * 2)
         results = await pipe.execute()
         return {window: int(results[i * 2]) for i, (window, _) in enumerate(keys)}
