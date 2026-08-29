@@ -126,6 +126,22 @@ class FakeTokenRepo:
                 return SimpleNamespace(**d)
         return None
 
+    async def delete_by_hash(self, token_hash, token_type):
+        before = len(self.docs)
+        self.docs = [
+            d
+            for d in self.docs
+            if not (d["token_hash"] == token_hash and d["token_type"] == token_type)
+        ]
+        return before - len(self.docs)
+
+
+class FailingTokenRepo(FakeTokenRepo):
+    """Persistence outage: every token write fails."""
+
+    async def create(self, data):
+        raise RuntimeError("mongo down")
+
 
 def make_service(user, *, mailer=None, mark_result=True, token_repo=None):
     """Real AccountDeletionService over a mocked user repository.
@@ -238,14 +254,121 @@ def test_delete_me_confirm_email_rejected_for_password_account():
 
 def test_delete_me_oauth_only_confirm_email_succeeds():
     user = make_user_doc(password_set=False, password_hash=None)
-    svc, _repo = make_service(user)
+    mailer = RecordingMailer()
+    tokens = FakeTokenRepo()
+    svc, _repo = make_service(user, mailer=mailer, token_repo=tokens)
+
+    before = datetime.now(timezone.utc)
+    resp = _client(svc).request(
+        "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
+    )
+    after = datetime.now(timezone.utc)
+
+    assert resp.status_code == 200
+    # The OAuth-only path computes the deadline itself (now + grace) and
+    # threads the same instant into the flip and the token expiry.
+    purge_after = datetime.fromisoformat(resp.json()["purge_after"])
+    assert before + timedelta(days=GRACE_DAYS) <= purge_after
+    assert purge_after <= after + timedelta(days=GRACE_DAYS)
+    # The persisted restore proof expires exactly at the stored deadline
+    # and the notice carried its one-shot link.
+    assert [d["expires_at"] for d in tokens.docs] == [purge_after]
+    (_email, sent_deadline, sent_token) = mailer.requested[0]
+    assert sent_deadline == purge_after
+    assert sent_token is not None
+
+
+def test_delete_me_oauth_only_token_persisted_before_flip():
+    """The invariant: an OAuth-only account is never PENDING_DELETION
+    without a persisted restore token — so the mint must land first."""
+    user = make_user_doc(password_set=False, password_hash=None)
+    tokens = FakeTokenRepo()
+    svc, repo = make_service(user, token_repo=tokens)
+
+    tokens_at_flip = []
+
+    async def record_flip(*args, **kwargs):
+        tokens_at_flip.append(len(tokens.docs))
+        return True
+
+    repo.mark_pending_deletion.side_effect = record_flip
 
     resp = _client(svc).request(
         "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
     )
 
     assert resp.status_code == 200
-    assert resp.json()["purge_after"] == PURGE_AFTER.isoformat()
+    assert tokens_at_flip == [1]
+
+
+def test_delete_me_oauth_only_token_failure_500_account_stays_active():
+    """Minting the restore proof failed: the request must fail (500)
+    BEFORE the flip — a failed request is recoverable, a proof-less
+    pending deletion is not (no credential restore, re-request 409s)."""
+    user = make_user_doc(password_set=False, password_hash=None)
+    mailer = RecordingMailer()
+    tokens = FailingTokenRepo()
+    svc, repo = make_service(user, mailer=mailer, token_repo=tokens)
+
+    resp = _client(svc).request(
+        "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
+    )
+
+    assert resp.status_code == 500
+    # The guarded transition never ran — the account is still ACTIVE.
+    repo.mark_pending_deletion.assert_not_awaited()
+    # No token left behind, no notice mailed.
+    assert tokens.docs == []
+    assert mailer.requested == []
+
+
+def test_delete_me_oauth_only_flip_race_cleans_up_token():
+    """Lost the flip race AFTER minting: 409, and the just-minted (never
+    emailed) token is deleted so it can't linger as a stray proof."""
+    user = make_user_doc(password_set=False, password_hash=None)
+    mailer = RecordingMailer()
+    tokens = FakeTokenRepo()
+    svc, _repo = make_service(user, mailer=mailer, mark_result=False, token_repo=tokens)
+
+    resp = _client(svc).request(
+        "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
+    )
+
+    assert resp.status_code == 409
+    assert tokens.docs == []
+    assert mailer.requested == []
+
+
+def test_delete_me_oauth_only_flip_exception_cleans_up_token():
+    """A flip that ERRORS (not just loses the race) also cleans up the
+    minted token before propagating."""
+    user = make_user_doc(password_set=False, password_hash=None)
+    tokens = FakeTokenRepo()
+    svc, repo = make_service(user, token_repo=tokens)
+    repo.mark_pending_deletion.side_effect = RuntimeError("mongo down")
+
+    resp = _client(svc).request(
+        "DELETE", "/api/v1/me", json={"confirm_email": "test@example.com"}
+    )
+
+    assert resp.status_code == 500
+    assert tokens.docs == []
+
+
+def test_delete_me_password_token_failure_still_pending_mail_without_link():
+    """Password accounts keep best-effort minting AFTER the flip — they
+    always have credential restore, so a lost link must not fail the
+    deletion request; the notice just omits the link."""
+    user = make_user_doc(password_set=True, password_hash=hash_password(PASSWORD))
+    mailer = RecordingMailer()
+    svc, repo = make_service(user, mailer=mailer, token_repo=FailingTokenRepo())
+
+    resp = _client(svc).request("DELETE", "/api/v1/me", json={"password": PASSWORD})
+
+    assert resp.status_code == 200
+    repo.mark_pending_deletion.assert_awaited_once()
+    (_email, _deadline, sent_token) = mailer.requested[0]
+    assert sent_token is None
 
 
 def test_delete_me_oauth_only_wrong_confirm_email_403():

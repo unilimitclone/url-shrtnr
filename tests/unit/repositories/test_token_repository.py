@@ -93,6 +93,20 @@ class TestTokenRepositoryErasure:
         assert count == 3
 
     @pytest.mark.asyncio
+    async def test_delete_by_hash_targets_exact_token_only(self):
+        """Precision cleanup: hash + type, never a user-wide sweep — a
+        concurrent request's freshly-minted token must survive."""
+        col = make_collection()
+        result = MagicMock()
+        result.deleted_count = 1
+        col.delete_many = AsyncMock(return_value=result)
+        count = await self._repo(col).delete_by_hash("h" * 64, "deletion_restore")
+        col.delete_many.assert_awaited_once_with(
+            {"token_hash": "h" * 64, "token_type": "deletion_restore"}
+        )
+        assert count == 1
+
+    @pytest.mark.asyncio
     async def test_delete_by_user_or_email_drops_empty_email_clause(self):
         """{"email": ""} would match OTHER accounts' tokens stored with an
         empty address — a falsy email keeps only the user_id clause."""

@@ -139,6 +139,16 @@ class TokenRepository(BaseRepository[VerificationTokenDoc]):
             query["app_id"] = app_id
         return await self._delete_many(query)
 
+    async def delete_by_hash(self, token_hash: str, token_type: str) -> int:
+        """Delete the token with this exact hash — precision cleanup for a
+        mint whose follow-up write failed. Never touches sibling tokens, so
+        a concurrent request's freshly-minted token always survives.
+        Returns the number of documents deleted (0 or 1).
+        """
+        return await self._delete_many(
+            {"token_hash": token_hash, "token_type": token_type}
+        )
+
     async def delete_by_user_or_email(self, user_id: ObjectId, email: str) -> int:
         """Delete every token tied to the user id OR the email address.
 

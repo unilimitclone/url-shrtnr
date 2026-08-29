@@ -23,7 +23,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from errors import ConflictError, ForbiddenError, NotFoundError
+from errors import AppError, ConflictError, ForbiddenError, NotFoundError
 from infrastructure.crypto import hash_password, hash_token, verify_password
 from infrastructure.logging import get_logger
 from schemas.models.token import TOKEN_TYPE_DELETION_RESTORE
@@ -104,28 +104,19 @@ class AccountDeletionService:
 
         self._verify_reauth(user, password, confirm_email)
 
-        flipped = await self._user_repo.mark_pending_deletion(user.id, self._grace_days)
-        if not flipped:
-            # Lost a race with a concurrent request (the guarded transition
-            # matches ACTIVE only) — same answer as the pre-check.
-            raise ConflictError("account deletion already requested")
-
-        # Read back the stored deadline — the repo computed it, and the
-        # response must echo exactly what the sweep will honour.
-        updated = await self._user_repo.find_by_id(user.id)
-        if updated is None or updated.purge_after is None:
-            # The flip succeeded, so this only happens on a pathological
-            # race with the sweep; recompute the same deadline.
-            purge_after = datetime.now(timezone.utc) + timedelta(days=self._grace_days)
+        # Password accounts mint best-effort AFTER the flip (credentials can
+        # always cancel); OAuth-only BEFORE — see _request_oauth_only_deletion.
+        if user.password_hash:
+            purge_after = await self._flip_to_pending(user.id)
+            restore_token = await self._mint_restore_token(user, purge_after)
         else:
-            purge_after = updated.purge_after
+            purge_after, restore_token = await self._request_oauth_only_deletion(user)
 
         svc_log.info(
             "account_deletion_requested",
             user_id=str(user.id),
             grace_days=self._grace_days,
         )
-        restore_token = await self._mint_restore_token(user, purge_after)
         await self._notify_requested(user.email, purge_after, restore_token)
         return purge_after
 
@@ -208,6 +199,62 @@ class AccountDeletionService:
 
     # ── Internal ────────────────────────────────────────────────────────
 
+    async def _flip_to_pending(self, user_id: ObjectId) -> datetime:
+        """Guarded flip to PENDING_DELETION; returns the stored deadline.
+
+        Raises:
+            ConflictError: Lost a race with a concurrent request (the
+                guarded transition matches ACTIVE only) — same answer as
+                the pre-check.
+        """
+        flipped = await self._user_repo.mark_pending_deletion(user_id, self._grace_days)
+        if not flipped:
+            raise ConflictError("account deletion already requested")
+
+        # Read back the stored deadline — the repo computed it, and the
+        # response must echo exactly what the sweep will honour.
+        updated = await self._user_repo.find_by_id(user_id)
+        if updated is None or updated.purge_after is None:
+            # The flip succeeded, so this only happens on a pathological
+            # race with the sweep; recompute the same deadline.
+            return datetime.now(timezone.utc) + timedelta(days=self._grace_days)
+        return updated.purge_after
+
+    async def _request_oauth_only_deletion(self, user: UserDoc) -> tuple[datetime, str]:
+        """Token-first deletion for an OAuth-only account.
+
+        Computes the purge deadline up front and threads the same ``now``
+        into the flip, so the persisted token's expiry equals the stored
+        ``purge_after`` exactly. Mint failure aborts with a 500 while the
+        account is still ACTIVE; a flip failure best-effort deletes the
+        just-minted (never emailed) token before propagating. Invariant:
+        an OAuth-only account is never PENDING_DELETION without a
+        persisted restore token — the emailed link is its ONLY cancel path
+        (credential restore impossible, a second deletion request 409s),
+        so a proof-less pending deletion would erase at ``purge_after``
+        with no way to stop it. Password accounts deliberately differ:
+        credentials always restore, so their mint stays best-effort after
+        the flip and a lost link only degrades the notice mail.
+        """
+        now = datetime.now(timezone.utc)
+        purge_after = now + timedelta(days=self._grace_days)
+        restore_token, token_hash = await self._mint_restore_token_or_raise(
+            user, purge_after
+        )
+        try:
+            flipped = await self._user_repo.mark_pending_deletion(
+                user.id, self._grace_days, now=now
+            )
+        except Exception:
+            await self._discard_token_by_hash(token_hash)
+            raise
+        if not flipped:
+            # Lost a race with a concurrent request — clean up only OUR
+            # token (by hash): the winning request's proof must survive.
+            await self._discard_token_by_hash(token_hash)
+            raise ConflictError("account deletion already requested")
+        return purge_after, restore_token
+
     @staticmethod
     def _verify_reauth(
         user: UserDoc, password: str | None, confirm_email: str | None
@@ -240,10 +287,12 @@ class AccountDeletionService:
     ) -> str | None:
         """Mint the one-shot restore token; only its hash is stored.
 
-        Expiry rides ``purge_after`` — the link dies exactly when the
-        grace period does (and the TTL index reaps the doc). Best-effort:
-        a minting failure must not fail the deletion request the user was
-        just re-authenticated for; the notice then omits the link.
+        Password-account path (post-flip). Expiry rides ``purge_after`` —
+        the link dies exactly when the grace period does (and the TTL index
+        reaps the doc). Best-effort: a minting failure must not fail the
+        deletion request the user was just re-authenticated for; the notice
+        then omits the link and credentials remain the restore path.
+        OAuth-only accounts use ``_mint_restore_token_or_raise`` instead.
         """
         if self._token_repo is None:
             return None
@@ -272,6 +321,63 @@ class AccountDeletionService:
                 error_type=type(exc).__name__,
             )
             return None
+
+    async def _mint_restore_token_or_raise(
+        self, user: UserDoc, purge_after: datetime
+    ) -> tuple[str, str]:
+        """Mint the restore token for an OAuth-only deletion — MUST succeed.
+
+        Unlike the password path's best-effort mint, a failure here raises
+        (500) so the account stays ACTIVE. No stale-token supersede either:
+        deleting the user's other tokens could destroy the proof a
+        concurrently-won request just minted, and unused extras die with
+        the TTL index at their ``expires_at`` anyway. Returns
+        ``(token, token_hash)`` so a failed flip can clean up precisely.
+
+        Raises:
+            AppError: token repo unconfigured or persistence failed.
+        """
+        if self._token_repo is None:
+            raise AppError("unable to prepare the account restore link")
+        restore_token = generate_secure_token(32)
+        token_hash = hash_token(restore_token)
+        try:
+            await self._token_repo.create(
+                {
+                    "user_id": user.id,
+                    "email": user.email,
+                    "token_hash": token_hash,
+                    "token_type": TOKEN_TYPE_DELETION_RESTORE,
+                    "expires_at": purge_after,
+                    "created_at": datetime.now(timezone.utc),
+                    "used_at": None,
+                    "attempts": 0,
+                }
+            )
+        except Exception as exc:
+            log.error(
+                "account_deletion_restore_token_failed",
+                user_id=str(user.id),
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise AppError("unable to prepare the account restore link") from exc
+        return restore_token, token_hash
+
+    async def _discard_token_by_hash(self, token_hash: str) -> None:
+        """Best-effort cleanup of OUR just-minted token after a failed
+        flip — by hash, never by user, so a concurrent winner's token
+        survives. The account is not pending, so a leaked token is inert
+        (restore refuses non-pending accounts) and the TTL index reaps it.
+        """
+        if self._token_repo is None:
+            return
+        try:
+            await self._token_repo.delete_by_hash(
+                token_hash, TOKEN_TYPE_DELETION_RESTORE
+            )
+        except Exception as exc:
+            log.warning("account_deletion_token_cleanup_failed", error=str(exc))
 
     async def _discard_restore_tokens(self, user_id: ObjectId) -> None:
         """Best-effort: a credential restore invalidates the emailed link."""
