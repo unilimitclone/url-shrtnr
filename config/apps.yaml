@@ -56,7 +56,7 @@ apps:
     icon: spoo-mobile.svg
     description: Shorten links on the go
     verified: true
-    status: coming_soon
+    status: live
     type: device_auth
     redirect_uris:
       - spoo://oauth/callback
