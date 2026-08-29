@@ -339,6 +339,99 @@
         }
       }
     },
+    "/auth/restore": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Restore Account",
+        "description": "Cancel a pending account deletion during the grace period.\n\nValidates email + password against the account and flips it back to\nACTIVE, clearing the purge deadline. Only works while the account is\nPENDING_DELETION (i.e. before `purge_after` from ``DELETE /api/v1/me``\npasses); OAuth-only accounts restore via the frontend's OAuth restore\nflow instead.\n\n**Authentication**: Not required (public endpoint)\n\n**Rate Limits**: 3/hour\n\n**Security**: Returns a uniform 403 for wrong credentials, unknown\nemail, and accounts not pending deletion \u2014 prevents account\nenumeration and state probing.",
+        "operationId": "restoreAccount",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request \u2014 invalid parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient permissions or scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
     "/auth/me": {
       "get": {
         "tags": [
@@ -2644,7 +2737,7 @@
           "Link Management"
         ],
         "summary": "Delete URL",
-        "description": "Delete a URL permanently.\n\n**This action is IRREVERSIBLE.** The URL, its alias, and all associated\nclick analytics data will be permanently deleted. The alias may be reclaimed\nby another user afterward.\n\n**Authentication**: Required \u2014 you must own the URL.\n\n**API Key Scope**: `urls:manage` or `admin:all`\n\n**Rate Limits**: 60/min, 1,000/day\n\n**Recommendation**: Consider setting the URL status to `INACTIVE` via\n`PATCH /urls/{url_id}/status` instead if you may want to restore it later.",
+        "description": "Delete a URL permanently.\n\n**This action is IRREVERSIBLE.** The URL and its alias are permanently\ndeleted, and the alias may be reclaimed by another user afterward.\nHistorical click analytics are not removed; they are erased when the\nowning account is deleted.\n\n**Authentication**: Required \u2014 you must own the URL.\n\n**API Key Scope**: `urls:manage` or `admin:all`\n\n**Rate Limits**: 60/min, 1,000/day\n\n**Recommendation**: Consider setting the URL status to `INACTIVE` via\n`PATCH /urls/{url_id}/status` instead if you may want to restore it later.",
         "operationId": "deleteUrl",
         "parameters": [
           {
@@ -7045,6 +7138,108 @@
         ]
       }
     },
+    "/api/v1/me": {
+      "delete": {
+        "tags": [
+          "Me"
+        ],
+        "summary": "Delete Account",
+        "description": "Request permanent account deletion (GDPR Art. 17).\n\nRe-authentication is required: accounts with a password send\n``password``; OAuth-only accounts confirm by typing their exact\naccount email as ``confirm_email``. On success the account enters a\ngrace period (7 days by default) and `purge_after` marks its end \u2014\nafter that instant a background sweep permanently erases the account,\nits links, and their analytics.\n\nDuring the grace period every login is blocked with error code\n``ACCOUNT_PENDING_DELETION``; ``POST /auth/restore`` (email +\npassword) cancels the deletion and reactivates the account.\n\n**Authentication**: Required (JWT only \u2014 API keys and app tokens\ncannot delete the account)\n\n**Rate Limits**: 3/hour\n\n**Errors**: 403 when re-authentication fails (never says which field\nwas wrong), 409 when deletion is already pending.",
+        "operationId": "deleteMyAccount",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request \u2014 invalid parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient permissions or scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict \u2014 resource already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/features": {
       "get": {
         "tags": [
@@ -9108,6 +9303,24 @@
   },
   "components": {
     "schemas": {
+      "AccountDeletionResponse": {
+        "properties": {
+          "purge_after": {
+            "type": "string",
+            "title": "Purge After",
+            "description": "When the grace period ends and the erasure sweep may pick the account up. Restoring before this instant cancels the deletion.",
+            "examples": [
+              "2026-08-26T00:00:00+00:00"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "purge_after"
+        ],
+        "title": "AccountDeletionResponse",
+        "description": "Deletion accepted \u2014 the account is now pending erasure."
+      },
       "AliasCheckResponse": {
         "properties": {
           "available": {
@@ -10729,6 +10942,45 @@
         ],
         "title": "CustomDomainResponse",
         "description": "A single custom domain \u2014 covers create, get, verify, and list responses."
+      },
+      "DeleteAccountRequest": {
+        "properties": {
+          "password": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password",
+            "description": "Account password \u2014 re-auth for accounts with a password set",
+            "examples": [
+              "MySecurePass123!"
+            ]
+          },
+          "confirm_email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 320
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirm Email",
+            "description": "The exact account email, typed to confirm \u2014 re-auth for OAuth-only accounts (no password set)",
+            "examples": [
+              "user@example.com"
+            ]
+          }
+        },
+        "type": "object",
+        "title": "DeleteAccountRequest",
+        "description": "Request body for DELETE /api/v1/me.\n\nExactly one re-auth proof applies per account: ``password`` for\naccounts with a password set, ``confirm_email`` (the exact account\nemail, typed) for OAuth-only accounts. The wrong proof \u2014 or a missing\none \u2014 fails re-authentication; the response never says which."
       },
       "DeleteUrlResponse": {
         "properties": {
@@ -12871,6 +13123,35 @@
         ],
         "title": "ResetPasswordRequest",
         "description": "Request body for POST /auth/reset-password."
+      },
+      "RestoreAccountRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email",
+            "description": "Account email address",
+            "examples": [
+              "user@example.com"
+            ]
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Password",
+            "description": "Account password",
+            "examples": [
+              "MySecurePass123!"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "RestoreAccountRequest",
+        "description": "Request body for POST /auth/restore."
       },
       "SendVerificationResponse": {
         "properties": {

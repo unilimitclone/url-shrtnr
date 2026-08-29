@@ -598,6 +598,8 @@ class TestHostBreadth:
         col.aggregate.return_value.to_list = AsyncMock(return_value=[])
         b = await self._repo(col).host_breadth("nobody.example")
         assert b["total_links"] == 0 and b["sample_urls"] == []
+
+
 class TestUrlRepositoryOwnerErasure:
     """iter_by_owner + delete_by_owner — the account-erasure pair."""
 
