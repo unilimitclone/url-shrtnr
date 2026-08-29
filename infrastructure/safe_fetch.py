@@ -78,7 +78,7 @@ def _is_public(ip: str) -> bool:
     return addr.is_global and not addr.is_multicast
 
 
-async def _resolve_public_ip(host: str) -> str:
+async def resolve_public_ip(host: str) -> str:
     """Resolve *host* and return one address, rejecting any private result."""
     # A literal IP address skips DNS entirely.
     try:
@@ -153,7 +153,7 @@ async def fetch_public(
         parsed = httpx.URL(url)
         if parsed.scheme != "https":
             raise FetchHardError("non-https URL")
-        ip = await _resolve_public_ip(parsed.host)
+        ip = await resolve_public_ip(parsed.host)
 
         # Pin the connection to the validated IP; keep name-based TLS via
         # sni_hostname and the Host header.
@@ -282,7 +282,7 @@ async def post_public(
         parsed = httpx.URL(url)
         if parsed.scheme != "https":
             return PostResult(None, "non-https URL", None)
-        ip = await _resolve_public_ip(parsed.host)
+        ip = await resolve_public_ip(parsed.host)
     except (FetchHardError, FetchTransientError, httpx.InvalidURL) as exc:
         # Transient DNS failures included: delivery outcomes are DATA for
         # the retry ladder, never exceptions that skip attempt recording.
@@ -328,7 +328,7 @@ async def validate_public_https_url(url: str) -> None:
     parsed = httpx.URL(url)
     if parsed.scheme != "https":
         raise FetchHardError("URL must be https")
-    await _resolve_public_ip(parsed.host)
+    await resolve_public_ip(parsed.host)
 
 
 @dataclass(frozen=True)
@@ -365,7 +365,7 @@ async def expand_public(
         if parsed.scheme not in ("http", "https"):
             raise FetchHardError("unsupported scheme")
         try:
-            ip = await _resolve_public_ip(parsed.host)
+            ip = await resolve_public_ip(parsed.host)
         except FetchHardError:
             if not hops:
                 raise

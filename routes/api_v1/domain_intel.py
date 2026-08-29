@@ -16,7 +16,7 @@ from dependencies import DomainIntelSvc
 from errors import AppError, ValidationError
 from infrastructure.logging import get_logger
 from infrastructure.safe_fetch import FetchHardError, FetchTransientError
-from middleware.openapi import ERROR_RESPONSES, PUBLIC_SECURITY
+from middleware.openapi import ERROR_RESPONSES, OPTIONAL_AUTH_SECURITY
 from middleware.rate_limiter import Limits, dynamic_limit, limiter
 from schemas.dto.responses.domain_intel import DomainIntelResponse
 
@@ -44,7 +44,7 @@ class LookupTimeoutError(AppError):
 @router.get(
     "/domain-intel",
     responses=ERROR_RESPONSES,
-    openapi_extra=PUBLIC_SECURITY,
+    openapi_extra=OPTIONAL_AUTH_SECURITY,
     operation_id="getDomainIntel",
     summary="Domain Records",
 )

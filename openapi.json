@@ -6926,7 +6926,15 @@
             }
           }
         },
-        "security": []
+        "security": [
+          {},
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "JWTAuth": []
+          }
+        ]
       }
     },
     "/api/v1/domain-intel": {
@@ -7026,7 +7034,15 @@
             }
           }
         },
-        "security": []
+        "security": [
+          {},
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "JWTAuth": []
+          }
+        ]
       }
     },
     "/api/v1/me/features": {

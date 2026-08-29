@@ -401,6 +401,29 @@ class MetaTagsSettings(BaseSettings):
     fetch_user_agent: str = "spoo.me-og-validator/1.0 (+https://spoo.me)"
 
 
+class WebRiskSettings(BaseSettings):
+    """Google Web Risk lookups for the URL expander's safety verdict.
+
+    Env vars are prefixed ``WEB_RISK_`` so a generic ``API_KEY`` set
+    elsewhere in the deploy environment can't configure this. Without a
+    key the check silently doesn't run and the verdict is absent — the
+    tool never shows a fabricated one.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_prefix="WEB_RISK_",
+    )
+
+    api_key: str = ""
+    timeout_seconds: float = Field(default=4.0, gt=0)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+
 class WebhookSettings(BaseSettings):
     """Webhooks system — real-time event deliveries to subscriber URLs.
 
@@ -517,9 +540,6 @@ class AppSettings(BaseSettings):
 
     # Validator constraints (overridable by self-hosters via env vars)
     blocked_url_regex_timeout: float = 0.2
-    # Google Web Risk (URL expander verdicts). Empty = the check silently
-    # doesn't run; the tool shows facts it has, never a fake verdict.
-    web_risk_api_key: str = ""
     max_emoji_alias_length: int = 15
     # Newest Unicode emoji version accepted in custom emoji aliases.
     # 15.1 renders on iOS 17.4+ / Android 14+ / Windows 11 23H2+.
@@ -606,6 +626,7 @@ class AppSettings(BaseSettings):
     edge_cache: EdgeCacheSettings | None = None
     r2: R2StorageSettings | None = None
     meta_tags: MetaTagsSettings | None = None
+    web_risk: WebRiskSettings | None = None
     webhooks: WebhookSettings | None = None
 
     @model_validator(mode="after")
@@ -646,6 +667,8 @@ class AppSettings(BaseSettings):
             self.r2 = R2StorageSettings()
         if self.meta_tags is None:
             self.meta_tags = MetaTagsSettings()
+        if self.web_risk is None:
+            self.web_risk = WebRiskSettings()
         if self.webhooks is None:
             self.webhooks = WebhookSettings()
         if self.webhooks.enabled and not self.secret_key:

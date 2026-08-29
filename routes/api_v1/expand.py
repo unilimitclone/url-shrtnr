@@ -17,7 +17,7 @@ from dependencies import UrlExpandSvc
 from errors import AppError, ValidationError
 from infrastructure.logging import get_logger
 from infrastructure.safe_fetch import FetchHardError, FetchTransientError
-from middleware.openapi import ERROR_RESPONSES, PUBLIC_SECURITY
+from middleware.openapi import ERROR_RESPONSES, OPTIONAL_AUTH_SECURITY
 from middleware.rate_limiter import Limits, dynamic_limit, limiter
 from schemas.dto.responses.expand import ExpandResponse
 
@@ -43,7 +43,7 @@ class ChainTimeoutError(AppError):
 @router.get(
     "/expand",
     responses=ERROR_RESPONSES,
-    openapi_extra=PUBLIC_SECURITY,
+    openapi_extra=OPTIONAL_AUTH_SECURITY,
     operation_id="expandUrl",
     summary="Expand a Short Link",
 )

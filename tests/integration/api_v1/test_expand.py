@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -25,17 +25,22 @@ CHAIN = ExpandedChain(
 )
 
 
-def _app(patterns=None):
-    app = _build_test_app({get_current_user: lambda: None})
+def _service(patterns=None, *, web_risk_key="", http=None, cache=None):
     repo = AsyncMock()
     repo.get_patterns = AsyncMock(return_value=patterns or [])
-    app.state.url_expand_service = UrlExpandService(
+    return UrlExpandService(
         repo,
-        MetaFetchCache(None),
+        cache or MetaFetchCache(None),
         regex_timeout=0.2,
         user_agent="test",
-        web_risk_api_key="",
+        http_client=http or MagicMock(get=AsyncMock()),
+        web_risk_api_key=web_risk_key,
     )
+
+
+def _app(patterns=None, **kwargs):
+    app = _build_test_app({get_current_user: lambda: None})
+    app.state.url_expand_service = _service(patterns, **kwargs)
     return app
 
 
@@ -91,3 +96,49 @@ def test_expand_unreachable_is_422():
         resp = client.get("/api/v1/expand", params={"url": "https://internal.example"})
     assert resp.status_code == 422
     assert resp.json()["code"] == "unfetchable"
+
+
+def test_web_risk_verdict_rides_the_wire():
+    http = MagicMock()
+    http.get = AsyncMock(
+        return_value=MagicMock(
+            status_code=200,
+            json=lambda: {"threat": {"threatTypes": ["SOCIAL_ENGINEERING"]}},
+        )
+    )
+    with (
+        patch(
+            "services.url_expand_service.expand_public",
+            new=AsyncMock(return_value=CHAIN),
+        ),
+        TestClient(
+            _app(web_risk_key="k", http=http), raise_server_exceptions=True
+        ) as client,
+    ):
+        resp = client.get("/api/v1/expand", params={"url": "https://bit.ly/x"})
+    assert resp.json()["web_risk"] == {
+        "checked": True,
+        "threats": ["SOCIAL_ENGINEERING"],
+    }
+
+
+def test_a_failed_web_risk_call_is_not_cached_as_absence():
+    """A transient Web Risk failure must not hide the safety signal for the
+    whole cache TTL — the next caller has to ask again."""
+    cache = MetaFetchCache(None)
+    cache.set = AsyncMock()
+    http = MagicMock()
+    http.get = AsyncMock(return_value=MagicMock(status_code=503))
+    with (
+        patch(
+            "services.url_expand_service.expand_public",
+            new=AsyncMock(return_value=CHAIN),
+        ),
+        TestClient(
+            _app(web_risk_key="k", http=http, cache=cache),
+            raise_server_exceptions=True,
+        ) as client,
+    ):
+        resp = client.get("/api/v1/expand", params={"url": "https://bit.ly/x"})
+    assert resp.json()["web_risk"] is None
+    cache.set.assert_not_called()

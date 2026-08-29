@@ -16,8 +16,9 @@ import httpx
 import tldextract
 
 from infrastructure.cache.meta_fetch_cache import MetaFetchCache
+from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
-from infrastructure.safe_fetch import FetchHardError
+from infrastructure.safe_fetch import resolve_public_ip
 
 log = get_logger(__name__)
 
@@ -25,7 +26,6 @@ _tld_extractor = tldextract.TLDExtract(cache_dir=None)
 
 _DNS_TYPES = ("A", "AAAA", "MX", "NS", "TXT")
 _MAX_RECORDS = 8
-_RDAP_TIMEOUT = 8.0
 _TLS_TIMEOUT = 5.0
 
 
@@ -68,24 +68,54 @@ def _cert_name(rdns: tuple) -> dict[str, str]:
     return {k: v for rdn in rdns for (k, v) in rdn}
 
 
+def _cert_summary(cert: dict) -> dict:
+    """Map a peer certificate onto the wire shape."""
+    issuer = _cert_name(cert.get("issuer", ()))
+    subject = _cert_name(cert.get("subject", ()))
+    not_after = cert.get("notAfter")
+    days_left = None
+    if not_after:
+        try:
+            expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(
+                tzinfo=timezone.utc
+            )
+            days_left = (expires - datetime.now(timezone.utc)).days
+        except ValueError:
+            pass
+    sans = [v for (k, v) in cert.get("subjectAltName", ()) if k == "DNS"]
+    return {
+        "issuer": issuer.get("organizationName") or issuer.get("commonName"),
+        "subject": subject.get("commonName"),
+        "valid_from": cert.get("notBefore"),
+        "valid_to": not_after,
+        "days_left": days_left,
+        "sans": sans[:_MAX_RECORDS],
+    }
+
+
 class DomainIntelService:
-    def __init__(self, cache: MetaFetchCache) -> None:
+    def __init__(self, cache: MetaFetchCache, http_client: HttpClient) -> None:
         self._cache = cache
+        self._http = http_client
 
     async def lookup(self, host: str) -> dict:
         cached = await self._cache.get(host)
         if cached is not None:
             return cached
 
+        # Same SSRF guard the fetcher runs: the caller picks this hostname,
+        # and a public name can resolve into private space. Raises unless
+        # every address is public, so the TLS probe below can't be aimed
+        # at the internal network.
+        public_ip = await resolve_public_ip(host)
+
         registrable = _tld_extractor(host).registered_domain or host
 
         dns_results, whois, cert = await asyncio.gather(
             self._dns(host),
             self._rdap(registrable),
-            self._tls(host),
+            self._tls(host, public_ip),
         )
-        if not any(dns_results.values()):
-            raise FetchHardError("host does not resolve")
 
         payload = {
             "host": host,
@@ -106,10 +136,12 @@ class DomainIntelService:
         """rdap.org bootstraps to the registry's own RDAP server; a miss
         (unsupported TLD, registry down) is data we simply don't show."""
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True, timeout=_RDAP_TIMEOUT
-            ) as client:
-                resp = await client.get(f"https://rdap.org/domain/{domain}")
+            resp = await self._http.get(
+                f"https://rdap.org/domain/{domain}",
+                # The bootstrap hands off to the registry, so a couple of
+                # hops are expected — but it isn't ours, so cap them.
+                extensions={"max_redirects": 3},
+            )
             if resp.status_code != 200:
                 return None
             data = resp.json()
@@ -126,11 +158,14 @@ class DomainIntelService:
             "age_days": _age_days(created),
         }
 
-    async def _tls(self, host: str) -> dict | None:
+    async def _tls(self, host: str, ip: str) -> dict | None:
+        """Handshake against the pre-validated address, with the hostname
+        carried in SNI so the certificate still verifies (and DNS can't
+        rebind between the guard and the connection)."""
         try:
             ctx = ssl.create_default_context()
             _reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, 443, ssl=ctx, server_hostname=host),
+                asyncio.open_connection(ip, 443, ssl=ctx, server_hostname=host),
                 timeout=_TLS_TIMEOUT,
             )
         except (OSError, ssl.SSLError, asyncio.TimeoutError, TimeoutError):
@@ -141,26 +176,4 @@ class DomainIntelService:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
-        if not cert:
-            return None
-        issuer = _cert_name(cert.get("issuer", ()))
-        subject = _cert_name(cert.get("subject", ()))
-        not_after = cert.get("notAfter")
-        days_left = None
-        if not_after:
-            try:
-                expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(
-                    tzinfo=timezone.utc
-                )
-                days_left = (expires - datetime.now(timezone.utc)).days
-            except ValueError:
-                pass
-        sans = [v for (k, v) in cert.get("subjectAltName", ()) if k == "DNS"]
-        return {
-            "issuer": issuer.get("organizationName") or issuer.get("commonName"),
-            "subject": subject.get("commonName"),
-            "valid_from": cert.get("notBefore"),
-            "valid_to": not_after,
-            "days_left": days_left,
-            "sans": sans[:_MAX_RECORDS],
-        }
+        return _cert_summary(cert) if cert else None

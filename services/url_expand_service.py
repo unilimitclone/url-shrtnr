@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import httpx
 
 from infrastructure.cache.meta_fetch_cache import MetaFetchCache
+from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from infrastructure.safe_fetch import expand_public
 from repositories.blocked_url_repository import BlockedUrlRepository
@@ -20,7 +21,6 @@ log = get_logger(__name__)
 
 _WEB_RISK_ENDPOINT = "https://webrisk.googleapis.com/v1/uris:search"
 _WEB_RISK_THREATS = ("MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE")
-_WEB_RISK_TIMEOUT = 4.0
 
 
 class UrlExpandService:
@@ -31,12 +31,14 @@ class UrlExpandService:
         *,
         regex_timeout: float,
         user_agent: str,
+        http_client: HttpClient,
         web_risk_api_key: str = "",
     ) -> None:
         self._blocked_url_repo = blocked_url_repo
         self._cache = cache
         self._regex_timeout = regex_timeout
         self._user_agent = user_agent
+        self._http = http_client
         self._web_risk_api_key = web_risk_api_key
 
     async def expand(self, url: str) -> dict:
@@ -70,7 +72,11 @@ class UrlExpandService:
             "web_risk": web_risk,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
-        await self._cache.set(url, payload)
+        # A configured-but-failing Web Risk call returns None, and caching
+        # that would hide the safety signal for the whole TTL. Skip the
+        # write so the next caller asks again.
+        if not (self._web_risk_api_key and web_risk is None):
+            await self._cache.set(url, payload)
         return payload
 
     async def _web_risk(self, url: str) -> dict | None:
@@ -84,8 +90,7 @@ class UrlExpandService:
             *(("threatTypes", t) for t in _WEB_RISK_THREATS),
         ]
         try:
-            async with httpx.AsyncClient(timeout=_WEB_RISK_TIMEOUT) as client:
-                resp = await client.get(_WEB_RISK_ENDPOINT, params=params)
+            resp = await self._http.get(_WEB_RISK_ENDPOINT, params=params)
             if resp.status_code != 200:
                 log.warning("web_risk_status", status=resp.status_code)
                 return None

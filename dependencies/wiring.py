@@ -336,10 +336,12 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         MetaFetchCache(redis_client, prefix="url_expand"),
         regex_timeout=settings.blocked_url_regex_timeout,
         user_agent=settings.meta_tags.fetch_user_agent,
-        web_risk_api_key=settings.web_risk_api_key,
+        http_client=http_client,
+        web_risk_api_key=settings.web_risk.api_key,
     )
     app.state.domain_intel_service = DomainIntelService(
-        MetaFetchCache(redis_client, prefix="domain_intel", ttl_seconds=86_400)
+        MetaFetchCache(redis_client, prefix="domain_intel", ttl_seconds=86_400),
+        http_client,
     )
     app.state.public_stats_service = PublicStatsService(
         public_link_resolver,
