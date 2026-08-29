@@ -1160,8 +1160,14 @@ class TestDeleteAllForOwner:
 
         assert removed == 2
         assert repo.delete_by_id.await_count == 2
-        url_service.delete_all_by_domain.assert_any_await(USER_OID, "links.acme.com")
-        url_service.delete_all_by_domain.assert_any_await(USER_OID, "go.acme.com")
+        # Erasure mode: BLOCKED links on the owner's own fqdns are retained
+        # (scrubbed by the URL layer) — unlike the interactive revoke cascade.
+        url_service.delete_all_by_domain.assert_any_await(
+            USER_OID, "links.acme.com", retain_blocked=True
+        )
+        url_service.delete_all_by_domain.assert_any_await(
+            USER_OID, "go.acme.com", retain_blocked=True
+        )
         edge.announce_revoked.assert_any_await("links.acme.com")
         tenant_resolver.invalidate.assert_any_await("go.acme.com")
 

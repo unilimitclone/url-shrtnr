@@ -1329,13 +1329,21 @@ class UrlService:
         self,
         owner_id: ObjectId,
         domain: str,
+        *,
+        retain_blocked: bool = False,
     ) -> int:
         """Bulk-delete all URLs owned by *owner_id* under *domain*.
 
         Refuses the system default — that would nuke all of a user's spoo.me
         URLs in one call. Returns number of URLs deleted.
 
-        Used by:
+        ``retain_blocked`` is the account-erasure mode
+        (``CustomDomainService.delete_all_for_owner``): BLOCKED docs on the
+        fqdn are scrubbed of creator PII and RETAINED — the same Art. 17(3)
+        retention as ``delete_all_by_owner`` — instead of hard-deleted,
+        so the domain cascade can never undo what the owner-wide erasure
+        step just retained. The interactive callers keep the default
+        (delete everything on the fqdn, BLOCKED included):
           - `DELETE /api/v1/urls?domain=` (standalone bulk delete)
           - `CustomDomainService.delete(cascade=True)` (domain revoke cascade)
         """
@@ -1351,7 +1359,11 @@ class UrlService:
         if not aliases:
             return 0
 
-        deleted = await self._url_repo.delete_many_by_owner_and_domain(owner_id, domain)
+        if retain_blocked:
+            await self._url_repo.scrub_blocked_owner_pii(owner_id, domain=domain)
+        deleted = await self._url_repo.delete_many_by_owner_and_domain(
+            owner_id, domain, retain_blocked=retain_blocked
+        )
 
         # Best-effort cache cleanup; cache miss after delete is correct anyway.
         await self._url_cache.invalidate_many(aliases, domain)

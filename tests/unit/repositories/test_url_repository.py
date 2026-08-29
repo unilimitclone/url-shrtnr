@@ -347,6 +347,23 @@ class TestUrlRepositoryBulkDelete:
         assert query == {"owner_id": USER_OID, "domain": "links.acme.com"}
 
     @pytest.mark.asyncio
+    async def test_delete_many_retain_blocked_excludes_blocked(self):
+        # Erasure mode: BLOCKED docs on the fqdn are the abuse audit trail —
+        # the domain cascade must not delete what the owner-wide step retained.
+        col = make_collection()
+        col.delete_many = AsyncMock(return_value=MagicMock(deleted_count=3))
+        count = await self._repo(col).delete_many_by_owner_and_domain(
+            USER_OID, "links.acme.com", retain_blocked=True
+        )
+        assert count == 3
+        query = col.delete_many.call_args[0][0]
+        assert query == {
+            "owner_id": USER_OID,
+            "domain": "links.acme.com",
+            "status": {"$ne": "BLOCKED"},
+        }
+
+    @pytest.mark.asyncio
     async def test_delete_many_refuses_missing_filters(self):
         repo = self._repo()
         with pytest.raises(ValueError):
@@ -650,6 +667,23 @@ class TestUrlRepositoryOwnerErasure:
         )
         # matched (not modified): an already-scrubbed doc is still retained.
         assert retained == 2
+
+    @pytest.mark.asyncio
+    async def test_scrub_blocked_pii_domain_scoped(self):
+        col = make_collection()
+        result = MagicMock()
+        result.matched_count = 1
+        col.update_many = AsyncMock(return_value=result)
+        retained = await self._repo(col).scrub_blocked_owner_pii(
+            USER_OID, domain="links.acme.com"
+        )
+        query = col.update_many.call_args[0][0]
+        assert query == {
+            "owner_id": USER_OID,
+            "status": "BLOCKED",
+            "domain": "links.acme.com",
+        }
+        assert retained == 1
 
     @pytest.mark.asyncio
     async def test_scrub_blocked_pii_refuses_anonymous_sentinel(self):

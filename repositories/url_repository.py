@@ -197,19 +197,24 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             raise
 
     async def delete_many_by_owner_and_domain(
-        self, owner_id: ObjectId, domain: str
+        self, owner_id: ObjectId, domain: str, *, retain_blocked: bool = False
     ) -> int:
         """Bulk-delete all URLs owned by *owner_id* under *domain*.
 
         Both filters required defensively — a missing or empty arg here would
-        silently delete more than intended.
+        silently delete more than intended. ``retain_blocked`` is the
+        account-erasure mode: BLOCKED docs survive (abuse audit trail +
+        alias reservation, same exclusion as ``delete_by_owner``) so the
+        domain cascade can never hard-delete what the owner-wide erasure
+        step just retained. The interactive domain cascades leave it off.
         """
         if not owner_id or not domain:
             raise ValueError("owner_id and domain are both required for bulk delete")
+        query: dict = {"owner_id": owner_id, "domain": domain}
+        if retain_blocked:
+            query["status"] = {"$ne": UrlStatus.BLOCKED.value}
         try:
-            result = await self._col.delete_many(
-                {"owner_id": owner_id, "domain": domain}
-            )
+            result = await self._col.delete_many(query)
             return int(result.deleted_count or 0)
         except PyMongoError as exc:
             log.error(
@@ -258,7 +263,9 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             {"owner_id": owner_id, "status": {"$ne": UrlStatus.BLOCKED.value}}
         )
 
-    async def scrub_blocked_owner_pii(self, owner_id: ObjectId) -> int:
+    async def scrub_blocked_owner_pii(
+        self, owner_id: ObjectId, *, domain: str | None = None
+    ) -> int:
         """Strip creator PII off the owner's BLOCKED docs, in place.
 
         Erasure retains BLOCKED links under GDPR Art. 17(3) (abuse
@@ -267,14 +274,19 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         can never be re-registered by the next phisher. Everything that
         identifies the creator as a person goes: ``creation_ip``, the
         ``meta_tags.updated_ip`` audit mirror, and the link ``password``.
-        Returns the number of BLOCKED docs retained (matched, not
-        modified — an already-scrubbed doc still counts as retained).
+        ``domain`` narrows the scrub to one fqdn (the erasure domain
+        cascade); None scrubs owner-wide. Returns the number of BLOCKED
+        docs retained (matched, not modified — an already-scrubbed doc
+        still counts as retained).
         """
         if not owner_id or owner_id == ANONYMOUS_OWNER_ID:
             raise ValueError("owner_id must be a real account id")
+        query: dict = {"owner_id": owner_id, "status": UrlStatus.BLOCKED.value}
+        if domain is not None:
+            query["domain"] = domain
         try:
             result = await self._col.update_many(
-                {"owner_id": owner_id, "status": UrlStatus.BLOCKED.value},
+                query,
                 {
                     "$unset": {
                         "creation_ip": "",

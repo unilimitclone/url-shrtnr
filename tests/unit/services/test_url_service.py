@@ -2163,11 +2163,46 @@ class TestUrlServiceBulkDelete:
         count = await svc.delete_all_by_domain(USER_OID, "links.acme.com")
 
         assert count == 3
+        # Interactive default: BLOCKED docs on the fqdn are deleted too,
+        # and nothing gets scrubbed.
         url_repo.delete_many_by_owner_and_domain.assert_awaited_once_with(
-            USER_OID, "links.acme.com"
+            USER_OID, "links.acme.com", retain_blocked=False
         )
+        url_repo.scrub_blocked_owner_pii.assert_not_called()
         url_cache.invalidate_many.assert_awaited_once_with(
             ["a", "b", "c"], "links.acme.com"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_retain_blocked_scrubs_then_excludes(self):
+        """Erasure's domain cascade: BLOCKED docs on the fqdn survive with
+        creator PII scrubbed; only the rest are deleted — so the
+        blocked-retained tally from the owner-wide step stays exact."""
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        url_repo.list_aliases_by_owner_and_domain = AsyncMock(
+            return_value=["a", "badbad1"]
+        )
+        url_repo.scrub_blocked_owner_pii = AsyncMock(return_value=1)
+        url_repo.delete_many_by_owner_and_domain = AsyncMock(return_value=1)
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+
+        count = await svc.delete_all_by_domain(
+            USER_OID, "links.acme.com", retain_blocked=True
+        )
+
+        assert count == 1
+        url_repo.scrub_blocked_owner_pii.assert_awaited_once_with(
+            USER_OID, domain="links.acme.com"
+        )
+        url_repo.delete_many_by_owner_and_domain.assert_awaited_once_with(
+            USER_OID, "links.acme.com", retain_blocked=True
+        )
+        # Retained BLOCKED aliases still get their cache entries purged —
+        # the cached projection carries the pre-scrub password hash.
+        url_cache.invalidate_many.assert_awaited_once_with(
+            ["a", "badbad1"], "links.acme.com"
         )
 
 

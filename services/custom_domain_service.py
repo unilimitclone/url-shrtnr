@@ -397,7 +397,10 @@ class CustomDomainService:
         even mid-rollback, and takes a raw owner id (there is no
         authenticated caller by the time the sweep runs). Per domain:
         cascade-delete its URLs when wired (a no-op after the erasure's
-        owner-wide URL delete), announce edge eviction (best-effort — the
+        owner-wide URL delete) — with ``retain_blocked``, so BLOCKED links
+        the owner-wide step just retained and scrubbed survive this pass
+        too (the interactive revoke cascade deliberately differs and
+        deletes them), announce edge eviction (best-effort — the
         doc deletion makes the tenant resolver 404 regardless), invalidate
         the tenant cache, then hard-delete the doc. Repo failures propagate
         so the sweep re-queues the whole user. Page zero is re-read because
@@ -419,7 +422,9 @@ class CustomDomainService:
                 return removed
             for doc in page:
                 if self._url_service is not None:
-                    await self._url_service.delete_all_by_domain(owner_id, doc.fqdn)
+                    await self._url_service.delete_all_by_domain(
+                        owner_id, doc.fqdn, retain_blocked=True
+                    )
                 if not await self._edge.announce_revoked(doc.fqdn):
                     log.warning(
                         "audit.domain.erase_eviction_failed",
