@@ -271,6 +271,7 @@ def build_account_erasure_service(
             request_timeout_seconds=r2.request_timeout_seconds,
         )
 
+    user_repo = UserRepository(db["users"])
     url_service = UrlService(
         UrlRepository(db["urlsV2"]),
         LegacyUrlRepository(db["urls"]),
@@ -288,6 +289,7 @@ def build_account_erasure_service(
         edge_kv=edge_kv_client,
         r2_storage=r2_storage,
         meta_key_secret=settings.secret_key,
+        user_repo=user_repo,
     )
 
     # Custom-domains stack, mirrored from wire_services: erasure needs the
@@ -329,7 +331,7 @@ def build_account_erasure_service(
     )
 
     return AccountErasureService(
-        UserRepository(db["users"]),
+        user_repo,
         url_service,
         domain_service,
         ClickRepository(db["clicks"]),
@@ -673,6 +675,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         meta_image_sink=meta_image_sink,
         meta_key_secret=settings.secret_key,
         events=app.state.domain_event_sink,
+        user_repo=user_repo,
     )
     app.state.bulk_url_service = BulkUrlService(
         url_repo,

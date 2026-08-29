@@ -61,12 +61,73 @@ class TestIngest:
         assert result.image_meta["height"] == 2
         assert result.image_meta["content_type"] == "image/png"
         key = storage.put_object.call_args.args[0]
-        from services.meta_tags.images import owner_key_prefix
+        from services.image_ingest import owner_key_prefix
 
         expected_prefix = owner_key_prefix(OWNER, "")
         assert key.startswith(f"og/{expected_prefix}/") and key.endswith(".png")
         # The raw ObjectId must never reach a public URL path.
         assert str(OWNER) not in key
+
+    @pytest.mark.asyncio
+    async def test_upload_pins_and_prefers_the_stored_prefix(self):
+        """With a user repo wired, the upload keys under the pinned prefix
+        (rotation-proof) instead of recomputing the HMAC."""
+        storage = _storage()
+        user = MagicMock()
+        user.storage_prefix = "p1nn3dpr3f1x0000"
+        user_repo = MagicMock()
+        user_repo.find_by_id = AsyncMock(return_value=user)
+        user_repo.set_storage_prefix_if_absent = AsyncMock(return_value=True)
+
+        await ingest_meta_image(
+            _data_uri(_png_bytes(3, 2)),
+            owner_id=OWNER,
+            storage=storage,
+            max_bytes=MAX,
+            user_repo=user_repo,
+        )
+        key = storage.put_object.call_args.args[0]
+        assert key.startswith("og/p1nn3dpr3f1x0000/")
+        user_repo.set_storage_prefix_if_absent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upload_pins_the_prefix_on_first_use(self):
+        from services.image_ingest import owner_key_prefix
+
+        storage = _storage()
+        user = MagicMock()
+        user.storage_prefix = None
+        user_repo = MagicMock()
+        user_repo.find_by_id = AsyncMock(return_value=user)
+        user_repo.set_storage_prefix_if_absent = AsyncMock(return_value=True)
+
+        await ingest_meta_image(
+            _data_uri(_png_bytes(3, 2)),
+            owner_id=OWNER,
+            storage=storage,
+            max_bytes=MAX,
+            user_repo=user_repo,
+        )
+        user_repo.set_storage_prefix_if_absent.assert_awaited_once_with(
+            OWNER, owner_key_prefix(OWNER, "")
+        )
+
+    @pytest.mark.asyncio
+    async def test_anonymous_owner_never_touches_the_user_repo(self):
+        from schemas.models.base import ANONYMOUS_OWNER_ID
+
+        storage = _storage()
+        user_repo = MagicMock()
+        user_repo.find_by_id = AsyncMock()
+
+        await ingest_meta_image(
+            _data_uri(_png_bytes(3, 2)),
+            owner_id=ANONYMOUS_OWNER_ID,
+            storage=storage,
+            max_bytes=MAX,
+            user_repo=user_repo,
+        )
+        user_repo.find_by_id.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_magic_mismatch_rejected(self):

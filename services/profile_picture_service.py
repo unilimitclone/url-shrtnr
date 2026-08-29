@@ -199,7 +199,12 @@ class ProfilePictureService:
         # Content-addressed + owner-scoped, mirroring og/ keys: re-uploads
         # dedupe, takedowns can prefix-sweep profile-pictures/{prefix}/.
         # Replaced objects are not deleted (same orphan-GC stance as og/).
-        prefix = owner_key_prefix(user_id, self._key_secret)
+        prefix = user_doc.storage_prefix
+        if prefix is None:
+            prefix = owner_key_prefix(user_id, self._key_secret)
+            # Pin the prefix on first upload — a SECRET_KEY rotation would
+            # otherwise re-key it and orphan the objects for erasure sweeps.
+            await self._user_repo.set_storage_prefix_if_absent(user_id, prefix)
         digest = hashlib.sha256(decoded.data).hexdigest()
         key = f"profile-pictures/{prefix}/{digest}.{EXT[decoded.info.format]}"
         url = await self._r2_storage.put_object(

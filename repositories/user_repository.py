@@ -76,6 +76,22 @@ class UserRepository(BaseRepository[UserDoc]):
             {"$set": ops},
         )
 
+    async def set_storage_prefix_if_absent(
+        self, user_id: ObjectId, prefix: str
+    ) -> bool:
+        """Pin the R2 owner-key prefix on first upload — one guarded write.
+
+        The prefix derives from SECRET_KEY, so a rotation would orphan
+        everything stored under the old value; persisting it on first use
+        keeps the erasure sweep pointed at where the objects actually live.
+        The absence guard makes concurrent first uploads first-write-wins.
+        Returns True when THIS call did the pinning.
+        """
+        return await self._update_modified(
+            {"_id": user_id, "storage_prefix": None},
+            {"$set": {"storage_prefix": prefix}},
+        )
+
     async def mark_pending_deletion(self, user_id: ObjectId, grace_days: int) -> bool:
         """Flip an ACTIVE account to PENDING_DELETION with a purge deadline.
 

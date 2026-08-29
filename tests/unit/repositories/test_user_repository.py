@@ -163,6 +163,26 @@ class TestUserRepository:
         with pytest.raises(ServerSelectionTimeoutError):
             await self._repo(col).update(USER_OID, {"$set": {"email_verified": True}})
 
+    # ── Storage prefix pinning ────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_set_storage_prefix_if_absent_is_guarded_on_absence(self):
+        col = make_collection()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=1))
+        ok = await self._repo(col).set_storage_prefix_if_absent(USER_OID, "abc123")
+        assert ok is True
+        query, ops = col.update_one.await_args.args
+        # First-write-wins: only a doc without a pinned prefix matches.
+        assert query == {"_id": USER_OID, "storage_prefix": None}
+        assert ops == {"$set": {"storage_prefix": "abc123"}}
+
+    @pytest.mark.asyncio
+    async def test_set_storage_prefix_if_absent_noops_when_pinned(self):
+        col = make_collection()
+        col.update_one = AsyncMock(return_value=MagicMock(modified_count=0))
+        ok = await self._repo(col).set_storage_prefix_if_absent(USER_OID, "abc123")
+        assert ok is False
+
     # ── Pending deletion ──────────────────────────────────────────────────────
 
     @pytest.mark.asyncio

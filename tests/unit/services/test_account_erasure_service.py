@@ -30,10 +30,11 @@ SECRET = "test-secret"
 URL_IDS = [ObjectId("cccccccccccccccccccccccc"), ObjectId("dddddddddddddddddddddddd")]
 
 
-def _user_doc(user_id=UID, email=EMAIL):
+def _user_doc(user_id=UID, email=EMAIL, storage_prefix=None):
     doc = MagicMock()
     doc.id = user_id
     doc.email = email
+    doc.storage_prefix = storage_prefix
     return doc
 
 
@@ -396,6 +397,40 @@ async def test_erase_unconfigured_r2_counts_zero():
     counts = await _service(stubs).erase(UID)
     assert counts["r2_objects"] == 0
     stubs.r2_storage.list_keys.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_erase_prefers_the_pinned_storage_prefix():
+    """The prefix pinned at upload time is where the objects actually live;
+    when it matches the computed HMAC there is exactly one sweep."""
+    stubs = Stubs()
+    pinned = owner_key_prefix(UID, SECRET)
+    stubs.user_repo.find_by_id = AsyncMock(
+        return_value=_user_doc(storage_prefix=pinned)
+    )
+    counts = await _service(stubs).erase(UID)
+    listed = [args[0] for name, args in stubs.calls if name == "r2.list"]
+    assert listed == [f"profile-pictures/{pinned}/", f"og/{pinned}/"]
+    assert counts["r2_objects"] == 2
+
+
+@pytest.mark.asyncio
+async def test_erase_sweeps_both_prefixes_after_secret_rotation():
+    """Stored and computed prefixes diverge after a SECRET_KEY rotation —
+    uploads may sit under either, so BOTH get swept (stored first)."""
+    stubs = Stubs()
+    stubs.user_repo.find_by_id = AsyncMock(
+        return_value=_user_doc(storage_prefix="0ld5ecretpref1x0")
+    )
+    computed = owner_key_prefix(UID, SECRET)
+    await _service(stubs).erase(UID)
+    listed = [args[0] for name, args in stubs.calls if name == "r2.list"]
+    assert listed == [
+        "profile-pictures/0ld5ecretpref1x0/",
+        "og/0ld5ecretpref1x0/",
+        f"profile-pictures/{computed}/",
+        f"og/{computed}/",
+    ]
 
 
 @pytest.mark.asyncio

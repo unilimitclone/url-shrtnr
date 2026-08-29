@@ -70,6 +70,7 @@ from shared.generators import generate_secure_token
 if TYPE_CHECKING:
     from infrastructure.cloudflare_kv import CloudflareKVClient
     from infrastructure.storage.r2 import R2StorageClient
+    from repositories.user_repository import UserRepository
     from services.meta_tags.sinks import MetaImageValidationSink
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
@@ -439,6 +440,7 @@ class UrlService:
         meta_image_sink: MetaImageValidationSink | None = None,
         meta_key_secret: str = "",
         events: DomainEventSink | None = None,
+        user_repo: UserRepository | None = None,
     ) -> None:
         self._url_repo = url_repo
         self._legacy_repo = legacy_repo
@@ -478,6 +480,9 @@ class UrlService:
         # HMAC pepper for storage-key owner prefixes (public URLs must not
         # carry raw ObjectIds). Wired from settings.secret_key.
         self._meta_key_secret = meta_key_secret
+        # Lets og-image uploads pin the owner's storage prefix on first use
+        # (rotation-proofing the erasure sweep); None degrades to bare HMAC.
+        self._user_repo = user_repo
         # Domain-event sink (webhooks backbone). Null default: producers
         # never carry conditionals and tests need no wiring changes.
         self._events = events or NullDomainEventSink()
@@ -747,6 +752,7 @@ class UrlService:
             storage=self._r2_storage,
             max_bytes=self._meta_image_max_bytes,
             key_secret=self._meta_key_secret,
+            user_repo=self._user_repo,
         )
         if ingested.r2_hosted:
             return meta.model_copy(update={"image": ingested.url}), ingested.image_meta

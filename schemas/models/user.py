@@ -130,3 +130,6 @@ class UserDoc(MongoBaseModel):
     # cleared on restore. Null on every account that never requested deletion.
     deletion_requested_at: datetime | None = None
     purge_after: datetime | None = None
+    # R2 owner-key prefix, pinned on first upload so SECRET_KEY rotations
+    # can't hide the objects from erasure sweeps. Null until first upload.
+    storage_prefix: str | None = None

@@ -19,10 +19,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from errors import ValidationError
+from schemas.models.base import ANONYMOUS_OWNER_ID
 from shared.image_sniff import MIME, ImageInfo, sniff_image
 
 if TYPE_CHECKING:
     from bson import ObjectId
+
+    from repositories.user_repository import UserRepository
 
 _DATA_URI_RE = re.compile(
     r"^data:image/(?P<fmt>png|jpeg|webp);base64,(?P<b64>[A-Za-z0-9+/=]+)$"
@@ -81,3 +84,28 @@ def owner_key_prefix(owner_id: ObjectId, secret: str) -> str:
     """
     digest = hmac.new(secret.encode(), str(owner_id).encode(), hashlib.sha256)
     return digest.hexdigest()[:16]
+
+
+async def resolve_owner_prefix(
+    owner_id: ObjectId, secret: str, user_repo: UserRepository | None = None
+) -> str:
+    """Resolve the owner's storage prefix, pinning it on first use.
+
+    Prefers the prefix persisted on the user doc — the one existing objects
+    actually live under — and only computes ``owner_key_prefix`` fresh when
+    none is stored yet, pinning that value so a later SECRET_KEY rotation
+    can't orphan the objects (uploads made before the field existed still
+    orphan on rotation — historical, not fixable retroactively). Anonymous
+    owners and repo-less callers get the bare computation: there is no user
+    doc to pin anything on.
+    """
+    computed = owner_key_prefix(owner_id, secret)
+    if user_repo is None or owner_id == ANONYMOUS_OWNER_ID:
+        return computed
+    user = await user_repo.find_by_id(owner_id)
+    if user is None:
+        return computed
+    if user.storage_prefix:
+        return user.storage_prefix
+    await user_repo.set_storage_prefix_if_absent(owner_id, computed)
+    return computed

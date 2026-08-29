@@ -169,6 +169,8 @@ class AccountErasureService:
         Mongo/R2 failures propagate (the ERASING doc is still there, so the
         next sweep re-claims and retries); PostHog and mail failures are
         swallowed — neither may park an account in ERASING forever.
+        Deleted R2 objects may outlive origin deletion at the CDN edge
+        until their cache TTL lapses — no CDN purge is attempted here.
         """
         claimed = await self._user_repo.claim_for_erasure(
             user_id, now=datetime.now(timezone.utc)
@@ -181,7 +183,14 @@ class AccountErasureService:
         # Captured BEFORE any deletion: the confirmation mail and the
         # email-keyed predicates need these after the docs are gone.
         email = user.email
-        r2_prefix = owner_key_prefix(user_id, self._key_secret)
+        # Prefer the prefix pinned at upload time — the one the objects live
+        # under across SECRET_KEY rotations; sweep BOTH when they diverge.
+        computed_prefix = owner_key_prefix(user_id, self._key_secret)
+        stored_prefix = user.storage_prefix
+        if stored_prefix and stored_prefix != computed_prefix:
+            r2_prefixes: tuple[str, ...] = (stored_prefix, computed_prefix)
+        else:
+            r2_prefixes = (stored_prefix or computed_prefix,)
 
         counts: dict[str, int] = {}
         # 1. Links first — per-link cache/edge purge, then bulk delete. BLOCKED
@@ -228,8 +237,8 @@ class AccountErasureService:
         counts["feature_flags_pulled"] = await self._feature_flag_repo.pull_allowlisted(
             user_id, email
         )
-        # 6. R2 — profile pictures + og images under the owner prefix.
-        counts["r2_objects"] = await self._sweep_r2(r2_prefix)
+        # 6. R2 — profile pictures + og images under the owner prefix(es).
+        counts["r2_objects"] = await self._sweep_r2(r2_prefixes)
         # 7-8. External systems, then the doc itself — LAST among deletes.
         await self._erase_posthog(user_id)
         deleted = await self._user_repo.delete_hard(user_id)
@@ -288,20 +297,25 @@ class AccountErasureService:
 
     # ── Internal ────────────────────────────────────────────────────────
 
-    async def _sweep_r2(self, prefix: str) -> int:
-        """Delete every stored object under the owner's key prefix.
+    async def _sweep_r2(self, prefixes: tuple[str, ...]) -> int:
+        """Delete every stored object under the owner's key prefix(es).
 
+        Usually one prefix; two when the pinned ``storage_prefix`` and the
+        freshly computed HMAC diverge after a SECRET_KEY rotation — objects
+        may sit under either. Rotations that predate the pinning field
+        still orphan the old prefix (historical; needs the old secret).
         A failed delete RAISES — the user doc must survive so the next
         sweep retries, instead of orphaning the object forever.
         """
         if self._r2_storage is None or not self._r2_storage.is_configured:
             return 0
         removed = 0
-        for scope in (f"profile-pictures/{prefix}/", f"og/{prefix}/"):
-            for key in await self._r2_storage.list_keys(scope):
-                if not await self._r2_storage.delete_object(key):
-                    raise R2StorageError(f"erasure could not delete {key}")
-                removed += 1
+        for prefix in prefixes:
+            for scope in (f"profile-pictures/{prefix}/", f"og/{prefix}/"):
+                for key in await self._r2_storage.list_keys(scope):
+                    if not await self._r2_storage.delete_object(key):
+                        raise R2StorageError(f"erasure could not delete {key}")
+                    removed += 1
         return removed
 
     async def _erase_posthog(self, user_id: ObjectId) -> None:
