@@ -474,7 +474,10 @@ class LlmSettings(BaseSettings):
     # Hard ceilings applied to every task unless the task declares tighter
     # ones. Requests = model round-trips in one task run (tool loop
     # included); tokens = total across the run.
-    max_requests_per_run: int = Field(default=8, ge=1)
+    # Measured on the 167-row eval: dead destinations and redirect chains
+    # legitimately use 8-10 rounds before concluding; 8 cut off 10 of 167
+    # real investigations mid-flight.
+    max_requests_per_run: int = Field(default=12, ge=1)
     # Measured: a clean investigation uses 4-5 tool calls; one whose
     # destination is dead legitimately explores more (root, variants,
     # chain) before concluding. 10 cut those off mid-investigation.

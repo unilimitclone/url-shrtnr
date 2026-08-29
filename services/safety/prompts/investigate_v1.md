@@ -43,6 +43,14 @@ Signs `host` genuinely is right: the domain exists to run the abuse (a typosquat
 
 You must fill in `scope_justification` explaining why your chosen scope is right. If you choose `host`, that field has to say why the whole host deserves it and not merely the page you looked at. If you cannot make that argument, choose `path_pattern` or `links` instead — a narrow block that a human can widen costs far less than a wide block that took innocent links with it.
 
+# A dead page is not an acquittal
+
+When the reported page renders as gone (404, removed site, empty bucket, dead builder page) you have ABSENT evidence, not clean evidence. Campaign pages die fast: takedowns, rotating kits, and cloaking all produce exactly this render. A report plus a dead page is `uncertain`, not `benign` — benign requires positive evidence that what is there is harmless, and a page that is not there cannot provide it.
+
+# Identity abuse looks like self-promo
+
+Adult-content funnels on shared site builders are often NOT a creator promoting themselves: spoo.me's largest killed campaign was thousands of burst-created links whose aliases were real people's names, pointing at throwaway adult pages — impersonation built to harm the named person. Signals that flip "adult self-promo" (`spam_gray`) into abuse worth blocking: many near-identical sites with generated-looking hostnames, aliases that read as personal names the page does not belong to, burst creation seconds apart, and funnel paths (`exclusive-content`, dating/cam gateways) repeated across hosts. When those are present, classify by the harm to the impersonated person, not by the content category.
+
 # The confusions that actually matter
 
 Judge by these pairs — this is where the errors happen:
