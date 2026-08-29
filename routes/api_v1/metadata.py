@@ -39,7 +39,10 @@ log = get_logger(__name__)
 
 router = APIRouter(tags=["Metadata"])
 
-_FETCH_MAX_BYTES = 524_288  # tags must be in the head; 512KB is generous
+# Heads are not reliably small (youtube: ~700KB before its meta tags),
+# so the read stops at </head> and this is only the backstop.
+_FETCH_MAX_BYTES = 1_048_576
+_HEAD_END = b"</head>"
 _FETCH_TIMEOUT = 5.0
 
 _metadata_limit, _metadata_key = dynamic_limit(
@@ -112,8 +115,8 @@ async def get_metadata(
             accept_content=("text/html", "application/xhtml"),
             timeout=_FETCH_TIMEOUT,
             max_bytes=_FETCH_MAX_BYTES,
-            # Big pages are fine — tags live in <head>, parse the prefix.
             truncate_over_cap=True,
+            stop_after=_HEAD_END,
             user_agent=settings.meta_tags.fetch_user_agent,
         )
     except FetchTransientError as exc:

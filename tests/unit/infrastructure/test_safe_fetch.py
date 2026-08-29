@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from infrastructure.safe_fetch import (
     FetchHardError,
     _is_public,
+    _read_body,
     fetch_public_image,
     resolve_public_ip,
 )
@@ -129,3 +130,71 @@ class TestFetchGuards:
         ):
             await fetch_public_image("https://example.com/a.png")
         assert captured["accept_encoding"] == "identity"
+
+
+class TestReadBodyStopMarker:
+    """``stop_after`` ends the read at </head> so an HTML caller pays for the
+    head, not the cap. Heads are not reliably small: youtube puts ~700KB of
+    inline JSON before its meta tags, which a 512KB cap silently cut off."""
+
+    @staticmethod
+    def _resp(chunks):
+        resp = MagicMock()
+
+        async def aiter_bytes():
+            for chunk in chunks:
+                yield chunk
+
+        resp.aiter_bytes = aiter_bytes
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_read_stops_at_the_marker(self):
+        body = await _read_body(
+            self._resp([b"<head><title>x</title></head>", b"<body>" + b"z" * 5000]),
+            max_bytes=1_000_000,
+            truncate_over_cap=True,
+            stop_after=b"</head>",
+        )
+        assert bytes(body) == b"<head><title>x</title></head>"
+
+    @pytest.mark.asyncio
+    async def test_marker_split_across_chunks_is_still_found(self):
+        body = await _read_body(
+            self._resp([b"<head>a</he", b"ad><body>ignored"]),
+            max_bytes=1_000_000,
+            truncate_over_cap=True,
+            stop_after=b"</head>",
+        )
+        assert bytes(body) == b"<head>a</head>"
+
+    @pytest.mark.asyncio
+    async def test_tags_past_the_old_512kb_cap_survive(self):
+        """The youtube shape: a huge head, then the tags."""
+        head = b"<head>" + b"j" * 700_000 + b'<meta property="og:title"></head>'
+        body = await _read_body(
+            self._resp([head, b"<body>" + b"z" * 600_000]),
+            max_bytes=1_048_576,
+            truncate_over_cap=True,
+            stop_after=b"</head>",
+        )
+        assert b"og:title" in bytes(body)
+
+    @pytest.mark.asyncio
+    async def test_a_missing_marker_still_honours_the_cap(self):
+        body = await _read_body(
+            self._resp([b"x" * 900, b"y" * 900]),
+            max_bytes=1_000,
+            truncate_over_cap=True,
+            stop_after=b"</head>",
+        )
+        assert len(body) == 1_000
+
+    @pytest.mark.asyncio
+    async def test_without_a_marker_the_whole_body_is_read(self):
+        body = await _read_body(
+            self._resp([b"<head></head>", b"<body>tail"]),
+            max_bytes=1_000,
+            truncate_over_cap=True,
+        )
+        assert bytes(body) == b"<head></head><body>tail"

@@ -120,11 +120,21 @@ bracket_ip = _bracket
 
 
 async def _read_body(
-    resp: httpx.Response, max_bytes: int, truncate_over_cap: bool
+    resp: httpx.Response,
+    max_bytes: int,
+    truncate_over_cap: bool,
+    stop_after: bytes | None = None,
 ) -> bytearray:
     buf = bytearray()
+    searched = 0
     async for chunk in resp.aiter_bytes():
         buf += chunk
+        if stop_after is not None:
+            # Resume one marker-width back: it can straddle two chunks.
+            found = buf.find(stop_after, max(0, searched - len(stop_after)))
+            if found != -1:
+                return buf[: found + len(stop_after)]
+            searched = len(buf)
         if len(buf) > max_bytes:
             if truncate_over_cap:
                 return buf[:max_bytes]
@@ -141,6 +151,7 @@ async def fetch_public(
     max_bytes: int = 1_048_576,
     max_redirects: int = 3,
     truncate_over_cap: bool = False,
+    stop_after: bytes | None = None,
     user_agent: str = DEFAULT_USER_AGENT,
 ) -> FetchedBody:
     """Fetch *url* with SSRF guards. ``accept_content`` are content-type
@@ -148,9 +159,12 @@ async def fetch_public(
     fail even when a prefix matched (e.g. ``("svg",)``).
 
     ``truncate_over_cap=True`` returns the first ``max_bytes`` instead of
-    failing when the body exceeds the cap — right for HTML meta parsing
-    (tags live in <head>; github.com's homepage alone is >512KB), wrong
-    for images (a truncated image is not a valid image)."""
+    failing when the body exceeds the cap, which is right for HTML meta
+    parsing and wrong for images (a truncated image is not a valid image).
+
+    ``stop_after`` ends the read at a marker, so an HTML caller pays for
+    the head rather than the cap. Heads are not reliably small: youtube
+    puts ~700KB of inline JSON before its meta tags."""
     # httpx timeouts are per-operation and reset each chunk, so the body
     # read below is bounded by an explicit wall-clock ceiling instead.
     hop_deadline = timeout * 3
@@ -214,7 +228,7 @@ async def fetch_public(
                 # wall-clock ceiling a slow-drip server can't evade.
                 try:
                     buf = await asyncio.wait_for(
-                        _read_body(resp, max_bytes, truncate_over_cap),
+                        _read_body(resp, max_bytes, truncate_over_cap, stop_after),
                         timeout=hop_deadline,
                     )
                 except (asyncio.TimeoutError, TimeoutError) as exc:
