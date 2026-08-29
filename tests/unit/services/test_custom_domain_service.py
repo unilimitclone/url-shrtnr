@@ -1153,6 +1153,7 @@ class TestDeleteAllForOwner:
         )
         d1 = _doc(fqdn="links.acme.com", domain_id=ObjectId())
         d2 = _doc(fqdn="go.acme.com", domain_id=ObjectId())
+        repo.count_by_owner = AsyncMock(return_value=2)
         repo.list_by_owner = AsyncMock(side_effect=[[d1, d2], []])
 
         removed = await svc.delete_all_for_owner(USER_OID)
@@ -1167,6 +1168,7 @@ class TestDeleteAllForOwner:
     @pytest.mark.asyncio
     async def test_no_domains_is_a_noop(self):
         svc, repo, _, edge, _ = _build_service()
+        repo.count_by_owner = AsyncMock(return_value=0)
         repo.list_by_owner = AsyncMock(return_value=[])
         assert await svc.delete_all_for_owner(USER_OID) == 0
         repo.delete_by_id.assert_not_awaited()
@@ -1176,6 +1178,7 @@ class TestDeleteAllForOwner:
     async def test_failed_eviction_does_not_block_erasure(self):
         svc, repo, _, edge, _ = _build_service()
         edge.announce_revoked = AsyncMock(return_value=False)
+        repo.count_by_owner = AsyncMock(return_value=1)
         repo.list_by_owner = AsyncMock(side_effect=[[_doc()], []])
         assert await svc.delete_all_for_owner(USER_OID) == 1
         repo.delete_by_id.assert_awaited_once_with(DOMAIN_OID)
@@ -1183,7 +1186,38 @@ class TestDeleteAllForOwner:
     @pytest.mark.asyncio
     async def test_repo_failure_propagates(self):
         svc, repo, _, _, _ = _build_service()
+        repo.count_by_owner = AsyncMock(return_value=1)
         repo.list_by_owner = AsyncMock(side_effect=[[_doc()], []])
         repo.delete_by_id = AsyncMock(side_effect=RuntimeError("mongo down"))
         with pytest.raises(RuntimeError):
             await svc.delete_all_for_owner(USER_OID)
+
+    @pytest.mark.asyncio
+    async def test_noop_delete_raises_instead_of_spinning(self):
+        """A delete that removes nothing would re-list the same page forever
+        (page zero is re-read each pass) — it must raise, not loop."""
+        from errors import AppError
+
+        svc, repo, _, _, _ = _build_service()
+        repo.count_by_owner = AsyncMock(return_value=1)
+        repo.list_by_owner = AsyncMock(return_value=[_doc()])
+        repo.delete_by_id = AsyncMock(return_value=False)
+        with pytest.raises(AppError):
+            await svc.delete_all_for_owner(USER_OID)
+        # Exactly one attempt — the loop never got a second spin.
+        repo.delete_by_id.assert_awaited_once_with(DOMAIN_OID)
+
+    @pytest.mark.asyncio
+    async def test_pass_cap_raises_when_pages_never_drain(self):
+        """Deletes report success but the listing never shrinks (replica
+        lag, repo drift): the absolute pass cap turns it into a failure."""
+        from errors import AppError
+
+        svc, repo, _, _, _ = _build_service()
+        repo.count_by_owner = AsyncMock(return_value=1)
+        repo.list_by_owner = AsyncMock(return_value=[_doc()])
+        repo.delete_by_id = AsyncMock(return_value=True)
+        with pytest.raises(AppError):
+            await svc.delete_all_for_owner(USER_OID)
+        # count=1 ⇒ (1 // 50) + 2 = 2 passes, then the loud stop.
+        assert repo.list_by_owner.await_count == 2

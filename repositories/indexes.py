@@ -171,10 +171,17 @@ async def ensure_indexes(
     await reports_col.create_index([("domain", 1), ("code", 1)], unique=True)
     await reports_col.create_index([("last_reported_at", -1)])
     await reports_col.create_index([("status", 1)])
+    # Multikey, for the erasure cascade's $pull. Not sparse: nearly every
+    # report carries at least one reporter, so sparse would save nothing.
+    await reports_col.create_index([("reporter_ids", 1)])
 
     # ── report_submissions ─────────────────────────────────────────────
     report_submissions_col = db["report_submissions"]
     await report_submissions_col.create_index([("created_at", -1)])
+    # Erasure's delete_by_reporter is an $or over both fields — Mongo only
+    # skips the collection scan when EACH branch has its own index.
+    await report_submissions_col.create_index([("reporter_id", 1)])
+    await report_submissions_col.create_index([("reporter_email", 1)])
 
     # ── custom_domains ────────────────────────────────────────────────
     custom_domains_col = db["custom_domains"]

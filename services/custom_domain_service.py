@@ -12,6 +12,7 @@ from pymongo.errors import DuplicateKeyError
 
 from config import CustomDomainSettings
 from errors import (
+    AppError,
     DomainAlreadyRegisteredError,
     DomainBlocklistedError,
     DomainNotVerifiedError,
@@ -45,6 +46,9 @@ if TYPE_CHECKING:
     from services.url_service import UrlService
 
 log = get_logger(__name__)
+
+# Erasure cascade page size — one repo read per pass of the drain loop.
+_ERASE_PAGE_SIZE = 50
 
 
 class CustomDomainService:
@@ -396,11 +400,21 @@ class CustomDomainService:
         owner-wide URL delete), announce edge eviction (best-effort — the
         doc deletion makes the tenant resolver 404 regardless), invalidate
         the tenant cache, then hard-delete the doc. Repo failures propagate
-        so the sweep re-queues the whole user. Returns domains removed.
+        so the sweep re-queues the whole user. Page zero is re-read because
+        deletions shift the pages, so every doc a pass sees MUST go — a
+        no-op delete raises rather than spinning the scheduler slot against
+        CF forever, and a pass cap bounds the loop absolutely. Returns
+        domains removed.
         """
+        total = await self._repo.count_by_owner(owner_id)
+        # Each pass deletes a full page or raises, so the initial count
+        # bounds the passes; +2 absorbs the empty-page exit and rounding.
+        max_passes = (total // _ERASE_PAGE_SIZE) + 2
         removed = 0
-        while True:
-            page = await self._repo.list_by_owner(owner_id, skip=0, limit=50)
+        for _ in range(max_passes):
+            page = await self._repo.list_by_owner(
+                owner_id, skip=0, limit=_ERASE_PAGE_SIZE
+            )
             if not page:
                 return removed
             for doc in page:
@@ -414,7 +428,17 @@ class CustomDomainService:
                         owner_id=str(owner_id),
                     )
                 await self._invalidate_cache(doc.fqdn)
-                await self._repo.delete_by_id(doc.id)
+                if not await self._repo.delete_by_id(doc.id):
+                    # The doc was listed but didn't delete — repo drift or a
+                    # racing writer; raising re-queues the user for the sweep.
+                    log.error(
+                        "audit.domain.erase_delete_noop",
+                        fqdn=doc.fqdn,
+                        domain_id=str(doc.id),
+                        owner_id=str(owner_id),
+                        removed=removed,
+                    )
+                    raise AppError("domain erasure delete removed nothing")
                 removed += 1
                 log.info(
                     "audit.domain.erased",
@@ -422,6 +446,14 @@ class CustomDomainService:
                     domain_id=str(doc.id),
                     owner_id=str(owner_id),
                 )
+        log.error(
+            "audit.domain.erase_loop_exhausted",
+            owner_id=str(owner_id),
+            removed=removed,
+            initial_count=total,
+            max_passes=max_passes,
+        )
+        raise AppError("domain erasure did not drain the owner's domains")
 
     async def remove_revoked(
         self,

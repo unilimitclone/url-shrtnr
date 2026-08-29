@@ -145,7 +145,12 @@ class TestEnsureIndexes:
         )
         reports_col.create_index.assert_any_await([("last_reported_at", -1)])
         reports_col.create_index.assert_any_await([("status", 1)])
+        # Erasure-cascade predicates: pull_reporter (multikey) and the two
+        # $or branches of delete_by_reporter — each branch needs its index.
+        reports_col.create_index.assert_any_await([("reporter_ids", 1)])
         report_submissions_col.create_index.assert_any_await([("created_at", -1)])
+        report_submissions_col.create_index.assert_any_await([("reporter_id", 1)])
+        report_submissions_col.create_index.assert_any_await([("reporter_email", 1)])
         custom_domains_col.create_index.assert_any_await(
             [("fqdn", 1)],
             unique=True,
