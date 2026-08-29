@@ -65,11 +65,13 @@ class TestEnsureIndexes:
 
         # Check a few critical indexes
         users_col.create_index.assert_any_await([("email", 1)], unique=True)
-        # Erasure sweep: partial — holds only PENDING_DELETION docs.
+        # Erasure sweep: partial — holds only PENDING_DELETION/ERASING docs.
         users_col.create_index.assert_any_await(
             [("status", 1), ("purge_after", 1)],
             name="pending_deletion_sweep",
-            partialFilterExpression={"status": "PENDING_DELETION"},
+            partialFilterExpression={
+                "status": {"$in": ["PENDING_DELETION", "ERASING"]}
+            },
         )
         urls_v2_col.create_index.assert_any_await(
             [("owner_id", 1)],
@@ -196,6 +198,41 @@ class TestEnsureIndexes:
         # Must not raise.
         await ensure_indexes(db)
         col.drop_index.assert_any_await("alias_1")
+
+    @pytest.mark.asyncio
+    async def test_sweep_index_recreated_on_options_conflict(self):
+        # Deploys carrying the old PENDING_DELETION-only partial filter hit
+        # code 85 — the index must be drop-recreated, not left stale.
+        from repositories.indexes import ensure_indexes
+
+        db = MagicMock()
+        col = AsyncMock()
+        conflict = OperationFailure("options conflict", code=85)
+
+        async def create_index(keys, **kwargs):
+            if (
+                kwargs.get("name") == "pending_deletion_sweep"
+                and not col.drop_index.await_count
+            ):
+                raise conflict
+            return None
+
+        col.create_index = AsyncMock(side_effect=create_index)
+        col.drop_index = AsyncMock()
+        db.__getitem__ = lambda self, name: col
+        db.create_collection = AsyncMock(side_effect=CollectionInvalid("clicks"))
+
+        await ensure_indexes(db)
+
+        col.drop_index.assert_any_await("pending_deletion_sweep")
+        # Recreated with the new $in filter after the drop.
+        col.create_index.assert_any_await(
+            [("status", 1), ("purge_after", 1)],
+            name="pending_deletion_sweep",
+            partialFilterExpression={
+                "status": {"$in": ["PENDING_DELETION", "ERASING"]}
+            },
+        )
 
     @pytest.mark.asyncio
     async def test_drop_alias_1_propagates_other_errors(self):

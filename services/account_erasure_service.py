@@ -5,16 +5,21 @@ every collection and external system that references it; ``sweep()``
 drains the purge queue (the users collection itself — PENDING_DELETION
 docs past their ``purge_after``).
 
-The cascade order is load-bearing: ``email`` and the R2 owner-key prefix
-are captured BEFORE anything is deleted, external systems (R2, PostHog,
-the confirmation mail) run before the user doc dies, and the users
+The cascade order is load-bearing: erasure starts with an atomic claim
+(PENDING_DELETION/ERASING + purge-due → ERASING, so a grace-period
+restore that lands mid-sweep wins and the account survives), ``email``
+and the R2 owner-key prefix are captured BEFORE anything is deleted,
+external systems (R2, PostHog) run before the user doc dies, the users
 collection goes LAST — so a crash anywhere re-queues the whole user on
-the next sweep. That makes at-least-once execution safe: every step is a
-``delete_many``/``$pull`` that no-ops on re-run.
+the next sweep — and the confirmation mail (the one non-idempotent step)
+fires only AFTER the doc is gone. That makes at-least-once execution
+safe: every other step is a ``delete_many``/``$pull`` that no-ops on
+re-run.
 """
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol
 
@@ -85,9 +90,10 @@ class NoopErasureMailer:
 class AccountErasureService:
     """Hard-erases one account across every collection that references it.
 
-    Every step is idempotent (``delete_many`` / ``$pull``); the user doc
-    goes last, so at-least-once sweep execution is safe: a crash anywhere
-    re-queues the user for the next sweep.
+    Every delete step is idempotent (``delete_many`` / ``$pull``); the user
+    doc goes last and the confirmation mail only after it, so at-least-once
+    sweep execution is safe: a crash anywhere re-queues the user (still
+    ERASING, still purge-due) for the next sweep.
     """
 
     def __init__(
@@ -112,6 +118,7 @@ class AccountErasureService:
         mailer: ErasureMailer | None = None,
         key_secret: str = "",
         batch_limit: int = 25,
+        time_budget_seconds: float = 480,
     ) -> None:
         self._user_repo = user_repo
         self._url_service = url_service
@@ -135,15 +142,26 @@ class AccountErasureService:
         # key with (settings.secret_key), or the sweep misses everything.
         self._key_secret = key_secret
         self._batch_limit = batch_limit
+        # Stop STARTING erasures once this much of a sweep run is spent —
+        # default 80% of the scheduler's 600s lease (see sweep()).
+        self._time_budget_seconds = time_budget_seconds
 
     async def erase(self, user_id: ObjectId) -> dict[str, int]:
         """Run the full cascade for one account. Returns per-step counts.
 
-        A missing user returns ``{}`` — already erased by a prior attempt.
-        Mongo/R2 failures propagate (the user doc is still there, so the
-        next sweep retries); PostHog and mail failures are swallowed —
-        neither may park an account in PENDING_DELETION forever.
+        Starts with the atomic erasure claim (guarded flip to ERASING):
+        a failed claim returns ``{}`` — the account was restored mid-sweep,
+        already erased, or is not purge-due — and nothing is touched. Once
+        the claim holds, erasure is final: restore no longer matches.
+        Mongo/R2 failures propagate (the ERASING doc is still there, so the
+        next sweep re-claims and retries); PostHog and mail failures are
+        swallowed — neither may park an account in ERASING forever.
         """
+        claimed = await self._user_repo.claim_for_erasure(
+            user_id, now=datetime.now(timezone.utc)
+        )
+        if not claimed:
+            return {}
         user = await self._user_repo.find_by_id(user_id)
         if user is None:
             return {}
@@ -187,10 +205,15 @@ class AccountErasureService:
         )
         # 6. R2 — profile pictures + og images under the owner prefix.
         counts["r2_objects"] = await self._sweep_r2(r2_prefix)
-        # 7-8. External systems, then the doc itself — LAST.
+        # 7-8. External systems, then the doc itself — LAST among deletes.
         await self._erase_posthog(user_id)
-        await self._send_confirmation(email)
-        await self._user_repo.delete_hard(user_id)
+        deleted = await self._user_repo.delete_hard(user_id)
+        # The mail is the one non-idempotent step: only after the doc is gone,
+        # or a failing delete_hard resends "permanently deleted" every sweep.
+        if deleted:
+            await self._send_confirmation(email)
+        else:
+            log.warning("account_erase_doc_already_gone", user_id=str(user_id))
 
         # D6: the one compliance record — user_id + counts, never email/IP.
         log.info("account_erased", user_id=str(user_id), **counts)
@@ -200,21 +223,43 @@ class AccountErasureService:
         """Erase every account whose purge deadline has passed.
 
         Per-user failures are isolated: log, count, continue — the failed
-        user stays PENDING_DELETION and the next sweep retries. The batch
-        limit bounds one run; the recurring schedule drains any backlog.
+        user stays claimable and the next sweep retries. The batch limit
+        bounds one run; the time budget stops STARTING new erasures once a
+        run has outstayed its welcome (heavy cascades can outrun the
+        scheduler lease — the in-flight one finishes, the rest defer to the
+        next sweep). The recurring schedule drains any backlog.
         """
+        started = time.monotonic()
         due = await self._user_repo.find_purge_due(
             now=datetime.now(timezone.utc), limit=self._batch_limit
         )
-        erased = failed = 0
-        for user in due:
+        erased = failed = skipped = deferred = 0
+        for index, user in enumerate(due):
+            if time.monotonic() - started >= self._time_budget_seconds:
+                deferred = len(due) - index
+                log.warning(
+                    "account_erasure_sweep_budget_exhausted",
+                    deferred=deferred,
+                    budget_seconds=self._time_budget_seconds,
+                )
+                break
             try:
-                await self.erase(user.id)
-                erased += 1
+                counts = await self.erase(user.id)
             except Exception:
                 log.exception("account_erase_failed", user_id=str(user.id))
                 failed += 1
-        return {"erased": erased, "failed": failed}
+            else:
+                if counts:
+                    erased += 1
+                else:
+                    # Claim lost — restored mid-sweep or already purged.
+                    skipped += 1
+        return {
+            "erased": erased,
+            "failed": failed,
+            "skipped": skipped,
+            "deferred": deferred,
+        }
 
     # ── Internal ────────────────────────────────────────────────────────
 

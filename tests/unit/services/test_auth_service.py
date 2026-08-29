@@ -298,6 +298,22 @@ class TestLogin:
         assert exc_info.value.error_code == "ACCOUNT_PENDING_DELETION"
 
     @pytest.mark.asyncio
+    async def test_login_blocked_when_erasing(self):
+        """ERASING (cascade claimed) answers exactly like PENDING_DELETION —
+        a fresh session must never outlive the erasure."""
+        from errors import AccountPendingDeletionError
+        from infrastructure.crypto import hash_password
+
+        svc = make_credential_service()
+        hashed = hash_password("ValidPass1!")
+        user = make_user_doc(password_hash=hashed, password_set=True, status="ERASING")
+        svc._user_repo.find_by_email.return_value = user
+
+        with pytest.raises(AccountPendingDeletionError) as exc_info:
+            await svc.login("test@example.com", "ValidPass1!")
+        assert exc_info.value.error_code == "ACCOUNT_PENDING_DELETION"
+
+    @pytest.mark.asyncio
     async def test_login_pending_deletion_hidden_behind_password_proof(self):
         """Wrong password on a pending account answers like any wrong
         password — strangers can't probe deletion state."""

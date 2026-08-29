@@ -724,6 +724,9 @@ class AppSettings(BaseSettings):
     # sweep run erases (the */10 cron drains any backlog).
     account_deletion_grace_days: int = 7
     account_erasure_batch_limit: int = 25
+    # Sweep-run budget: stop STARTING erasures past this (80% of the 600s
+    # scheduler lease) so a batch of heavy cascades never outruns the lease.
+    account_erasure_time_budget_seconds: int = 480
 
     # Validator constraints (overridable by self-hosters via env vars)
     blocked_url_regex_timeout: float = 0.2
@@ -754,6 +757,7 @@ class AppSettings(BaseSettings):
         "emoji_generated_alias_length",
         "geo_rules_max_countries",
         "account_erasure_batch_limit",
+        "account_erasure_time_budget_seconds",
     )
     @classmethod
     def _must_be_positive_int(cls, v: int, info) -> int:

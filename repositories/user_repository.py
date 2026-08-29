@@ -95,12 +95,38 @@ class UserRepository(BaseRepository[UserDoc]):
             },
         )
 
+    async def claim_for_erasure(self, user_id: ObjectId, now: datetime) -> bool:
+        """Atomically claim a purge-due account for the erasure cascade.
+
+        Guarded transition: only a PENDING_DELETION or ERASING doc whose
+        ``purge_after`` has passed matches, so a restore that landed after
+        sweep selection wins — the claim fails and the account survives.
+        ERASING is deliberately re-claimable: a crashed cascade retries on
+        the next sweep. ``purge_after`` is preserved (never unset) so that
+        re-claim still matches. Returns True when the claim holds.
+        """
+        return await self._update(
+            {
+                "_id": user_id,
+                "status": {
+                    "$in": [
+                        UserStatus.PENDING_DELETION.value,
+                        UserStatus.ERASING.value,
+                    ]
+                },
+                "purge_after": {"$lte": now},
+            },
+            {"$set": {"status": UserStatus.ERASING.value}},
+        )
+
     async def restore(self, user_id: ObjectId) -> bool:
         """Cancel a pending deletion — PENDING_DELETION back to ACTIVE.
 
         Guarded like ``mark_pending_deletion``: only a PENDING_DELETION doc
         matches, so restoring an ACTIVE (or already-purged) account returns
-        False. Clears both deletion timestamps.
+        False. Clears both deletion timestamps. ERASING docs also refuse —
+        once the cascade claims the account, erasure is final; matching
+        here would "restore" an aborted half-cascade into an empty account.
         """
         return await self._update_modified(
             {"_id": user_id, "status": UserStatus.PENDING_DELETION.value},
@@ -111,16 +137,23 @@ class UserRepository(BaseRepository[UserDoc]):
         )
 
     async def find_purge_due(self, now: datetime, limit: int) -> list[UserDoc]:
-        """Return pending-deletion users whose purge deadline has passed.
+        """Return purge-due users — PENDING_DELETION plus ERASING retries.
 
-        Oldest deadline first, capped at *limit* — the erasure sweep's whole
-        query shape, served by the ``pending_deletion_sweep`` partial index.
+        ERASING docs are crashed cascades awaiting re-claim, so they stay in
+        the sweep's view. Oldest deadline first, capped at *limit* — the
+        erasure sweep's whole query shape, served by the
+        ``pending_deletion_sweep`` partial index.
         """
         try:
             cursor = (
                 self._col.find(
                     {
-                        "status": UserStatus.PENDING_DELETION.value,
+                        "status": {
+                            "$in": [
+                                UserStatus.PENDING_DELETION.value,
+                                UserStatus.ERASING.value,
+                            ]
+                        },
                         "purge_after": {"$lte": now},
                     }
                 )
@@ -143,6 +176,8 @@ class UserRepository(BaseRepository[UserDoc]):
 
         The erasure cascade's LAST step — every satellite collection must be
         cleaned first, so a crash anywhere re-queues the user for the next
-        sweep instead of orphaning data.
+        sweep instead of orphaning data. Guarded on ERASING: only a doc the
+        cascade claimed via ``claim_for_erasure`` may die, so a stray call
+        can never hard-delete a live account.
         """
-        return await self._delete({"_id": user_id})
+        return await self._delete({"_id": user_id, "status": UserStatus.ERASING.value})

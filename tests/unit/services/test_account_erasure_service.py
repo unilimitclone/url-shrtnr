@@ -46,6 +46,7 @@ class Stubs:
         self.calls: list[tuple] = []
 
         self.user_repo = MagicMock()
+        self.user_repo.claim_for_erasure = self._tracked("users.claim", True)
         self.user_repo.find_by_id = AsyncMock(return_value=_user_doc())
         self.user_repo.delete_hard = self._tracked("users.delete_hard", True)
         self.user_repo.find_purge_due = AsyncMock(return_value=[])
@@ -126,7 +127,15 @@ class Stubs:
         return [name for name, _ in self.calls]
 
 
-def _service(stubs: Stubs, *, r2=..., posthog=..., mailer=..., batch_limit=25):
+def _service(
+    stubs: Stubs,
+    *,
+    r2=...,
+    posthog=...,
+    mailer=...,
+    batch_limit=25,
+    time_budget_seconds=480,
+):
     return AccountErasureService(
         user_repo=stubs.user_repo,
         url_service=stubs.url_service,
@@ -147,6 +156,7 @@ def _service(stubs: Stubs, *, r2=..., posthog=..., mailer=..., batch_limit=25):
         mailer=stubs.mailer if mailer is ... else mailer,
         key_secret=SECRET,
         batch_limit=batch_limit,
+        time_budget_seconds=time_budget_seconds,
     )
 
 
@@ -183,14 +193,15 @@ async def test_erase_follows_cascade_order_user_doc_last():
     stubs = Stubs()
     await _service(stubs).erase(UID)
     names = stubs.names()
-    # The user doc must die LAST — a crash anywhere re-queues the user.
-    assert names[-1] == "users.delete_hard"
-    # External systems fire after every collection is cleaned, before the doc.
-    assert names[-3:] == ["posthog", "mailer", "users.delete_hard"]
-    # Cascade order from the plan: links → domains → clicks → satellites →
-    # pulls → R2 → PostHog → email → users.
+    # Claim FIRST (a mid-sweep restore must win before anything is touched);
+    # mail LAST, only after the doc is gone (the one non-idempotent step).
+    assert names[0] == "users.claim"
+    assert names[-3:] == ["posthog", "users.delete_hard", "mailer"]
+    # Cascade order from the plan: claim → links → domains → clicks →
+    # satellites → pulls → R2 → PostHog → users → email.
     milestones = [n for n in names if n not in ("r2.list", "r2.delete")]
     assert milestones == [
+        "users.claim",
         "urls",
         "domains",
         "clicks",
@@ -205,18 +216,30 @@ async def test_erase_follows_cascade_order_user_doc_last():
         "reports_pull",
         "feature_flags_pull",
         "posthog",
-        "mailer",
         "users.delete_hard",
+        "mailer",
     ]
 
 
 @pytest.mark.asyncio
-async def test_erase_missing_user_returns_empty_without_side_effects():
+async def test_erase_failed_claim_returns_empty_without_side_effects():
+    """Claim lost (restored mid-sweep, not due, or already purged) — the
+    account is untouched: no delete ran, no mail went out."""
+    stubs = Stubs()
+    stubs.user_repo.claim_for_erasure = AsyncMock(return_value=False)
+    counts = await _service(stubs).erase(UID)
+    assert counts == {}
+    assert stubs.calls == []
+
+
+@pytest.mark.asyncio
+async def test_erase_missing_user_after_claim_returns_empty():
     stubs = Stubs()
     stubs.user_repo.find_by_id = AsyncMock(return_value=None)
     counts = await _service(stubs).erase(UID)
     assert counts == {}
-    assert stubs.calls == []
+    # Only the claim ran — no deletes, no mail.
+    assert stubs.names() == ["users.claim"]
 
 
 @pytest.mark.asyncio
@@ -275,6 +298,17 @@ async def test_erase_mailer_failure_is_swallowed():
     counts = await _service(stubs).erase(UID)
     assert counts == EXPECTED_COUNTS
     stubs.user_repo.delete_hard.assert_awaited_once_with(UID)
+
+
+@pytest.mark.asyncio
+async def test_erase_skips_confirmation_mail_when_doc_already_gone():
+    """delete_hard finding nothing means the claim raced away — the
+    "permanently deleted" mail must not go out for a doc we didn't delete."""
+    stubs = Stubs()
+    stubs.user_repo.delete_hard = AsyncMock(return_value=False)
+    counts = await _service(stubs).erase(UID)
+    assert counts == EXPECTED_COUNTS
+    stubs.mailer.send_erasure_confirmation.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -340,7 +374,7 @@ async def test_erase_r2_delete_failure_keeps_user_doc():
 async def test_sweep_nothing_due():
     stubs = Stubs()
     result = await _service(stubs).sweep()
-    assert result == {"erased": 0, "failed": 0}
+    assert result == {"erased": 0, "failed": 0, "skipped": 0, "deferred": 0}
     stubs.user_repo.delete_hard.assert_not_awaited()
 
 
@@ -362,7 +396,7 @@ async def test_sweep_isolates_per_user_failures():
     # First user's cascade blows up; the second must still be erased.
     stubs.click_repo.delete_by_owner = AsyncMock(side_effect=[RuntimeError("boom"), 2])
     result = await _service(stubs).sweep()
-    assert result == {"erased": 1, "failed": 1}
+    assert result == {"erased": 1, "failed": 1, "skipped": 0, "deferred": 0}
     stubs.user_repo.delete_hard.assert_awaited_once_with(UID2)
 
 
@@ -375,8 +409,41 @@ async def test_sweep_counts_all_successes():
         side_effect=lambda uid: user_a if uid == UID else user_b
     )
     result = await _service(stubs).sweep()
-    assert result == {"erased": 2, "failed": 0}
+    assert result == {"erased": 2, "failed": 0, "skipped": 0, "deferred": 0}
     assert stubs.user_repo.delete_hard.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_sweep_mid_sweep_restore_leaves_account_intact():
+    """THE race: selected for the batch, then restored before its turn —
+    the claim fails, nothing is deleted, and the sweep reports a skip."""
+    stubs = Stubs()
+    user_a, user_b = _user_doc(UID), _user_doc(UID2, email="b@example.com")
+    stubs.user_repo.find_purge_due = AsyncMock(return_value=[user_a, user_b])
+    stubs.user_repo.find_by_id = AsyncMock(
+        side_effect=lambda uid: user_a if uid == UID else user_b
+    )
+    # user_a restored mid-sweep: its claim fails; user_b still erases.
+    stubs.user_repo.claim_for_erasure = AsyncMock(
+        side_effect=lambda uid, now: uid != UID
+    )
+    result = await _service(stubs).sweep()
+    assert result == {"erased": 1, "failed": 0, "skipped": 1, "deferred": 0}
+    stubs.user_repo.delete_hard.assert_awaited_once_with(UID2)
+    stubs.mailer.send_erasure_confirmation.assert_awaited_once_with("b@example.com")
+
+
+@pytest.mark.asyncio
+async def test_sweep_defers_when_time_budget_exhausted():
+    """Budget spent before the batch drains — no NEW erasures start, the
+    remainder defers to the next sweep, and the count is reported."""
+    stubs = Stubs()
+    user_a, user_b = _user_doc(UID), _user_doc(UID2, email="b@example.com")
+    stubs.user_repo.find_purge_due = AsyncMock(return_value=[user_a, user_b])
+    result = await _service(stubs, time_budget_seconds=0).sweep()
+    assert result == {"erased": 0, "failed": 0, "skipped": 0, "deferred": 2}
+    stubs.user_repo.claim_for_erasure.assert_not_awaited()
+    stubs.user_repo.delete_hard.assert_not_awaited()
 
 
 # ── scheduler registration ───────────────────────────────────────────────────

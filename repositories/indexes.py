@@ -38,12 +38,24 @@ async def ensure_indexes(
     )
     await users_col.create_index([("auth_providers.provider", 1)])
     # THE erasure sweep's whole query shape. Partial — holds only
-    # PENDING_DELETION docs, so it stays tiny at any account count.
-    await users_col.create_index(
-        [("status", 1), ("purge_after", 1)],
-        name="pending_deletion_sweep",
-        partialFilterExpression={"status": "PENDING_DELETION"},
-    )
+    # PENDING_DELETION/ERASING docs ($in filter needs Mongo 6.0+; prod is 8.x).
+    _sweep_index_spec = {
+        "name": "pending_deletion_sweep",
+        "partialFilterExpression": {"status": {"$in": ["PENDING_DELETION", "ERASING"]}},
+    }
+    try:
+        await users_col.create_index(
+            [("status", 1), ("purge_after", 1)], **_sweep_index_spec
+        )
+    except OperationFailure as e:
+        if getattr(e, "code", None) != 85:  # IndexOptionsConflict
+            raise
+        # Mongo rejects option edits on an existing name: drop-recreate.
+        await users_col.drop_index("pending_deletion_sweep")
+        await users_col.create_index(
+            [("status", 1), ("purge_after", 1)], **_sweep_index_spec
+        )
+        log.info("pending_deletion_sweep_index_recreated")
 
     # ── urlsV2 ─────────────────────────────────────────────────────────────
     # Per-domain alias namespace via compound unique. Replaces the legacy

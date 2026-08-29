@@ -225,9 +225,10 @@ class OAuthService:
 
         Deliberately does NOT auto-restore: the error code routes the
         frontend to the explicit restore flow, so a provider sign-in can
-        never silently cancel a deletion the user asked for.
+        never silently cancel a deletion the user asked for. ERASING is
+        blocked identically — the cascade has claimed the account.
         """
-        if user.status == UserStatus.PENDING_DELETION:
+        if user.status in (UserStatus.PENDING_DELETION, UserStatus.ERASING):
             log.info(
                 "oauth_login_blocked",
                 reason="pending_deletion",

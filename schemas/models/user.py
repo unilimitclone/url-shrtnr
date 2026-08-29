@@ -27,6 +27,9 @@ class UserStatus(str, Enum):
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"
     PENDING_DELETION = "PENDING_DELETION"
+    # Claimed by the erasure cascade — the point of no return: restore only
+    # matches PENDING_DELETION, so it can't resurrect a half-erased account.
+    ERASING = "ERASING"
 
 
 class OAuthAction(str, Enum):

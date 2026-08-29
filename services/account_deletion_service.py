@@ -84,7 +84,7 @@ class AccountDeletionService:
         user = await self._user_repo.find_by_id(user_id)
         if user is None:
             raise NotFoundError("user not found")
-        if user.status == UserStatus.PENDING_DELETION:
+        if user.status in (UserStatus.PENDING_DELETION, UserStatus.ERASING):
             raise ConflictError("account deletion already requested")
 
         self._verify_reauth(user, password, confirm_email)

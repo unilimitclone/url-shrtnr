@@ -217,9 +217,63 @@ class TestUserRepository:
 
     @pytest.mark.asyncio
     async def test_restore_rejected_when_not_pending(self):
+        """ERASING (cascade claimed) and ACTIVE docs never match — once the
+        claim lands, restore is refused for good."""
         col = make_collection()
         col.update_one = AsyncMock(return_value=MagicMock(modified_count=0))
         assert await self._repo(col).restore(USER_OID) is False
+
+    # ── Erasure claim ─────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_claim_for_erasure_query_shape_and_success(self):
+        """The claim matches only purge-due PENDING_DELETION/ERASING docs
+        and flips to ERASING without ever touching purge_after."""
+        col = make_collection()
+        col.update_one = AsyncMock(
+            return_value=MagicMock(matched_count=1, modified_count=1)
+        )
+        now = datetime.now(timezone.utc)
+
+        ok = await self._repo(col).claim_for_erasure(USER_OID, now=now)
+
+        assert ok is True
+        query, ops = col.update_one.await_args.args
+        assert query == {
+            "_id": USER_OID,
+            "status": {"$in": ["PENDING_DELETION", "ERASING"]},
+            "purge_after": {"$lte": now},
+        }
+        assert ops == {"$set": {"status": "ERASING"}}
+        # purge_after survives the claim — a crashed cascade must stay
+        # re-claimable on the next sweep.
+        assert "$unset" not in ops
+
+    @pytest.mark.asyncio
+    async def test_claim_for_erasure_rejected_when_not_due_or_wrong_status(self):
+        """Restored-to-ACTIVE, not-yet-due, and already-purged docs all
+        fail the guarded filter — the account survives untouched."""
+        col = make_collection()
+        col.update_one = AsyncMock(
+            return_value=MagicMock(matched_count=0, modified_count=0)
+        )
+        ok = await self._repo(col).claim_for_erasure(
+            USER_OID, now=datetime.now(timezone.utc)
+        )
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_claim_for_erasure_reclaims_erasing_doc(self):
+        """A crashed cascade left the doc ERASING: the re-claim matches but
+        modifies nothing — it must still count as claimed."""
+        col = make_collection()
+        col.update_one = AsyncMock(
+            return_value=MagicMock(matched_count=1, modified_count=0)
+        )
+        ok = await self._repo(col).claim_for_erasure(
+            USER_OID, now=datetime.now(timezone.utc)
+        )
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_find_purge_due_query_shape_and_models(self):
@@ -237,7 +291,10 @@ class TestUserRepository:
         due = await self._repo(col).find_purge_due(now=now, limit=25)
 
         col.find.assert_called_once_with(
-            {"status": "PENDING_DELETION", "purge_after": {"$lte": now}}
+            {
+                "status": {"$in": ["PENDING_DELETION", "ERASING"]},
+                "purge_after": {"$lte": now},
+            }
         )
         cursor.sort.assert_called_once_with("purge_after", 1)
         cursor.limit.assert_called_once_with(25)
@@ -267,14 +324,16 @@ class TestUserRepository:
             )
 
     @pytest.mark.asyncio
-    async def test_delete_hard_removes_doc(self):
+    async def test_delete_hard_removes_only_erasing_doc(self):
         col = make_collection()
         col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))
         assert await self._repo(col).delete_hard(USER_OID) is True
-        col.delete_one.assert_awaited_once_with({"_id": USER_OID})
+        col.delete_one.assert_awaited_once_with({"_id": USER_OID, "status": "ERASING"})
 
     @pytest.mark.asyncio
-    async def test_delete_hard_returns_false_on_miss(self):
+    async def test_delete_hard_no_ops_on_non_erasing_doc(self):
+        """A doc the cascade never claimed (ACTIVE, PENDING_DELETION) never
+        matches the guarded filter — no stray hard delete."""
         col = make_collection()
         col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=0))
         assert await self._repo(col).delete_hard(USER_OID) is False

@@ -171,6 +171,24 @@ class TestHandleCallbackPendingDeletion:
         svc._user_repo.update.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_existing_oauth_user_login_blocked_when_erasing(self):
+        """ERASING is gated identically — the cascade claimed the account."""
+        from errors import AccountPendingDeletionError
+
+        svc = make_oauth_service()
+        user = make_user_doc(status="ERASING")
+        svc._user_repo.find_by_oauth_provider.return_value = user
+
+        with pytest.raises(AccountPendingDeletionError):
+            await svc.handle_callback(
+                provider_key="google",
+                provider_info=make_provider_info(),
+                action="login",
+                state_data={"action": "login"},
+            )
+        svc._user_repo.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_auto_link_blocked_when_pending_deletion(self):
         from errors import AccountPendingDeletionError
 

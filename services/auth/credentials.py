@@ -88,7 +88,9 @@ class CredentialService:
         # Checked AFTER password proof so strangers can't probe account
         # state; the owner gets the restore-flow error code instead of a
         # session (POST /auth/restore cancels the pending deletion).
-        if user.status == UserStatus.PENDING_DELETION:
+        # ERASING gets the same answer: the cascade has claimed the account
+        # and a fresh session must never outlive it.
+        if user.status in (UserStatus.PENDING_DELETION, UserStatus.ERASING):
             svc_log.info(
                 "login_blocked", reason="pending_deletion", user_id=str(user.id)
             )

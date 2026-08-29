@@ -348,6 +348,7 @@ def build_account_erasure_service(
         mailer=build_erasure_mailer(settings, http_client),
         key_secret=settings.secret_key,
         batch_limit=settings.account_erasure_batch_limit,
+        time_budget_seconds=settings.account_erasure_time_budget_seconds,
     )
 
 
@@ -983,6 +984,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         mailer=erasure_mailer,
         key_secret=settings.secret_key,
         batch_limit=settings.account_erasure_batch_limit,
+        time_budget_seconds=settings.account_erasure_time_budget_seconds,
     )
 
     # ── Scheduled tasks ──────────────────────────────────────────────
