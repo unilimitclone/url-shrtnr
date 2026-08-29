@@ -114,9 +114,8 @@ def _bracket(ip: str) -> str:
     return f"[{ip}]" if ":" in ip else ip
 
 
-# The ONE SSRF resolver: outbound callers reuse these instead of growing a
-# second guard that drifts from the rebinding/NAT64/multicast rules here.
-resolve_public_ip = _resolve_public_ip
+# The ONE SSRF resolver: outbound callers reuse this instead of growing a
+# second guard that drifts from the rebinding rules here.
 bracket_ip = _bracket
 
 
