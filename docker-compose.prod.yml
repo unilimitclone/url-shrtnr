@@ -305,6 +305,43 @@ services:
         max-file: "3"
         tag: "{{.Name}}"
 
+  # Next frontend. Caddy routes page paths here; everything else (short
+  # codes, auth, api) still hits app directly. Health check is wget, not
+  # curl: the runtime image is bare node:22-alpine, and deploy.yml reads
+  # .State.Health.Status to decide rollback.
+  next:
+    image: ghcr.io/spoo-me/frontend:${NEXT_IMAGE_TAG:-edge}
+    container_name: spoo_next
+    restart: always
+    environment:
+      - SPOO_API_URL=http://spoo.me:8000
+    # SSR dials spoo.me so its Host header is the one the tenant resolver
+    # expects. Scoped to this container: a network alias would also make the
+    # app resolve its own domain internally, and the link tools' outbound
+    # fetches need the public address. Pinned to app's ipv4_address above.
+    extra_hosts:
+      - "spoo.me:172.30.0.10"
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=3", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    mem_limit: 512m
+    mem_reservation: 128m
+    networks:
+      spoonet:
+        ipv4_address: 172.30.0.80
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}"
+
 volumes:
   redis-data:
   caddy-data:
