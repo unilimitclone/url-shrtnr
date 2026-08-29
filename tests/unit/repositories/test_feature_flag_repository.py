@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from bson import ObjectId
+from pymongo.errors import PyMongoError
 
 from .conftest import make_collection
 
@@ -115,3 +116,12 @@ class TestPullAllowlisted:
             },
         )
         assert count == 2
+
+    @pytest.mark.asyncio
+    async def test_propagates_pymongo_error(self):
+        col = make_collection()
+        col.update_many = AsyncMock(side_effect=PyMongoError("conn lost"))
+        with pytest.raises(PyMongoError):
+            await self._repo(col).pull_allowlisted(
+                ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa"), "user@example.com"
+            )

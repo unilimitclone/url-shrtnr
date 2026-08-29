@@ -3,6 +3,9 @@
 ``build_erasure_mailer`` / ``build_posthog_eraser`` pick the real
 integration when its settings are configured and the Noop otherwise —
 AppSettings is env-only, so both branches are probed via env vars.
+``build_account_erasure_service`` (the worker-side composition of the
+same cascade) is probed the same way: env decides which side-effect
+clients get wired, primitives are fakes.
 """
 
 from unittest.mock import MagicMock
@@ -10,22 +13,46 @@ from unittest.mock import MagicMock
 import pytest
 
 from config import AppSettings
-from dependencies.wiring import build_erasure_mailer, build_posthog_eraser
+from dependencies.wiring import (
+    build_account_erasure_service,
+    build_erasure_mailer,
+    build_posthog_eraser,
+)
+from infrastructure.cloudflare_kv import CloudflareKVClient
 from infrastructure.email.zeptomail import ZeptoMailProvider
 from infrastructure.posthog_erasure import HttpPostHogEraser
+from infrastructure.storage.r2 import R2StorageClient
 from services.account_erasure_service import (
+    AccountErasureService,
     NoopErasureMailer,
     NoopPostHogEraser,
+)
+from services.cf_saas_backend import CfSaasBackend
+from services.edge_cache.og_writethrough import OgEdgeWritethrough
+from services.mock_dcv_backend import MockDcvBackend
+
+_SIDE_EFFECT_ENV = (
+    "ZEPTO_API_TOKEN",
+    "POSTHOG_ERASURE_API_KEY",
+    "POSTHOG_ERASURE_PROJECT_ID",
+    "POSTHOG_ERASURE_HOST",
+    "EDGE_CACHE_CF_ACCOUNT_ID",
+    "EDGE_CACHE_CF_API_TOKEN",
+    "EDGE_CACHE_KV_NAMESPACE_ID",
+    "R2_ACCOUNT_ID",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+    "R2_BUCKET",
+    "R2_PUBLIC_BASE_URL",
+    "CUSTOM_DOMAINS_MOCK_DCV",
 )
 
 
 @pytest.fixture
 def base_env(monkeypatch):
     monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017/")
-    monkeypatch.delenv("ZEPTO_API_TOKEN", raising=False)
-    monkeypatch.delenv("POSTHOG_ERASURE_API_KEY", raising=False)
-    monkeypatch.delenv("POSTHOG_ERASURE_PROJECT_ID", raising=False)
-    monkeypatch.delenv("POSTHOG_ERASURE_HOST", raising=False)
+    for var in _SIDE_EFFECT_ENV:
+        monkeypatch.delenv(var, raising=False)
     return monkeypatch
 
 
@@ -81,3 +108,54 @@ class TestBuildPostHogEraser:
         eraser = build_posthog_eraser(AppSettings(), MagicMock())
         assert isinstance(eraser, HttpPostHogEraser)
         assert eraser._host == "https://us.posthog.com"
+
+
+class TestBuildAccountErasureService:
+    """Worker-side composition root: same env gates as the app wiring."""
+
+    def _build(self):
+        # Mock db mapping, inert http client, redis None (cache
+        # invalidation degrades to no-ops, as in workers without Redis).
+        return build_account_erasure_service(
+            MagicMock(), AppSettings(), MagicMock(), None
+        )
+
+    def test_minimal_env_wires_disabled_side_effects(self, base_env):
+        service = self._build()
+        assert isinstance(service, AccountErasureService)
+        # Edge cache + R2 unconfigured ⇒ no KV purge, no og write-through,
+        # no R2 sweep.
+        assert service._r2_storage is None
+        assert service._url_service._edge_kv is None
+        assert service._url_service._og_writethrough is None
+        assert service._url_service._r2_storage is None
+        # Unconfigured mail/PostHog degrade to Noops, as in the app.
+        assert isinstance(service._mailer, NoopErasureMailer)
+        assert isinstance(service._posthog, NoopPostHogEraser)
+
+    def test_default_dcv_selects_cf_saas_backend(self, base_env):
+        service = self._build()
+        assert isinstance(service._domain_service._edge, CfSaasBackend)
+
+    def test_mock_dcv_selects_mock_backend(self, base_env):
+        base_env.setenv("CUSTOM_DOMAINS_MOCK_DCV", "true")
+        service = self._build()
+        assert isinstance(service._domain_service._edge, MockDcvBackend)
+
+    def test_configured_edge_and_r2_wire_real_clients(self, base_env):
+        base_env.setenv("EDGE_CACHE_CF_ACCOUNT_ID", "acct")
+        base_env.setenv("EDGE_CACHE_CF_API_TOKEN", "kv-token")
+        base_env.setenv("EDGE_CACHE_KV_NAMESPACE_ID", "ns")
+        base_env.setenv("R2_ACCOUNT_ID", "acct")
+        base_env.setenv("R2_ACCESS_KEY_ID", "key")
+        base_env.setenv("R2_SECRET_ACCESS_KEY", "secret")
+        base_env.setenv("R2_BUCKET", "og-images")
+        base_env.setenv("R2_PUBLIC_BASE_URL", "https://og.spoo.me")
+        service = self._build()
+        url_service = service._url_service
+        assert isinstance(url_service._edge_kv, CloudflareKVClient)
+        assert isinstance(url_service._og_writethrough, OgEdgeWritethrough)
+        assert isinstance(url_service._r2_storage, R2StorageClient)
+        # The erasure R2 sweep and the URL service delete path must share
+        # ONE client — a split here would orphan uploaded og:images.
+        assert service._r2_storage is url_service._r2_storage

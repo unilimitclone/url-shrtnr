@@ -422,3 +422,13 @@ async def test_request_deletion_computes_deadline_when_readback_races():
     )
 
     assert purge_after >= before + timedelta(days=GRACE_DAYS, seconds=-5)
+
+
+def test_get_account_deletion_service_reads_app_state():
+    """The real dependency (overridden everywhere above) resolves from
+    app.state, where wire_services parks the singleton."""
+    from unittest.mock import MagicMock
+
+    request = MagicMock()
+    resolved = get_account_deletion_service(request)
+    assert resolved is request.app.state.account_deletion_service

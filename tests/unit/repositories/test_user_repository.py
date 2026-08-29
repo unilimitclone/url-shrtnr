@@ -256,6 +256,17 @@ class TestUserRepository:
         )
 
     @pytest.mark.asyncio
+    async def test_find_purge_due_propagates_pymongo_error(self):
+        col = make_collection()
+        col.find.return_value.to_list = AsyncMock(
+            side_effect=OperationFailure("conn lost")
+        )
+        with pytest.raises(OperationFailure):
+            await self._repo(col).find_purge_due(
+                now=datetime.now(timezone.utc), limit=25
+            )
+
+    @pytest.mark.asyncio
     async def test_delete_hard_removes_doc(self):
         col = make_collection()
         col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))

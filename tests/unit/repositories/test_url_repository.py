@@ -655,3 +655,18 @@ class TestUrlRepositoryOwnerErasure:
             async for _ in self._repo(col).iter_by_owner(ANONYMOUS_OWNER_ID):
                 pass
         col.find.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_iter_by_owner_propagates_pymongo_error(self):
+        class _DeadCursor:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise OperationFailure("cursor died mid-stream")
+
+        col = make_collection()
+        col.find = MagicMock(return_value=_DeadCursor())
+        with pytest.raises(OperationFailure):
+            async for _ in self._repo(col).iter_by_owner(USER_OID):
+                pass
