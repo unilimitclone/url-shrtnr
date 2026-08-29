@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from dependencies import get_current_user
 from infrastructure.cache.meta_fetch_cache import MetaFetchCache
 from infrastructure.safe_fetch import ChainHop, ExpandedChain, FetchHardError
+from infrastructure.web_risk import WebRiskClient
 from services.url_expand_service import UrlExpandService
 
 from .conftest import _build_test_app
@@ -33,8 +34,11 @@ def _service(patterns=None, *, web_risk_key="", http=None, cache=None):
         cache or MetaFetchCache(None),
         regex_timeout=0.2,
         user_agent="test",
-        http_client=http or MagicMock(get=AsyncMock()),
-        web_risk_api_key=web_risk_key,
+        web_risk=(
+            WebRiskClient(http or MagicMock(get=AsyncMock()), api_key=web_risk_key)
+            if web_risk_key
+            else None
+        ),
     )
 
 

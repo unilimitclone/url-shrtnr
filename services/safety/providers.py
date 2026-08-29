@@ -17,8 +17,8 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
-from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
+from infrastructure.web_risk import WebRiskClient
 from repositories.blocked_url_repository import BlockedUrlRepository
 from repositories.feed_domain_repository import FeedDomainRepository
 from repositories.verdict_repository import VerdictRepository
@@ -85,65 +85,29 @@ class FeedDomainProvider:
 
 
 class WebRiskProvider:
-    """Google Web Risk Lookup API (``uris:search``) — judges the full URL
-    against Google's MALWARE and SOCIAL_ENGINEERING lists. Online lookup
-    (100k/month free tier covers report-triggered volume by orders of
-    magnitude); the local hash-DB variant is a later create-gate concern.
+    """Google Web Risk verdict for the full URL. Online lookup (100k/month
+    free tier covers report-triggered volume by orders of magnitude); the
+    local hash-DB variant is a later create-gate concern.
 
-    Network or quota failures abstain.
+    An unanswered lookup abstains.
     """
 
     name = "web_risk"
 
-    _THREAT_TYPES = ("MALWARE", "SOCIAL_ENGINEERING")
-
-    def __init__(
-        self,
-        http_client: HttpClient,
-        *,
-        api_key: str,
-        api_base: str = "https://webrisk.googleapis.com",
-    ) -> None:
-        self._http = http_client
-        self._api_key = api_key
-        self._api_base = api_base.rstrip("/")
+    def __init__(self, client: WebRiskClient) -> None:
+        self._client = client
 
     async def analyze(
         self, url: str, host: str, registrable_domain: str
     ) -> ProviderVerdict | None:
-        try:
-            # Key rides a header: httpx logs full request URLs at INFO.
-            response = await self._http.get(
-                f"{self._api_base}/v1/uris:search",
-                params={
-                    "uri": url,
-                    "threatTypes": list(self._THREAT_TYPES),
-                },
-                headers={"X-Goog-Api-Key": self._api_key},
-                timeout=10.0,
-            )
-            if response.status_code != 200:
-                log.warning(
-                    "safety_provider_failed",
-                    provider=self.name,
-                    error=f"http {response.status_code}",
-                )
-                return None
-            threat = response.json().get("threat")
-            if threat:
-                types = ",".join(threat.get("threatTypes", [])) or "UNKNOWN"
-                return ProviderVerdict(
-                    tier=VerdictTier.TOXIC,
-                    reason=f"flagged by Google Web Risk ({types})",
-                    scope="links",
-                )
-        except Exception as exc:
-            log.warning(
-                "safety_provider_failed",
-                provider=self.name,
-                error=type(exc).__name__,
-            )
-        return None
+        threats = await self._client.lookup(url)
+        if not threats:
+            return None
+        return ProviderVerdict(
+            tier=VerdictTier.TOXIC,
+            reason=f"flagged by Google Web Risk ({','.join(threats)})",
+            scope="links",
+        )
 
 
 def verdict_covers(verdict, url: str) -> bool:

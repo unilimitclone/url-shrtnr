@@ -19,9 +19,11 @@ from infrastructure.cache.url_cache import UrlCache
 from infrastructure.captcha.hcaptcha import HCaptchaProvider
 from infrastructure.cloudflare_client import CloudflareClient
 from infrastructure.cloudflare_kv import CloudflareKVClient
+from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 from infrastructure.ops_notify import DiscordOpsNotifier
 from infrastructure.storage.r2 import R2StorageClient
+from infrastructure.web_risk import DEFAULT_THREAT_TYPES, WebRiskClient
 from repositories.api_key_repository import ApiKeyRepository
 from repositories.app_grant_repository import AppGrantRepository
 from repositories.blocked_domain_repository import BlockedDomainRepository
@@ -117,6 +119,29 @@ from services.webhooks.consumers import WebhookFanoutClickSink
 from services.webhooks.renderers import default_renderers
 
 log = get_logger(__name__)
+
+# The expander answers a waiting request, so it can't sit on the safety
+# analyzer's queue-side timeout.
+_EXPANDER_WEB_RISK_TIMEOUT = 4.0
+
+
+def build_expander_web_risk(
+    settings: AppSettings, http_client: HttpClient
+) -> WebRiskClient | None:
+    """The URL expander's Web Risk client, on the same credential as the
+    safety analyzer. Its threat list is wider because this verdict is
+    displayed, never enforced.
+    """
+    safety = settings.safety
+    if not safety.web_risk_enabled:
+        return None
+    return WebRiskClient(
+        http_client,
+        api_key=safety.web_risk_api_key,
+        api_base=safety.web_risk_api_base,
+        threat_types=(*DEFAULT_THREAT_TYPES, "UNWANTED_SOFTWARE"),
+        timeout=_EXPANDER_WEB_RISK_TIMEOUT,
+    )
 
 
 def build_click_service(
@@ -349,9 +374,11 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         # Online lookup: analyzer only, never the create path.
         analyzer_providers.append(
             WebRiskProvider(
-                http_client,
-                api_key=sf_settings.web_risk_api_key,
-                api_base=sf_settings.web_risk_api_base,
+                WebRiskClient(
+                    http_client,
+                    api_key=sf_settings.web_risk_api_key,
+                    api_base=sf_settings.web_risk_api_base,
+                )
             )
         )
         log.info("safety_web_risk_enabled")
@@ -540,8 +567,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         MetaFetchCache(redis_client, prefix="url_expand"),
         regex_timeout=settings.blocked_url_regex_timeout,
         user_agent=settings.meta_tags.fetch_user_agent,
-        http_client=http_client,
-        web_risk_api_key=settings.web_risk.api_key,
+        web_risk=build_expander_web_risk(settings, http_client),
     )
     app.state.domain_intel_service = DomainIntelService(
         MetaFetchCache(redis_client, prefix="domain_intel", ttl_seconds=86_400),
