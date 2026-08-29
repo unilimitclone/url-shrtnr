@@ -56,8 +56,8 @@ class TestL1Settings:
         s = SafetySettings()
         assert s.l1_enabled is True
         assert s.l1_burst_window_seconds == 600
-        assert s.l1_domain_burst_threshold == 50
-        assert s.l1_domain_daily_threshold == 300
+        assert s.l1_domain_burst_threshold == 25
+        assert s.l1_domain_daily_threshold == 150
 
     def test_l1_thresholds_reject_degenerate_values(self):
         with pytest.raises(PydanticValidationError):
