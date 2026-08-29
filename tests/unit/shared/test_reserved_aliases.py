@@ -7,7 +7,15 @@ from shared.validators import validate_alias
 
 
 def test_frontend_surfaces_are_reserved():
-    for alias in ("about", "pricing", "onboarding", "dashboard", "relay", "terms"):
+    for alias in (
+        "about",
+        "pricing",
+        "onboarding",
+        "dashboard",
+        "relay",
+        "terms",
+        "tools",
+    ):
         assert is_reserved_alias(alias)
 
 

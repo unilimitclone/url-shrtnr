@@ -76,6 +76,7 @@ RESERVED_ALIASES: frozenset[str] = frozenset(
         "terms",
         "terms-of-service",
         "testimonials",
+        "tools",
         "tos",
         "twitter",
         "verify",

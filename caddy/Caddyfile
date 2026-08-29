@@ -97,11 +97,112 @@
 	}
 }
 
+# Compose one branded error page: when the origin self-describes an error
+# (X-Error-Code) and the client meaningfully asked for HTML, swap the body
+# for the Next error page while KEEPING the origin status. JSON clients and
+# Accept:*/* scanner probes get the origin response untouched.
+(compose_prod_err) {
+	@err{args[0]} {
+		status {args[0]}
+		header X-Error-Code *
+	}
+	handle_response @err{args[0]} {
+		@html{args[0]} {
+			header Accept *text/html*
+			method GET HEAD
+		}
+		handle @html{args[0]} {
+			rewrite * /_error/{args[0]}?code={rp.header.X-Error-Code}&from={uri}
+			reverse_proxy spoo_next:3000 {
+				@ok{args[0]} status 2xx
+				replace_status @ok{args[0]} {args[0]}
+				header_up Host {host}
+			}
+		}
+		handle {
+			copy_response
+		}
+	}
+}
+
 spoo.me, www.spoo.me {
 	import common_tls
+
+	# Legal/legacy path redirects (old Jinja routes that moved).
+	redir /tos /terms permanent
+	redir /register /signup permanent
+
+	# Only paths with a built Next page belong here — a listed path with
+	# no page behind it 404s in Next instead of falling through to FastAPI.
+	@next {
+		path /about /about/*
+		path /pricing /pricing/*
+		path /apps /apps/*
+		path /product /product/*
+		path /testimonials /testimonials/*
+		path /tools /tools/*
+		path /login /signup /forgot-password
+		path /onboarding /onboarding/*
+		path /privacy /terms /legal
+		path /relay/*
+		path /dashboard /dashboard/*
+		# Composed-error URL (Next rewrites it to error-pages/ internally).
+		path /_error/*
+		path /_next/* /icon.png
+		path /favicon.ico /favicon.png /favicon.svg
+		# Next public/ asset dirs + the favicon-proxy route. A new top-level
+		# dir under public/ needs a line here AND a reserved-aliases entry,
+		# or it 404s through FastAPI and takes client pages down with it.
+		path /geo/* /brand/* /icons-3d/*
+		path /api/favicon
+		# SEO files (robots.ts/sitemap.ts generators + public/ text files).
+		path /robots.txt /sitemap.xml /humans.txt
+		path /security.txt /.well-known/security.txt
+		# OG cards (public/og + the homepage card route) and the AI index.
+		path /og/* /opengraph-image.png /llms.txt
+	}
+	reverse_proxy @next spoo_next:3000 {
+		header_up X-Real-IP {client_ip}
+		header_up X-Forwarded-For {client_ip}
+		header_up Host {host}
+	}
+
+	# Paths whose GET is a Next page but whose POST is a shipped backend
+	# contract: / (the anonymous shorten API), /contact and /report (form
+	# intakes), /stats and /stats/{code} (legacy public JSON API). Next
+	# answers POSTs with a 200, so an unscoped matcher silently breaks
+	# every one of these for API clients.
+	@next_get {
+		method GET HEAD
+		path / /contact /report
+		path /stats /stats/*
+	}
+	reverse_proxy @next_get spoo_next:3000 {
+		header_up X-Real-IP {client_ip}
+		header_up X-Forwarded-For {client_ip}
+		header_up Host {host}
+	}
+
+	# /{code}+ preview — any single segment ending in + (matched against the
+	# DECODED path, so emoji aliases land here too). No valid alias contains
+	# +, so this can never shadow a real code.
+	@preview path_regexp ^/[^/]+\+$
+	reverse_proxy @preview spoo_next:3000 {
+		header_up X-Real-IP {client_ip}
+		header_up X-Forwarded-For {client_ip}
+		header_up Host {host}
+	}
+
+	# Everything else: short codes, /auth/*, /oauth/*, /api/v1/*, /static/*
 	reverse_proxy app:8000 {
 		header_up X-Real-IP {client_ip}
 		header_up X-Forwarded-For {client_ip}
+
+		import compose_prod_err 404
+		import compose_prod_err 410
+		import compose_prod_err 429
+		import compose_prod_err 451
+		import compose_prod_err 500
 	}
 }
 
@@ -129,6 +230,7 @@ Disallow: /" 200
 		path /pricing /pricing/*
 		path /apps /apps/*
 		path /testimonials /testimonials/*
+		path /tools /tools/*
 		path /login /signup /forgot-password
 		path /onboarding /onboarding/*
 		path /privacy /terms /legal
@@ -148,6 +250,8 @@ Disallow: /" 200
 		# with the backend for whatever claims it later.
 		path /robots.txt /sitemap.xml /humans.txt
 		path /security.txt /.well-known/security.txt
+		# OG cards (public/og + the homepage card route) and the AI index.
+		path /og/* /opengraph-image.png /llms.txt
 	}
 	reverse_proxy @next spoo_next_beta:3000 {
 		header_up X-Real-IP {client_ip}
