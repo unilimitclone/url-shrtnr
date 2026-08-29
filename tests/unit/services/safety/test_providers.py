@@ -29,7 +29,7 @@ class TestBlockedDomainProvider:
             "https://sub.evil.com/x", "sub.evil.com", "evil.com"
         )
         assert verdict is not None
-        assert "evil.com" in verdict.reason
+        assert verdict.reason == "domain evil.com is on the domain blocklist"
 
     @pytest.mark.asyncio
     async def test_miss_abstains(self):
