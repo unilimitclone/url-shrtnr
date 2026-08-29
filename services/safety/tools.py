@@ -279,6 +279,7 @@ async def domain_intel_impl(http: HttpClient, host: str) -> str:
     # TLS certificate (issuer + notBefore), direct handshake.
     def _tls() -> str:
         ctx = ssl.create_default_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         with (
             socket.create_connection((host, 443), timeout=_TLS_TIMEOUT) as sock,
             ctx.wrap_socket(sock, server_hostname=host) as tls,
