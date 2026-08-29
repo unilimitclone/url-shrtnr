@@ -76,6 +76,7 @@ from services.report_intake_service import ReportIntakeService
 from services.stats_service import StatsService
 from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
+from services.url_expand_service import UrlExpandService
 from services.url_service import UrlService
 from services.webhooks import (
     DeliveryExecutor,
@@ -329,6 +330,12 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         system_default_domain=settings.system_default_domain,
     )
     app.state.public_preview_service = PublicPreviewService(public_link_resolver)
+    app.state.url_expand_service = UrlExpandService(
+        blocked_url_repo,
+        MetaFetchCache(redis_client, prefix="url_expand"),
+        regex_timeout=settings.blocked_url_regex_timeout,
+        user_agent=settings.meta_tags.fetch_user_agent,
+    )
     app.state.public_stats_service = PublicStatsService(
         public_link_resolver,
         app.state.stats_service,

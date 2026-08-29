@@ -6829,6 +6829,106 @@
         ]
       }
     },
+    "/api/v1/expand": {
+      "get": {
+        "tags": [
+          "Metadata"
+        ],
+        "summary": "Expand a Short Link",
+        "description": "Follow a URL's redirect chain and return every hop in order.\n\nWorks on links from any shortener. Bodies are never fetched \u2014 only\neach hop's status and Location header \u2014 and results are cached ~1h\nserver-side, so repeat calls for the same URL don't refetch.\n\n**Authentication**: None required. Authenticated callers get the\nhigher per-account rate limit; anonymous calls are limited per IP.\n\n**Rate Limits**: 60/min, 2,000/day authenticated; 15/min, 300/day\nanonymous.",
+        "operationId": "expandUrl",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 2048,
+              "description": "Short or redirecting URL to follow, http or https.",
+              "examples": [
+                "https://spoo.me/example"
+              ],
+              "title": "Url"
+            },
+            "description": "Short or redirecting URL to follow, http or https."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpandResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request \u2014 invalid parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient permissions or scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
     "/api/v1/me/features": {
       "get": {
         "tags": [
@@ -9739,6 +9839,36 @@
         "title": "BulkUrlResultRow",
         "description": "Per-item verdict.\n\n``error_code`` reuses the API's error-code slugs so clients share\none mapping with the single-item routes: ``not_found`` (no such URL\nin your account \u2014 someone else's id answers the same, deliberately),\n``forbidden`` (blocked link), ``conflict``, ``validation_error``,\nplus ``internal`` (unexpected per-item failure, logged server-side)\nand ``not_attempted`` (processing aborted before this item).\n``error`` is display-safe but not stable; ``error_code`` is the key\nto branch on."
       },
+      "ChainHop": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "HTTP status; null when the hop never answered."
+          },
+          "https": {
+            "type": "boolean",
+            "title": "Https"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "https"
+        ],
+        "title": "ChainHop"
+      },
       "ClaimItemRequest": {
         "properties": {
           "url_id": {
@@ -10925,6 +11055,62 @@
           "event_types"
         ],
         "title": "EventTypesResponse"
+      },
+      "ExpandResponse": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "The URL that was requested."
+          },
+          "final_url": {
+            "type": "string",
+            "title": "Final Url"
+          },
+          "final_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Status"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "description": "Chain stopped at the redirect cap."
+          },
+          "hops": {
+            "items": {
+              "$ref": "#/components/schemas/ChainHop"
+            },
+            "type": "array",
+            "title": "Hops"
+          },
+          "blocklist_match": {
+            "type": "boolean",
+            "title": "Blocklist Match"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fetched At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "final_url",
+          "truncated",
+          "hops",
+          "blocklist_match",
+          "fetched_at"
+        ],
+        "title": "ExpandResponse",
+        "description": "A URL's redirect chain, every hop listed in order.\n\n``blocklist_match`` is the only safety claim: whether any hop matches\nthe abuse blocklist spoo.me enforces at link creation."
       },
       "FeatureState": {
         "type": "string",

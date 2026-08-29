@@ -36,6 +36,7 @@ from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
 from services.stats_service import StatsService
+from services.url_expand_service import UrlExpandService
 from services.url_service import UrlService
 from services.webhooks.service import WebhookService
 
@@ -136,6 +137,10 @@ def get_public_preview_service(request: Request) -> PublicPreviewService:
     return request.app.state.public_preview_service
 
 
+def get_url_expand_service(request: Request) -> UrlExpandService:
+    return request.app.state.url_expand_service
+
+
 def get_report_intake_service(request: Request) -> ReportIntakeService:
     return request.app.state.report_intake_service
 
@@ -169,5 +174,6 @@ AppGrantRepo = Annotated[AppGrantRepository, Depends(get_app_grant_repo)]
 FeatureFlagSvc = Annotated[FeatureFlagService, Depends(get_feature_flag_service)]
 CustomDomainSvc = Annotated[CustomDomainService, Depends(get_custom_domain_service)]
 PublicPreviewSvc = Annotated[PublicPreviewService, Depends(get_public_preview_service)]
+UrlExpandSvc = Annotated[UrlExpandService, Depends(get_url_expand_service)]
 ReportIntakeSvc = Annotated[ReportIntakeService, Depends(get_report_intake_service)]
 WebhookSvc = Annotated[WebhookService, Depends(get_webhook_service)]
