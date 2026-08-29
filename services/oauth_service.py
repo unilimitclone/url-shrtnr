@@ -374,8 +374,10 @@ class OAuthService:
         # ── Email collision ───────────────────────────────────────────────────
         existing_email_user = await self._user_repo.find_by_email(provider_info.email)
         if existing_email_user:
-            self._ensure_not_pending_deletion(existing_email_user, provider_key)
             if self._can_auto_link(existing_email_user, provider_info, provider_key):
+                # Only AFTER _can_auto_link proved the provider verified this
+                # email — unverified callbacks must not probe deletion state.
+                self._ensure_not_pending_deletion(existing_email_user, provider_key)
                 success = await self._link_provider(
                     existing_email_user.id, provider_info, provider_key
                 )

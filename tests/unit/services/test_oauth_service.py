@@ -207,6 +207,31 @@ class TestHandleCallbackPendingDeletion:
             )
         svc._user_repo.update.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_unverified_callback_cannot_probe_deletion_state(self):
+        """An unverified provider email is an unauthenticated GET — a
+        pending-deletion address must answer EXACTLY like any other
+        registered address (the generic email collision), never with the
+        pending-deletion error that leaks the account's deletion state."""
+
+        async def collide(status):
+            svc = make_oauth_service()
+            svc._user_repo.find_by_oauth_provider.return_value = None
+            svc._user_repo.find_by_email.return_value = make_user_doc(status=status)
+            with pytest.raises(ConflictError) as exc_info:
+                await svc.handle_callback(
+                    provider_key="google",
+                    provider_info=make_provider_info(email_verified=False),
+                    action="login",
+                    state_data={"action": "login"},
+                )
+            return exc_info.value
+
+        pending = await collide("PENDING_DELETION")
+        active = await collide("ACTIVE")
+        assert type(pending) is type(active)
+        assert str(pending) == str(active)
+
 
 # ── handle_callback: new user (flow 4) ───────────────────────────────────────
 
