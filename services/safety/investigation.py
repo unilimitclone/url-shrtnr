@@ -33,7 +33,7 @@ from schemas.enums.safety import VerdictTier
 from services.safety.enforcer import SafetyEnforcer
 from services.safety.events import SafetyAnalyzeEvent
 from services.safety.tools import reset_hard_hit, saw_hard_hit
-from shared.validators import matching_blocked_pattern
+from shared.validators import is_valid_pattern, matching_blocked_pattern
 
 log = get_logger(__name__)
 
@@ -290,6 +290,16 @@ class DeepInvestigator:
         if decision.tier is VerdictTier.TOXIC and not decision.auto:
             stored_tier = VerdictTier.UNCERTAIN
         stored_scope = verdict.scope.value
+        stored_pattern = verdict.path_pattern
+        if verdict.scope is Scope.PATH_PATTERN and not is_valid_pattern(
+            verdict.path_pattern or ""
+        ):
+            log.warning(
+                "safety_model_pattern_invalid",
+                host=event.host,
+                pattern=verdict.path_pattern,
+            )
+            stored_scope, stored_pattern = Scope.LINKS.value, None
         if decision.action == "block_host":
             stored_scope = Scope.HOST.value
         elif decision.action == "block_aliases" and verdict.scope is Scope.HOST:
@@ -303,7 +313,7 @@ class DeepInvestigator:
             "egress": None,  # set by fetch_page tool usage; recorded in evidence
             "corroborated": corroborated,
             "scope": stored_scope,
-            "path_pattern": verdict.path_pattern,
+            "path_pattern": stored_pattern,
             "scope_justification": verdict.scope_justification,
         }
         await self._verdict_repo.upsert_verdict(
@@ -354,7 +364,11 @@ class DeepInvestigator:
                 sample_url=event.url,
             )
         elif decision.action == "block_aliases":
-            if verdict.scope == Scope.PATH_PATTERN and verdict.path_pattern:
+            if (
+                verdict.scope == Scope.PATH_PATTERN
+                and verdict.path_pattern
+                and is_valid_pattern(verdict.path_pattern)
+            ):
                 # The pattern still waits for a human before it can refuse creates.
                 pattern = verdict.path_pattern
                 result = await self._enforcer.block_matching(

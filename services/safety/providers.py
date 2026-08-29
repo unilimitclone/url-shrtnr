@@ -67,6 +67,7 @@ class FeedDomainProvider:
                 return ProviderVerdict(
                     tier=VerdictTier.TOXIC,
                     reason=f"host {host} is listed by {self._label}",
+                    scope="host",
                 )
             if (
                 registrable_domain
@@ -76,6 +77,7 @@ class FeedDomainProvider:
                 return ProviderVerdict(
                     tier=VerdictTier.TOXIC,
                     reason=f"domain {registrable_domain} is listed by {self._label}",
+                    scope="host",
                 )
         except Exception as exc:
             log.warning("safety_provider_failed", provider=self.name, error=str(exc))
@@ -152,8 +154,14 @@ def verdict_covers(verdict, url: str) -> bool:
     if scope == "path_pattern" and verdict.path_pattern:
         return matching_blocked_pattern(url, (verdict.path_pattern,)) is not None
     if scope == "links" and verdict.sample_url:
-        return url == verdict.sample_url
+        return _without_query(url) == _without_query(verdict.sample_url)
     return False
+
+
+def _without_query(url: str) -> str:
+    """Scheme, host and path only: a links-scoped verdict covers the judged
+    URL, and appending ``?a=1`` is not a different destination."""
+    return url.split("?", 1)[0].split("#", 1)[0].rstrip("/")
 
 
 class ToxicVerdictProvider:

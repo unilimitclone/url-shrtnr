@@ -51,11 +51,13 @@ def _build(providers, existing=None):
 
 class TestAnalyze:
     @pytest.mark.asyncio
-    async def test_toxic_provider_blocks_narrowly_and_notifies(self):
-        """A fresh toxic screening hit never host-blocks: links scope only."""
+    async def test_url_scoped_signal_blocks_only_the_judged_url(self):
+        """A signal that judged one URL enforces one URL."""
         provider = _Provider(
-            ProviderVerdict(tier=VerdictTier.TOXIC, reason="blocklist hit"),
-            name="blocked_domain",
+            ProviderVerdict(
+                tier=VerdictTier.TOXIC, reason="web risk hit", scope="links"
+            ),
+            name="web_risk",
         )
         analyzer, verdict_repo, enforcer, notifier = _build([provider])
 
@@ -63,12 +65,53 @@ class TestAnalyze:
 
         kwargs = verdict_repo.upsert_verdict.await_args.kwargs
         assert kwargs["tier"] == VerdictTier.TOXIC
-        assert kwargs["source"] == "blocked_domain"
+        assert kwargs["source"] == "web_risk"
         assert kwargs["scope"] == "links"
         enforcer.block_host.assert_not_awaited()
         enforcer.block_matching.assert_awaited_once()
         notifier.safety_action.assert_awaited_once()
         notifier.safety_review.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_host_scoped_feed_hit_blocks_the_host(self):
+        """A feed listing the HOST is a host-level hard call; enforcing it
+        per-URL would leave every other link to a listed domain serving."""
+        provider = _Provider(
+            ProviderVerdict(
+                tier=VerdictTier.TOXIC,
+                reason="host evil.com is listed by fishfish.gg",
+                scope="host",
+            ),
+            name="feed_fishfish",
+        )
+        analyzer, verdict_repo, enforcer, _n = _build([provider])
+
+        await analyzer.analyze(_event())
+
+        enforcer.block_host.assert_awaited_once()
+        assert verdict_repo.upsert_verdict.await_args.kwargs["scope"] == "host"
+
+    @pytest.mark.asyncio
+    async def test_unusable_model_pattern_degrades_to_the_judged_url(self):
+        """A pattern that cannot compile is never stored or executed: the
+        verdict lands links-scoped instead of carrying a landmine."""
+        provider = _Provider(
+            ProviderVerdict(
+                tier=VerdictTier.TOXIC,
+                reason="pattern hit",
+                scope="path_pattern",
+                path_pattern=r"^https://evil\.com/(unclosed",
+            ),
+            name="blocked_pattern",
+        )
+        analyzer, verdict_repo, enforcer, _n = _build([provider])
+
+        await analyzer.analyze(_event())
+
+        kwargs = verdict_repo.upsert_verdict.await_args.kwargs
+        assert kwargs["scope"] == "links"
+        assert kwargs["path_pattern"] is None
+        enforcer.block_host.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_pattern_hit_blocks_matching_links_and_stores_the_pattern(self):
@@ -254,8 +297,7 @@ class TestSweepNotificationPolicy:
             )
         )
 
-        enforcer.block_host.assert_not_awaited()
-        enforcer.block_matching.assert_awaited_once()
+        enforcer.block_host.assert_awaited_once()
         notifier.safety_action.assert_awaited_once()
 
 
@@ -334,7 +376,7 @@ class TestDeepAdmission:
         from services.safety.admission import AdmissionDecision
 
         provider = _Provider(
-            ProviderVerdict(tier=VerdictTier.TOXIC, reason="feed hit"),
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="feed hit", scope="links"),
             name="feed_fishfish",
         )
         verdict_repo = AsyncMock()
@@ -537,7 +579,7 @@ class TestRedirectScreening:
         from unittest.mock import patch
 
         provider = _Provider(
-            ProviderVerdict(tier=VerdictTier.TOXIC, reason="feed hit"),
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="feed hit", scope="links"),
             name="feed_fishfish",
         )
         verdict_repo = AsyncMock()

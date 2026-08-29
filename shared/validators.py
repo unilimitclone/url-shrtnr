@@ -196,6 +196,19 @@ def validate_blocked_url(
     return matching_blocked_pattern(url, patterns, timeout=timeout) is None
 
 
+def is_valid_pattern(pattern: str) -> bool:
+    """Whether *pattern* compiles. Model- and operator-supplied regexes are
+    never handed to the matcher unchecked: a bad one raises at enforcement
+    time, after the verdict is already stored."""
+    if not pattern:
+        return False
+    try:
+        regex.compile(pattern)
+    except Exception:
+        return False
+    return True
+
+
 def matching_blocked_pattern(
     url: str, patterns: Sequence[str], timeout: float = 0.2
 ) -> str | None:
@@ -205,6 +218,8 @@ def matching_blocked_pattern(
         try:
             if regex.search(pattern, url, timeout=timeout):
                 return pattern
+        except regex.error:
+            log.warning("blocked_pattern_invalid", pattern=pattern)
         except TimeoutError:
             # Fail open (a pathological pattern must not take down link
             # creation) but never silently: a timing-out pattern is an

@@ -37,7 +37,7 @@ from services.safety.providers import (
 )
 from shared.datetime_utils import as_aware_utc
 from shared.url_utils import parse_destination
-from shared.validators import matching_blocked_pattern
+from shared.validators import is_valid_pattern, matching_blocked_pattern
 
 if TYPE_CHECKING:
     # sinks.py imports the analyzer (inline rung), so the sink protocol is
@@ -164,21 +164,38 @@ class SafetyAnalyzer:
     async def _handle_toxic(
         self, event: SafetyAnalyzeEvent, verdict: ProviderVerdict, source: str
     ) -> None:
-        """Enforce exactly as far as the signal reaches, never wider."""
-        if verdict.scope == "path_pattern" and verdict.path_pattern:
-            scope, path_pattern = "path_pattern", verdict.path_pattern
+        """Enforce exactly as far as the SIGNAL reaches, never wider and
+        never narrower: a feed listing a host is a host-level hard call, a
+        blocklist regex covers its pattern, a URL lookup covers that URL."""
+        scope, path_pattern = verdict.scope, None
+        if scope == "path_pattern":
+            if is_valid_pattern(verdict.path_pattern or ""):
+                path_pattern = verdict.path_pattern
+            else:
+                log.warning(
+                    "safety_pattern_unusable",
+                    host=event.host,
+                    pattern=verdict.path_pattern,
+                )
+                scope = "links"
 
-            def matcher(u: str, _p: str = verdict.path_pattern) -> bool:
-                return matching_blocked_pattern(u, (_p,)) is not None
-
-            scope_note = f"scoped to pattern {path_pattern}"
+        if scope == "host":
+            result = await self._enforcer.block_host(event.host, reason=verdict.reason)
+            scope_note = "host-wide"
+        elif scope == "path_pattern":
+            pattern = path_pattern or ""
+            result = await self._enforcer.block_matching(
+                event.host,
+                matcher=lambda u: matching_blocked_pattern(u, (pattern,)) is not None,
+                reason=verdict.reason,
+            )
+            scope_note = f"scoped to pattern {pattern}"
         else:
-            # Host-scoped claims wait for the deep tier; enforce the judged URL only.
-            scope, path_pattern = "links", None
-
-            def matcher(u: str, _u: str = event.url) -> bool:
-                return u == _u
-
+            result = await self._enforcer.block_matching(
+                event.host,
+                matcher=lambda u, _u=event.url: u == _u,
+                reason=verdict.reason,
+            )
             scope_note = "scoped to the judged URL"
 
         await self._verdict_repo.upsert_verdict(
@@ -192,9 +209,6 @@ class SafetyAnalyzer:
             context=event.context,
             scope=scope,
             path_pattern=path_pattern,
-        )
-        result = await self._enforcer.block_matching(
-            event.host, matcher=matcher, reason=verdict.reason
         )
         escalated = await self._escalate(event, verdict, source)
         follow_up = (

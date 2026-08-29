@@ -56,17 +56,28 @@ from shared.url_utils import registrable_domain
 
 log = get_logger(__name__)
 
+
+class _HardHitFlag:
+    def __init__(self) -> None:
+        self.hit = False
+
+
 # Set by feed_lookup only when a hard source ACTUALLY hit, never derived from
-# the model's prose; task-local so concurrent runs cannot cross-contaminate.
-_hard_hit = contextvars.ContextVar("safety_hard_hit", default=False)
+# the model's prose. The var holds a MUTABLE flag rather than a bool: the agent
+# dispatches tools with create_task, and a child task's context is a copy, so a
+# rebinding set() inside a tool would never reach the caller that reads it.
+_hard_hit: contextvars.ContextVar[_HardHitFlag | None] = contextvars.ContextVar(
+    "safety_hard_hit", default=None
+)
 
 
 def reset_hard_hit() -> None:
-    _hard_hit.set(False)
+    _hard_hit.set(_HardHitFlag())
 
 
 def saw_hard_hit() -> bool:
-    return _hard_hit.get()
+    flag = _hard_hit.get()
+    return flag is not None and flag.hit
 
 
 _MAX_HOPS = 10
@@ -445,7 +456,9 @@ def build_investigation_tools(deps: InvestigationToolDeps) -> list[Callable]:
                 log.warning("web_risk_lookup_failed", error=str(exc))
         if hits:
             # Authority decisions read THIS flag, never the model's restatement.
-            _hard_hit.set(True)
+            flag = _hard_hit.get()
+            if flag is not None:
+                flag.hit = True
             return f"HARD HITS on {host}: {', '.join(hits)}"
         return f"no feed or Web Risk hits on {host}"
 

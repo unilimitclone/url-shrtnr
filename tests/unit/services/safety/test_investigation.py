@@ -3,6 +3,7 @@ pure function) and the investigator flow."""
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -219,7 +220,12 @@ class TestInvestigatorFlow:
         from services.safety import tools as safety_tools
 
         async def run_and_set_flag(_task, _bundle):
-            safety_tools._hard_hit.set(True)
+            # Mutate the shared flag from a CHILD task, exactly as the agent
+            # dispatches tools: a rebinding set() here would not survive.
+            async def tool_call():
+                safety_tools._hard_hit.get().hit = True
+
+            await asyncio.gather(tool_call())
             return _verdict(Classification.SCAM_HOST)
 
         inv, _, enforcer, _ = _investigator(_verdict(Classification.SCAM_HOST))
