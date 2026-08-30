@@ -60,6 +60,7 @@ RESERVED_ALIASES: frozenset[str] = frozenset(
         "profile-pictures",
         "public",
         "register",
+        "restore-account",
         "relay",
         "report",
         "reset",
