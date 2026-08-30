@@ -438,16 +438,29 @@ class TestDeepAdmission:
 
     @pytest.mark.asyncio
     async def test_host_scoped_hit_from_a_non_feed_source_still_escalates(self):
+        """Only a feed short-circuits the reach question. An operator
+        pattern matching host-wide is still a claim worth investigating."""
+        from services.safety.admission import AdmissionDecision
+
         provider = _Provider(
             ProviderVerdict(tier=VerdictTier.TOXIC, reason="operator pattern"),
             name="blocked_pattern",
         )
-        analyzer, _verdict_repo, _enforcer, notifier = _build([provider])
+        admission = AsyncMock()
+        admission.decide = AsyncMock(
+            return_value=AdmissionDecision(admitted=True, reason="within_budget")
+        )
+        deep_sink = AsyncMock()
+        analyzer, _verdict_repo, _enforcer, notifier = _build(
+            [provider], admission=admission, deep_sink=deep_sink
+        )
 
         await analyzer.analyze(_event())
 
+        deep_sink.emit.assert_awaited_once()
+        assert admission.decide.await_args.kwargs == {"escalation": True}
         reason = notifier.safety_action.await_args.kwargs["reason"]
-        assert "needs review" in reason
+        assert "sent to investigation" in reason
 
     @pytest.mark.asyncio
     async def test_feed_block_on_a_shared_carrier_is_flagged(self, capsys):
@@ -464,9 +477,19 @@ class TestDeepAdmission:
             [provider], carriers=carriers
         )
 
-        await analyzer.analyze(_event(host="e.vg"))
+        await analyzer.analyze(
+            SafetyAnalyzeEvent(
+                url="https://e.vg/kit?token=secret",
+                host="e.vg",
+                registrable_domain="e.vg",
+                trigger="report",
+            )
+        )
 
-        assert "safety_feed_block_on_shared_carrier" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "safety_feed_block_on_shared_carrier" in out
+        assert "sample_path=https://e.vg/kit" in out
+        assert "token=secret" not in out
         assert carriers.covers.await_args.args == ("e.vg", "e.vg")
 
     @pytest.mark.asyncio

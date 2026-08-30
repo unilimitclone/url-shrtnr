@@ -51,9 +51,9 @@ class SharedCarrierLookup:
 
     A shortener or a platform share wrapper appears on a scam feed because
     scammers routed through it, never because the domain itself is the
-    scam. Blocking such a host kills every unrelated link that passes
-    through it, so a host-scope hit on one of these is narrowed to the
-    judged link instead.
+    scam. Enforcement still follows the feed and blocks host-wide; this
+    lookup only marks the blocks that therefore reached every unrelated
+    link routed through the same domain.
     """
 
     def __init__(self, repo: FeedDomainRepository, *, feeds: tuple[str, ...]) -> None:

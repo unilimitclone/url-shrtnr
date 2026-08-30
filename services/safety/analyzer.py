@@ -249,7 +249,8 @@ class SafetyAnalyzer:
                 host=event.host,
                 registrable_domain=event.registrable_domain,
                 source=source,
-                sample_url=event.url,
+                # Query strings on these carry recipient ids and tokens.
+                sample_path=event.url.split("?", 1)[0].split("#", 1)[0],
             )
 
     async def _reenforce(self, event: SafetyAnalyzeEvent, existing: VerdictDoc) -> bool:
