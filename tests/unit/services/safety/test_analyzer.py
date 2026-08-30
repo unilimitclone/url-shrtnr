@@ -35,7 +35,7 @@ class _Provider:
         return self._verdict
 
 
-def _build(providers, existing=None):
+def _build(providers, existing=None, **kwargs):
     verdict_repo = AsyncMock()
     verdict_repo.find_by_host = AsyncMock(return_value=existing)
     enforcer = AsyncMock()
@@ -44,7 +44,7 @@ def _build(providers, existing=None):
     )
     notifier = AsyncMock()
     analyzer = SafetyAnalyzer(
-        providers, verdict_repo, enforcer, notifier, reverdict_ttl_hours=24
+        providers, verdict_repo, enforcer, notifier, reverdict_ttl_hours=24, **kwargs
     )
     return analyzer, verdict_repo, enforcer, notifier
 
@@ -411,10 +411,36 @@ class TestDeepAdmission:
         assert "needs review" not in notifier.safety_action.await_args.kwargs["reason"]
 
     @pytest.mark.asyncio
-    async def test_toxic_without_deep_tier_flags_the_host_decision_for_review(self):
+    async def test_host_scoped_feed_hit_never_pays_for_a_second_opinion(self):
+        """The feed already answered the host question, so there is no reach
+        left to investigate and no model call to make."""
+        from services.safety.admission import AdmissionDecision
+
         provider = _Provider(
             ProviderVerdict(tier=VerdictTier.TOXIC, reason="feed hit"),
             name="feed_fishfish",
+        )
+        admission = AsyncMock()
+        admission.decide = AsyncMock(
+            return_value=AdmissionDecision(admitted=True, reason="within_budget")
+        )
+        deep_sink = AsyncMock()
+        analyzer, _verdict_repo, _enforcer, notifier = _build(
+            [provider], admission=admission, deep_sink=deep_sink
+        )
+
+        await analyzer.analyze(_event())
+
+        deep_sink.emit.assert_not_awaited()
+        admission.decide.assert_not_awaited()
+        reason = notifier.safety_action.await_args.kwargs["reason"]
+        assert "feed listing is itself the host-wide answer" in reason
+
+    @pytest.mark.asyncio
+    async def test_host_scoped_hit_from_a_non_feed_source_still_escalates(self):
+        provider = _Provider(
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="operator pattern"),
+            name="blocked_pattern",
         )
         analyzer, _verdict_repo, _enforcer, notifier = _build([provider])
 
@@ -422,6 +448,42 @@ class TestDeepAdmission:
 
         reason = notifier.safety_action.await_args.kwargs["reason"]
         assert "needs review" in reason
+
+    @pytest.mark.asyncio
+    async def test_feed_block_on_a_shared_carrier_is_flagged(self, capsys):
+        """e.vg is on a scam feed because scammers routed through it. The
+        block still follows the feed; the warning is how an operator finds
+        out it reached every unrelated link too."""
+        provider = _Provider(
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="feed hit"),
+            name="feed_fishfish",
+        )
+        carriers = AsyncMock()
+        carriers.covers = AsyncMock(return_value=True)
+        analyzer, _verdict_repo, _enforcer, _notifier = _build(
+            [provider], carriers=carriers
+        )
+
+        await analyzer.analyze(_event(host="e.vg"))
+
+        assert "safety_feed_block_on_shared_carrier" in capsys.readouterr().out
+        assert carriers.covers.await_args.args == ("e.vg", "e.vg")
+
+    @pytest.mark.asyncio
+    async def test_feed_block_on_an_ordinary_host_is_not_flagged(self, capsys):
+        provider = _Provider(
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="feed hit"),
+            name="feed_fishfish",
+        )
+        carriers = AsyncMock()
+        carriers.covers = AsyncMock(return_value=False)
+        analyzer, _verdict_repo, _enforcer, _notifier = _build(
+            [provider], carriers=carriers
+        )
+
+        await analyzer.analyze(_event())
+
+        assert "safety_feed_block_on_shared_carrier" not in capsys.readouterr().out
 
 
 class TestScopedReenforcement:

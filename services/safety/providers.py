@@ -46,6 +46,41 @@ class AnalysisProvider(Protocol):
     ) -> ProviderVerdict | None: ...
 
 
+class SharedCarrierLookup:
+    """Membership check for feeds whose domains CARRY other people's links.
+
+    A shortener or a platform share wrapper appears on a scam feed because
+    scammers routed through it, never because the domain itself is the
+    scam. Blocking such a host kills every unrelated link that passes
+    through it, so a host-scope hit on one of these is narrowed to the
+    judged link instead.
+    """
+
+    def __init__(self, repo: FeedDomainRepository, *, feeds: tuple[str, ...]) -> None:
+        self._repo = repo
+        self._feeds = feeds
+
+    async def covers(self, host: str, registrable_domain: str) -> bool:
+        """Never raises: an unreachable feed store must not turn a narrow
+        block into a host-wide one."""
+        candidates = [d for d in (host, registrable_domain) if d]
+        for feed in self._feeds:
+            for domain in candidates:
+                try:
+                    if await self._repo.contains(feed, domain):
+                        return True
+                except Exception as exc:
+                    log.warning(
+                        "shared_carrier_lookup_failed",
+                        feed=feed,
+                        domain=domain,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
+                    return False
+        return False
+
+
 class FeedDomainProvider:
     """Membership check against a synced external feed's domain set
     (``safety_feed_domains``). An empty or never-synced set abstains — the

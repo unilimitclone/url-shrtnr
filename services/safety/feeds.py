@@ -58,6 +58,10 @@ _SHORTENER_SEED_PATH = os.path.join(
 # The RESOLVE class: never refused, never a judgment source — membership only
 # marks a created link for terminal-URL resolution of the chain's endpoint.
 REDIRECTOR_FEED = "redirectors"
+
+# Domains that carry OTHER people's links: listed for what routed through
+# them, so a host-wide block reaches every unrelated link too.
+CARRIER_FEEDS = (SHORTENER_FEED, REDIRECTOR_FEED)
 _REDIRECTOR_SEED_PATH = os.path.join(
     os.path.dirname(_SHORTENER_SEED_PATH),
     "redirector_domains.txt",
