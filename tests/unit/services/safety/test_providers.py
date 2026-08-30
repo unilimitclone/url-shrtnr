@@ -330,3 +330,51 @@ class TestToxicVerdictScope:
             )
             is not None
         )
+
+
+class TestSharedCarrierLookup:
+    """e.vg sits on a scam feed for what routed through it. This lookup is
+    how a host-wide block on such a domain gets flagged rather than passing
+    silently."""
+
+    @staticmethod
+    def _lookup(listed: set[str]):
+        from services.safety.providers import SharedCarrierLookup
+
+        repo = AsyncMock()
+        repo.contains = AsyncMock(side_effect=lambda feed, domain: domain in listed)
+        return SharedCarrierLookup(repo, feeds=("shorteners", "redirectors")), repo
+
+    @pytest.mark.asyncio
+    async def test_listed_host_is_covered(self):
+        lookup, _repo = self._lookup({"e.vg"})
+        assert await lookup.covers("e.vg", "e.vg") is True
+
+    @pytest.mark.asyncio
+    async def test_registrable_domain_matches_when_the_host_does_not(self):
+        lookup, _repo = self._lookup({"bitly.cx"})
+        assert await lookup.covers("sub.bitly.cx", "bitly.cx") is True
+
+    @pytest.mark.asyncio
+    async def test_unlisted_host_is_not_covered(self):
+        lookup, repo = self._lookup({"e.vg"})
+        assert await lookup.covers("rbxtools.st", "rbxtools.st") is False
+        assert repo.contains.await_count == 4
+
+    @pytest.mark.asyncio
+    async def test_blank_registrable_domain_is_skipped(self):
+        lookup, repo = self._lookup(set())
+        assert await lookup.covers("e.vg", "") is False
+        assert repo.contains.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_backend_failure_reports_not_covered(self):
+        """A dead feed store must not invent a carrier, and must not raise
+        into the enforcement path either."""
+        from services.safety.providers import SharedCarrierLookup
+
+        repo = AsyncMock()
+        repo.contains = AsyncMock(side_effect=RuntimeError("mongo down"))
+        lookup = SharedCarrierLookup(repo, feeds=("shorteners",))
+
+        assert await lookup.covers("e.vg", "e.vg") is False
