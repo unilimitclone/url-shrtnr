@@ -37,6 +37,7 @@ from services.safety.providers import (
     ProviderVerdict,
     SharedCarrierLookup,
     verdict_covers,
+    without_query,
 )
 from shared.datetime_utils import as_aware_utc
 from shared.url_utils import parse_destination
@@ -250,7 +251,7 @@ class SafetyAnalyzer:
                 registrable_domain=event.registrable_domain,
                 source=source,
                 # Query strings on these carry recipient ids and tokens.
-                sample_path=event.url.split("?", 1)[0].split("#", 1)[0],
+                sample_url=without_query(event.url),
             )
 
     async def _reenforce(self, event: SafetyAnalyzeEvent, existing: VerdictDoc) -> bool:

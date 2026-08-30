@@ -61,9 +61,11 @@ class SharedCarrierLookup:
         self._feeds = feeds
 
     async def covers(self, host: str, registrable_domain: str) -> bool:
-        """Never raises: an unreachable feed store must not turn a narrow
-        block into a host-wide one."""
-        candidates = [d for d in (host, registrable_domain) if d]
+        """Never raises. The block and the verdict are already written by
+        the time this runs, so a raise could not widen or narrow them. What
+        it would take out is the operator notification on the next line, and
+        a block nobody hears about is worse than an unflagged one."""
+        candidates = [d for d in dict.fromkeys((host, registrable_domain)) if d]
         for feed in self._feeds:
             for domain in candidates:
                 try:
@@ -156,11 +158,11 @@ def verdict_covers(verdict, url: str) -> bool:
     if scope == "path_pattern" and verdict.path_pattern:
         return matching_blocked_pattern(url, (verdict.path_pattern,)) is not None
     if scope == "links" and verdict.sample_url:
-        return _without_query(url) == _without_query(verdict.sample_url)
+        return without_query(url) == without_query(verdict.sample_url)
     return False
 
 
-def _without_query(url: str) -> str:
+def without_query(url: str) -> str:
     """Scheme, host and path only: a links-scoped verdict covers the judged
     URL, and appending ``?a=1`` is not a different destination."""
     return url.split("?", 1)[0].split("#", 1)[0].rstrip("/")

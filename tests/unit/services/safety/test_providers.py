@@ -337,13 +337,20 @@ class TestSharedCarrierLookup:
     how a host-wide block on such a domain gets flagged rather than passing
     silently."""
 
-    @staticmethod
-    def _lookup(listed: set[str]):
+    FEEDS = ("shorteners", "redirectors")
+
+    @classmethod
+    def _lookup(cls, listed: set[str]):
+        """The mock keys on (feed, domain) like the real repository, so a
+        lookup against a feed this instance was never configured with is a
+        miss rather than a silent pass."""
         from services.safety.providers import SharedCarrierLookup
 
         repo = AsyncMock()
-        repo.contains = AsyncMock(side_effect=lambda feed, domain: domain in listed)
-        return SharedCarrierLookup(repo, feeds=("shorteners", "redirectors")), repo
+        repo.contains = AsyncMock(
+            side_effect=lambda feed, domain: feed in cls.FEEDS and domain in listed
+        )
+        return SharedCarrierLookup(repo, feeds=cls.FEEDS), repo
 
     @pytest.mark.asyncio
     async def test_listed_host_is_covered(self):
@@ -359,13 +366,37 @@ class TestSharedCarrierLookup:
     async def test_unlisted_host_is_not_covered(self):
         lookup, repo = self._lookup({"e.vg"})
         assert await lookup.covers("rbxtools.st", "rbxtools.st") is False
-        assert repo.contains.await_count == 4
+        # Apex: host and registrable domain are the same read, once per feed.
+        assert [c.args for c in repo.contains.await_args_list] == [
+            ("shorteners", "rbxtools.st"),
+            ("redirectors", "rbxtools.st"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_subdomain_checks_both_forms_against_every_feed(self):
+        lookup, repo = self._lookup(set())
+        assert await lookup.covers("sub.rbxtools.st", "rbxtools.st") is False
+        assert [c.args for c in repo.contains.await_args_list] == [
+            ("shorteners", "sub.rbxtools.st"),
+            ("shorteners", "rbxtools.st"),
+            ("redirectors", "sub.rbxtools.st"),
+            ("redirectors", "rbxtools.st"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_feed_it_was_not_configured_with_is_never_consulted(self):
+        lookup, repo = self._lookup({"e.vg"})
+        await lookup.covers("e.vg", "e.vg")
+        assert {c.args[0] for c in repo.contains.await_args_list} <= set(self.FEEDS)
 
     @pytest.mark.asyncio
     async def test_blank_registrable_domain_is_skipped(self):
         lookup, repo = self._lookup(set())
         assert await lookup.covers("e.vg", "") is False
-        assert repo.contains.await_count == 2
+        assert [c.args for c in repo.contains.await_args_list] == [
+            ("shorteners", "e.vg"),
+            ("redirectors", "e.vg"),
+        ]
 
     @pytest.mark.asyncio
     async def test_backend_failure_reports_not_covered(self):

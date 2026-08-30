@@ -463,6 +463,20 @@ class TestDeepAdmission:
         assert "sent to investigation" in reason
 
     @pytest.mark.asyncio
+    async def test_denied_escalation_still_flags_the_host_decision(self):
+        """The review fallback is what an operator sees when the deep tier
+        is unwired or the budget is gone. It must survive both."""
+        provider = _Provider(
+            ProviderVerdict(tier=VerdictTier.TOXIC, reason="operator pattern"),
+            name="blocked_pattern",
+        )
+        analyzer, _verdict_repo, _enforcer, notifier = _build([provider])
+
+        await analyzer.analyze(_event())
+
+        assert "needs review" in notifier.safety_action.await_args.kwargs["reason"]
+
+    @pytest.mark.asyncio
     async def test_feed_block_on_a_shared_carrier_is_flagged(self, capsys):
         """e.vg is on a scam feed because scammers routed through it. The
         block still follows the feed; the warning is how an operator finds
@@ -488,7 +502,7 @@ class TestDeepAdmission:
 
         out = capsys.readouterr().out
         assert "safety_feed_block_on_shared_carrier" in out
-        assert "sample_path=https://e.vg/kit" in out
+        assert "sample_url=https://e.vg/kit" in out
         assert "token=secret" not in out
         assert carriers.covers.await_args.args == ("e.vg", "e.vg")
 
