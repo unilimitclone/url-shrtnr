@@ -135,7 +135,7 @@ def test_docs_redirects_to_external():
     with TestClient(app, follow_redirects=False) as c:
         resp = c.get("/docs")
     assert resp.status_code == 301
-    assert resp.headers["location"] == "https://docs.spoo.me"
+    assert resp.headers["location"] == "https://spoo.me/docs"
 
 
 def test_docs_wildcard_redirects():
@@ -143,7 +143,7 @@ def test_docs_wildcard_redirects():
     with TestClient(app, follow_redirects=False) as c:
         resp = c.get("/docs/some-topic")
     assert resp.status_code == 301
-    assert resp.headers["location"] == "https://docs.spoo.me/some-topic"
+    assert resp.headers["location"] == "https://spoo.me/docs/some-topic"
 
 
 # ── Legal pages ──────────────────────────────────────────────────────────────
@@ -290,3 +290,13 @@ def test_report_post_success():
         )
     assert resp.status_code == 200
     svc.send_report.assert_called_once()
+
+
+def test_the_legacy_api_docs_page_is_gone():
+    """?old=1 used to render a full copy of the pre-Mintlify docs: indexable,
+    self-titled, and competing with the real docs for the same queries."""
+    app = _build_test_app()
+    with TestClient(app, follow_redirects=False) as c:
+        resp = c.get("/api?old=1")
+    assert resp.status_code == 301
+    assert resp.headers["location"] == "https://spoo.me/docs/introduction"

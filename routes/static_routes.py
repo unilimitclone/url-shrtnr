@@ -71,29 +71,21 @@ async def favicon(request: Request) -> Response:
 
 # ── Docs / legal ─────────────────────────────────────────────────────────────
 
+# docs.spoo.me still resolves but 301s here, so pointing at it costs a hop.
+DOCS_ROOT = "https://spoo.me/docs"
+
 
 @router.get("/api")
 @limiter.exempt
 async def api_redirect(request: Request) -> Response:
-    if request.query_params.get("old") == "1":
-        return templates.TemplateResponse(
-            request,
-            "api.html",
-            {
-                "host_url": str(request.base_url),
-                "self_promo": True,
-                "self_promo_uri": "https://docs.spoo.me",
-                "self_promo_text": "We have moved and revamped the docs to https://docs.spoo.me",
-            },
-        )
-    return RedirectResponse("https://docs.spoo.me/introduction", status_code=301)
+    return RedirectResponse(DOCS_ROOT + "/introduction", status_code=301)
 
 
 @router.get("/docs")
 @router.get("/docs/")
 @limiter.exempt
 async def docs_redirect(request: Request) -> Response:
-    return RedirectResponse("https://docs.spoo.me", status_code=301)
+    return RedirectResponse(DOCS_ROOT, status_code=301)
 
 
 @router.get("/docs/privacy-policy")
@@ -127,7 +119,7 @@ async def terms_of_service(request: Request) -> Response:
 @router.get("/docs/{path:path}")
 @limiter.exempt
 async def docs_wildcard(path: str, request: Request) -> Response:
-    return RedirectResponse(f"https://docs.spoo.me/{path}", status_code=301)
+    return RedirectResponse(f"{DOCS_ROOT}/{path}", status_code=301)
 
 
 # ── Contact ──────────────────────────────────────────────────────────────────
