@@ -96,6 +96,7 @@ from services.public_preview_service import PublicPreviewService
 from services.public_stats_service import PublicStatsService
 from services.report_intake_service import ReportIntakeService
 from services.safety import (
+    CARRIER_FEEDS,
     AdmissionPolicy,
     BlockedPatternProvider,
     CreationPatternScorer,
@@ -109,6 +110,7 @@ from services.safety import (
     SafetyAnalyzer,
     SafetyEnforcer,
     SafetySink,
+    SharedCarrierLookup,
     SweepDeps,
     ToxicVerdictProvider,
     UrlPolicyService,
@@ -614,6 +616,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         reverdict_ttl_hours=sf_settings.reverdict_ttl_hours,
         admission=admission,
         deep_sink=deep_sink if admission is not None else None,
+        carriers=SharedCarrierLookup(feed_domain_repo, feeds=CARRIER_FEEDS),
     )
     app.state.safety_analyzer = safety_analyzer
     safety_sink: SafetySink

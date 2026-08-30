@@ -46,6 +46,43 @@ class AnalysisProvider(Protocol):
     ) -> ProviderVerdict | None: ...
 
 
+class SharedCarrierLookup:
+    """Membership check for feeds whose domains CARRY other people's links.
+
+    A shortener or a platform share wrapper appears on a scam feed because
+    scammers routed through it, never because the domain itself is the
+    scam. Enforcement still follows the feed and blocks host-wide; this
+    lookup only marks the blocks that therefore reached every unrelated
+    link routed through the same domain.
+    """
+
+    def __init__(self, repo: FeedDomainRepository, *, feeds: tuple[str, ...]) -> None:
+        self._repo = repo
+        self._feeds = feeds
+
+    async def covers(self, host: str, registrable_domain: str) -> bool:
+        """Never raises. The block and the verdict are already written by
+        the time this runs, so a raise could not widen or narrow them. What
+        it would take out is the operator notification on the next line, and
+        a block nobody hears about is worse than an unflagged one."""
+        candidates = [d for d in dict.fromkeys((host, registrable_domain)) if d]
+        for feed in self._feeds:
+            for domain in candidates:
+                try:
+                    if await self._repo.contains(feed, domain):
+                        return True
+                except Exception as exc:
+                    log.warning(
+                        "shared_carrier_lookup_failed",
+                        feed=feed,
+                        domain=domain,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
+                    return False
+        return False
+
+
 class FeedDomainProvider:
     """Membership check against a synced external feed's domain set
     (``safety_feed_domains``). An empty or never-synced set abstains — the
@@ -121,11 +158,11 @@ def verdict_covers(verdict, url: str) -> bool:
     if scope == "path_pattern" and verdict.path_pattern:
         return matching_blocked_pattern(url, (verdict.path_pattern,)) is not None
     if scope == "links" and verdict.sample_url:
-        return _without_query(url) == _without_query(verdict.sample_url)
+        return without_query(url) == without_query(verdict.sample_url)
     return False
 
 
-def _without_query(url: str) -> str:
+def without_query(url: str) -> str:
     """Scheme, host and path only: a links-scoped verdict covers the judged
     URL, and appending ``?a=1`` is not a different destination."""
     return url.split("?", 1)[0].split("#", 1)[0].rstrip("/")

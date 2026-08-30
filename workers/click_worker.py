@@ -103,6 +103,8 @@ from services.safety import (
     build_sweep_tasks,
 )
 from services.safety.consumers import SafetyAnalysisConsumer
+from services.safety.feeds import CARRIER_FEEDS
+from services.safety.providers import SharedCarrierLookup
 from services.scheduler import TaskScheduler
 from services.scheduler.tasks import build_task_registry
 from services.webhooks import (
@@ -435,6 +437,7 @@ async def _build_runtime(
             reverdict_ttl_hours=sf.reverdict_ttl_hours,
             admission=admission,
             deep_sink=deep_sink,
+            carriers=SharedCarrierLookup(worker_feed_repo, feeds=CARRIER_FEEDS),
         )
         runtime.safety_consumer = SafetyAnalysisConsumer(safety_analyzer)
         # Sweeps emitted from THIS process run inline through the worker's

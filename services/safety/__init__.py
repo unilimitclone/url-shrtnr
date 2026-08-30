@@ -16,6 +16,7 @@ from services.safety.deep_consumer import DeepAnalysisConsumer
 from services.safety.enforcer import EnforcementResult, SafetyEnforcer
 from services.safety.events import SAFETY_STREAM, SafetyAnalyzeEvent
 from services.safety.feeds import (
+    CARRIER_FEEDS,
     FISHFISH_FEED,
     MANUAL_FEED,
     REDIRECTOR_FEED,
@@ -41,6 +42,7 @@ from services.safety.providers import (
     BlockedPatternProvider,
     FeedDomainProvider,
     ProviderVerdict,
+    SharedCarrierLookup,
     ToxicVerdictProvider,
     WebRiskProvider,
 )
@@ -62,6 +64,7 @@ from services.safety.tools import (
 )
 
 __all__ = [
+    "CARRIER_FEEDS",
     "FISHFISH_FEED",
     "MANUAL_FEED",
     "REDIRECTOR_FEED",
@@ -95,6 +98,7 @@ __all__ = [
     "SafetyAnalyzer",
     "SafetyEnforcer",
     "SafetySink",
+    "SharedCarrierLookup",
     "SweepDeps",
     "ToxicVerdictProvider",
     "UrlPolicyService",

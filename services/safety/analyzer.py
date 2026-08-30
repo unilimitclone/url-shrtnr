@@ -10,8 +10,10 @@ process hosts it (worker consumer or inline sink). Semantics:
 - First non-abstaining provider wins. No provider judging means tier
   UNCERTAIN and a human review embed — BENIGN is never inferred from
   absence of evidence.
-- Screening never originates a host-wide block: it blocks only the links
-  its evidence covers and escalates the host question to the deep tier.
+- Screening enforces exactly as far as its signal reaches. A curated feed
+  naming a host is a host-wide call and needs no second opinion; anything
+  narrower blocks the links it covers and escalates the host question to
+  the deep tier.
 - Everything is best-effort: analysis failures log and drop, they never
   propagate into the trigger path (a report must store even when analysis
   is broken).
@@ -33,7 +35,9 @@ from services.safety.events import SafetyAnalyzeEvent
 from services.safety.providers import (
     AnalysisProvider,
     ProviderVerdict,
+    SharedCarrierLookup,
     verdict_covers,
+    without_query,
 )
 from shared.datetime_utils import as_aware_utc
 from shared.url_utils import parse_destination
@@ -59,6 +63,10 @@ _TRIGGER_AUTHORITY = {
 # Unresolved machine-volume triggers stay silent; review pings would drown the channel.
 _SILENT_TRIGGERS = frozenset({"sweep", "hot", "redirect"})
 
+# A curated feed naming a host IS the host-wide answer, so there is no reach
+# question left to bill a model for. FeedDomainProvider names itself this way.
+_FEED_SOURCE_PREFIX = "feed_"
+
 
 class SafetyAnalyzer:
     def __init__(
@@ -71,6 +79,7 @@ class SafetyAnalyzer:
         reverdict_ttl_hours: int = 24,
         admission: AdmissionPolicy | None = None,
         deep_sink: DeepAnalysisSink | None = None,
+        carriers: SharedCarrierLookup | None = None,
     ) -> None:
         self._providers = providers
         self._verdict_repo = verdict_repo
@@ -79,6 +88,7 @@ class SafetyAnalyzer:
         self._reverdict_ttl = timedelta(hours=reverdict_ttl_hours)
         self._admission = admission
         self._deep_sink = deep_sink
+        self._carriers = carriers
 
     async def analyze(self, event: SafetyAnalyzeEvent) -> None:
         if event.trigger == "redirect" and not (event.context or {}).get("terminal"):
@@ -210,12 +220,13 @@ class SafetyAnalyzer:
             scope=scope,
             path_pattern=path_pattern,
         )
-        escalated = await self._escalate(event, verdict, source)
-        follow_up = (
-            "host-wide decision sent to investigation"
-            if escalated
-            else "host-wide decision needs review"
-        )
+        if scope == "host" and source.startswith(_FEED_SOURCE_PREFIX):
+            await self._warn_if_shared_carrier(event, source)
+            follow_up = "feed listing is itself the host-wide answer"
+        elif await self._escalate(event, verdict, source):
+            follow_up = "host-wide decision sent to investigation"
+        else:
+            follow_up = "host-wide decision needs review"
         await self._notifier.safety_action(
             host=event.host,
             reason=f"{verdict.reason} ({scope_note}; {follow_up})",
@@ -224,6 +235,24 @@ class SafetyAnalyzer:
             legacy_count=result.legacy_count,
             sample_url=event.url,
         )
+
+    async def _warn_if_shared_carrier(
+        self, event: SafetyAnalyzeEvent, source: str
+    ) -> None:
+        """A feed listing a shortener or share wrapper reaches every
+        unrelated link routed through it. Enforcement still follows the
+        feed; this is the signal that it was wider than the evidence."""
+        if self._carriers is None:
+            return
+        if await self._carriers.covers(event.host, event.registrable_domain):
+            log.warning(
+                "safety_feed_block_on_shared_carrier",
+                host=event.host,
+                registrable_domain=event.registrable_domain,
+                source=source,
+                # Query strings on these carry recipient ids and tokens.
+                sample_url=without_query(event.url),
+            )
 
     async def _reenforce(self, event: SafetyAnalyzeEvent, existing: VerdictDoc) -> bool:
         """Idempotent re-enforcement bounded by the verdict's scope; True when

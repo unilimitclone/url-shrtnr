@@ -63,6 +63,10 @@ _REDIRECTOR_SEED_PATH = os.path.join(
     "redirector_domains.txt",
 )
 
+# Domains that carry OTHER people's links: listed for what routed through
+# them, so a host-wide block reaches every unrelated link too.
+CARRIER_FEEDS = (SHORTENER_FEED, REDIRECTOR_FEED)
+
 
 def _load_seed(path: str) -> tuple[str, ...]:
     """Parse a seed file: one domain per line, ``#`` comments."""
