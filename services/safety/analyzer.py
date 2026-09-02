@@ -31,7 +31,7 @@ from schemas.enums.safety import VerdictTier
 from schemas.models.verdict import VerdictDoc
 from services.safety.admission import AdmissionPolicy
 from services.safety.enforcer import SafetyEnforcer
-from services.safety.events import SafetyAnalyzeEvent
+from services.safety.events import SILENT_TRIGGERS, SafetyAnalyzeEvent
 from services.safety.providers import (
     AnalysisProvider,
     ProviderVerdict,
@@ -60,8 +60,6 @@ _TRIGGER_AUTHORITY = {
     "report": 2,
 }
 
-# Unresolved machine-volume triggers stay silent; review pings would drown the channel.
-_SILENT_TRIGGERS = frozenset({"sweep", "hot", "redirect"})
 
 # A curated feed naming a host IS the host-wide answer, so there is no reach
 # question left to bill a model for. FeedDomainProvider names itself this way.
@@ -160,7 +158,7 @@ class SafetyAnalyzer:
         # exactly the spam the two-stage split exists to prevent.
         if await self._admit_deep(event):
             return
-        if event.trigger in _SILENT_TRIGGERS:
+        if event.trigger in SILENT_TRIGGERS:
             # Coverage screening: the uncertain verdict IS the record.
             log.info("safety_screened", host=event.host, trigger=event.trigger)
             return

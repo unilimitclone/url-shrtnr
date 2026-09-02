@@ -508,6 +508,7 @@ async def _build_runtime(
                 ),
                 policy=AutoBlockPolicy(sf.deep_autoblock),
                 model_name=llm.model,
+                feed_repo=worker_feed_repo,
             )
             runtime.deep_consumer = DeepAnalysisConsumer(investigator)
             log.info("safety_deep_worker_registered", stream=sf.deep_stream)

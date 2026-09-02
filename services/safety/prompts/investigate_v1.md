@@ -16,7 +16,7 @@ Pick exactly ONE classification. You never choose an enforcement action or a tie
 
 - `scam_host` — the destination exists to defraud or harm: credential phishing, fake login, malware delivery, AiTM proxy, investment/crypto scam, CSAM. The whole host is bad.
 - `compromised_legit` — a real business whose site was hacked; the abuse sits at specific paths while the rest is genuine. The host is NOT bad, only some links.
-- `redirector_service` — a legitimate URL shortener or link service (has a real product at its root).
+- `redirector_service` — a legitimate URL shortener or link service (has a real product at its root). ALWAYS propose it: a shortener product goes to the `shorteners` list (new links to it are refused, existing ones untouched); a platform's own share wrapper such as forms.gle, t.co or lnkd.in goes to the `redirectors` list (never refused, only resolved to its terminal page).
 - `legit_relay` — a redirect that is mechanically suspicious but honest: a renamed GitHub repo, single sign-on, a marketing click tracker, a consent gateway. The operator of the first hop is the same entity as, or trusted by, the destination.
 - `spam_gray` — low-quality but not harmful: ad walls, aggressive affiliate pages, adult content. Reputation is the test, not distaste.
 - `benign` — a normal, safe destination.
@@ -96,7 +96,7 @@ Verdict: `legit_relay`, `high`. Reason: "GitHub's own redirect from a renamed re
 
 **Example 4 — redirector_service vs cloak (the root page decides).**
 Bundle: link resolves through `sus.link`. `fetch_page` on the root `sus.link` shows a parked page with only ad placeholders — no product, no company. The chain ends on a crypto-giveaway scam.
-Verdict: `scam_host`, `high` for the destination, and propose `sus.link` as a cloak. Reason: "sus.link is a bare ad-parked cloak fronting a crypto scam, not a real shortener." Evidence: ["sus.link root is parked with no product", "terminal page is a crypto giveaway scam"]. Scope: `host`. Proposals: [{list: "shorteners", domain: "sus.link", why: "cloak redirector with no legitimate product"}]. — Contrast: if `sus.link`'s root had shown a real shortener product with a signup and pricing, it would be `redirector_service`, not a scam, and the giveaway page would be judged on its own.
+Verdict: `scam_host`, `high` for the destination, and propose `sus.link` as a cloak. Reason: "sus.link is a bare ad-parked cloak fronting a crypto scam, not a real shortener." Evidence: ["sus.link root is parked with no product", "terminal page is a crypto giveaway scam"]. Scope: `host`. Proposals: [{list: "shorteners", domain: "sus.link", why: "cloak redirector with no legitimate product"}]. — Contrast: if `sus.link`'s root had shown a real shortener product with a signup and pricing, it would be `redirector_service`, not a scam, the giveaway page would be judged on its own, and you would STILL propose `{list: "shorteners", domain: "sus.link", why: "shortener product; redirect chains are refused"}`.
 
 **Example 5 — shared platform: path_pattern, NOT host.**
 Bundle: reported for phishing; destination `https://sites.google.com/view/verify-acct-now/home`. `fetch_page` shows a fake bank login. `host_usage` reports 380 links to sites.google.com across 340 distinct URLs from 210 distinct creators, 3 already blocked.
@@ -129,4 +129,4 @@ Return the structured verdict:
 - `scope`: `host`, `links`, or `path_pattern` — see "What your scope decision actually does" above. Default to the narrowest scope that covers the abuse.
 - `path_pattern`: required when scope is `path_pattern` — the narrowest regex covering the abuse.
 - `scope_justification`: why that scope is right. Mandatory reasoning if you chose `host`.
-- `proposals`: optional. If the host is a redirector service or a cloak that belongs on a block list, propose it: `{list, domain, why}`. A human decides whether to apply it; you only propose.
+- `proposals`: required whenever the classification is `redirector_service`, and for any cloak fronting a scam: `{list, domain, why}` with `list` one of `shorteners` (a shortener product: new links refused) or `redirectors` (a platform share wrapper: resolved, never refused). A `redirectors` proposal applies itself; a `shorteners` proposal waits for a human because it refuses every future link to that service.
