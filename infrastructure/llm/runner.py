@@ -88,7 +88,10 @@ class LlmTaskRunner:
     def _agent(self, task: LlmTask) -> Agent:
         agent = self._agents.get(task.name)
         if agent is None:
-            model_settings: dict = {"timeout": self._settings.request_timeout_seconds}
+            model_settings: dict = {
+                "timeout": self._settings.request_timeout_seconds,
+                "temperature": self._settings.temperature,
+            }
             if self._settings.model.startswith("anthropic:"):
                 # Every tool round resends the whole conversation; the moving
                 # breakpoint cuts loop input cost ~3-4x. Other providers

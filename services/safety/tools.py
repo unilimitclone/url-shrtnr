@@ -91,6 +91,14 @@ _MAX_FORM_FIELDS = 8
 _MAX_SCRIPT_HOSTS = 12
 _MAX_EMBEDDED = 4
 _CHALLENGE_TEXT_CAP = 400
+# Real challenge providers, matched on the script URL, not the host: a Google
+# homepage clone also loads gstatic, but nothing legitimate loads these paths.
+_CHALLENGE_PROVIDER_MARKS = (
+    "/recaptcha/",
+    "hcaptcha.com",
+    "challenges.cloudflare.com",
+    "cdn-cgi/challenge-platform",
+)
 # Titles and body text of the common interstitials. Measured on kisalt.com,
 # which renders 27KB of "Just a moment..." and nothing of the actual site.
 _CHALLENGE_MARKERS = (
@@ -202,6 +210,7 @@ class _EvidenceHTMLParser(HTMLParser):
         self.meta_description = ""
         self.forms: list[str] = []
         self.script_hosts: set[str] = set()
+        self.challenge_provider = False
         self.text_parts: list[str] = []
         self.text_len = 0
         self.embedded: list[str] = []
@@ -216,9 +225,12 @@ class _EvidenceHTMLParser(HTMLParser):
         if tag in self._SKIP:
             self._skip_depth += 1
             if tag == "script" and a.get("src"):
-                host = urlparse(a["src"]).hostname
+                src = a["src"]
+                host = urlparse(src).hostname
                 if host:
                     self.script_hosts.add(host)
+                if any(mark in src.lower() for mark in _CHALLENGE_PROVIDER_MARKS):
+                    self.challenge_provider = True
             return
         if tag == "title":
             self._in_title = True
@@ -307,25 +319,43 @@ def trim_html(html: str) -> str:
         f"embedded destinations: {'; '.join(embedded) or 'none'}",
         f"visible text (capped): {visible or '(none)'}",
     ]
-    if _is_bot_challenge(parser.title, visible, forms=len(parser.forms)):
+    shape = _challenge_shape(
+        parser.title,
+        visible,
+        forms=len(parser.forms),
+        provider=parser.challenge_provider,
+    )
+    if shape == "real":
         parts.append(
-            "NOTE: matches anti-bot challenge markers with no forms and almost "
-            "no text, so this is likely the interstitial rather than the site: "
-            "MISSING evidence about the destination, not evidence it is safe."
+            "NOTE: anti-bot challenge wording, no forms, almost no text, AND a "
+            "real challenge provider script is loaded: this is the provider's "
+            "interstitial, not the site. MISSING evidence about the destination, "
+            "not evidence it is safe."
+        )
+    elif shape == "fake":
+        parts.append(
+            "NOTE: anti-bot challenge wording with no forms and almost no text, "
+            "but NO challenge provider script is loaded (no reCAPTCHA, hCaptcha "
+            "or Turnstile). A real challenge always loads its provider. This is "
+            "a hand-drawn fake gate: POSITIVE evidence, see the fake-gate rule."
         )
     return "\n".join(parts)
 
 
-def _is_bot_challenge(title: str, visible: str, *, forms: int) -> bool:
-    """A challenge page renders successfully and tells you nothing. The
-    markers alone are attacker-controlled text, so they only count when the
-    page also has the shape of an interstitial: no forms and almost no text.
-    A scam page that hides "verifying you are human" in a corner still shows
-    its credential form and stays judgeable."""
+def _challenge_shape(title: str, visible: str, *, forms: int, provider: bool) -> str:
+    """ "real", "fake" or "". The markers are attacker-controlled text, so
+    they only count on a page with an interstitial's shape: no forms and
+    almost no text. What separates the two outcomes is a fact the page
+    cannot fake cheaply: whether a real challenge provider's script loaded.
+    A kit that imitates Cloudflare's wording verbatim but draws its own card
+    is the ClickFix lure, and telling the model it is "missing evidence"
+    would talk it out of the very verdict the fake-gate rule asks for."""
     if forms or len(visible) > _CHALLENGE_TEXT_CAP:
-        return False
+        return ""
     haystack = f"{title} {visible}".lower()
-    return any(marker in haystack for marker in _CHALLENGE_MARKERS)
+    if not any(marker in haystack for marker in _CHALLENGE_MARKERS):
+        return ""
+    return "real" if provider else "fake"
 
 
 async def domain_intel_impl(host: str) -> str:

@@ -514,6 +514,8 @@ class LlmSettings(BaseSettings):
     # chain) before concluding. 10 cut those off mid-investigation.
     max_tool_calls_per_run: int = Field(default=18, ge=1)
     max_total_tokens_per_run: int = Field(default=120_000, ge=1000)
+    # 0: the same evidence should land on the same verdict. Provider default is 1.0.
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
     request_timeout_seconds: float = Field(default=60.0, gt=0)
     run_timeout_seconds: float = Field(default=300.0, gt=0)
     # Prompt overrides: a directory of <task>.md files that replaces the
