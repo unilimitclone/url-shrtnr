@@ -373,15 +373,45 @@ class TestEmbeddedAndChallenge:
         )
         assert "meta refresh=0;url=https://evil.example/login" in trim_html(html)
 
-    def test_bot_challenge_is_named_as_missing_evidence(self):
-        """kisalt.com renders 27KB of this and nothing of the actual site."""
+    def test_real_provider_challenge_is_named_as_missing_evidence(self):
+        """kisalt.com renders 27KB of this and nothing of the actual site. The
+        real one always loads Cloudflare's challenge-platform script."""
         html = (
-            "<html><head><title>Just a moment...</title></head>"
-            "<body>Enable JavaScript and cookies to continue</body></html>"
+            "<html><head><title>Just a moment...</title>"
+            '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script>'
+            "</head><body>Enable JavaScript and cookies to continue</body></html>"
         )
         out = trim_html(html)
-        assert "anti-bot challenge markers" in out
+        assert "real challenge provider script is loaded" in out
         assert "MISSING evidence" in out
+        assert "fake gate" not in out
+
+    def test_challenge_wording_without_a_provider_is_a_fake_gate(self):
+        """A ClickFix kit that copies Cloudflare's wording verbatim is
+        formless and thin by construction. Calling that missing evidence
+        would talk the model out of the verdict the fake-gate rule asks for.
+        The tell is the one thing the kit did not do: load a provider."""
+        html = (
+            "<html><head><title>Just a moment...</title>"
+            '<script src="https://static.cloudflareinsights.com/beacon.min.js"></script>'
+            "</head><body>Verifying you are human. This may take a few seconds.</body></html>"
+        )
+        out = trim_html(html)
+        assert "NO challenge provider script is loaded" in out
+        assert "hand-drawn fake gate: POSITIVE evidence" in out
+        assert "MISSING evidence" not in out
+
+    def test_recaptcha_and_turnstile_count_as_real_providers(self):
+        for src in (
+            "https://www.google.com/recaptcha/api.js",
+            "https://js.hcaptcha.com/1/api.js",
+            "https://challenges.cloudflare.com/turnstile/v0/api.js",
+        ):
+            html = (
+                f'<html><head><title>Checking your browser</title><script src="{src}"></script></head>'
+                "<body>Please verify you are a human</body></html>"
+            )
+            assert "real challenge provider script is loaded" in trim_html(html), src
 
     def test_challenge_words_on_a_page_with_a_form_do_not_discount_it(self):
         """The markers are attacker-controlled text. A scam page that hides

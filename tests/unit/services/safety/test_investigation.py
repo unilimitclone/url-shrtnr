@@ -706,3 +706,47 @@ class TestReviewDecisions:
 
         with pytest.raises(pydantic.ValidationError):
             ListProposal(list="manual", domain="x.example", why="t")
+
+
+class TestPromptCarriesTheClickFixRule:
+    """Seven of eighteen medium-confidence scam calls were fake verification
+    gates on young domains. The prompt had no rule letting the model treat
+    the gate as the payload, so it obeyed the only high examples it had and
+    hedged. This pins the rule so a prompt edit cannot quietly drop it."""
+
+    def test_rule_and_worked_example_are_present(self):
+        from services.safety.investigation import _DEFAULT_PROMPT as p
+
+        assert "A fake verification gate is the payload" in p
+        assert "ClickFix" in p
+        assert "Example 10" in p
+        assert "5347567.shop" in p
+        # The counter-case stays: a real provider challenge is still missing evidence.
+        assert "cdn-cgi/challenge-platform" in p
+
+    def test_rule_requires_a_rendered_non_provider_gate_plus_two_signals(self):
+        """One weak property must never be enough. The first draft used 'or'
+        and a dead page went high on hostname shape alone."""
+        from services.safety.investigation import _DEFAULT_PROMPT as p
+
+        rule = p[p.index("A fake verification gate is the payload") :]
+        rule = rule[: rule.index("\n")]
+        assert "needs TWO things together" in rule
+        assert "you RENDERED the gate" in rule
+        assert "NOT a real challenge provider" in rule
+        assert "failed to render, or a dead 404, is not a gate" in rule
+        assert "at least two of" in rule
+        assert "never `scam_host` `high`" in rule
+        assert "Name the signals you counted" in rule
+
+    def test_example_10_claims_only_what_its_bundle_observed(self):
+        from services.safety.investigation import _DEFAULT_PROMPT as p
+
+        ex = p[p.index("**Example 10") :]
+        ex = ex[: ex.index("\n\n") if "\n\n" in ex else None]
+        assert "Verdict: `scam_host`, `high`" in ex
+        assert "first TLS certificate 2 days old (RDAP unavailable)" in ex
+        assert "root returns 'Cannot GET /'" in ex
+        assert "plus four of the second-part signals" in ex
+        # It must not overclaim coverage it did not check.
+        assert "on any path" not in ex

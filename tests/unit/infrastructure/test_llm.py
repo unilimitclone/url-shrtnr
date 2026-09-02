@@ -195,3 +195,32 @@ class TestCostTelemetryIsNotRedacted:
         assert out["output_tokens"] == 314
         assert out["cache_read_tokens"] == 0
         assert out["api_key"] == "***REDACTED***"  # real secrets still go
+
+
+class TestSamplingTemperature:
+    """A judgment task should land the same evidence on the same verdict.
+    Anthropic's default is 1.0; that is where one host came back high,
+    medium and redirector_service across three runs in a day."""
+
+    @staticmethod
+    def _agent(**overrides):
+        from pydantic import BaseModel
+
+        from config import LlmSettings
+        from infrastructure.llm.registry import LlmTask
+        from infrastructure.llm.runner import LlmTaskRunner
+
+        class Out(BaseModel):
+            x: int
+
+        settings = LlmSettings(_env_file=None, enabled=True, api_key="k", **overrides)
+        task = LlmTask(
+            name="t", prompt_version="v1", system_prompt="hi", output_type=Out, tools=()
+        )
+        return LlmTaskRunner(settings, model=None)._agent(task)
+
+    def test_defaults_to_zero(self):
+        assert self._agent().model_settings["temperature"] == 0.0
+
+    def test_env_setting_reaches_the_agent(self):
+        assert self._agent(temperature=0.3).model_settings["temperature"] == 0.3
