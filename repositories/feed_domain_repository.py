@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pymongo import UpdateOne
 
 from repositories.base import BaseRepository
+from shared.url_utils import registrable_domain
 
 _BULK_BATCH = 5_000
 
@@ -73,6 +74,28 @@ class FeedDomainRepository(BaseRepository[None]):
             )
             purged = int(result.deleted_count)
         return kept, purged, new_domains
+
+    async def add(self, feed: str, domain: str) -> bool:
+        """Add one domain to *feed*. True when it was new. Seeds only run on
+        an empty feed and syncs only replace feeds that have an upstream, so
+        an add here survives both."""
+        # A model-emitted string becomes a Mongo key: reduce it to the
+        # registrable domain or refuse, so contains() can actually match it.
+        domain = registrable_domain(domain.strip().lower())
+        if not domain or "/" in domain or " " in domain or "." not in domain:
+            return False
+        result = await self._col.update_one(
+            {"_id": self._key(feed, domain)},
+            {
+                "$set": {
+                    "feed": feed,
+                    "domain": domain,
+                    "synced_at": datetime.now(timezone.utc),
+                }
+            },
+            upsert=True,
+        )
+        return result.upserted_id is not None
 
     async def contains(self, feed: str, domain: str) -> bool:
         doc = await self._col.find_one(

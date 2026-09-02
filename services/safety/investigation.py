@@ -22,16 +22,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from infrastructure.llm import LlmTask, LlmTaskFailed, LlmTaskRunner, load_prompt
 from infrastructure.logging import get_logger
+from repositories.feed_domain_repository import FeedDomainRepository
 from repositories.url_repository import UrlRepository
 from repositories.verdict_repository import VerdictRepository
 from schemas.enums.safety import VerdictTier
 from services.safety.enforcer import SafetyEnforcer
-from services.safety.events import SafetyAnalyzeEvent
+from services.safety.events import SILENT_TRIGGERS, SafetyAnalyzeEvent
+from services.safety.feeds import REDIRECTOR_FEED
+from services.safety.providers import without_query
 from services.safety.tools import reset_hard_hit, saw_hard_hit
 from shared.validators import is_valid_pattern, matching_blocked_pattern
 
@@ -75,7 +79,9 @@ class Scope(str, Enum):
 
 
 class ListProposal(BaseModel):
-    list: str  # e.g. "shorteners" | "manual"
+    # Only these two exist; anything else fails parse and lands in the
+    # existing LlmTaskFailed path instead of becoming an inert Mongo row.
+    list: Literal["shorteners", "redirectors"]
     domain: str
     why: str
 
@@ -120,7 +126,7 @@ class AutoBlockPolicy(str, Enum):
 class AuthorityDecision:
     """What code will actually do with the model's claim."""
 
-    action: str  # "block_host" | "block_aliases" | "propose" | "benign" | "review"
+    action: str  # block_host | block_aliases | apply_list | propose | benign | review
     tier: VerdictTier
     auto: bool  # did this enforce on its own, or is it a review ask?
 
@@ -144,8 +150,17 @@ def decide_authority(
         return AuthorityDecision("benign", VerdictTier.BENIGN, auto=True)
 
     if cls == Classification.REDIRECTOR_SERVICE:
-        # Adding a whole service to a block list reaches every FUTURE link
-        # to it — always a human tap, regardless of confidence.
+        if not verdict.proposals:
+            # Naming a service is an observation; without a list proposal
+            # there is nothing for an operator to approve or refuse.
+            return AuthorityDecision("benign", VerdictTier.GRAY, auto=True)
+        resolve_only = all(p.list == REDIRECTOR_FEED for p in verdict.proposals)
+        if high and resolve_only and policy is not AutoBlockPolicy.OFF:
+            # The resolve-only list refuses nothing, so a wrong add costs one
+            # extra hop of resolution. OFF still means no autonomous action.
+            return AuthorityDecision("apply_list", VerdictTier.GRAY, auto=True)
+        # A refuse-list add reaches every FUTURE link to the service, so it
+        # is always a human tap, regardless of confidence.
         return AuthorityDecision("propose", VerdictTier.GRAY, auto=False)
 
     if cls == Classification.SPAM_GRAY:
@@ -252,7 +267,9 @@ class DeepInvestigator:
         *,
         policy: AutoBlockPolicy,
         model_name: str,
+        feed_repo: FeedDomainRepository | None = None,
     ) -> None:
+        self._feed_repo = feed_repo
         self._runner = runner
         self._task = task
         self._url_repo = url_repo
@@ -315,6 +332,7 @@ class DeepInvestigator:
             "scope": stored_scope,
             "path_pattern": stored_pattern,
             "scope_justification": verdict.scope_justification,
+            "proposals": [p.model_dump() for p in verdict.proposals],
         }
         await self._verdict_repo.upsert_verdict(
             event.host,
@@ -385,10 +403,25 @@ class DeepInvestigator:
                 scope_note = f"pattern proposed for the blocklist: {pattern}"
             else:
                 pairs = await self._aliases_to_block(event)
-                alias_result = await self._enforcer.block_aliases(
-                    pairs, host=event.host, reason=verdict.reason
-                )
-                blocked_count, legacy_count = alias_result.blocked_count, 0
+                if pairs:
+                    alias_result = await self._enforcer.block_aliases(
+                        pairs, host=event.host, reason=verdict.reason
+                    )
+                    blocked_count, legacy_count = alias_result.blocked_count, 0
+                else:
+                    # Only a report names its codes. A sweep, burst or hot
+                    # link judged one URL, so the URL is the thing to block.
+                    result = await self._enforcer.block_matching(
+                        event.host,
+                        matcher=lambda u, _u=event.url: (
+                            without_query(u) == without_query(_u)
+                        ),
+                        reason=verdict.reason,
+                    )
+                    blocked_count, legacy_count = (
+                        result.blocked_count,
+                        result.legacy_count,
+                    )
                 scope_note = "specific links only, host left serving"
             await self._notifier.safety_action(
                 host=event.host,
@@ -398,7 +431,40 @@ class DeepInvestigator:
                 legacy_count=legacy_count,
                 sample_url=event.url,
             )
+        elif decision.action == "apply_list":
+            if self._feed_repo is None:
+                log.warning(
+                    "safety_list_apply_unwired",
+                    host=event.host,
+                    proposed=[f"{p.list}:{p.domain}" for p in verdict.proposals],
+                )
+                return
+            added = [
+                f"{p.list}:{p.domain}"
+                for p in verdict.proposals
+                if await self._feed_repo.add(p.list, p.domain)
+            ]
+            log.info(
+                "safety_list_applied",
+                host=event.host,
+                trigger=event.trigger,
+                added=added,
+                proposed=len(verdict.proposals),
+            )
         elif decision.action in ("review", "propose"):
+            # A proposal carries something to approve, which is exactly what
+            # separates it from the dead-page review asks the silence is for.
+            if decision.action == "review" and event.trigger in SILENT_TRIGGERS:
+                # Coverage triggers file their verdict and stay quiet, the
+                # same rule the screening tier and _record_and_review use.
+                log.info(
+                    "safety_investigation_screened",
+                    host=event.host,
+                    trigger=event.trigger,
+                    classification=verdict.classification.value,
+                    confidence=verdict.confidence.value,
+                )
+                return
             await self._notifier.safety_review(
                 host=event.host,
                 trigger=event.trigger,

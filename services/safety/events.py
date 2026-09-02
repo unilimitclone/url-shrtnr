@@ -21,6 +21,9 @@ from infrastructure.logging import get_logger
 log = get_logger(__name__)
 
 SAFETY_STREAM = "events:safety"
+# Machine-volume coverage triggers: unresolved results are a record, not an
+# ask, because nobody is waiting on the answer.
+SILENT_TRIGGERS = frozenset({"sweep", "hot", "redirect"})
 SAFETY_DLQ_STREAM = "events:safety:dlq"
 
 STREAM_FIELD_VERSION = "v"
