@@ -95,10 +95,12 @@ def link_destination_urls(
     geo_rules: dict[str, str] | None = None,
     variants: Iterable[str] | None = None,
     pre_start_url: str | None = None,
+    expired_redirect_url: str | None = None,
 ) -> list[str]:
     """Every URL a link can send a visitor to: the main destination, geo
-    overrides, A/B variants, and the pre-start page a scheduled link shows
-    before it goes live. Distinct, first occurrence kept."""
+    overrides, A/B variants, the pre-start page a scheduled link shows before
+    it goes live, and the page an expired link falls back to. Distinct, first
+    occurrence kept."""
     seen: set[str] = set()
     out: list[str] = []
     for url in (
@@ -106,6 +108,7 @@ def link_destination_urls(
         *(geo_rules or {}).values(),
         *(variants or ()),
         pre_start_url,
+        expired_redirect_url,
     ):
         if isinstance(url, str) and url and url not in seen:
             seen.add(url)

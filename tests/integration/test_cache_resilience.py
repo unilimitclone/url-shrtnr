@@ -134,6 +134,7 @@ def _make_v2_doc_mock(
     doc.pre_start_url = None
     doc.max_clicks = None
     doc.geo_rules = None
+    doc.expired_redirect_url = None
     doc.status = status
     doc.owner_id = ObjectId("000000000000000000000001")
     doc.total_clicks = 0

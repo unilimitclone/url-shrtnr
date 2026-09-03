@@ -16,6 +16,7 @@ from fastapi.responses import RedirectResponse, Response
 from dependencies import ClickSink, GeoIP, UrlSvc
 from errors import (
     BlockedUrlError,
+    ExpiredRedirectError,
     ForbiddenError,
     GoneError,
     NotFoundError,
@@ -185,6 +186,17 @@ async def redirect_url(
     except BlockedUrlError:
         log.info("url_blocked", short_code=short_code)
         return _error_page(request, "451", "THIS URL HAS BEEN BLOCKED", 451)
+    except ExpiredRedirectError as exc:
+        # Not a click: the owner's limit was reached, so nothing is counted.
+        log.info(
+            "url_expired_fallback",
+            short_code=short_code,
+            fallback_domain=extract_hostname(exc.redirect_url),
+        )
+        resp = RedirectResponse(exc.redirect_url, status_code=302)
+        resp.headers["X-Robots-Tag"] = _NOINDEX_HEADER
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
     except GoneError:
         log.info("url_gone", short_code=short_code)
         return _error_page(request, "410", "SHORT URL EXPIRED", 410)

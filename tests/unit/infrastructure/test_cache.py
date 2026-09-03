@@ -137,6 +137,7 @@ class TestUrlCacheDataMetaFields:
         assert data.meta_color is None
         assert data.meta_image_width is None
         assert data.meta_image_height is None
+        assert data.expired_redirect_url is None
 
     def test_meta_fields_roundtrip_json(self):
         from infrastructure.cache.url_cache import UrlCacheData

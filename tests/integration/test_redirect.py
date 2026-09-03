@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from dependencies import get_click_sink, get_url_service
 from errors import (
     BlockedUrlError,
+    ExpiredRedirectError,
     ForbiddenError,
     GoneError,
     NotFoundError,
@@ -282,6 +283,32 @@ def test_redirect_expired_url():
 
     assert resp.status_code == 410
     assert "text/html" in resp.headers.get("content-type", "")
+
+
+def test_redirect_expired_with_fallback_302s_and_records_no_click():
+    """resolve raises ExpiredRedirectError -> 302 to the owner's fallback,
+    uncacheable, and the click sink never hears about it."""
+    mock_url_svc = AsyncMock()
+    mock_url_svc.resolve = AsyncMock(
+        side_effect=ExpiredRedirectError("https://fallback.example/ended")
+    )
+    mock_click_sink = AsyncMock()
+
+    app = build_test_app(
+        redirect_router,
+        overrides={
+            get_url_service: lambda: mock_url_svc,
+            get_click_sink: lambda: mock_click_sink,
+        },
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/abc123", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["Location"] == "https://fallback.example/ended"
+    assert resp.headers["Cache-Control"] == "no-store"
+    assert resp.headers["X-Robots-Tag"] == "noindex, nofollow, noarchive"
+    mock_click_sink.emit.assert_not_awaited()
 
 
 def test_redirect_inactive_url():

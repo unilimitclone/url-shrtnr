@@ -495,6 +495,15 @@ class TestUrlDestinationSecondaryHosts:
         assert dest is not None
         assert dest.secondary_hosts == ["v2.example"]
 
+    def test_expired_fallback_host_is_a_secondary_host(self):
+        dest = UrlDestination.for_link(
+            "https://main.example/",
+            geo_rules={"IN": "https://geo.example/"},
+            expired_redirect_url="https://fallback.example/ended",
+        )
+        assert dest is not None
+        assert dest.secondary_hosts == ["fallback.example", "geo.example"]
+
     def test_geo_hosts_survive_an_unparseable_main_destination(self):
         dest = UrlDestination.for_link(
             "nonsense", geo_rules={"IN": "https://geo.example/"}

@@ -44,6 +44,8 @@ class UrlCacheData(BaseModel):
     # non-geo links; entries cached before this field existed deserialize
     # to None (default), so no cache version bump is needed.
     geo_rules: dict[str, str] | None = None
+    # v2 only; served with 302 once the link is EXPIRED.
+    expired_redirect_url: str | None = None
     # Custom meta-tags (v2 only; None = feature disabled on this link).
     # meta_title is the enabled-signal: LinkMetaTags.title is mandatory.
     meta_title: str | None = None
@@ -82,6 +84,7 @@ class UrlCacheData(BaseModel):
             owner_id=str(doc.owner_id) if doc.owner_id else None,
             domain=doc.domain,
             geo_rules=doc.geo_rules,
+            expired_redirect_url=doc.expired_redirect_url,
             meta_title=doc.meta_tags.title if doc.meta_tags else None,
             meta_description=doc.meta_tags.description if doc.meta_tags else None,
             meta_image=doc.meta_tags.image if doc.meta_tags else None,

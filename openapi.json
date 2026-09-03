@@ -1872,7 +1872,7 @@
           "URL Shortening"
         ],
         "summary": "Create Shortened URL",
-        "description": "Create a new shortened URL.\n\nCreate a shortened URL with optional customization including password\nprotection, expiration, click limits, and bot blocking. Authenticated\nusers may target an owned, ACTIVE custom domain via the ``domain`` field.\n\n**Emoji aliases**: ``alias`` also accepts an emoji-only short code\n(e.g. ``\ud83d\ude80\ud83d\udd25``) \u2014 1-15 fully-qualified emoji; ZWJ sequences, flags,\nkeycaps, and text-style symbols are rejected (they render or copy\ninconsistently across platforms). Set ``alias_type: \"emoji\"`` to\nauto-generate an emoji code instead of an alphanumeric one. Stored\nand returned in canonical form (variation selectors stripped).\n\n**Authentication**: Optional \u2014 higher rate limits when authenticated.\nRequired if ``domain`` is supplied.\n\n**API Key Scope**: `shorten:create` or `admin:all`\n\n**Rate Limits**:\n\n- Authenticated: 60/min, 5,000/day\n- Anonymous: 20/min, 1,000/day\n\n**Anonymous Usage Consequences**:\n\n- Lower rate limits\n- Cannot manage or view URLs later\n- Cannot use private stats\n- URLs not linked to any account\n- Cannot use custom domains\n- Cannot use geo targeting\n- Cannot use custom meta tags",
+        "description": "Create a new shortened URL.\n\nCreate a shortened URL with optional customization including password\nprotection, expiration, click limits, and bot blocking. Authenticated\nusers may target an owned, ACTIVE custom domain via the ``domain`` field.\n\n**Emoji aliases**: ``alias`` also accepts an emoji-only short code\n(e.g. ``\ud83d\ude80\ud83d\udd25``) \u2014 1-15 fully-qualified emoji; ZWJ sequences, flags,\nkeycaps, and text-style symbols are rejected (they render or copy\ninconsistently across platforms). Set ``alias_type: \"emoji\"`` to\nauto-generate an emoji code instead of an alphanumeric one. Stored\nand returned in canonical form (variation selectors stripped).\n\n**Authentication**: Optional \u2014 higher rate limits when authenticated.\nRequired if ``domain`` is supplied.\n\n**API Key Scope**: `shorten:create` or `admin:all`\n\n**Rate Limits**:\n\n- Authenticated: 60/min, 5,000/day\n- Anonymous: 20/min, 1,000/day\n\n**Anonymous Usage Consequences**:\n\n- Lower rate limits\n- Cannot manage or view URLs later\n- Cannot use private stats\n- URLs not linked to any account\n- Cannot use custom domains\n- Cannot use geo targeting\n- Cannot set an expired-link fallback\n- Cannot use custom meta tags",
         "operationId": "shortenUrl",
         "requestBody": {
           "content": {
@@ -2621,7 +2621,7 @@
           "Link Management"
         ],
         "summary": "Update URL",
-        "description": "Update an existing URL's properties.\n\nPartially update a shortened URL. Only provided fields are modified; omitted\nfields remain unchanged. Pass `null` to remove optional settings like\n`password`, `max_clicks`, or `expire_after`.\n\n**Authentication**: Required \u2014 you must own the URL.\n\n**API Key Scope**: `urls:manage` or `admin:all`\n\n**Rate Limits**: 120/min, 2,000/day\n\n**Updatable Fields**: `long_url`, `alias`, `password`, `block_bots`,\n`max_clicks`, `expire_after`, `private_stats`, `status`, `domain`,\n`geo_rules`, `meta_tags`\n\n**Notes**:\n\n- Setting `max_clicks` to `0` or `null` removes the click limit\n- Changing the `alias` checks availability and may fail with 409 Conflict\n- Setting `domain` moves the URL to a different tenant; caller must own\n  the target as an ACTIVE custom domain, or pass `null` to move back to\n  the system default. Alias collision is verified on the target.\n- `geo_rules` replaces the whole map; pass `null` or `{}` to remove all\n  rules\n- The `url_id` is the MongoDB ObjectId, not the alias",
+        "description": "Update an existing URL's properties.\n\nPartially update a shortened URL. Only provided fields are modified; omitted\nfields remain unchanged. Pass `null` to remove optional settings like\n`password`, `max_clicks`, or `expire_after`.\n\n**Authentication**: Required \u2014 you must own the URL.\n\n**API Key Scope**: `urls:manage` or `admin:all`\n\n**Rate Limits**: 120/min, 2,000/day\n\n**Updatable Fields**: `long_url`, `alias`, `password`, `block_bots`,\n`max_clicks`, `expire_after`, `private_stats`, `status`, `domain`,\n`geo_rules`, `expired_redirect_url`, `meta_tags`\n\n**Notes**:\n\n- Setting `max_clicks` to `0` or `null` removes the click limit\n- Changing the `alias` checks availability and may fail with 409 Conflict\n- Setting `domain` moves the URL to a different tenant; caller must own\n  the target as an ACTIVE custom domain, or pass `null` to move back to\n  the system default. Alias collision is verified on the target.\n- `geo_rules` replaces the whole map; pass `null` or `{}` to remove all\n  rules\n- `expired_redirect_url` is where visitors land once the link has expired;\n  pass `null` to go back to the expired page\n- The `url_id` is the MongoDB ObjectId, not the alias",
         "operationId": "updateUrl",
         "parameters": [
           {
@@ -11342,6 +11342,22 @@
               }
             ]
           },
+          "expired_redirect_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 8192
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expired Redirect Url",
+            "description": "Where visitors land once the link has expired, by time or by click limit, instead of the expired page. Validated like a destination. Requires authentication.",
+            "examples": [
+              "https://example.com/offer-ended"
+            ]
+          },
           "tag_ids": {
             "anyOf": [
               {
@@ -14780,6 +14796,22 @@
               }
             ]
           },
+          "expired_redirect_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 8192
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expired Redirect Url",
+            "description": "Where visitors land once the link has expired, by time or by click limit, instead of the expired page. Validated like a destination. Pass `null` or empty to remove; omit to keep.",
+            "examples": [
+              "https://example.com/offer-ended"
+            ]
+          },
           "tag_ids": {
             "anyOf": [
               {
@@ -14992,6 +15024,21 @@
               {
                 "IN": "https://example.in/"
               }
+            ]
+          },
+          "expired_redirect_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expired Redirect Url",
+            "description": "Destination served once the link has expired, or null.",
+            "examples": [
+              "https://example.com/offer-ended"
             ]
           },
           "tags": {
@@ -15319,6 +15366,17 @@
             ],
             "title": "Geo Rules"
           },
+          "expired_redirect_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expired Redirect Url"
+          },
           "tags": {
             "items": {
               "$ref": "#/components/schemas/TagRef"
@@ -15487,6 +15545,21 @@
               {
                 "IN": "https://example.in/"
               }
+            ]
+          },
+          "expired_redirect_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expired Redirect Url",
+            "description": "Destination served once the link has expired, or null.",
+            "examples": [
+              "https://example.com/offer-ended"
             ]
           },
           "tags": {

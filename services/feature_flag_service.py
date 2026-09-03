@@ -57,6 +57,7 @@ GEO_TARGETING_FLAG = "geo_targeting"
 META_TAGS_FLAG = "custom_meta_tags"
 AB_TESTING_FLAG = "ab_testing"
 WEBHOOKS_FLAG = "webhooks"
+EXPIRED_FALLBACK_FLAG = "expired_fallback"
 LINK_SCHEDULING_FLAG = "link_scheduling"
 
 # Flags whose per-user answer is exposed to clients via GET /api/v1/me/
@@ -69,6 +70,7 @@ EXPOSED_FEATURES: tuple[str, ...] = (
     META_TAGS_FLAG,
     AB_TESTING_FLAG,
     WEBHOOKS_FLAG,
+    EXPIRED_FALLBACK_FLAG,
     LINK_SCHEDULING_FLAG,
 )
 

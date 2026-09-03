@@ -31,6 +31,7 @@ from middleware.rate_limiter import Limits, dynamic_limit, limiter
 from schemas.dto.requests.url import AliasCheckQuery, CreateUrlRequest
 from schemas.dto.responses.url import AliasCheckResponse, UrlResponse
 from services.feature_flag_service import (
+    EXPIRED_FALLBACK_FLAG,
     GEO_TARGETING_FLAG,
     LINK_SCHEDULING_FLAG,
     META_TAGS_FLAG,
@@ -94,6 +95,7 @@ async def shorten_v1(
     - URLs not linked to any account
     - Cannot use custom domains
     - Cannot use geo targeting
+    - Cannot set an expired-link fallback
     - Cannot use custom meta tags
     """
     owner_id = user.user_id if user is not None else None
@@ -103,6 +105,13 @@ async def shorten_v1(
         if user is None:
             raise AuthenticationError("Authentication required to set geo_rules")
         await flag_svc.require(GEO_TARGETING_FLAG, user)
+
+    if body.expired_redirect_url:
+        if user is None:
+            raise AuthenticationError(
+                "Authentication required to set expired_redirect_url"
+            )
+        await flag_svc.require(EXPIRED_FALLBACK_FLAG, user)
 
     # optional_scopes_verified already rejects unverified authenticated users,
     # so the flag is the only remaining gate here.

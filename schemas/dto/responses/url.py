@@ -111,6 +111,11 @@ class UrlResponse(ResponseBase):
         description="Per-country destination overrides (ISO alpha-2 code → URL), or null.",
         examples=[{"IN": "https://example.in/"}],
     )
+    expired_redirect_url: str | None = Field(
+        default=None,
+        description="Destination served once the link has expired, or null.",
+        examples=["https://example.com/offer-ended"],
+    )
     tags: list[TagRef] = Field(
         default_factory=list,
         description="The link's tags (id, name, colour), in the link's order.",
@@ -157,6 +162,7 @@ class UrlResponse(ResponseBase):
             status=doc.effective_status,
             private_stats=doc.private_stats,
             geo_rules=doc.geo_rules,
+            expired_redirect_url=doc.expired_redirect_url,
             tags=_tag_refs(doc, tag_refs),
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
             claim_token=claim_token,
@@ -221,6 +227,11 @@ class UpdateUrlResponse(ResponseBase):
         description="Per-country destination overrides (ISO alpha-2 code → URL), or null.",
         examples=[{"IN": "https://example.in/"}],
     )
+    expired_redirect_url: str | None = Field(
+        default=None,
+        description="Destination served once the link has expired, or null.",
+        examples=["https://example.com/offer-ended"],
+    )
     tags: list[TagRef] = Field(
         default_factory=list,
         description="The link's tags (id, name, colour), in the link's order.",
@@ -251,6 +262,7 @@ class UpdateUrlResponse(ResponseBase):
             private_stats=doc.private_stats,
             domain=doc.domain,
             geo_rules=doc.geo_rules,
+            expired_redirect_url=doc.expired_redirect_url,
             tags=_tag_refs(doc, tag_refs),
             updated_at=to_unix_timestamp(doc.updated_at, default=0),
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
@@ -283,6 +295,7 @@ class UrlListItem(ResponseBase):
     last_click: datetime | None = None
     domain: str | None = None
     geo_rules: dict[str, str] | None = None
+    expired_redirect_url: str | None = None
     tags: list[TagRef] = Field(default_factory=list)
     meta_tags: MetaTagsResponse | None = None
 
@@ -316,6 +329,7 @@ class UrlListItem(ResponseBase):
             last_click=_ensure_utc(doc.last_click),
             domain=doc.domain,
             geo_rules=doc.geo_rules,
+            expired_redirect_url=doc.expired_redirect_url,
             tags=_tag_refs(doc, tag_refs),
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )

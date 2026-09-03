@@ -83,6 +83,22 @@ class TestCreateUrlRequest:
         assert req.max_clicks == 100
 
 
+class TestCreateUrlRequestExpiredRedirectUrl:
+    def test_defaults_none(self):
+        assert CreateUrlRequest(long_url="https://x.com").expired_redirect_url is None
+
+    def test_accepts_url(self):
+        req = CreateUrlRequest(
+            long_url="https://x.com", expired_redirect_url="https://y.com/ended"
+        )
+        assert req.expired_redirect_url == "https://y.com/ended"
+
+    def test_update_null_lands_in_fields_set(self):
+        req = UpdateUrlRequest.model_validate({"expired_redirect_url": None})
+        assert "expired_redirect_url" in req.model_fields_set
+        assert req.expired_redirect_url is None
+
+
 class TestCreateUrlRequestAliasShape:
     """DTO-level alias gate: structural failures are 422; the emoji
     *policy* (qualification/version/grapheme caps) is service-enforced."""
