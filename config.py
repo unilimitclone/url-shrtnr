@@ -758,6 +758,10 @@ class AppSettings(BaseSettings):
     # tests/unit/test_geo_launch_guard.py.
     geo_rules_enabled: bool = False
     geo_rules_max_countries: int = 50
+    # Dark like geo_rules until safety stamps secondary hosts; see the
+    # tripwire in tests/unit/test_ab_variants_launch_guard.py.
+    ab_variants_enabled: bool = False
+    ab_variants_max: int = 10
     url_password_min_length: int = 8
     account_password_min_length: int = 8
     account_password_max_length: int = 128
@@ -770,6 +774,7 @@ class AppSettings(BaseSettings):
         "max_emoji_alias_length",
         "emoji_generated_alias_length",
         "geo_rules_max_countries",
+        "ab_variants_max",
         "account_erasure_batch_limit",
         "account_erasure_time_budget_seconds",
         "account_erasure_claim_lease_seconds",

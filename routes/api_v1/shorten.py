@@ -31,6 +31,7 @@ from middleware.rate_limiter import Limits, dynamic_limit, limiter
 from schemas.dto.requests.url import AliasCheckQuery, CreateUrlRequest
 from schemas.dto.responses.url import AliasCheckResponse, UrlResponse
 from services.feature_flag_service import (
+    AB_TESTING_FLAG,
     EXPIRED_FALLBACK_FLAG,
     GEO_TARGETING_FLAG,
     LINK_SCHEDULING_FLAG,
@@ -95,6 +96,7 @@ async def shorten_v1(
     - URLs not linked to any account
     - Cannot use custom domains
     - Cannot use geo targeting
+    - Cannot use A/B variants
     - Cannot set an expired-link fallback
     - Cannot use custom meta tags
     """
@@ -105,6 +107,11 @@ async def shorten_v1(
         if user is None:
             raise AuthenticationError("Authentication required to set geo_rules")
         await flag_svc.require(GEO_TARGETING_FLAG, user)
+
+    if body.ab_variants:
+        if user is None:
+            raise AuthenticationError("Authentication required to set ab_variants")
+        await flag_svc.require(AB_TESTING_FLAG, user)
 
     if body.expired_redirect_url:
         if user is None:

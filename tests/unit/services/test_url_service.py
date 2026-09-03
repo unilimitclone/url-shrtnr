@@ -62,6 +62,7 @@ def make_url_v2_doc(
     starts_at: datetime | None = None,
     pre_start_url: str | None = None,
     tag_ids: list | None = None,
+    ab_variants: list | None = None,
     expired_redirect_url: str | None = None,
 ) -> UrlV2Doc:
     return UrlV2Doc.from_mongo(
@@ -80,6 +81,7 @@ def make_url_v2_doc(
             "starts_at": starts_at,
             "pre_start_url": pre_start_url,
             "geo_rules": geo_rules,
+            "ab_variants": ab_variants,
             "expired_redirect_url": expired_redirect_url,
             "status": status,
             "private_stats": True,
@@ -183,6 +185,7 @@ def make_service(
     og_writethrough=None,
     edge_kv=None,
     geo_rules_enabled=True,
+    ab_variants_enabled=True,
 ):
     from services.url_service import UrlService
 
@@ -198,6 +201,7 @@ def make_service(
         og_writethrough=og_writethrough,
         edge_kv=edge_kv,
         geo_rules_enabled=geo_rules_enabled,
+        ab_variants_enabled=ab_variants_enabled,
     )
 
 
@@ -2791,6 +2795,255 @@ class TestUrlServiceGeoRules:
         url_repo.find_by_alias.assert_not_called()
 
 
+# TestUrlServiceAbVariants
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestAbVariantsFeatureGate:
+    @pytest.mark.asyncio
+    async def test_ab_variants_refused_while_the_feature_is_dark(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo,
+            legacy_repo,
+            emoji_repo,
+            blocked_url_repo,
+            url_cache,
+            ab_variants_enabled=False,
+        )
+        blocked_url_repo.get_patterns.return_value = []
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            ab_variants=[{"url": "https://example.com/b", "weight": 40}],
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "ab_variants"
+        url_repo.insert.assert_not_awaited()
+
+
+class TestUrlServiceAbVariants:
+    """A/B variants: create/update validation, persistence, cache projection."""
+
+    VARIANTS: typing.ClassVar[list[dict]] = [
+        {"url": "https://example.com/b", "weight": 60},
+        {"url": "https://example.com/c", "weight": 40},
+    ]
+
+    @pytest.mark.asyncio
+    async def test_create_persists_ab_variants(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com", ab_variants=self.VARIANTS
+        )
+        result, _token = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        assert [v.model_dump() for v in result.ab_variants] == self.VARIANTS
+        inserted = url_repo.insert.call_args[0][0]
+        assert inserted["ab_variants"] == self.VARIANTS
+
+    @pytest.mark.asyncio
+    async def test_create_without_variants_stores_none(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        await svc.create(
+            CreateUrlRequest(long_url="https://example.com", ab_variants=[]),
+            owner_id=USER_OID,
+            client_ip="1.2.3.4",
+        )
+        assert url_repo.insert.call_args[0][0]["ab_variants"] is None
+
+    def test_too_many_entries_rejected(self):
+        from schemas.dto.requests.url import AbVariantRequest
+        from services.url_service import _validate_ab_variants_shape
+
+        variants = [
+            AbVariantRequest(url="https://example.com/x", weight=1) for _ in range(11)
+        ]
+        with pytest.raises(ValidationError) as exc:
+            _validate_ab_variants_shape(variants, max_variants=10)
+        assert exc.value.field == "ab_variants"
+
+    @pytest.mark.asyncio
+    async def test_create_blocked_variant_destination_rejected(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = [r"https://evil\.com"]
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            ab_variants=[
+                {"url": "https://example.com/b", "weight": 30},
+                {"url": "https://evil.com/page", "weight": 30},
+            ],
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "ab_variants.1.url"
+        assert "blocked" in str(exc.value).lower()
+        url_repo.insert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_self_link_variant_rejected(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            ab_variants=[{"url": "https://spoo.me/other", "weight": 50}],
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "ab_variants.0.url"
+
+    @pytest.mark.asyncio
+    async def test_update_sets_ab_variants(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = make_url_v2_doc(ab_variants=self.VARIANTS)
+        blocked_url_repo.get_patterns.return_value = []
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        await svc.update(URL_OID, UpdateUrlRequest(ab_variants=self.VARIANTS), USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["ab_variants"] == self.VARIANTS
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("clear_value", [None, []])
+    async def test_update_null_or_empty_clears_ab_variants(self, clear_value):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc(ab_variants=self.VARIANTS)
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = make_url_v2_doc()
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest.model_validate({"ab_variants": clear_value})
+        await svc.update(URL_OID, req, USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["ab_variants"] is None
+
+    @pytest.mark.asyncio
+    async def test_update_omitted_ab_variants_untouched(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc(ab_variants=self.VARIANTS)
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = existing
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        await svc.update(URL_OID, UpdateUrlRequest(block_bots=True), USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert "ab_variants" not in update_doc["$set"]
+
+    @pytest.mark.asyncio
+    async def test_update_identical_variants_is_noop_and_skips_validation(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        url_repo.find_by_id.return_value = make_url_v2_doc(ab_variants=self.VARIANTS)
+        blocked_url_repo.get_patterns.return_value = [r"https://example\."]
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        await svc.update(URL_OID, UpdateUrlRequest(ab_variants=self.VARIANTS), USER_OID)
+
+        url_repo.update.assert_not_called()
+        blocked_url_repo.get_patterns.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_blocked_variant_destination_rejected(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+        blocked_url_repo.get_patterns.return_value = [r"https://evil\.com"]
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(
+            ab_variants=[{"url": "https://evil.com/x", "weight": 10}]
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.update(URL_OID, req, USER_OID)
+        assert exc.value.field == "ab_variants.0.url"
+
+    @pytest.mark.asyncio
+    async def test_update_refused_while_the_feature_is_dark(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo,
+            legacy_repo,
+            emoji_repo,
+            blocked_url_repo,
+            url_cache,
+            ab_variants_enabled=False,
+        )
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        with pytest.raises(ValidationError) as exc:
+            await svc.update(
+                URL_OID, UpdateUrlRequest(ab_variants=self.VARIANTS), USER_OID
+            )
+        assert exc.value.field == "ab_variants"
+
+    def test_v2_doc_to_cache_carries_ab_variants(self):
+        from infrastructure.cache.url_cache import UrlCacheData
+
+        cache_data = UrlCacheData.from_v2_doc(
+            make_url_v2_doc(ab_variants=self.VARIANTS)
+        )
+        assert [v.model_dump() for v in cache_data.ab_variants] == self.VARIANTS
+        assert UrlCacheData.from_v2_doc(make_url_v2_doc()).ab_variants is None
+
+
 # _v2_doc_to_cache — meta_tags mapping
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -4331,6 +4584,72 @@ class TestSecondaryDestinationStamping:
         from shared.url_utils import parse_destination
 
         assert written["dest"]["host"] == parse_destination(existing.long_url)["host"]
+
+    @pytest.mark.asyncio
+    async def test_create_with_ab_variants_stamps_secondary_hosts(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://clean.example/",
+            geo_rules={"IN": "https://geo.example/in"},
+            ab_variants=[
+                {"url": "https://hidden.example/b", "weight": 30},
+                {"url": "https://clean.example/c", "weight": 30},
+            ],
+        )
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        inserted = url_repo.insert.call_args.args[0]
+        assert inserted["dest"]["secondary_hosts"] == ["geo.example", "hidden.example"]
+
+    @pytest.mark.asyncio
+    async def test_update_ab_variants_restamps_secondary_hosts(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = existing
+        blocked_url_repo.get_patterns.return_value = []
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(
+            ab_variants=[{"url": "https://hidden.example/b", "weight": 40}]
+        )
+        await svc.update(URL_OID, req, USER_OID)
+
+        written = url_repo.update.call_args[0][1]["$set"]
+        assert written["dest"]["secondary_hosts"] == ["hidden.example"]
+
+    @pytest.mark.asyncio
+    async def test_clearing_ab_variants_drops_secondary_hosts(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc(
+            ab_variants=[{"url": "https://hidden.example/b", "weight": 40}]
+        )
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = make_url_v2_doc()
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        await svc.update(URL_OID, UpdateUrlRequest(ab_variants=None), USER_OID)
+
+        written = url_repo.update.call_args[0][1]["$set"]
+        assert written["ab_variants"] is None
+        assert "secondary_hosts" not in written["dest"]
 
     @pytest.mark.asyncio
     async def test_clearing_geo_rules_drops_secondary_hosts(self):

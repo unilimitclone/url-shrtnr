@@ -202,6 +202,14 @@ class UrlDestination(BaseModel):
         return data
 
 
+class AbVariant(BaseModel):
+    """One A/B split destination. ``weight`` is the percentage of visitors
+    sent here; long_url receives whatever the variants leave over."""
+
+    url: str
+    weight: int = Field(ge=1, le=100)
+
+
 class UrlV2Doc(MongoBaseModel):
     """Document model for the `urlsV2` collection.
 
@@ -262,6 +270,9 @@ class UrlV2Doc(MongoBaseModel):
     # Ids into the owner's ``tags`` collection. Docs written before the
     # field existed read as [].
     tag_ids: list[PyObjectId] = Field(default_factory=list)
+    # Weighted split destinations; weights sum to at most 100 and long_url
+    # takes the remainder. Applied only when no geo rule matched.
+    ab_variants: list[AbVariant] | None = None
     # Where visitors go once the link is EXPIRED; INACTIVE and BLOCKED never use it.
     expired_redirect_url: str | None = None
     status: UrlStatus = UrlStatus.ACTIVE

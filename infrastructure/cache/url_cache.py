@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from infrastructure.crypto import verify_password as verify_password_hash
 from infrastructure.logging import get_logger
+from schemas.models.url import AbVariant
 from shared.datetime_utils import to_unix_timestamp, to_unix_timestamp_ceil
 
 if TYPE_CHECKING:
@@ -46,6 +47,8 @@ class UrlCacheData(BaseModel):
     geo_rules: dict[str, str] | None = None
     # v2 only; served with 302 once the link is EXPIRED.
     expired_redirect_url: str | None = None
+    # Same decoding story as geo_rules: absent on older entries → None.
+    ab_variants: list[AbVariant] | None = None
     # Custom meta-tags (v2 only; None = feature disabled on this link).
     # meta_title is the enabled-signal: LinkMetaTags.title is mandatory.
     meta_title: str | None = None
@@ -85,6 +88,7 @@ class UrlCacheData(BaseModel):
             domain=doc.domain,
             geo_rules=doc.geo_rules,
             expired_redirect_url=doc.expired_redirect_url,
+            ab_variants=doc.ab_variants,
             meta_title=doc.meta_tags.title if doc.meta_tags else None,
             meta_description=doc.meta_tags.description if doc.meta_tags else None,
             meta_image=doc.meta_tags.image if doc.meta_tags else None,

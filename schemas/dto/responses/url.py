@@ -23,7 +23,7 @@ from schemas.dto.base import ResponseBase
 from schemas.dto.responses.tag import TagRef
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.tag import TagDoc
-from schemas.models.url import LinkMetaTags, UrlStatus, UrlV2Doc
+from schemas.models.url import AbVariant, LinkMetaTags, UrlStatus, UrlV2Doc
 from shared.datetime_utils import to_unix_timestamp
 
 
@@ -59,6 +59,27 @@ class MetaTagsResponse(ResponseBase):
             color=meta.color,
             warnings=meta.image_warnings() or None,
         )
+
+
+class AbVariantResponse(ResponseBase):
+    """One A/B split destination."""
+
+    url: str = Field(description="Variant destination URL.")
+    weight: int = Field(description="Percentage of visitors sent here.")
+
+    @classmethod
+    def from_model(
+        cls, variants: list[AbVariant] | None
+    ) -> list[AbVariantResponse] | None:
+        if not variants:
+            return None
+        return [cls(url=v.url, weight=v.weight) for v in variants]
+
+
+_AB_VARIANTS_RESP_DESC = (
+    "Weighted split destinations ({url, weight} entries; the default "
+    "destination takes the remaining share), or null."
+)
 
 
 class UrlResponse(ResponseBase):
@@ -120,6 +141,11 @@ class UrlResponse(ResponseBase):
         default_factory=list,
         description="The link's tags (id, name, colour), in the link's order.",
     )
+    ab_variants: list[AbVariantResponse] | None = Field(
+        default=None,
+        description=_AB_VARIANTS_RESP_DESC,
+        examples=[[{"url": "https://example.com/b", "weight": 40}]],
+    )
     meta_tags: MetaTagsResponse | None = Field(
         default=None, description="Custom social preview, if configured."
     )
@@ -164,6 +190,7 @@ class UrlResponse(ResponseBase):
             geo_rules=doc.geo_rules,
             expired_redirect_url=doc.expired_redirect_url,
             tags=_tag_refs(doc, tag_refs),
+            ab_variants=AbVariantResponse.from_model(doc.ab_variants),
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
             claim_token=claim_token,
         )
@@ -236,6 +263,11 @@ class UpdateUrlResponse(ResponseBase):
         default_factory=list,
         description="The link's tags (id, name, colour), in the link's order.",
     )
+    ab_variants: list[AbVariantResponse] | None = Field(
+        default=None,
+        description=_AB_VARIANTS_RESP_DESC,
+        examples=[[{"url": "https://example.com/b", "weight": 40}]],
+    )
     updated_at: int = Field(
         description="Last update time as Unix timestamp.", examples=[1704067200]
     )
@@ -264,6 +296,7 @@ class UpdateUrlResponse(ResponseBase):
             geo_rules=doc.geo_rules,
             expired_redirect_url=doc.expired_redirect_url,
             tags=_tag_refs(doc, tag_refs),
+            ab_variants=AbVariantResponse.from_model(doc.ab_variants),
             updated_at=to_unix_timestamp(doc.updated_at, default=0),
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
@@ -297,6 +330,7 @@ class UrlListItem(ResponseBase):
     geo_rules: dict[str, str] | None = None
     expired_redirect_url: str | None = None
     tags: list[TagRef] = Field(default_factory=list)
+    ab_variants: list[AbVariantResponse] | None = None
     meta_tags: MetaTagsResponse | None = None
 
     @classmethod
@@ -331,6 +365,7 @@ class UrlListItem(ResponseBase):
             geo_rules=doc.geo_rules,
             expired_redirect_url=doc.expired_redirect_url,
             tags=_tag_refs(doc, tag_refs),
+            ab_variants=AbVariantResponse.from_model(doc.ab_variants),
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
 

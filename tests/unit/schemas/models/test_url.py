@@ -229,6 +229,37 @@ class TestUrlV2DocGeoRules:
         assert doc.to_mongo()["geo_rules"] == rules
 
 
+class TestUrlV2DocAbVariants:
+    def _make(self, **overrides):
+        base = {
+            "_id": oid(),
+            "alias": "abc1234",
+            "owner_id": oid(),
+            "domain": "spoo.me",
+            "created_at": now(),
+            "long_url": "https://example.com",
+        }
+        base.update(overrides)
+        return UrlV2Doc.model_validate(base)
+
+    def test_absent_ab_variants_defaults_to_none(self):
+        assert self._make().ab_variants is None
+
+    def test_ab_variants_round_trip(self):
+        variants = [{"url": "https://example.com/b", "weight": 40}]
+        doc = self._make(ab_variants=variants)
+        assert doc.ab_variants is not None
+        assert doc.ab_variants[0].url == "https://example.com/b"
+        assert doc.ab_variants[0].weight == 40
+        assert doc.to_mongo()["ab_variants"] == variants
+
+    def test_weight_bounds_enforced_on_the_model(self):
+        with pytest.raises(PydanticValidationError):
+            self._make(ab_variants=[{"url": "https://example.com/b", "weight": 0}])
+        with pytest.raises(PydanticValidationError):
+            self._make(ab_variants=[{"url": "https://example.com/b", "weight": 101}])
+
+
 # ── LinkMetaTags ──────────────────────────────────────────────────────────────
 
 

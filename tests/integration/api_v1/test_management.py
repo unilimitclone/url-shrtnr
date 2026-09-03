@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import typing
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
+import pytest
 from bson import ObjectId
 from fastapi.testclient import TestClient
 
@@ -14,6 +16,7 @@ from dependencies import (
     require_auth,
 )
 from errors import ForbiddenError, NotFoundError
+from schemas.models.url import AbVariant
 
 from .conftest import _build_test_app, _make_api_key_doc, _make_url_doc, _make_user
 
@@ -250,6 +253,85 @@ class TestUpdateUrlWithDomain:
         # Crucially: the service must not have been called. The route guard
         # must reject *before* the move attempt.
         url_svc.update.assert_not_called()
+
+
+class TestUpdateUrlAbVariants:
+    """Setting ab_variants is flag-gated (403 when off); clearing never is."""
+
+    VARIANTS: typing.ClassVar[list[dict]] = [
+        {"url": "https://example.com/b", "weight": 40}
+    ]
+
+    @staticmethod
+    def _flag_svc(enabled: bool) -> AsyncMock:
+        svc = AsyncMock()
+        svc.is_enabled = AsyncMock(return_value=enabled)
+        svc.require = AsyncMock(
+            side_effect=None
+            if enabled
+            else ForbiddenError("A/B testing is not enabled for this account")
+        )
+        return svc
+
+    def _app(self, user, mock_svc, flag_svc):
+        from dependencies import get_feature_flag_service
+
+        return _build_test_app(
+            {
+                require_auth: lambda: user,
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: flag_svc,
+            }
+        )
+
+    def test_set_ab_variants_flag_on_returns_200(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        url_doc.ab_variants = [AbVariant(url="https://example.com/b", weight=40)]
+        mock_svc = AsyncMock()
+        mock_svc.update = AsyncMock(return_value=url_doc)
+
+        application = self._app(user, mock_svc, self._flag_svc(True))
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}", json={"ab_variants": self.VARIANTS}
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["ab_variants"] == self.VARIANTS
+
+    def test_set_ab_variants_flag_off_returns_403(self):
+        user = _make_user()
+        mock_svc = AsyncMock()
+
+        application = self._app(user, mock_svc, self._flag_svc(False))
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}", json={"ab_variants": self.VARIANTS}
+            )
+
+        assert resp.status_code == 403
+        mock_svc.update.assert_not_called()
+
+    @pytest.mark.parametrize("clear_value", [None, []])
+    def test_clear_ab_variants_bypasses_flag(self, clear_value):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        mock_svc = AsyncMock()
+        mock_svc.update = AsyncMock(return_value=url_doc)
+        flag_svc = self._flag_svc(False)
+
+        application = self._app(user, mock_svc, flag_svc)
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}", json={"ab_variants": clear_value}
+            )
+
+        assert resp.status_code == 200
+        flag_svc.require.assert_not_awaited()
+        mock_svc.update.assert_called_once()
 
 
 class TestUpdateUrlGeoRules:

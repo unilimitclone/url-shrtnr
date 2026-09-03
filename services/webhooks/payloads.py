@@ -50,7 +50,7 @@ def link_snapshot(doc: UrlV2Doc) -> dict[str, Any]:
     """The public snapshot carried by every link.* lifecycle event.
 
     A projection of the link DOCUMENT, never of entitlements: feature
-    fields (geo_rules, meta_tags) are null when unset, which needs no
+    fields (geo_rules, ab_variants, meta_tags) are null when unset, which needs no
     flag lookup — flags gate writes, the doc already carries the truth.
     """
     return {
@@ -68,6 +68,9 @@ def link_snapshot(doc: UrlV2Doc) -> dict[str, Any]:
         "pre_start_url": doc.pre_start_url,
         "geo_rules": doc.geo_rules or None,
         "tag_ids": [str(i) for i in doc.tag_ids],
+        "ab_variants": (
+            [v.model_dump() for v in doc.ab_variants] if doc.ab_variants else None
+        ),
         "meta_tags": _public_meta_tags(doc.meta_tags),
         "total_clicks": doc.total_clicks,
         "created_at": doc.created_at.isoformat(),

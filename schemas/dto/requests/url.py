@@ -37,6 +37,9 @@ _GEO_URL_MAX_LENGTH = 8192  # same bound as long_url
 # request body — the ceiling bounds the loop for anonymous callers.
 _GEO_RULES_HARD_CAP = 500
 
+# Same split for variants: settings.ab_variants_max is the product cap.
+_AB_VARIANTS_HARD_CAP = 50
+
 
 _ALNUM_ALIAS_RE = re.compile(r"[a-zA-Z0-9_-]+\Z")
 
@@ -106,6 +109,52 @@ def _normalise_geo_rules(v: dict | None) -> dict | None:
             )
         normalised[code] = url.strip()
     return normalised
+
+
+class AbVariantRequest(RequestBase):
+    """One A/B split destination as sent on create/update."""
+
+    url: str = Field(
+        min_length=1,
+        max_length=_GEO_URL_MAX_LENGTH,
+        description="Destination URL for this variant.",
+        examples=["https://example.com/b"],
+    )
+    weight: int = Field(
+        ge=1,
+        le=100,
+        description="Percentage of visitors sent to this variant (1-100).",
+        examples=[40],
+    )
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _strip_url(cls, v: object) -> object:
+        return v.strip() if isinstance(v, str) else v
+
+
+def _cap_ab_variants(v: object) -> object:
+    """Pre-auth ceiling on the list length, like ``_normalise_geo_rules``.
+    Everything else (weights, sum, URL safety) validates after coercion."""
+    if isinstance(v, list) and len(v) > _AB_VARIANTS_HARD_CAP:
+        raise ValueError(f"ab_variants cannot exceed {_AB_VARIANTS_HARD_CAP} entries")
+    return v
+
+
+def _check_ab_weights(
+    v: list[AbVariantRequest] | None,
+) -> list[AbVariantRequest] | None:
+    if v and sum(variant.weight for variant in v) > 100:
+        raise ValueError("ab_variants weights must sum to at most 100")
+    return v
+
+
+_AB_VARIANTS_FIELD_DESC = (
+    "Weighted split destinations: each entry is `{url, weight}` where "
+    "`weight` is the percentage of visitors sent there (integers, summing to "
+    "at most 100). The default destination (`url`) receives the remainder. "
+    "Requires authentication."
+)
 
 
 class UrlFilter(RequestBase):
@@ -315,6 +364,11 @@ class CreateUrlRequest(RequestBase):
         description=_TAG_IDS_FIELD_DESC,
         examples=[["665f0c2f9e7a4b1d2c3d4e5f"]],
     )
+    ab_variants: list[AbVariantRequest] | None = Field(
+        default=None,
+        description=_AB_VARIANTS_FIELD_DESC,
+        examples=[[{"url": "https://example.com/b", "weight": 40}]],
+    )
     meta_tags: MetaTagsRequest | None = Field(
         default=None, description=_META_TAGS_FIELD_DESC
     )
@@ -357,6 +411,18 @@ class CreateUrlRequest(RequestBase):
     @classmethod
     def _norm_tag_ids(cls, v: list | None) -> list | None:
         return normalise_object_ids(v, cap=TAGS_MAX_PER_LINK, noun="tags per link")
+
+    @field_validator("ab_variants", mode="before")
+    @classmethod
+    def _cap_variants(cls, v: object) -> object:
+        return _cap_ab_variants(v)
+
+    @field_validator("ab_variants")
+    @classmethod
+    def _variant_weights(
+        cls, v: list[AbVariantRequest] | None
+    ) -> list[AbVariantRequest] | None:
+        return _check_ab_weights(v)
 
 
 class UpdateUrlRequest(RequestBase):
@@ -471,6 +537,15 @@ class UpdateUrlRequest(RequestBase):
         description=_TAG_IDS_FIELD_DESC,
         examples=[["665f0c2f9e7a4b1d2c3d4e5f"]],
     )
+    ab_variants: list[AbVariantRequest] | None = Field(
+        default=None,
+        description=(
+            _AB_VARIANTS_FIELD_DESC + " The list replaces any existing variants "
+            "in full. Pass `null` or `[]` to remove all variants; omit to keep "
+            "them unchanged."
+        ),
+        examples=[[{"url": "https://example.com/b", "weight": 40}]],
+    )
     meta_tags: MetaTagsRequest | None = Field(
         default=None, description=_META_TAGS_FIELD_DESC
     )
@@ -513,6 +588,18 @@ class UpdateUrlRequest(RequestBase):
     @classmethod
     def _norm_tag_ids(cls, v: list | None) -> list | None:
         return normalise_object_ids(v, cap=TAGS_MAX_PER_LINK, noun="tags per link")
+
+    @field_validator("ab_variants", mode="before")
+    @classmethod
+    def _cap_variants(cls, v: object) -> object:
+        return _cap_ab_variants(v)
+
+    @field_validator("ab_variants")
+    @classmethod
+    def _variant_weights(
+        cls, v: list[AbVariantRequest] | None
+    ) -> list[AbVariantRequest] | None:
+        return _check_ab_weights(v)
 
 
 class UpdateUrlStatusRequest(BaseModel):
