@@ -408,7 +408,10 @@ class TestDeepAdmission:
         deep_sink.emit.assert_awaited_once()
         emitted = deep_sink.emit.await_args.args[0]
         assert "feed_fishfish: feed hit" in emitted.context["screening"]
-        assert "needs review" not in notifier.safety_action.await_args.kwargs["reason"]
+        assert (
+            notifier.safety_action.await_args.kwargs["follow_up"]
+            == "host-wide decision sent to investigation"
+        )
 
     @pytest.mark.asyncio
     async def test_host_scoped_feed_hit_never_pays_for_a_second_opinion(self):
@@ -433,8 +436,9 @@ class TestDeepAdmission:
 
         deep_sink.emit.assert_not_awaited()
         admission.decide.assert_not_awaited()
-        reason = notifier.safety_action.await_args.kwargs["reason"]
-        assert "feed listing is itself the host-wide answer" in reason
+        kw = notifier.safety_action.await_args.kwargs
+        assert kw["follow_up"] == "feed listing is itself the host-wide answer"
+        assert kw["reason"] == "feed hit"
 
     @pytest.mark.asyncio
     async def test_host_scoped_hit_from_a_non_feed_source_still_escalates(self):
@@ -459,8 +463,9 @@ class TestDeepAdmission:
 
         deep_sink.emit.assert_awaited_once()
         assert admission.decide.await_args.kwargs == {"escalation": True}
-        reason = notifier.safety_action.await_args.kwargs["reason"]
-        assert "sent to investigation" in reason
+        kw = notifier.safety_action.await_args.kwargs
+        assert kw["follow_up"] == "host-wide decision sent to investigation"
+        assert kw["reason"] == "operator pattern"
 
     @pytest.mark.asyncio
     async def test_denied_escalation_still_flags_the_host_decision(self):
@@ -474,7 +479,9 @@ class TestDeepAdmission:
 
         await analyzer.analyze(_event())
 
-        assert "needs review" in notifier.safety_action.await_args.kwargs["reason"]
+        kw = notifier.safety_action.await_args.kwargs
+        assert kw["follow_up"] == "host-wide decision needs review"
+        assert "needs review" not in kw["reason"]
 
     @pytest.mark.asyncio
     async def test_feed_block_on_a_shared_carrier_is_flagged(self, capsys):
@@ -641,8 +648,9 @@ class TestReenforcementNotify:
 
         await analyzer.analyze(_event())
 
-        reason = notifier.safety_action.await_args.kwargs["reason"]
-        assert "re-enforced" in reason
+        kw = notifier.safety_action.await_args.kwargs
+        assert kw["scope"] == "host-wide (re-enforced existing verdict)"
+        assert kw["reason"] == "old verdict"
 
     @pytest.mark.asyncio
     async def test_idempotent_reenforcement_stays_quiet(self):

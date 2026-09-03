@@ -557,3 +557,76 @@ class TestRetryOnlyOnWaitTimeout:
         client = BrowserRunClient(http, account_id="acc", api_token="tok")
         assert await client.snapshot("https://nauratimm.net/") is None
         assert calls["n"] == 2
+
+
+class TestLastRenderStash:
+    @staticmethod
+    def _fetch_page(shots: dict[str, bytes]):
+        async def snapshot(url):
+            return RenderResult(url=url, html="<title>x</title>", screenshot=shots[url])
+
+        deps = _deps()
+        deps.browser.snapshot = AsyncMock(side_effect=snapshot)
+        return next(
+            t for t in build_investigation_tools(deps) if t.__name__ == "fetch_page"
+        )
+
+    @pytest.mark.asyncio
+    async def test_fetch_page_leaves_its_screenshot_for_the_embed(self):
+        from services.safety.tools import last_render_screenshot, reset_last_render
+
+        reset_last_render()
+        fetch_page = self._fetch_page({"https://x.example/p": b"px"})
+
+        await fetch_page("https://x.example/p")
+
+        assert last_render_screenshot() == b"px"
+
+    @pytest.mark.asyncio
+    async def test_the_judged_url_wins_over_a_later_root_fetch(self):
+        """Example 10's sequence: fetch the fake gate, then fetch the root,
+        which returns "Cannot GET /". Last-wins would put the blank root
+        beside a reason that describes the gate."""
+        from services.safety.tools import last_render_screenshot, reset_last_render
+
+        reset_last_render()
+        fetch_page = self._fetch_page(
+            {
+                "https://5347567.shop/197721937": b"GATE",
+                "https://5347567.shop/": b"BLANK",
+            }
+        )
+
+        await fetch_page("https://5347567.shop/197721937")
+        await fetch_page("https://5347567.shop/")
+
+        assert last_render_screenshot("https://5347567.shop/197721937") == b"GATE"
+        assert last_render_screenshot("https://5347567.shop/197721937?utm=1") == b"GATE"
+        assert last_render_screenshot() == b"BLANK"  # no preference: most recent
+
+    @pytest.mark.asyncio
+    async def test_unmatched_preference_falls_back_to_the_most_recent(self):
+        from services.safety.tools import last_render_screenshot, reset_last_render
+
+        reset_last_render()
+        fetch_page = self._fetch_page(
+            {"https://x.example/a": b"A", "https://x.example/b": b"B"}
+        )
+        await fetch_page("https://x.example/a")
+        await fetch_page("https://x.example/b")
+
+        assert last_render_screenshot("https://elsewhere.example/") == b"B"
+
+    @pytest.mark.asyncio
+    async def test_reset_clears_the_previous_investigation(self):
+        from services.safety.tools import last_render_screenshot, reset_last_render
+
+        reset_last_render()
+        fetch_page = self._fetch_page({"https://x.example/p": b"px"})
+        await fetch_page("https://x.example/p")
+        assert last_render_screenshot() == b"px"
+
+        reset_last_render()
+
+        assert last_render_screenshot() == b""
+        assert last_render_screenshot("https://x.example/p") == b""

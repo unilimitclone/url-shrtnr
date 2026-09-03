@@ -53,7 +53,7 @@ from infrastructure.safe_fetch import (
 from repositories.feed_domain_repository import FeedDomainRepository
 from repositories.url_repository import UrlRepository
 from services.safety.feeds import FISHFISH_FEED, MANUAL_FEED, SHORTENER_FEED
-from services.safety.providers import WebRiskProvider
+from services.safety.providers import WebRiskProvider, without_query
 from shared.url_utils import registrable_domain
 
 log = get_logger(__name__)
@@ -75,6 +75,38 @@ _hard_hit: contextvars.ContextVar[_HardHitFlag | None] = contextvars.ContextVar(
 
 def reset_hard_hit() -> None:
     _hard_hit.set(_HardHitFlag())
+
+
+class _Renders:
+    def __init__(self) -> None:
+        self.shots: list[tuple[str, bytes]] = []  # (url, webp) in fetch order
+
+
+# Same mutable-holder shape as the hard-hit flag, for the same create_task
+# reason: fetch_page runs in a child task and must mutate, never rebind.
+_last_render: contextvars.ContextVar[_Renders | None] = contextvars.ContextVar(
+    "safety_last_render", default=None
+)
+
+
+def reset_last_render() -> None:
+    _last_render.set(_Renders())
+
+
+def last_render_screenshot(prefer_url: str = "") -> bytes:
+    """The screenshot to show beside the verdict: the render of the judged
+    URL when there is one, else the most recent. The prompt tells the model
+    to fetch the destination AND the domain root, so last-wins would attach
+    a blank root page next to a reason that describes the gate."""
+    held = _last_render.get()
+    if held is None or not held.shots:
+        return b""
+    if prefer_url:
+        want = without_query(prefer_url)
+        for url, shot in reversed(held.shots):
+            if without_query(url) == want:
+                return shot
+    return held.shots[-1][1]
 
 
 def saw_hard_hit() -> bool:
@@ -523,6 +555,9 @@ def build_investigation_tools(deps: InvestigationToolDeps) -> list[Callable]:
         text = f"rendered via {result.egress}\nurl: {url}\n{trimmed}"
         if not result.screenshot:
             return text
+        held = _last_render.get()
+        if held is not None:
+            held.shots.append((url, result.screenshot))
         return ToolReturn(
             return_value=f"{text}\nscreenshot: attached",
             content=[BinaryContent(data=result.screenshot, media_type="image/webp")],

@@ -36,6 +36,7 @@ from services.safety.investigation import (
     build_investigate_task,
     decide_authority,
 )
+from services.safety.notify import SafetyNotifier
 from services.safety.policy import PolicyRejection, UrlPolicyService
 from services.safety.providers import (
     AnalysisProvider,
@@ -97,6 +98,7 @@ __all__ = [
     "SafetyAnalyzeEvent",
     "SafetyAnalyzer",
     "SafetyEnforcer",
+    "SafetyNotifier",
     "SafetySink",
     "SharedCarrierLookup",
     "SweepDeps",

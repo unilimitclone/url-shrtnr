@@ -94,6 +94,7 @@ from services.safety import (
     RedisStreamDeepAnalysisSink,
     SafetyAnalyzer,
     SafetyEnforcer,
+    SafetyNotifier,
     SweepDeps,
     WebRiskProvider,
     build_feed_providers,
@@ -429,10 +430,12 @@ async def _build_runtime(
             safety_providers,
             VerdictRepository(db["safety_verdicts"]),
             safety_enforcer,
-            DiscordOpsNotifier(
-                settings.contact_webhook,
-                settings.url_report_webhook,
-                runtime.http_client,
+            SafetyNotifier(
+                DiscordOpsNotifier(
+                    settings.contact_webhook,
+                    settings.url_report_webhook,
+                    runtime.http_client,
+                )
             ),
             reverdict_ttl_hours=sf.reverdict_ttl_hours,
             admission=admission,
@@ -501,10 +504,12 @@ async def _build_runtime(
                 UrlRepository(db["urlsV2"]),
                 VerdictRepository(db["safety_verdicts"]),
                 safety_enforcer,
-                DiscordOpsNotifier(
-                    settings.contact_webhook,
-                    settings.url_report_webhook,
-                    runtime.http_client,
+                SafetyNotifier(
+                    DiscordOpsNotifier(
+                        settings.contact_webhook,
+                        settings.url_report_webhook,
+                        runtime.http_client,
+                    )
                 ),
                 policy=AutoBlockPolicy(sf.deep_autoblock),
                 model_name=llm.model,
