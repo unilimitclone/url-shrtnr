@@ -37,8 +37,14 @@ class WebhookDeliveryRepository(BaseRepository[WebhookDeliveryDoc]):
         return await self._find_one({"_id": delivery_id, "user_id": user_id})
 
     async def count_pending(self, endpoint_id: ObjectId) -> int:
+        """Rows that hold a pending slot. Test sends are never reserved, so
+        one that died mid-attempt must not inflate the recount."""
         return await self._count(
-            {"endpoint_id": endpoint_id, "status": DeliveryStatus.PENDING.value}
+            {
+                "endpoint_id": endpoint_id,
+                "status": DeliveryStatus.PENDING.value,
+                "is_test": {"$ne": True},
+            }
         )
 
     async def list_by_endpoint(
@@ -114,9 +120,12 @@ class WebhookDeliveryRepository(BaseRepository[WebhookDeliveryDoc]):
 
     async def record_attempt_and_finish(
         self, delivery_id: ObjectId, attempt: DeliveryAttempt, status: DeliveryStatus
-    ) -> None:
-        await self._update(
-            {"_id": delivery_id},
+    ) -> bool:
+        """Terminal write. Returns True when this call moved the row out of
+        PENDING (False for a manual retry of an already-finished row), so
+        the caller releases the endpoint's pending slot exactly once."""
+        return await self._finish(
+            delivery_id,
             {
                 "$push": {"attempts": attempt.model_dump()},
                 "$inc": {"attempt_count": 1},
@@ -143,11 +152,12 @@ class WebhookDeliveryRepository(BaseRepository[WebhookDeliveryDoc]):
             },
         )
 
-    async def mark_failed(self, delivery_id: ObjectId, reason: str) -> None:
+    async def mark_failed(self, delivery_id: ObjectId, reason: str) -> bool:
         """Terminal failure without an HTTP attempt (endpoint inactive,
-        event row TTL-expired)."""
-        await self._update(
-            {"_id": delivery_id},
+        event row TTL-expired). Same return contract as
+        ``record_attempt_and_finish``."""
+        return await self._finish(
+            delivery_id,
             {
                 "$inc": {"attempt_count": 1},
                 "$set": {
@@ -162,4 +172,15 @@ class WebhookDeliveryRepository(BaseRepository[WebhookDeliveryDoc]):
                     ).model_dump()
                 },
             },
+        )
+
+    async def _finish(self, delivery_id: ObjectId, ops: dict) -> bool:
+        before = await self._col.find_one_and_update(
+            {"_id": delivery_id},
+            ops,
+            projection={"status": 1},
+            return_document=ReturnDocument.BEFORE,
+        )
+        return (
+            before is not None and before.get("status") == DeliveryStatus.PENDING.value
         )

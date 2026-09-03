@@ -63,6 +63,7 @@ class WebhookEndpointDoc(MongoBaseModel):
     # consecutive_failures counts EXHAUSTED deliveries, not attempts.
     consecutive_failures: int = 0
     dropped_count: int = 0  # pending-cap drops since last successful delivery
+    pending_count: int = 0  # reserved at dispatch, released on every terminal outcome
     total_deliveries: int = 0
     total_successes: int = 0
     last_delivery_at: datetime | None = None

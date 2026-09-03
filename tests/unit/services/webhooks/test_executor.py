@@ -290,6 +290,68 @@ class TestFailurePaths:
         assert deliveries.mark_failed.await_args[0][1] == "event_expired"
         post.assert_not_awaited()
 
+
+class TestPendingSlotRelease:
+    """Every terminal outcome releases the endpoint's pending slot exactly
+    once; non-terminal outcomes and rows that never reserved one do not."""
+
+    @pytest.mark.asyncio
+    async def test_success_releases(self):
+        endpoint = _endpoint()
+        executor, deliveries, endpoints, _ = _make(endpoint)
+        deliveries.record_attempt_and_finish.return_value = True
+        with patch("services.webhooks.executor.post_public", _post(204)):
+            await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        endpoints.release_pending.assert_awaited_once_with(endpoint.id)
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_releases(self):
+        endpoint = _endpoint()
+        executor, deliveries, endpoints, _ = _make(endpoint)
+        deliveries.record_attempt_and_finish.return_value = True
+        last = len(RETRY_SCHEDULE_SECONDS) - 1
+        with patch("services.webhooks.executor.post_public", _post(500)):
+            await executor.attempt(
+                _delivery(endpoint_id=endpoint.id, attempt_count=last)
+            )
+        endpoints.release_pending.assert_awaited_once_with(endpoint.id)
+
+    @pytest.mark.asyncio
+    async def test_terminal_without_attempt_releases(self):
+        endpoint = _endpoint(status=WebhookStatus.DISABLED)
+        executor, deliveries, endpoints, _ = _make(endpoint)
+        deliveries.mark_failed.return_value = True
+        await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        endpoints.release_pending.assert_awaited_once_with(endpoint.id)
+
+    @pytest.mark.asyncio
+    async def test_reschedule_and_defer_keep_the_slot(self):
+        executor, _, endpoints, _ = _make(_endpoint())
+        with patch("services.webhooks.executor.post_public", _post(500)):
+            await executor.attempt(_delivery())
+        with patch("services.webhooks.executor.post_public", _post(429)):
+            await executor.attempt(_delivery())
+        endpoints.release_pending.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_test_send_never_releases(self):
+        executor, deliveries, endpoints, _ = _make(_endpoint())
+        deliveries.record_attempt_and_finish.return_value = True
+        with patch("services.webhooks.executor.post_public", _post(204)):
+            await executor.attempt(_delivery(is_test=True))
+        endpoints.release_pending.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_manual_retry_of_finished_row_never_releases(self):
+        executor, deliveries, endpoints, _ = _make(_endpoint())
+        deliveries.record_attempt_and_finish.return_value = False
+        row = _delivery(status=DeliveryStatus.FAILED, rendered_body="{}")
+        with patch("services.webhooks.executor.post_public", _post(204)):
+            await executor.attempt(row)
+        endpoints.release_pending.assert_not_awaited()
+
+
+class TestRotationGrace:
     @pytest.mark.asyncio
     async def test_success_after_grace_secret_sends_dual_signatures(self):
         old_secret = "whsec_b2xkLXNlY3JldC1vbGQtc2VjcmV0"
@@ -380,3 +442,42 @@ class TestDeliveryUrl:
         with patch("services.webhooks.executor.post_public", post):
             await executor.attempt(_delivery())
         assert post.await_args[0][0] == endpoint.url
+
+
+class TestRenderFailures:
+    @pytest.mark.asyncio
+    async def test_unknown_flavor_is_terminal(self):
+        endpoint = _endpoint()
+        deliveries, endpoints, events = AsyncMock(), AsyncMock(), AsyncMock()
+        endpoints.find_by_id.return_value = endpoint
+        events.find_by_oid.return_value = _event()
+        deliveries.mark_failed.return_value = True
+        executor = DeliveryExecutor(
+            deliveries, endpoints, events, {}, master_secret=_MASTER
+        )
+        with patch("services.webhooks.executor.post_public", _post(204)) as post:
+            await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        assert deliveries.mark_failed.await_args[0][1].startswith("unknown_flavor:")
+        endpoints.release_pending.assert_awaited_once_with(endpoint.id)
+        post.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_payload_over_cap_is_terminal(self):
+        endpoint = _endpoint()
+        deliveries, endpoints, events = AsyncMock(), AsyncMock(), AsyncMock()
+        endpoints.find_by_id.return_value = endpoint
+        events.find_by_oid.return_value = _event()
+        deliveries.mark_failed.return_value = True
+        executor = DeliveryExecutor(
+            deliveries,
+            endpoints,
+            events,
+            default_renderers(),
+            master_secret=_MASTER,
+            max_payload_bytes=16,
+        )
+        with patch("services.webhooks.executor.post_public", _post(204)) as post:
+            await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        assert deliveries.mark_failed.await_args[0][1] == "payload_over_cap"
+        endpoints.release_pending.assert_awaited_once_with(endpoint.id)
+        post.assert_not_awaited()

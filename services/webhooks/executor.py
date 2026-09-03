@@ -117,7 +117,7 @@ class DeliveryExecutor:
 
         endpoint = await self._endpoints.find_by_id(row.endpoint_id)
         if endpoint is None or endpoint.status == WebhookStatus.DISABLED:
-            await self._deliveries.mark_failed(row.id, "endpoint_inactive")
+            await self._fail(row, "endpoint_inactive")
             return
         if endpoint.status == WebhookStatus.PAUSED and not single_shot:
             # Paused is a temporary state the owner controls: hold the
@@ -146,7 +146,7 @@ class DeliveryExecutor:
                 webhook_id=row.webhook_id,
                 error_type=type(exc).__name__,
             )
-            await self._deliveries.mark_failed(row.id, "secret_unreadable")
+            await self._fail(row, "secret_unreadable")
             if not single_shot:
                 await self._disable(endpoint, EndpointDisabledReason.SECRET_UNREADABLE)
             return
@@ -169,9 +169,7 @@ class DeliveryExecutor:
 
         ok = result.status_code is not None and 200 <= result.status_code < 300
         if ok:
-            await self._deliveries.record_attempt_and_finish(
-                row.id, attempt, DeliveryStatus.SUCCESS
-            )
+            await self._finish(row, attempt, DeliveryStatus.SUCCESS)
             if not single_shot:
                 await self._endpoints.record_success(endpoint.id)
             log.info(
@@ -222,24 +220,18 @@ class DeliveryExecutor:
         if single_shot:
             # One recorded attempt, terminal, health untouched: the caller
             # (test send / manual retry) reads the outcome synchronously.
-            await self._deliveries.record_attempt_and_finish(
-                row.id, attempt, DeliveryStatus.FAILED
-            )
+            await self._finish(row, attempt, DeliveryStatus.FAILED)
             return
 
         if result.status_code == 410:
-            await self._deliveries.record_attempt_and_finish(
-                row.id, attempt, DeliveryStatus.FAILED
-            )
+            await self._finish(row, attempt, DeliveryStatus.FAILED)
             await self._disable(endpoint, EndpointDisabledReason.GONE)
             return
 
         # attempt_count on the claimed row predates this attempt.
         attempts_done = row.attempt_count + 1
         if attempts_done >= len(RETRY_SCHEDULE_SECONDS):
-            await self._deliveries.record_attempt_and_finish(
-                row.id, attempt, DeliveryStatus.FAILED
-            )
+            await self._finish(row, attempt, DeliveryStatus.FAILED)
             reason = result.error or f"status {result.status_code}"
             streak = await self._endpoints.record_exhausted(endpoint.id, reason)
             if streak >= self._max_consecutive:
@@ -254,6 +246,23 @@ class DeliveryExecutor:
             attempt,
             datetime.now(timezone.utc) + timedelta(seconds=delay),
         )
+
+    # ── Terminal writes ──────────────────────────────────────────────────
+
+    async def _finish(
+        self, row: WebhookDeliveryDoc, attempt: DeliveryAttempt, status: DeliveryStatus
+    ) -> None:
+        if await self._deliveries.record_attempt_and_finish(row.id, attempt, status):
+            await self._release_slot(row)
+
+    async def _fail(self, row: WebhookDeliveryDoc, reason: str) -> None:
+        if await self._deliveries.mark_failed(row.id, reason):
+            await self._release_slot(row)
+
+    async def _release_slot(self, row: WebhookDeliveryDoc) -> None:
+        # Test sends are inserted PENDING without a dispatch reservation.
+        if not row.is_test:
+            await self._endpoints.release_pending(row.endpoint_id)
 
     # ── Internals ────────────────────────────────────────────────────────
 
@@ -274,13 +283,11 @@ class DeliveryExecutor:
         event = await self._events.find_by_oid(row.event_oid)
         if event is None:
             # TTL race at the 30-day edge — terminal, never a crash.
-            await self._deliveries.mark_failed(row.id, "event_expired")
+            await self._fail(row, "event_expired")
             return None
         renderer = self._renderers.get(endpoint.flavor.value)
         if renderer is None:
-            await self._deliveries.mark_failed(
-                row.id, f"unknown_flavor:{endpoint.flavor}"
-            )
+            await self._fail(row, f"unknown_flavor:{endpoint.flavor}")
             return None
         payload = dict(event.payload)
         if row.dropped_since_last:
@@ -295,7 +302,7 @@ class DeliveryExecutor:
             payload,
         )
         if len(body.encode()) > self._max_bytes:
-            await self._deliveries.mark_failed(row.id, "payload_over_cap")
+            await self._fail(row, "payload_over_cap")
             return None
         await self._deliveries.set_rendered_body(row.id, body)
         return body

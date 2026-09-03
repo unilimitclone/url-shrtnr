@@ -126,11 +126,30 @@ class _FakeEndpointRepo:
         )
         return streak
 
-    async def increment_deliveries(self, endpoint_id, by=1):
+    async def reserve_pending(self, endpoint_id, cap):
         doc = self.docs[endpoint_id]
+        if doc.pending_count >= cap:
+            return False
         await self.update_fields(
-            endpoint_id, {"total_deliveries": doc.total_deliveries + by}
+            endpoint_id,
+            {
+                "pending_count": doc.pending_count + 1,
+                "total_deliveries": doc.total_deliveries + 1,
+            },
         )
+        return True
+
+    async def release_pending(self, endpoint_id):
+        doc = self.docs[endpoint_id]
+        if doc.pending_count > 0:
+            await self.update_fields(
+                endpoint_id, {"pending_count": doc.pending_count - 1}
+            )
+
+    async def set_pending_count(self, endpoint_id, count):
+        previous = self.docs[endpoint_id].pending_count
+        await self.update_fields(endpoint_id, {"pending_count": count})
+        return previous
 
     async def increment_dropped(self, endpoint_id):
         doc = self.docs[endpoint_id]
@@ -170,7 +189,9 @@ class _FakeDeliveryRepo:
         return sum(
             1
             for d in self.docs.values()
-            if d.endpoint_id == endpoint_id and d.status == DeliveryStatus.PENDING
+            if d.endpoint_id == endpoint_id
+            and d.status == DeliveryStatus.PENDING
+            and not d.is_test
         )
 
     async def list_by_endpoint(self, endpoint_id, *, page, page_size, status=None):
@@ -207,6 +228,7 @@ class _FakeDeliveryRepo:
 
     async def record_attempt_and_finish(self, delivery_id, attempt, status):
         doc = self.docs[delivery_id]
+        was_pending = doc.status == DeliveryStatus.PENDING
         self._update(
             delivery_id,
             attempts=[*[a.model_dump() for a in doc.attempts], attempt.model_dump()],
@@ -215,9 +237,12 @@ class _FakeDeliveryRepo:
             completed_at=datetime.now(timezone.utc),
             next_attempt_at=None,
         )
+        return was_pending
 
     async def mark_failed(self, delivery_id, reason):
+        was_pending = self.docs[delivery_id].status == DeliveryStatus.PENDING
         self._update(delivery_id, status=DeliveryStatus.FAILED.value)
+        return was_pending
 
 
 class _FakeEventRepo:

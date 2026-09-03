@@ -3,6 +3,7 @@ pending cap. All fakes are in-memory; no Mongo, no Redis."""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -120,15 +121,45 @@ class TestMatcher:
         repo.find_active_for_owner.assert_not_awaited()
 
 
+class _CountingEndpointRepo:
+    """In-memory stand-in for the atomic reserve/release counter."""
+
+    def __init__(self, pending: int = 0) -> None:
+        self.pending = pending
+        self.dropped = 0
+        self.reserve_calls = 0
+
+    async def reserve_pending(self, endpoint_id, cap):
+        self.reserve_calls += 1
+        if self.pending >= cap:
+            return False
+        self.pending += 1
+        return True
+
+    async def set_pending_count(self, endpoint_id, count):
+        previous, self.pending = self.pending, count
+        return previous
+
+    async def increment_dropped(self, endpoint_id):
+        self.dropped += 1
+
+
 class TestDispatcher:
-    def _make(self, endpoints, pending: int = 0):
+    def _make(self, endpoints, pending: int = 0, real_pending: int | None = None):
         matcher = AsyncMock()
         matcher.match.return_value = endpoints
         event_repo = AsyncMock()
         event_repo.insert_event.return_value = ObjectId()
         delivery_repo = AsyncMock()
-        delivery_repo.count_pending.return_value = pending
-        endpoint_repo = AsyncMock()
+
+        def real_count(_endpoint_id):
+            if real_pending is not None:
+                return real_pending
+            inserted = delivery_repo.insert_many_rows.await_args_list
+            return pending + sum(len(call.args[0]) for call in inserted)
+
+        delivery_repo.count_pending.side_effect = real_count
+        endpoint_repo = _CountingEndpointRepo(pending)
         dispatcher = WebhookDispatcher(
             matcher,
             event_repo,
@@ -170,10 +201,53 @@ class TestDispatcher:
         assert rows[0]["dropped_since_last"] == 7
 
     @pytest.mark.asyncio
+    async def test_under_cap_reserves_without_counting(self):
+        dispatcher, _, delivery_repo, endpoint_repo = self._make([_endpoint()])
+        await dispatcher.dispatch(_click_event())
+        assert endpoint_repo.pending == 1
+        delivery_repo.count_pending.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_pending_cap_drops_and_counts(self):
+        """At the cap the verdict is re-verified against one real count,
+        then the delivery is dropped and counted."""
         ep = _endpoint()
         dispatcher, _, delivery_repo, endpoint_repo = self._make([ep], pending=10)
         await dispatcher.dispatch(_click_event())
-        endpoint_repo.increment_dropped.assert_awaited_once_with(ep.id)
+        delivery_repo.count_pending.assert_awaited_once_with(ep.id)
+        assert endpoint_repo.dropped == 1
+        assert endpoint_repo.pending == 10
         rows = delivery_repo.insert_many_rows.await_args[0][0]
         assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_drifted_counter_is_repaired_not_dropped(self):
+        """Counter says 10, Mongo says 3: repair to 3, reserve, deliver."""
+        dispatcher, _, delivery_repo, endpoint_repo = self._make(
+            [_endpoint()], pending=10, real_pending=3
+        )
+        await dispatcher.dispatch(_click_event())
+        assert endpoint_repo.dropped == 0
+        assert endpoint_repo.pending == 4
+        assert len(delivery_repo.insert_many_rows.await_args[0][0]) == 1
+
+    @pytest.mark.asyncio
+    async def test_recount_is_throttled_per_endpoint(self):
+        """A confirmed over-cap endpoint pays one real count per interval,
+        not one per event."""
+        dispatcher, _, delivery_repo, endpoint_repo = self._make([_endpoint()], 10)
+        for _ in range(5):
+            await dispatcher.dispatch(_click_event())
+        delivery_repo.count_pending.assert_awaited_once()
+        assert endpoint_repo.dropped == 5
+
+    @pytest.mark.asyncio
+    async def test_concurrent_enqueue_never_exceeds_cap(self):
+        dispatcher, _, delivery_repo, endpoint_repo = self._make([_endpoint()], 7)
+        await asyncio.gather(*(dispatcher.dispatch(_click_event()) for _ in range(20)))
+        assert endpoint_repo.pending == 10
+        inserted = sum(
+            len(call.args[0]) for call in delivery_repo.insert_many_rows.await_args_list
+        )
+        assert inserted == 3
+        assert endpoint_repo.dropped == 17

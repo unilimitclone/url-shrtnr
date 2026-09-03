@@ -100,11 +100,32 @@ class WebhookEndpointRepository(BaseRepository[WebhookEndpointDoc]):
         )
         return int(doc.get("consecutive_failures", 0)) if doc else 0
 
-    async def increment_deliveries(self, endpoint_id: ObjectId, by: int = 1) -> None:
-        """Counted at ENQUEUE, not at terminal state — "0 of 2" while two
-        deliveries are mid-ladder beats a "0 of 0" that contradicts the
-        visible delivery log. Success keeps its own counter."""
-        await self._update({"_id": endpoint_id}, {"$inc": {"total_deliveries": by}})
+    async def reserve_pending(self, endpoint_id: ObjectId, cap: int) -> bool:
+        """Take one pending slot under ``cap``; False when the endpoint is
+        at the cap (or the counter field is missing, which the caller
+        repairs). ``total_deliveries`` is counted at ENQUEUE, not at
+        terminal state — "0 of 2" while two deliveries are mid-ladder beats
+        a "0 of 0" that contradicts the visible delivery log."""
+        return await self._update(
+            {"_id": endpoint_id, "pending_count": {"$lt": cap}},
+            {"$inc": {"pending_count": 1, "total_deliveries": 1}},
+        )
+
+    async def release_pending(self, endpoint_id: ObjectId) -> None:
+        await self._update(
+            {"_id": endpoint_id, "pending_count": {"$gt": 0}},
+            {"$inc": {"pending_count": -1}},
+        )
+
+    async def set_pending_count(self, endpoint_id: ObjectId, count: int) -> int:
+        """Overwrite the counter with a real count; returns the value it
+        replaced (0 when the field was missing)."""
+        doc = await self._col.find_one_and_update(
+            {"_id": endpoint_id},
+            {"$set": {"pending_count": count}},
+            projection={"pending_count": 1},
+        )
+        return int(doc.get("pending_count", 0)) if doc else 0
 
     async def increment_dropped(self, endpoint_id: ObjectId) -> None:
         await self._update({"_id": endpoint_id}, {"$inc": {"dropped_count": 1}})
