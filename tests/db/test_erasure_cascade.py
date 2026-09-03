@@ -181,6 +181,17 @@ async def test_erase_retains_blocked_links_through_domain_cascade(
     # Mop-up path: owner-stamped click on a link deleted before erasure.
     await insert_click(db, ObjectId(), user_a, "gone123", "spoo.me")
 
+    # One tag so the cascade's tags step is exercised, not just counted.
+    await db["tags"].insert_one(
+        {
+            "owner_id": user_a,
+            "name": "launch",
+            "color": "violet",
+            "icon": "tag",
+            "created_at": CREATED_AT,
+        }
+    )
+
     await make_purge_due(db, user_a)
     counts = await erasure_service.erase(user_a)
 
@@ -188,6 +199,7 @@ async def test_erase_retains_blocked_links_through_domain_cascade(
         "urlsV2": 2,
         "urls_blocked_retained": 2,
         "custom_domains": 1,
+        "tags": 1,
         "clicks": 6,
         "api_keys": 0,
         "verification_tokens": 0,
@@ -226,6 +238,7 @@ async def test_erase_retains_blocked_links_through_domain_cascade(
         await db["clicks"].count_documents({"meta.url_id": {"$in": all_link_ids}}) == 0
     )
     assert await db["custom_domains"].count_documents({"owner_id": user_a}) == 0
+    assert await db["tags"].count_documents({"owner_id": user_a}) == 0
     assert await db["users"].find_one({"_id": user_a}) is None
 
 

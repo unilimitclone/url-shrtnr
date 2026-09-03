@@ -27,6 +27,7 @@ _COLLECTIONS = (
     "app-grants",
     "feature_flags",
     "custom_domains",
+    "tags",
     "blocked_domains",
     "reports",
     "report_submissions",

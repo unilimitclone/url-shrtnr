@@ -11,9 +11,14 @@ from bson import ObjectId
 from errors import ValidationError
 
 
+def parse_object_id(value: str, *, message: str) -> ObjectId:
+    """Parse an ObjectId path param, raise 400 with *message* on bad input."""
+    try:
+        return ObjectId(value)
+    except Exception:
+        raise ValidationError(message) from None
+
+
 def parse_url_id(url_id: str) -> ObjectId:
     """Parse url_id path param to ObjectId, raise 400 on invalid format."""
-    try:
-        return ObjectId(url_id)
-    except Exception:
-        raise ValidationError("Invalid URL ID format") from None
+    return parse_object_id(url_id, message="Invalid URL ID format")

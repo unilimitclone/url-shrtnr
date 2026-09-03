@@ -207,6 +207,9 @@ class UrlV2Doc(MongoBaseModel):
     # ISO 3166-1 alpha-2 country code (uppercase) → destination URL override.
     # long_url stays the fallback for unmatched countries. None = no targeting.
     geo_rules: dict[str, str] | None = None
+    # Ids into the owner's ``tags`` collection. Docs written before the
+    # field existed read as [].
+    tag_ids: list[PyObjectId] = Field(default_factory=list)
     status: UrlStatus = UrlStatus.ACTIVE
     # Enforcement audit trail, stamped when safety flips status to BLOCKED.
     # ``updated_at`` is lossy (any later touch overwrites); these survive.

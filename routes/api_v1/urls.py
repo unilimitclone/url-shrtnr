@@ -37,6 +37,7 @@ from dependencies import (
     CurrentUser,
     CustomDomainSvc,
     Settings,
+    TagSvc,
     UrlSvc,
     require_scopes,
 )
@@ -67,6 +68,7 @@ async def list_urls_v1(
     request: Request,
     query: Annotated[ListUrlsQuery, Query()],
     url_service: UrlSvc,
+    tag_service: TagSvc,
     user: CurrentUser = Depends(require_scopes(URL_READ_SCOPES)),  # noqa: B008
 ) -> UrlListResponse:
     """List all URLs owned by the authenticated user.
@@ -88,10 +90,13 @@ async def list_urls_v1(
 
     **Filtering**: Pass a JSON-encoded `filter` parameter with fields like
     `status`, `createdAfter`, `createdBefore`, `passwordSet`, `maxClicksSet`,
-    and `search`.
+    `search`, `tagIds`, `tagNames` and `tagsMatch`.
     """
     result = await url_service.list_by_owner(user.user_id, query)
-    result["items"] = [UrlListItem.from_doc(doc) for doc in result["items"]]
+    refs = await tag_service.refs_by_id(
+        user.user_id, [t for doc in result["items"] for t in doc.tag_ids]
+    )
+    result["items"] = [UrlListItem.from_doc(doc, refs) for doc in result["items"]]
     return result
 
 
@@ -109,6 +114,7 @@ async def get_url_v1(
         Path(description="Unique identifier of the URL (MongoDB ObjectId)."),
     ],
     url_service: UrlSvc,
+    tag_service: TagSvc,
     user: CurrentUser = Depends(require_scopes(URL_READ_SCOPES)),  # noqa: B008
 ) -> UrlListItem:
     """Fetch a single URL you own by its id.
@@ -132,7 +138,8 @@ async def get_url_v1(
     """
     oid = parse_url_id(url_id)
     doc = await url_service.get_owned(oid, user.user_id)
-    return UrlListItem.from_doc(doc)
+    refs = await tag_service.refs_by_id(user.user_id, doc.tag_ids)
+    return UrlListItem.from_doc(doc, refs)
 
 
 def _resolve_lookup_domain(raw: str, system_default_domain: str) -> str:
@@ -186,6 +193,7 @@ async def get_url_by_address_v1(
         ),
     ],
     url_service: UrlSvc,
+    tag_service: TagSvc,
     settings: Settings,
     user: CurrentUser = Depends(require_scopes(URL_READ_SCOPES)),  # noqa: B008
 ) -> UrlListItem:
@@ -220,7 +228,8 @@ async def get_url_by_address_v1(
     doc = await url_service.get_owned_by_alias(
         short_code, user.user_id, domain=lookup_domain
     )
-    return UrlListItem.from_doc(doc)
+    refs = await tag_service.refs_by_id(user.user_id, doc.tag_ids)
+    return UrlListItem.from_doc(doc, refs)
 
 
 @router.delete(

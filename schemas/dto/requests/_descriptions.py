@@ -23,6 +23,18 @@ STATS_URL_ID_DESC = (
     "For statistics on a single link, prefer `GET /api/v1/stats/links/{url_id}`."
 )
 
+STATS_TAG_ID_DESC = (
+    "Comma-separated tag ids (from `GET /api/v1/tags`). Same scope as `tag`, "
+    "by id. Filter only."
+)
+
+STATS_TAG_DESC = (
+    "Comma-separated tag names. Scopes the aggregate to clicks on your links "
+    "carrying at least one of them (resolved to link ids at query time, so a "
+    "tag added today covers the link's whole click history). Filter only: "
+    "`tag` is not a `group_by` dimension. See also `tag_id`."
+)
+
 STATS_START_DATE_DESC = (
     "Start of time range. Accepts ISO 8601 datetime string "
     "(e.g., `2025-01-01T00:00:00Z`) or Unix timestamp in seconds "
@@ -82,6 +94,8 @@ STATS_FILTERS_DESC = (
     "- `short_code` — Filter by URL alias (e.g., mylink, promo2024)\n"
     "- `url_id` — Filter by URL id (MongoDB ObjectId); ids you do not own "
     "match nothing\n"
+    "- `tag` / `tag_id` — Filter by link tag (name or id); clicks on your links "
+    "carrying any listed tag\n"
     "- `utm_source` / `utm_medium` / `utm_campaign` — Filter by campaign tags; "
     "`(none)` matches untagged clicks\n\n"
     "**Value format:** Array of strings for each dimension.\n\n"
@@ -222,19 +236,25 @@ LIST_URLS_FILTER_DESC = (
     "(ISO 8601 datetime or Unix timestamp)\n"
     "- **passwordSet** — Filter by password protection (boolean: `true`/`false`)\n"
     "- **maxClicksSet** — Filter by click limit presence (boolean: `true`/`false`)\n"
-    "- **search** — Search in alias or long_url (case-insensitive string)\n\n"
+    "- **search** — Search in alias or long_url (case-insensitive string)\n"
+    "- **tagIds** — Only links carrying these tags, by id (array of strings)\n"
+    "- **tagNames** — Same, by tag name; unknown names match nothing\n"
+    '- **tagsMatch** — `"any"` (default) or `"all"`; how multiple tags combine\n\n'
     "**Value formats:**\n\n"
     '- **status**: String — `"ACTIVE"` or `"INACTIVE"` (case-sensitive)\n'
     "- **createdAfter / createdBefore**: ISO 8601 datetime string "
     '(e.g., `"2024-01-01T00:00:00Z"`) or Unix timestamp (e.g., `1704067200`)\n'
     "- **passwordSet / maxClicksSet**: Boolean — `true` or `false`\n"
-    "- **search**: String — case-insensitive search term\n\n"
+    "- **search**: String — case-insensitive search term\n"
+    "- **tagIds / tagNames**: Array of strings\n"
+    '- **tagsMatch**: String — `"any"` or `"all"`\n\n'
     "**Examples:**\n\n"
     '- `{"status": "ACTIVE"}` — Only active URLs\n'
     '- `{"passwordSet": true}` — Only password-protected URLs\n'
     '- `{"createdAfter": "2024-01-01T00:00:00Z"}` — URLs created after Jan 1, 2024\n'
     '- `{"status": "ACTIVE", "maxClicksSet": true}` — Active URLs with click limits\n'
     '- `{"search": "example"}` — URLs containing "example" in alias or long_url\n'
+    '- `{"tagNames": ["launch", "q3"], "tagsMatch": "all"}` — URLs tagged both launch and q3\n'
     '- `{"createdAfter": "2024-01-01", "createdBefore": "2024-12-31", '
     '"status": "ACTIVE"}` — Active URLs from 2024'
 )

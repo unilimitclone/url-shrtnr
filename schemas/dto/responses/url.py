@@ -16,12 +16,22 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
+from bson import ObjectId
 from pydantic import Field
 
 from schemas.dto.base import ResponseBase
+from schemas.dto.responses.tag import TagRef
 from schemas.models.base import ANONYMOUS_OWNER_ID
+from schemas.models.tag import TagDoc
 from schemas.models.url import LinkMetaTags, UrlStatus, UrlV2Doc
 from shared.datetime_utils import to_unix_timestamp
+
+
+def _tag_refs(doc: UrlV2Doc, tag_refs: dict[ObjectId, TagDoc] | None) -> list[TagRef]:
+    """The link's tags in its own order; ids the registry no longer has are skipped."""
+    if not doc.tag_ids or not tag_refs:
+        return []
+    return [TagRef.from_doc(tag_refs[i]) for i in doc.tag_ids if i in tag_refs]
 
 
 class MetaTagsResponse(ResponseBase):
@@ -101,6 +111,10 @@ class UrlResponse(ResponseBase):
         description="Per-country destination overrides (ISO alpha-2 code → URL), or null.",
         examples=[{"IN": "https://example.in/"}],
     )
+    tags: list[TagRef] = Field(
+        default_factory=list,
+        description="The link's tags (id, name, colour), in the link's order.",
+    )
     meta_tags: MetaTagsResponse | None = Field(
         default=None, description="Custom social preview, if configured."
     )
@@ -117,7 +131,12 @@ class UrlResponse(ResponseBase):
 
     @classmethod
     def from_doc(
-        cls, doc: UrlV2Doc, base_url: str, *, claim_token: str | None = None
+        cls,
+        doc: UrlV2Doc,
+        base_url: str,
+        *,
+        claim_token: str | None = None,
+        tag_refs: dict[ObjectId, TagDoc] | None = None,
     ) -> UrlResponse:
         """Build from a UrlV2Doc and the canonical base URL.
 
@@ -138,6 +157,7 @@ class UrlResponse(ResponseBase):
             status=doc.effective_status,
             private_stats=doc.private_stats,
             geo_rules=doc.geo_rules,
+            tags=_tag_refs(doc, tag_refs),
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
             claim_token=claim_token,
         )
@@ -201,6 +221,10 @@ class UpdateUrlResponse(ResponseBase):
         description="Per-country destination overrides (ISO alpha-2 code → URL), or null.",
         examples=[{"IN": "https://example.in/"}],
     )
+    tags: list[TagRef] = Field(
+        default_factory=list,
+        description="The link's tags (id, name, colour), in the link's order.",
+    )
     updated_at: int = Field(
         description="Last update time as Unix timestamp.", examples=[1704067200]
     )
@@ -209,7 +233,9 @@ class UpdateUrlResponse(ResponseBase):
     )
 
     @classmethod
-    def from_doc(cls, doc: UrlV2Doc) -> UpdateUrlResponse:
+    def from_doc(
+        cls, doc: UrlV2Doc, tag_refs: dict[ObjectId, TagDoc] | None = None
+    ) -> UpdateUrlResponse:
         """Build from a UrlV2Doc after an update operation."""
         return cls(
             id=str(doc.id),
@@ -225,6 +251,7 @@ class UpdateUrlResponse(ResponseBase):
             private_stats=doc.private_stats,
             domain=doc.domain,
             geo_rules=doc.geo_rules,
+            tags=_tag_refs(doc, tag_refs),
             updated_at=to_unix_timestamp(doc.updated_at, default=0),
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
@@ -256,10 +283,13 @@ class UrlListItem(ResponseBase):
     last_click: datetime | None = None
     domain: str | None = None
     geo_rules: dict[str, str] | None = None
+    tags: list[TagRef] = Field(default_factory=list)
     meta_tags: MetaTagsResponse | None = None
 
     @classmethod
-    def from_doc(cls, doc: UrlV2Doc) -> UrlListItem:
+    def from_doc(
+        cls, doc: UrlV2Doc, tag_refs: dict[ObjectId, TagDoc] | None = None
+    ) -> UrlListItem:
         """Build from a UrlV2Doc for URL list responses."""
 
         def _ensure_utc(dt: datetime | None) -> datetime | None:
@@ -286,6 +316,7 @@ class UrlListItem(ResponseBase):
             last_click=_ensure_utc(doc.last_click),
             domain=doc.domain,
             geo_rules=doc.geo_rules,
+            tags=_tag_refs(doc, tag_refs),
             meta_tags=MetaTagsResponse.from_model(doc.meta_tags),
         )
 

@@ -63,6 +63,9 @@ class Stubs:
         self.domain_service = MagicMock()
         self.domain_service.delete_all_for_owner = self._tracked("domains", 1)
 
+        self.tag_service = MagicMock()
+        self.tag_service.delete_all_for_owner = self._tracked("tags", 2)
+
         self.click_repo = MagicMock()
         self.click_repo.delete_by_url_ids = self._tracked("clicks.by_url_ids", 4)
         self.click_repo.delete_by_owner = self._tracked("clicks", 2)
@@ -148,6 +151,7 @@ def _service(
         user_repo=stubs.user_repo,
         url_service=stubs.url_service,
         domain_service=stubs.domain_service,
+        tag_service=stubs.tag_service,
         click_repo=stubs.click_repo,
         api_key_repo=stubs.api_key_repo,
         token_repo=stubs.token_repo,
@@ -173,6 +177,7 @@ EXPECTED_COUNTS = {
     "urlsV2": 3,
     "urls_blocked_retained": 1,
     "custom_domains": 1,
+    "tags": 2,
     # url_id-chunk pass (4, pre-claim clicks included) + owner mop-up (2).
     "clicks": 6,
     "api_keys": 1,
@@ -215,6 +220,7 @@ async def test_erase_follows_cascade_order_user_doc_last():
         "users.claim",
         "urls",
         "domains",
+        "tags",
         # url_id-chunk deletes FIRST (pre-claim clicks), owner mop-up second.
         "clicks.by_url_ids",
         "clicks",

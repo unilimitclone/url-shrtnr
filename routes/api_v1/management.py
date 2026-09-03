@@ -19,6 +19,7 @@ from dependencies import (
     CustomDomainSvc,
     FeatureFlagSvc,
     Settings,
+    TagSvc,
     UrlSvc,
     require_scopes,
 )
@@ -105,6 +106,7 @@ async def update_url_v1(
     ],
     body: UpdateUrlRequest,
     url_service: UrlSvc,
+    tag_service: TagSvc,
     custom_domain_service: CustomDomainSvc,
     settings: Settings,
     flag_svc: FeatureFlagSvc,
@@ -156,7 +158,8 @@ async def update_url_v1(
     doc = await url_service.update(
         oid, body, user.user_id, client_ip=get_client_ip(request)
     )
-    return UpdateUrlResponse.from_doc(doc)
+    refs = await tag_service.refs_by_id(user.user_id, doc.tag_ids)
+    return UpdateUrlResponse.from_doc(doc, refs)
 
 
 @router.patch(
@@ -179,6 +182,7 @@ async def update_url_status_v1(
     ],
     body: UpdateUrlStatusRequest,
     url_service: UrlSvc,
+    tag_service: TagSvc,
     user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
 ) -> UpdateUrlResponse:
     """Update only the status of a URL (ACTIVE / INACTIVE).
@@ -213,7 +217,8 @@ async def update_url_status_v1(
     status_only = UpdateUrlRequest(status=body.status)
 
     doc = await url_service.update(oid, status_only, user.user_id)
-    return UpdateUrlResponse.from_doc(doc)
+    refs = await tag_service.refs_by_id(user.user_id, doc.tag_ids)
+    return UpdateUrlResponse.from_doc(doc, refs)
 
 
 @router.delete(

@@ -73,6 +73,7 @@ if TYPE_CHECKING:
     from infrastructure.storage.r2 import R2StorageClient
     from repositories.user_repository import UserRepository
     from services.meta_tags.sinks import MetaImageValidationSink
+    from services.tag_service import TagService
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
     EmojiUrlDoc,
@@ -390,6 +391,16 @@ async def _handle_meta_tags(
     ).model_dump()
 
 
+async def _handle_tag_ids(
+    request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
+) -> None:
+    if "tag_ids" not in request.model_fields_set:
+        return
+    tag_ids = await service._resolve_tag_ids(request.tag_ids, existing.owner_id)
+    if tag_ids != existing.tag_ids:
+        ops["tag_ids"] = tag_ids
+
+
 def _simple_field_handler(field_name: str) -> Callable:
     """Factory for nullable fields that just need a changed-check."""
 
@@ -424,6 +435,7 @@ FIELD_HANDLERS: dict[str, Callable[..., Awaitable[None]]] = {
     "private_stats": _simple_field_handler("private_stats"),
     "status": _handle_status,
     "geo_rules": _handle_geo_rules,
+    "tag_ids": _handle_tag_ids,
     # Must follow long_url — the handler validates against ops["long_url"]
     # when the destination changes in the same request.
     "meta_tags": _handle_meta_tags,
@@ -485,6 +497,7 @@ class UrlService:
         meta_key_secret: str = "",
         events: DomainEventSink | None = None,
         user_repo: UserRepository | None = None,
+        tag_service: TagService | None = None,
     ) -> None:
         self._url_repo = url_repo
         self._legacy_repo = legacy_repo
@@ -527,6 +540,7 @@ class UrlService:
         # Lets og-image uploads pin the owner's storage prefix on first use
         # (rotation-proofing the erasure sweep); None degrades to bare HMAC.
         self._user_repo = user_repo
+        self._tag_service = tag_service
         # Domain-event sink (webhooks backbone). Null default: producers
         # never carry conditionals and tests need no wiring changes.
         self._events = events or NullDomainEventSink()
@@ -952,6 +966,8 @@ class UrlService:
         if private_stats is None:
             private_stats = True if owner_id is not None else None
 
+        tag_ids = await self._resolve_tag_ids(request.tag_ids, owner_id)
+
         # 7. Build document model (validates fields via Pydantic)
         owner_oid = owner_id if owner_id is not None else ANONYMOUS_OWNER_ID
         # Anonymous creates mint a one-time claim token; only the hash is
@@ -976,6 +992,7 @@ class UrlService:
             starts_at=request.starts_at,
             pre_start_url=request.pre_start_url or None,
             geo_rules=request.geo_rules or None,
+            tag_ids=tag_ids,
             status=UrlStatus.ACTIVE,
             private_stats=private_stats,
             total_clicks=0,
@@ -1029,6 +1046,7 @@ class UrlService:
             alias_custom=bool(getattr(request, "alias", None)),
             domain=target_domain,
             geo_rules=len(request.geo_rules or {}),
+            tags=len(tag_ids),
             has_meta_tags=bool(request.meta_tags),
         )
 
@@ -1485,6 +1503,24 @@ class UrlService:
             deleted=deleted, blocked_retained=blocked_retained, url_ids=url_ids
         )
 
+    async def _resolve_tag_ids(
+        self, raw: list[str] | None, owner_id: ObjectId | None
+    ) -> list[ObjectId]:
+        """DTO id strings → owned ObjectIds. 400 on foreign ids or anonymous use."""
+        if not raw:
+            return []
+        if owner_id is None or owner_id == ANONYMOUS_OWNER_ID:
+            raise ValidationError("tags require an account", field="tag_ids")
+        ids = [ObjectId(i) for i in raw]
+        await self._tags().assert_owned(owner_id, ids)
+        return ids
+
+    def _tags(self) -> TagService:
+        # Fail closed: a deployment without the tag service cannot vouch for ids.
+        if self._tag_service is None:
+            raise ValidationError("tags are not available", field="tag_ids")
+        return self._tag_service
+
     async def list_by_owner(
         self,
         owner_id: ObjectId,
@@ -1535,6 +1571,19 @@ class UrlService:
                 mongo_query["max_clicks"] = {"$ne": None}
             elif f.max_clicks_set is False:
                 mongo_query["max_clicks"] = None
+
+            if f.tag_ids or f.tag_names:
+                wanted = [ObjectId(i) for i in (f.tag_ids or [])]
+                unresolved = False
+                if f.tag_names:
+                    named = await self._tags().ids_for_names(owner_id, f.tag_names)
+                    unresolved = len(named) < len(f.tag_names)
+                    wanted += [i for i in named if i not in wanted]
+                # A name no tag carries is on no link, so "all" can match none.
+                if f.tags_match == "all" and unresolved:
+                    wanted = []
+                tags_op = "$all" if f.tags_match == "all" else "$in"
+                and_clauses.append({"tag_ids": {tags_op: wanted}})
 
             if f.search:
                 try:

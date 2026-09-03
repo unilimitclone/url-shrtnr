@@ -99,6 +99,10 @@ class Limits:
     URL_BULK_STATUS = "60 per minute; 200 per day"
     URL_BULK_EXPIRY = "60 per minute; 200 per day"
     URL_BULK_DOMAIN = "60 per minute; 200 per day"
+    URL_BULK_TAGS = "60 per minute; 200 per day"
+    # Tags: writes are cheap single-doc ops; delete fans out over every link.
+    TAG_WRITE = "30 per minute"
+    TAG_DELETE = "10 per minute"
     URL_BULK_MUTATE_DELETE = "30 per minute; 100 per day"
 
     # Claim intake (POST /api/v1/urls/claim). Per submission, 16-item cap;

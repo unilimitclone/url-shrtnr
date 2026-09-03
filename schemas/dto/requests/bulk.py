@@ -17,12 +17,14 @@ from datetime import datetime
 from typing import Literal
 
 from bson import ObjectId
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from schemas.dto.base import RequestBase
 from schemas.models.url import UrlStatus
 from shared.datetime_utils import parse_datetime
+from shared.tags import TAGS_MAX_PER_LINK
 from shared.url_utils import normalise_fqdn
+from shared.validators import normalise_object_ids
 
 # Server cap per request. The frontend chunks larger selections and
 # merges the per-chunk reports. Bounded by report ergonomics and the
@@ -127,3 +129,50 @@ class BulkMoveDomainRequest(BulkIdsRequest):
         if v is None or v == "":
             return None
         return normalise_fqdn(v)
+
+
+class BulkTagUrlsRequest(BulkIdsRequest):
+    """Request body for bulk tag / untag, by tag id.
+
+    At least one of ``add`` or ``remove`` must name a tag, and no tag may be
+    in both.
+    """
+
+    add: list[str] = Field(
+        default_factory=list,
+        max_length=TAGS_MAX_PER_LINK,
+        description=(
+            f"Tag ids to add to every id (at most {TAGS_MAX_PER_LINK}); every one "
+            "must be a tag you own. Tags a link already carries are kept once."
+        ),
+        examples=[["665f0c2f9e7a4b1d2c3d4e5f"]],
+    )
+    remove: list[str] = Field(
+        default_factory=list,
+        description="Tag ids to remove from every id. Tags a link does not carry are ignored.",
+        examples=[["665f0c2f9e7a4b1d2c3d4e60"]],
+    )
+
+    @field_validator("add", "remove", mode="before")
+    @classmethod
+    def _tag_ids_are_object_ids(cls, v: list | None) -> object:
+        return [] if v is None else normalise_object_ids(v)
+
+    @model_validator(mode="after")
+    def _add_or_remove_present(self) -> BulkTagUrlsRequest:
+        if not self.add and not self.remove:
+            raise ValueError("add or remove must name at least one tag")
+        if len(self.add) > TAGS_MAX_PER_LINK:
+            raise ValueError(f"at most {TAGS_MAX_PER_LINK} tags per link")
+        both = set(self.add) & set(self.remove)
+        if both:
+            raise ValueError(
+                f"tags cannot be both added and removed: {', '.join(sorted(both))}"
+            )
+        return self
+
+    def add_ids(self) -> list[ObjectId]:
+        return [ObjectId(i) for i in self.add]
+
+    def remove_ids(self) -> list[ObjectId]:
+        return [ObjectId(i) for i in self.remove]
