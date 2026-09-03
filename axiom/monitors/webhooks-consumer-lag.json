@@ -1,0 +1,14 @@
+{
+  "name": "Webhooks consumer lag",
+  "description": "The webhooks consumer group is falling behind on the click or domain stream: sustained lag means deliveries are being created late. Check the click worker is up and the executor is not saturated.",
+  "type": "Threshold",
+  "intervalMinutes": 5,
+  "rangeMinutes": 10,
+  "aplQuery": "['spoo-prod'] | where event == \"stream_group_stats\" and ['group'] == \"webhooks\" | summarize max(lag) by bin(_time, 5m)",
+  "operator": "AboveOrEqual",
+  "threshold": 5000,
+  "alertOnNoData": false,
+  "notifierIds": [
+    "xd9Sj0KGJ0e2TYPnl2"
+  ]
+}

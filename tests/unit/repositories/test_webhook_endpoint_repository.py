@@ -61,3 +61,43 @@ class TestPendingCounter:
         repo, col = _repo()
         col.find_one_and_update.return_value = {"_id": _EP}
         assert await repo.set_pending_count(_EP, 3) == 0
+
+
+class TestFindBacklogged:
+    @pytest.mark.asyncio
+    async def test_only_positive_counters_sorted_desc(self):
+        repo, col = _repo()
+        cursor = col.find.return_value
+        cursor.to_list.return_value = [
+            {
+                "_id": _EP,
+                "user_id": ObjectId(),
+                "url": "https://example.com/h",
+                "events": ["*"],
+                "pending_count": 5,
+            }
+        ]
+        rows = await repo.find_backlogged(limit=20)
+        assert [r.pending_count for r in rows] == [5]
+        assert col.find.call_args[0][0] == {"pending_count": {"$gt": 0}}
+        cursor.sort.assert_called_once_with("pending_count", -1)
+        cursor.limit.assert_called_once_with(20)
+
+
+class TestBacklogTotals:
+    @pytest.mark.asyncio
+    async def test_aggregates_over_every_backlogged_endpoint(self):
+        repo, col = _repo()
+        col.aggregate.return_value.to_list.return_value = [
+            {"_id": None, "endpoints": 23, "total": 4100}
+        ]
+        assert await repo.backlog_totals() == (23, 4100)
+        pipeline = col.aggregate.await_args[0][0]
+        assert pipeline[0] == {"$match": {"pending_count": {"$gt": 0}}}
+        assert pipeline[1]["$group"]["total"] == {"$sum": "$pending_count"}
+
+    @pytest.mark.asyncio
+    async def test_empty_backlog_is_zero_zero(self):
+        repo, col = _repo()
+        col.aggregate.return_value.to_list.return_value = []
+        assert await repo.backlog_totals() == (0, 0)

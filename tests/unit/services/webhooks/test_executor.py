@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from bson import ObjectId
+from structlog.testing import capture_logs
 
 from infrastructure.crypto import encrypt_secret
 from infrastructure.safe_fetch import PostResult
@@ -663,3 +664,58 @@ class TestRunLoopEdges:
             await task
         await asyncio.sleep(0)
         assert cancelled.is_set()
+
+
+class TestObservabilityFields:
+    @pytest.mark.asyncio
+    async def test_delivered_carries_created_to_completed_latency(self):
+        endpoint = _endpoint()
+        executor, _, _, _ = _make(endpoint)
+        row = _delivery(
+            endpoint_id=endpoint.id,
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=2),
+        )
+        with (
+            patch("services.webhooks.executor.post_public", _post(204)),
+            capture_logs() as logs,
+        ):
+            await executor.attempt(row)
+        delivered = next(e for e in logs if e["event"] == "webhook_delivered")
+        assert 1900 <= delivered["latency_ms"] <= 10_000
+        assert delivered["duration_ms"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_terminal_failures_log_a_reason(self):
+        endpoint = _endpoint()
+        executor, _, endpoints, _ = _make(endpoint, max_consecutive=99)
+        last = len(RETRY_SCHEDULE_SECONDS) - 1
+        with (
+            patch("services.webhooks.executor.post_public", _post(500)),
+            capture_logs() as logs,
+        ):
+            await executor.attempt(
+                _delivery(endpoint_id=endpoint.id, attempt_count=last)
+            )
+        with (
+            patch("services.webhooks.executor.post_public", _post(410)),
+            capture_logs() as logs_gone,
+        ):
+            await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        endpoints.find_by_id.return_value = None
+        with capture_logs() as logs_inactive:
+            await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        reasons = [
+            next(e for e in batch if e["event"] == "webhook_delivery_failed")["reason"]
+            for batch in (logs, logs_gone, logs_inactive)
+        ]
+        assert reasons == ["exhausted", "gone", "endpoint_inactive"]
+
+    @pytest.mark.asyncio
+    async def test_reschedule_is_not_a_terminal_failure(self):
+        executor, _, _, _ = _make(_endpoint())
+        with (
+            patch("services.webhooks.executor.post_public", _post(500)),
+            capture_logs() as logs,
+        ):
+            await executor.attempt(_delivery())
+        assert not [e for e in logs if e["event"] == "webhook_delivery_failed"]

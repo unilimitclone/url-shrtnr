@@ -1,0 +1,14 @@
+{
+  "name": "Webhook endpoints auto-disabled",
+  "description": "Several subscriber endpoints were auto-disabled in a short window. One or two is normal churn; a spike points at our side (secret rotation, signing, SSRF policy) rather than theirs.",
+  "type": "Threshold",
+  "intervalMinutes": 5,
+  "rangeMinutes": 15,
+  "aplQuery": "['spoo-prod'] | where event == \"webhook_endpoint_disabled\" | summarize count() by bin(_time, 15m)",
+  "operator": "AboveOrEqual",
+  "threshold": 3,
+  "alertOnNoData": false,
+  "notifierIds": [
+    "xd9Sj0KGJ0e2TYPnl2"
+  ]
+}

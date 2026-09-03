@@ -42,6 +42,34 @@ class WebhookEndpointRepository(BaseRepository[WebhookEndpointDoc]):
         ).to_list(length=None)
         return [WebhookEndpointDoc.from_mongo(d) for d in docs]
 
+    async def backlog_totals(self) -> tuple[int, int]:
+        """(endpoints with pending rows, pending rows across all of them)."""
+        cursor = await self._col.aggregate(
+            [
+                {"$match": {"pending_count": {"$gt": 0}}},
+                {
+                    "$group": {
+                        "_id": None,
+                        "endpoints": {"$sum": 1},
+                        "total": {"$sum": "$pending_count"},
+                    }
+                },
+            ]
+        )
+        rows = await cursor.to_list(length=1)
+        if not rows:
+            return 0, 0
+        return int(rows[0]["endpoints"]), int(rows[0]["total"])
+
+    async def find_backlogged(self, *, limit: int) -> list[WebhookEndpointDoc]:
+        docs = (
+            await self._col.find({"pending_count": {"$gt": 0}})
+            .sort("pending_count", -1)
+            .limit(limit)
+            .to_list(length=limit)
+        )
+        return [WebhookEndpointDoc.from_mongo(d) for d in docs]
+
     async def count_by_user(self, user_id: ObjectId) -> int:
         return await self._count({"user_id": user_id})
 

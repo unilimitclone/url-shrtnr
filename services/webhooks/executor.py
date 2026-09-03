@@ -52,6 +52,15 @@ RETRY_SCHEDULE_SECONDS = (0, 5, 300, 1800, 7200, 18000, 36000)
 RATE_LIMIT_FALLBACK_SECONDS = 60
 RATE_LIMIT_MAX_DEFER_SECONDS = 900
 
+
+def _since_ms(started: datetime | None) -> int | None:
+    if started is None:
+        return None
+    return int(
+        (datetime.now(timezone.utc) - as_aware_utc(started)).total_seconds() * 1000
+    )
+
+
 # Type of the on-disable hook — wiring plugs email notification in here so
 # the executor never grows an email dependency.
 OnDisabled = Callable[[WebhookEndpointDoc, str], Awaitable[None]]
@@ -242,6 +251,7 @@ class DeliveryExecutor:
                 webhook_id=row.webhook_id,
                 status_code=result.status_code,
                 duration_ms=duration_ms,
+                latency_ms=_since_ms(row.created_at),
                 attempt=row.attempt_count + 1,
                 is_test=row.is_test,
             )
@@ -280,23 +290,23 @@ class DeliveryExecutor:
             attempt=row.attempt_count + 1,
         )
 
+        failure = result.error or f"status {result.status_code}"
         if single_shot:
             # One recorded attempt, terminal, health untouched: the caller
             # (test send / manual retry) reads the outcome synchronously.
-            await self._finish(row, attempt, DeliveryStatus.FAILED)
+            await self._finish(row, attempt, DeliveryStatus.FAILED, reason=failure)
             return
 
         if result.status_code == 410:
-            await self._finish(row, attempt, DeliveryStatus.FAILED)
+            await self._finish(row, attempt, DeliveryStatus.FAILED, reason="gone")
             await self._disable(endpoint, EndpointDisabledReason.GONE)
             return
 
         # attempt_count on the claimed row predates this attempt.
         attempts_done = row.attempt_count + 1
         if attempts_done >= len(RETRY_SCHEDULE_SECONDS):
-            await self._finish(row, attempt, DeliveryStatus.FAILED)
-            reason = result.error or f"status {result.status_code}"
-            streak = await self._endpoints.record_exhausted(endpoint.id, reason)
+            await self._finish(row, attempt, DeliveryStatus.FAILED, reason="exhausted")
+            streak = await self._endpoints.record_exhausted(endpoint.id, failure)
             if streak >= self._max_consecutive:
                 await self._disable(
                     endpoint, EndpointDisabledReason.CONSECUTIVE_FAILURES
@@ -313,14 +323,34 @@ class DeliveryExecutor:
     # ── Terminal writes ──────────────────────────────────────────────────
 
     async def _finish(
-        self, row: WebhookDeliveryDoc, attempt: DeliveryAttempt, status: DeliveryStatus
+        self,
+        row: WebhookDeliveryDoc,
+        attempt: DeliveryAttempt,
+        status: DeliveryStatus,
+        *,
+        reason: str | None = None,
     ) -> None:
         if await self._deliveries.record_attempt_and_finish(row.id, attempt, status):
             await self._release_slot(row)
+        if status == DeliveryStatus.FAILED:
+            self._log_failed(row, reason or "failed")
 
     async def _fail(self, row: WebhookDeliveryDoc, reason: str) -> None:
         if await self._deliveries.mark_failed(row.id, reason):
             await self._release_slot(row)
+        self._log_failed(row, reason)
+
+    def _log_failed(self, row: WebhookDeliveryDoc, reason: str) -> None:
+        log.warning(
+            "webhook_delivery_failed",
+            endpoint_id=str(row.endpoint_id),
+            event_type=row.event_type,
+            webhook_id=row.webhook_id,
+            reason=reason,
+            attempts=row.attempt_count + 1,
+            latency_ms=_since_ms(row.created_at),
+            is_test=row.is_test,
+        )
 
     async def _release_slot(self, row: WebhookDeliveryDoc) -> None:
         # Test sends are inserted PENDING without a dispatch reservation.
