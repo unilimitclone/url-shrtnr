@@ -18,10 +18,14 @@ filter converges to zero; null adds nothing to the sparse dest_registrable
 index.
 
 Second pass, urlsV2 only: links with geo_rules or a pre_start_url get
-``dest.secondary_hosts`` (every extra destination host but the main one) so a host block
-reaches links that hide the host in a rule. Idempotent: docs already
-carrying the field are skipped, and a link whose rules add no new host
-gets an empty list so the filter converges.
+``dest.secondary_hosts`` (every extra destination host but the main one) and
+the index-aligned ``dest.secondary_registrable``, so a host block and a
+feed-domain sweep both reach links that hide the host in a rule. Idempotent:
+docs already carrying the fields are skipped, and a link whose extra
+destinations add no new host gets empty lists so the filter converges.
+
+Run it from the project environment: ``uv run python scripts/backfill_url_dest.py``.
+The inline script header below also works, but only with PyPI reachable.
 
 Usage::
 
@@ -58,7 +62,7 @@ _SECONDARY_FILTER = {
             "$or": [
                 {
                     "dest": {"$type": "object"},
-                    "dest.secondary_hosts": {"$exists": False},
+                    "dest.secondary_registrable": {"$exists": False},
                 },
                 # An unparseable long_url left dest null; its geo hosts still count.
                 {"dest": None},
@@ -111,47 +115,77 @@ def secondary_urls(doc: dict) -> list:
     return urls
 
 
+def secondary_parts(urls: list, main_host: str) -> list[dict]:
+    """Mirror of shared/url_utils._secondary_parts: one parsed destination per
+    distinct host, sorted by host."""
+    by_host: dict[str, dict] = {}
+    for parts in (parse_destination(u) for u in urls):
+        if parts is not None and parts["host"] != main_host:
+            by_host.setdefault(parts["host"], parts)
+    return [by_host[h] for h in sorted(by_host)]
+
+
 def secondary_hosts(urls: list, main_host: str) -> list[str]:
-    """Mirror of shared/url_utils.secondary_hosts."""
-    hosts = {
-        parts["host"]
-        for parts in (parse_destination(u) for u in urls)
-        if parts is not None and parts["host"] != main_host
+    return [p["host"] for p in secondary_parts(urls, main_host)]
+
+
+def secondary_fields(urls: list, main_host: str) -> dict:
+    """Both secondary lists, index-aligned, empty when nothing adds a host."""
+    parts = secondary_parts(urls, main_host)
+    return {
+        "secondary_hosts": [p["host"] for p in parts],
+        "secondary_registrable": [p["registrable_domain"] for p in parts],
     }
-    return sorted(hosts)
 
 
 def dest_for(doc: dict, url_field: str) -> dict | None:
-    """The full dest stamp for one doc: parsed parts plus secondary hosts."""
+    """The full dest stamp for one doc: parsed parts plus secondary lists."""
     parts = parse_destination(doc.get(url_field))
-    extra = secondary_hosts(secondary_urls(doc), (parts or {}).get("host", ""))
-    if parts is None and not extra:
+    extra = secondary_fields(secondary_urls(doc), (parts or {}).get("host", ""))
+    if parts is None and not extra["secondary_hosts"]:
         return None
     stamp = dict(
         parts or {"scheme": "", "host": "", "subdomain": "", "registrable_domain": ""}
     )
-    if extra:
-        stamp["secondary_hosts"] = extra
+    if extra["secondary_hosts"]:
+        stamp.update(extra)
     return stamp
 
 
 def _secondary_set(d: dict) -> dict:
-    """What the second pass writes: the list on an existing stamp, or a whole
-    stamp when dest is null. [] is the convergence marker either way."""
+    """What the second pass writes: both lists on an existing stamp, or a
+    whole stamp when dest is null. Empty lists are the convergence marker."""
     if isinstance(d.get("dest"), dict):
-        hosts = secondary_hosts(secondary_urls(d), d["dest"].get("host", ""))
-        return {"dest.secondary_hosts": hosts}
+        fields = secondary_fields(secondary_urls(d), d["dest"].get("host", ""))
+        return {f"dest.{k}": v for k, v in fields.items()}
     stamp = dest_for(d, "long_url") or dict(_EMPTY_DEST)
     stamp.setdefault("secondary_hosts", [])
+    stamp.setdefault("secondary_registrable", [])
     return {"dest": stamp}
+
+
+def _secondary_op(d: dict) -> UpdateOne:
+    # The filter re-asserts what was read, so a doc edited in between is
+    # left for the next run instead of overwritten with stale hosts.
+    flt = {
+        "_id": d["_id"],
+        "geo_rules": d.get("geo_rules"),
+        "pre_start_url": d.get("pre_start_url"),
+        "dest.secondary_registrable": {"$exists": False},
+    }
+    if isinstance(d.get("dest"), dict):
+        flt["dest.host"] = d["dest"].get("host", "")
+    else:
+        flt["dest"] = None
+    return UpdateOne(flt, {"$set": _secondary_set(d)})
 
 
 def backfill_secondary(coll, dry_run: bool) -> None:
     todo = coll.count_documents(_SECONDARY_FILTER)
-    print(f"[{coll.name}] geo or scheduled links needing secondary_hosts: {todo}")
+    print(f"[{coll.name}] geo or scheduled links needing secondary fields: {todo}")
     if todo == 0 or dry_run:
         return
-    stamped = failed = 0
+    stamped = failed = skipped = 0
     last_id = None
     while True:
         query = dict(_SECONDARY_FILTER)
@@ -168,16 +202,19 @@ def backfill_secondary(coll, dry_run: bool) -> None:
         if not batch:
             break
         last_id = batch[-1]["_id"]
-        ops = [UpdateOne({"_id": d["_id"]}, {"$set": _secondary_set(d)}) for d in batch]
+        ops = [_secondary_op(d) for d in batch]
         try:
-            coll.bulk_write(ops, ordered=False)
+            skipped += len(ops) - coll.bulk_write(ops, ordered=False).matched_count
         except BulkWriteError as exc:
-            failed += len(exc.details.get("writeErrors", []))
+            errors = exc.details.get("writeErrors", [])
+            failed += len(errors)
+            skipped += max(0, len(ops) - exc.details.get("nMatched", 0) - len(errors))
         stamped += len(batch)
     remaining = coll.count_documents(_SECONDARY_FILTER)
     print(
-        f"[{coll.name}] secondary_hosts stamped {stamped - failed}; failed: {failed}; "
-        f"remaining (expect {failed}): {remaining}"
+        f"[{coll.name}] secondary fields stamped {stamped - failed - skipped}; "
+        f"failed: {failed}; skipped (changed meanwhile): {skipped}; "
+        f"remaining (expect {failed + skipped}): {remaining}"
     )
 
 
@@ -194,6 +231,7 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
         return
     done = 0
     failed = 0
+    skipped = 0
     last_id = None
     # Ride _id: the filter has no usable index, and this also carries the scan
     # past any doc whose update fails instead of dying on it forever.
@@ -209,17 +247,28 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
         if not batch:
             break
         last_id = batch[-1]["_id"]
+        # The filter re-asserts what was read: a doc edited between the read
+        # and this write is left for the next run instead of overwritten.
         ops = [
-            UpdateOne({"_id": d["_id"]}, {"$set": {"dest": dest_for(d, url_field)}})
+            UpdateOne(
+                {
+                    "_id": d["_id"],
+                    url_field: d.get(url_field),
+                    "geo_rules": d.get("geo_rules"),
+                    "dest": {"$exists": False},
+                },
+                {"$set": {"dest": dest_for(d, url_field)}},
+            )
             for d in batch
         ]
         try:
-            coll.bulk_write(ops, ordered=False)
+            skipped += len(ops) - coll.bulk_write(ops, ordered=False).matched_count
         except BulkWriteError as exc:
             # v1 docs at the 16MB ceiling reject any $set: one skipped row,
             # never the migration.
             errors = exc.details.get("writeErrors", [])
             failed += len(errors)
+            skipped += max(0, len(ops) - exc.details.get("nMatched", 0) - len(errors))
             for err in errors[:10]:
                 print(
                     f"[{coll.name}] SKIPPED _id={err.get('op', {}).get('q')}: "
@@ -230,8 +279,9 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
             print(f"[{coll.name}] progress: {done}/{todo}")
     remaining = coll.count_documents(_FILTER)
     print(
-        f"[{coll.name}] stamped {done - failed}; failed: {failed}; "
-        f"remaining (expect {failed}): {remaining}"
+        f"[{coll.name}] stamped {done - failed - skipped}; failed: {failed}; "
+        f"skipped (changed meanwhile): {skipped}; "
+        f"remaining (expect {failed + skipped}): {remaining}"
     )
 
 

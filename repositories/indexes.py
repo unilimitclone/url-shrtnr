@@ -122,6 +122,11 @@ async def ensure_indexes(
     await urls_v2_col.create_index(
         [("dest.secondary_hosts", 1)], name="dest_secondary_hosts", sparse=True
     )
+    await urls_v2_col.create_index(
+        [("dest.secondary_registrable", 1)],
+        name="dest_secondary_registrable",
+        sparse=True,
+    )
 
     # ── clicks (time-series) ───────────────────────────────────────────────
     # Create the time-series collection if it doesn't exist yet.

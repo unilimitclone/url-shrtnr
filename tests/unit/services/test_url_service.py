@@ -4108,6 +4108,7 @@ class TestSecondaryDestinationStamping:
         inserted = url_repo.insert.call_args.args[0]
         assert inserted["dest"]["host"] == "clean.example"
         assert inserted["dest"]["secondary_hosts"] == ["hidden.example"]
+        assert inserted["dest"]["secondary_registrable"] == ["hidden.example"]
 
     @pytest.mark.asyncio
     async def test_create_without_geo_rules_writes_no_secondary_field(self):

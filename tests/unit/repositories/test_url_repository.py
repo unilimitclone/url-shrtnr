@@ -470,7 +470,7 @@ class TestSweepQueries:
         col.name = "urlsV2"
         cursor = MagicMock()
         cursor.to_list = AsyncMock(
-            return_value=[{"_id": "a.evil.com", "sample_url": "https://a.evil.com/x"}]
+            return_value=[{"_id": "a.evil.com", "urls": ["https://a.evil.com/x"]}]
         )
         col.aggregate = AsyncMock(return_value=cursor)
 
@@ -478,7 +478,10 @@ class TestSweepQueries:
 
         assert result == [("a.evil.com", "https://a.evil.com/x")]
         pipeline = col.aggregate.await_args.args[0]
-        assert pipeline[0]["$match"]["dest.registrable_domain"] == "evil.com"
+        assert {"dest.registrable_domain": "evil.com"} in pipeline[0]["$match"]["$or"]
+        assert {"dest.secondary_registrable": "evil.com"} in pipeline[0]["$match"][
+            "$or"
+        ]
         assert pipeline[0]["$match"]["status"] == "ACTIVE"
 
     @pytest.mark.asyncio
@@ -491,7 +494,7 @@ class TestSweepQueries:
         col.name = "urlsV2"
         cursor = MagicMock()
         cursor.to_list = AsyncMock(
-            return_value=[{"_id": "fresh.com", "sample_url": "https://fresh.com/a"}]
+            return_value=[{"_id": "fresh.com", "urls": ["https://fresh.com/a"]}]
         )
         col.aggregate = AsyncMock(return_value=cursor)
 
@@ -855,3 +858,72 @@ class TestBlockCausesPerHost:
         assert union[0]["$ifNull"][0] == "$blocked_hosts"
         assert union[0]["$ifNull"][1]["$cond"][1] == ["$dest.host"]
         assert union[1] == ["b.example"]
+
+
+class TestFeedSweepReachesSecondaryDestinations:
+    """A geo or variant host under a feed-listed domain, whose main host is
+    elsewhere, must come out of the feed-delta fan-out as its own host."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_keeps_only_hosts_under_the_domain(self):
+        from repositories.url_repository import UrlRepository
+
+        col = make_collection()
+        col.name = "urlsV2"
+        cursor = MagicMock()
+        cursor.to_list = AsyncMock(return_value=[])
+        col.aggregate = AsyncMock(return_value=cursor)
+        await UrlRepository(col).list_active_hosts_by_registrable("evil.com")
+        pipeline = col.aggregate.await_args.args[0]
+        stages = [next(iter(st)) for st in pipeline]
+        assert stages == ["$match", "$project", "$unwind", "$match", "$group", "$limit"]
+        # Every (host, registrable) pair is unwound, then only pairs under the
+        # feed domain survive, so the clean main host never gets enqueued.
+        assert pipeline[3]["$match"] == {"pairs.1": "evil.com"}
+        assert pipeline[4]["$group"]["_id"] == {"$arrayElemAt": ["$pairs", 0]}
+        zipped = pipeline[1]["$project"]["pairs"]["$concatArrays"][1]["$zip"]["inputs"]
+        assert zipped[0] == {"$ifNull": ["$dest.secondary_hosts", []]}
+        assert zipped[1] == {"$ifNull": ["$dest.secondary_registrable", []]}
+
+
+class TestSweepSampleUrls:
+    def test_secondary_host_samples_its_own_url_not_the_main_one(self):
+        from repositories.url_repository import _host_samples
+
+        rows = [
+            {
+                "_id": "kit.evil.com",
+                "urls": ["https://clean.example/landing", "https://kit.evil.com/kit"],
+            },
+            {"_id": "clean.example", "urls": ["https://clean.example/landing"]},
+            {"_id": "orphan.example", "urls": ["https://elsewhere.example/"]},
+            {"_id": "", "urls": ["https://ignored.example/"]},
+        ]
+        assert _host_samples(rows) == [
+            ("kit.evil.com", "https://kit.evil.com/kit"),
+            ("clean.example", "https://clean.example/landing"),
+            ("orphan.example", "https://elsewhere.example/"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_recent_hosts_projects_every_url_of_the_link(self):
+        from datetime import datetime, timezone
+
+        from repositories.url_repository import UrlRepository
+
+        col = make_collection()
+        col.name = "urlsV2"
+        cursor = MagicMock()
+        cursor.to_list = AsyncMock(return_value=[])
+        col.aggregate = AsyncMock(return_value=cursor)
+        await UrlRepository(col).list_recent_destination_hosts(
+            datetime(2026, 9, 1, tzinfo=timezone.utc)
+        )
+        pipeline = col.aggregate.await_args.args[0]
+        urls = pipeline[1]["$project"]["urls"]["$concatArrays"]
+        assert urls[0] == ["$long_url"]
+        assert urls[1]["$map"]["input"] == {
+            "$objectToArray": {"$ifNull": ["$geo_rules", {}]}
+        }
+        assert urls[2]["$cond"][1] == ["$pre_start_url"]
+        assert pipeline[3]["$group"]["urls"] == {"$first": "$urls"}

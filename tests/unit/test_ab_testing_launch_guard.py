@@ -25,6 +25,9 @@ Required before shipping them:
   2. include variant URLs in link_destination_urls callers (report intake,
      hot screening) so each variant gets its own safety event
   3. stamp existing links: scripts/backfill_url_dest.py
+  4. add the variant URLs to _ALL_URLS in repositories/url_repository.py so
+     the sweeps sample a variant host's own URL (today: long_url, geo rules,
+     pre_start_url)
 """
 
 

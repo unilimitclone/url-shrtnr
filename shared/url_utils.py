@@ -113,14 +113,22 @@ def link_destination_urls(
     return out
 
 
+def _secondary_parts(urls: Iterable[str], exclude: str) -> list[dict]:
+    by_host: dict[str, dict] = {}
+    for parts in (parse_destination(u) for u in urls):
+        if parts is not None and parts["host"] != exclude:
+            by_host.setdefault(parts["host"], parts)
+    return [by_host[h] for h in sorted(by_host)]
+
+
 def secondary_hosts(urls: Iterable[str], *, exclude: str = "") -> list[str]:
     """Distinct parsed hosts of *urls* without *exclude*, sorted."""
-    hosts = {
-        parts["host"]
-        for parts in (parse_destination(u) for u in urls)
-        if parts is not None and parts["host"] != exclude
-    }
-    return sorted(hosts)
+    return [p["host"] for p in _secondary_parts(urls, exclude)]
+
+
+def secondary_registrables(urls: Iterable[str], *, exclude: str = "") -> list[str]:
+    """Registrable domain of each host secondary_hosts() returns, same order."""
+    return [p["registrable_domain"] for p in _secondary_parts(urls, exclude)]
 
 
 def extract_hostname(url: str | None) -> str | None:

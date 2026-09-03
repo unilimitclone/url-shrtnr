@@ -18,6 +18,7 @@ from infrastructure.logging import get_logger
 from repositories.base import BaseRepository
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import UrlStatus, UrlV2Doc
+from shared.url_utils import parse_destination
 
 log = get_logger(__name__)
 
@@ -32,6 +33,43 @@ def dest_host_filter(host: str) -> dict:
 
 # Every host a link can route to, for grouping: main plus secondary.
 _ALL_HOSTS = {"$setUnion": [["$dest.host"], {"$ifNull": ["$dest.secondary_hosts", []]}]}
+# Every URL the link routes to; the sweeps pick the one on the host they emit.
+_ALL_URLS = {
+    "$concatArrays": [
+        ["$long_url"],
+        {
+            "$map": {
+                "input": {"$objectToArray": {"$ifNull": ["$geo_rules", {}]}},
+                "as": "rule",
+                "in": "$$rule.v",
+            }
+        },
+        {
+            "$cond": [
+                {"$eq": [{"$type": "$pre_start_url"}, "string"]},
+                ["$pre_start_url"],
+                [],
+            ]
+        },
+    ]
+}
+# (host, registrable) pairs for every destination; secondary_registrable is
+# index-aligned with secondary_hosts by construction (UrlDestination.for_link).
+# $zip stops at the shorter list: a doc stamped before secondary_registrable
+# existed yields no pairs until the backfill's second pass re-stamps it.
+_HOST_PAIRS = {
+    "$concatArrays": [
+        [["$dest.host", "$dest.registrable_domain"]],
+        {
+            "$zip": {
+                "inputs": [
+                    {"$ifNull": ["$dest.secondary_hosts", []]},
+                    {"$ifNull": ["$dest.secondary_registrable", []]},
+                ]
+            }
+        },
+    ]
+}
 
 
 # Mongo caps a single query document at 16MB; a host-wide block can name
@@ -44,6 +82,24 @@ def _alias_chunks(
 ) -> list[list[dict[str, str]]]:
     clauses = [{"alias": a, "domain": d} for a, d in pairs]
     return [clauses[i : i + _ALIAS_CHUNK] for i in range(0, len(clauses), _ALIAS_CHUNK)]
+
+
+def _host_samples(docs: list[dict]) -> list[tuple[str, str]]:
+    """(host, sample URL on that host) per grouped row. A secondary host's
+    sample must be the geo or variant URL, not the link's main destination,
+    or the analyzer screens the wrong page."""
+    out: list[tuple[str, str]] = []
+    for d in docs:
+        host = d.get("_id")
+        if not host:
+            continue
+        urls = [u for u in d.get("urls") or [] if isinstance(u, str) and u]
+        sample = next(
+            (u for u in urls if (parse_destination(u) or {}).get("host") == host),
+            urls[0] if urls else "",
+        )
+        out.append((host, sample))
+    return out
 
 
 class UrlRepository(BaseRepository[UrlV2Doc]):
@@ -562,16 +618,20 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         pipeline = [
             {
                 "$match": {
-                    "dest.registrable_domain": registrable_domain,
+                    "$or": [
+                        {"dest.registrable_domain": registrable_domain},
+                        {"dest.secondary_registrable": registrable_domain},
+                    ],
                     "status": UrlStatus.ACTIVE.value,
                 }
             },
-            # Main host only: a secondary host's own registrable domain is not
-            # the matched one, so fanning it out here would tag it wrongly.
+            {"$project": {"pairs": _HOST_PAIRS, "urls": _ALL_URLS}},
+            {"$unwind": "$pairs"},
+            {"$match": {"pairs.1": registrable_domain}},
             {
                 "$group": {
-                    "_id": "$dest.host",
-                    "sample_url": {"$first": "$long_url"},
+                    "_id": {"$arrayElemAt": ["$pairs", 0]},
+                    "urls": {"$first": "$urls"},
                 }
             },
             {"$limit": limit},
@@ -584,7 +644,7 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
                 registrable_domain=registrable_domain,
                 limit=limit,
             )
-        return [(d["_id"], d.get("sample_url", "")) for d in docs if d.get("_id")]
+        return _host_samples(docs)
 
     async def list_recent_destination_hosts(
         self, since: datetime, *, limit: int = 20_000
@@ -595,18 +655,18 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         since_id = ObjectId.from_datetime(since)
         pipeline = [
             {"$match": {"_id": {"$gte": since_id}, "dest.host": {"$exists": True}}},
-            {"$project": {"hosts": _ALL_HOSTS, "long_url": 1}},
+            {"$project": {"hosts": _ALL_HOSTS, "urls": _ALL_URLS}},
             {"$unwind": "$hosts"},
             {
                 "$group": {
                     "_id": "$hosts",
-                    "sample_url": {"$first": "$long_url"},
+                    "urls": {"$first": "$urls"},
                 }
             },
             {"$limit": limit},
         ]
         docs = await self._aggregate(pipeline)
-        return [(d["_id"], d.get("sample_url", "")) for d in docs if d.get("_id")]
+        return _host_samples(docs)
 
     async def list_active_owned_by_aliases(
         self, pairs: list[tuple[str, str]], *, limit: int = 1_000
