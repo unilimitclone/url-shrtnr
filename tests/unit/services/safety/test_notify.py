@@ -111,3 +111,51 @@ class TestReviewEmbed:
         f = _fields(ops)
         assert "classification: uncertain" in f["Context"]
         assert f["Sample URL"] == "```https://h/x```"
+
+
+class TestFutureLinks:
+    """Scope says how far the block reached on links that already exist.
+    It says nothing about the next link someone creates, and it must never
+    imply the operator blocklist changed: nothing in the pipeline writes to
+    it, the verdict store is the create-time gate."""
+
+    @pytest.mark.asyncio
+    async def test_host_kind_says_new_links_are_refused(self):
+        n, ops = _notifier()
+        await _action(n, scope="host-wide", scope_kind="host")
+        f = _fields(ops)["Future links"]
+        assert "new links to this host are REFUSED at create" in f
+        assert "not the blocklist" in f
+
+    @pytest.mark.asyncio
+    async def test_pattern_kind_says_matches_refused_host_stays_open(self):
+        n, ops = _notifier()
+        await _action(
+            n, scope="pattern: ^https://evil.example/l.*", scope_kind="pattern"
+        )
+        f = _fields(ops)["Future links"]
+        assert "matching the pattern are REFUSED" in f
+        assert "other paths on the host stay open" in f
+
+    @pytest.mark.asyncio
+    async def test_links_kind_says_host_stays_open(self):
+        n, ops = _notifier()
+        await _action(n, scope="the judged link only", scope_kind="links")
+        f = _fields(ops)["Future links"]
+        assert "query variants included" in f
+        assert "the host stays open" in f
+
+    @pytest.mark.asyncio
+    async def test_no_kind_no_field(self):
+        n, ops = _notifier()
+        await _action(n, scope="host-wide")
+        assert "Future links" not in _fields(ops)
+
+    def test_future_text_never_promises_the_blocklist(self):
+        """A "proposed for the blocklist" claim shipped and survived two
+        review rounds. Pin it out."""
+        from services.safety.notify import _FUTURE
+
+        for text in _FUTURE.values():
+            assert "proposed" not in text
+            assert "blocklist" not in text.replace("not the blocklist", "")

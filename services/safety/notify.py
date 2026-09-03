@@ -8,12 +8,22 @@ and that the screenshot the model judged travels with the verdict.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from infrastructure.ops_notify import OpsNotifier
 
 ACTION_COLOR = 15548997  # red: automatic enforcement happened
 REVIEW_COLOR = 16705372  # yellow: a human decision is needed
+
+ScopeKind = Literal["host", "pattern", "links"]
+
+# What the verdict store, which is the create-time gate, does from now on.
+# Nothing here touches the operator blocklist; saying so is the point.
+_FUTURE: dict[str, str] = {
+    "host": "new links to this host are REFUSED at create (verdict store, not the blocklist)",
+    "pattern": "new links matching the pattern are REFUSED at create; other paths on the host stay open",
+    "links": "this URL (query variants included) is refused at create; the host stays open",
+}
 
 
 def _code(value: object) -> str:
@@ -34,14 +44,16 @@ class SafetyNotifier:
         legacy_count: int,
         sample_url: str | None,
         scope: str = "",
+        scope_kind: ScopeKind | None = None,
         screenshot: bytes | None = None,
         follow_up: str = "",
     ) -> bool:
         """Enforcement already happened; this states the action taken.
-        ``scope`` is its own field because "host-wide" and "one link" are
-        read very differently by the person deciding whether to intervene,
-        and ``follow_up`` is separate so a link-scoped block never reads
-        "host-wide decision..." beside a Scope that says otherwise."""
+        ``scope`` says how far the block reached on links that exist;
+        ``scope_kind`` adds what happens to the next link someone creates,
+        because "host-wide" alone does not answer that. ``follow_up`` is
+        separate so a link-scoped block never reads "host-wide decision..."
+        beside a Scope that says otherwise."""
         fields: list[dict[str, Any]] = [
             {"name": "Destination Host", "value": _code(host)},
             {"name": "Scope", "value": _code(scope or "unspecified")},
@@ -49,6 +61,8 @@ class SafetyNotifier:
             {"name": "Trigger", "value": _code(trigger)},
             {"name": "Links Blocked (v2)", "value": _code(blocked_count)},
         ]
+        if scope_kind:
+            fields.append({"name": "Future links", "value": _code(_FUTURE[scope_kind])})
         if legacy_count:
             fields.append(
                 {"name": "Legacy v1/emoji Blocked", "value": _code(legacy_count)}

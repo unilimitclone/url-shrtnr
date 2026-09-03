@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from infrastructure.logging import get_logger
 from infrastructure.web_risk import WebRiskClient
@@ -28,13 +28,15 @@ from shared.validators import matching_blocked_pattern
 log = get_logger(__name__)
 
 
+VerdictScope = Literal["host", "links", "path_pattern"]
+
+
 @dataclass(frozen=True)
 class ProviderVerdict:
     tier: VerdictTier
     reason: str
-    # "host", "links" (one exact URL) or "path_pattern" (regex in
-    # ``path_pattern``): how far the evidence reaches, not what it enforces.
-    scope: str = "host"
+    # How far the evidence reaches, not what it enforces.
+    scope: VerdictScope = "host"
     path_pattern: str | None = None
 
 

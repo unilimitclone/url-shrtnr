@@ -233,6 +233,9 @@ class SafetyAnalyzer:
             legacy_count=result.legacy_count,
             sample_url=event.url,
             scope=scope_note,
+            scope_kind={"host": "host", "path_pattern": "pattern", "links": "links"}[
+                scope
+            ],
             follow_up=follow_up,
         )
 
@@ -272,7 +275,7 @@ class SafetyAnalyzer:
                 reason=reason,
             )
             await self._notify_reenforced(
-                event, result, reason, scope=f"pattern: {pattern}"
+                event, result, reason, scope=f"pattern: {pattern}", scope_kind="pattern"
             )
             return matching_blocked_pattern(event.url, (pattern,)) is not None
         # links scope: already blocked and the create gate refuses the exact URL.
@@ -326,10 +329,16 @@ class SafetyAnalyzer:
                 legacy_count=result.legacy_count,
                 sample_url=event.url,
                 scope=f"the judged link only (reached through {event.host})",
+                scope_kind="links",
             )
 
     async def _notify_reenforced(
-        self, event, result, reason: str, scope: str = "host-wide"
+        self,
+        event,
+        result,
+        reason: str,
+        scope: str = "host-wide",
+        scope_kind: str = "host",
     ) -> None:
         """Blocked something: the operator hears about it. Zero blocks stays quiet."""
         if result.blocked_count + result.legacy_count == 0:
@@ -342,6 +351,7 @@ class SafetyAnalyzer:
             legacy_count=result.legacy_count,
             sample_url=event.url,
             scope=f"{scope} (re-enforced existing verdict)",
+            scope_kind=scope_kind,
         )
 
     async def _escalate(
