@@ -25,13 +25,13 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from infrastructure.logging import get_logger
-from infrastructure.ops_notify import OpsNotifier
 from repositories.verdict_repository import VerdictRepository
 from schemas.enums.safety import VerdictTier
 from schemas.models.verdict import VerdictDoc
 from services.safety.admission import AdmissionPolicy
 from services.safety.enforcer import SafetyEnforcer
 from services.safety.events import SILENT_TRIGGERS, SafetyAnalyzeEvent
+from services.safety.notify import SafetyNotifier
 from services.safety.providers import (
     AnalysisProvider,
     ProviderVerdict,
@@ -72,7 +72,7 @@ class SafetyAnalyzer:
         providers: list[AnalysisProvider],
         verdict_repo: VerdictRepository,
         enforcer: SafetyEnforcer,
-        notifier: OpsNotifier,
+        notifier: SafetyNotifier,
         *,
         reverdict_ttl_hours: int = 24,
         admission: AdmissionPolicy | None = None,
@@ -197,14 +197,14 @@ class SafetyAnalyzer:
                 matcher=lambda u: matching_blocked_pattern(u, (pattern,)) is not None,
                 reason=verdict.reason,
             )
-            scope_note = f"scoped to pattern {pattern}"
+            scope_note = f"pattern: {pattern}"
         else:
             result = await self._enforcer.block_matching(
                 event.host,
                 matcher=lambda u, _u=event.url: u == _u,
                 reason=verdict.reason,
             )
-            scope_note = "scoped to the judged URL"
+            scope_note = "the judged link only"
 
         await self._verdict_repo.upsert_verdict(
             event.host,
@@ -227,11 +227,13 @@ class SafetyAnalyzer:
             follow_up = "host-wide decision needs review"
         await self._notifier.safety_action(
             host=event.host,
-            reason=f"{verdict.reason} ({scope_note}; {follow_up})",
+            reason=verdict.reason,
             trigger=event.trigger,
             blocked_count=result.blocked_count,
             legacy_count=result.legacy_count,
             sample_url=event.url,
+            scope=scope_note,
+            follow_up=follow_up,
         )
 
     async def _warn_if_shared_carrier(
@@ -269,7 +271,9 @@ class SafetyAnalyzer:
                 matcher=lambda u: matching_blocked_pattern(u, (pattern,)) is not None,
                 reason=reason,
             )
-            await self._notify_reenforced(event, result, reason)
+            await self._notify_reenforced(
+                event, result, reason, scope=f"pattern: {pattern}"
+            )
             return matching_blocked_pattern(event.url, (pattern,)) is not None
         # links scope: already blocked and the create gate refuses the exact URL.
         return event.url == existing.sample_url
@@ -316,24 +320,28 @@ class SafetyAnalyzer:
             )
             await self._notifier.safety_action(
                 host=parts["host"],
-                reason=f"{reason} (reached through {event.host})",
+                reason=reason,
                 trigger=event.trigger,
                 blocked_count=result.blocked_count,
                 legacy_count=result.legacy_count,
                 sample_url=event.url,
+                scope=f"the judged link only (reached through {event.host})",
             )
 
-    async def _notify_reenforced(self, event, result, reason: str) -> None:
+    async def _notify_reenforced(
+        self, event, result, reason: str, scope: str = "host-wide"
+    ) -> None:
         """Blocked something: the operator hears about it. Zero blocks stays quiet."""
         if result.blocked_count + result.legacy_count == 0:
             return
         await self._notifier.safety_action(
             host=event.host,
-            reason=f"{reason} (re-enforced existing verdict)",
+            reason=reason,
             trigger=event.trigger,
             blocked_count=result.blocked_count,
             legacy_count=result.legacy_count,
             sample_url=event.url,
+            scope=f"{scope} (re-enforced existing verdict)",
         )
 
     async def _escalate(

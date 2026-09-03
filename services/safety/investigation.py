@@ -36,7 +36,12 @@ from services.safety.enforcer import SafetyEnforcer
 from services.safety.events import SILENT_TRIGGERS, SafetyAnalyzeEvent
 from services.safety.feeds import REDIRECTOR_FEED
 from services.safety.providers import without_query
-from services.safety.tools import reset_hard_hit, saw_hard_hit
+from services.safety.tools import (
+    last_render_screenshot,
+    reset_hard_hit,
+    reset_last_render,
+    saw_hard_hit,
+)
 from shared.validators import is_valid_pattern, matching_blocked_pattern
 
 log = get_logger(__name__)
@@ -282,6 +287,7 @@ class DeepInvestigator:
     async def investigate(self, event: SafetyAnalyzeEvent) -> None:
         bundle = await build_evidence_bundle(event, self._url_repo)
         reset_hard_hit()
+        reset_last_render()
         try:
             verdict: InvestigationVerdict = await self._runner.run(self._task, bundle)
         except LlmTaskFailed as exc:
@@ -371,6 +377,7 @@ class DeepInvestigator:
         verdict: InvestigationVerdict,
         decision: AuthorityDecision,
     ) -> None:
+        shot = last_render_screenshot(event.url) or None
         if decision.action == "block_host":
             result = await self._enforcer.block_host(event.host, reason=verdict.reason)
             await self._notifier.safety_action(
@@ -380,6 +387,8 @@ class DeepInvestigator:
                 blocked_count=result.blocked_count,
                 legacy_count=result.legacy_count,
                 sample_url=event.url,
+                scope="host-wide",
+                screenshot=shot,
             )
         elif decision.action == "block_aliases":
             if (
@@ -400,7 +409,7 @@ class DeepInvestigator:
                     result.blocked_count,
                     result.legacy_count,
                 )
-                scope_note = f"pattern proposed for the blocklist: {pattern}"
+                scope_note = f"pattern: {pattern} (proposed for the blocklist)"
             else:
                 pairs = await self._aliases_to_block(event)
                 if pairs:
@@ -425,11 +434,13 @@ class DeepInvestigator:
                 scope_note = "specific links only, host left serving"
             await self._notifier.safety_action(
                 host=event.host,
-                reason=f"{verdict.reason} ({scope_note})",
+                reason=verdict.reason,
                 trigger=event.trigger,
                 blocked_count=blocked_count,
                 legacy_count=legacy_count,
                 sample_url=event.url,
+                scope=scope_note,
+                screenshot=shot,
             )
         elif decision.action == "apply_list":
             if self._feed_repo is None:
@@ -469,6 +480,7 @@ class DeepInvestigator:
                 host=event.host,
                 trigger=event.trigger,
                 sample_url=event.url,
+                screenshot=shot,
                 context={
                     **(event.context or {}),
                     "classification": verdict.classification.value,

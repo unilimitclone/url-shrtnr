@@ -90,7 +90,9 @@ class _CapturingHttp:
         self.ok = ok
         self.payloads: list[dict[str, Any]] = []
 
-    async def post(self, url: str, json: dict[str, Any]):
+    # Same surface as HttpClient.post(url, **kwargs): the notifier passes
+    # follow_redirects and, with an image, data/files instead of json.
+    async def post(self, url: str, json: dict[str, Any] | None = None, **kwargs: Any):
         self.payloads.append(json)
         return SimpleNamespace(status_code=204 if self.ok else 500, text="boom")
 

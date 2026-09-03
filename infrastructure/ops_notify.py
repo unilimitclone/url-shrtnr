@@ -6,34 +6,55 @@ URL. It happens to deliver over Discord webhook URLs, which is why it
 used to live in ``infrastructure/webhook/`` — that name is reserved for
 the real webhooks system.
 
-``OpsNotifier`` is semantic: callers state WHAT happened; the
-implementation owns channel routing and every Discord specific (embed
-structure, colors, footer). Send failures return ``False`` and never
+Two shapes live here. The named methods (``contact_message``,
+``url_report``, ``report_summary``) are semantic: callers state WHAT
+happened and this module owns the whole embed. ``send_embed`` is the
+generic: the caller owns title, color and field text, and this module owns
+only what is Discord's business (channel routing, footer, the per-field
+size cap, an image as an attachment, https-only delivery with no
+redirects). Safety composes its embeds over ``send_embed`` in
+``services/safety/notify.py``. Send failures return ``False`` and never
 raise — callers decide whether a failed ping is fatal.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from infrastructure.http_client import HttpClient
 from infrastructure.logging import get_logger
 
 log = get_logger(__name__)
 
+_IMAGE_NAME = "evidence.webp"
+Channel = Literal["report", "contact"]
+_CHANNELS = frozenset(("report", "contact"))
+# Discord's per-field cap; the fences count.
+_FIELD_MAX = 1024
 _FOOTER = {
     "text": "spoo-me",
     "icon_url": "https://spoo.me/static/images/favicon.png",
 }
 _CONTACT_COLOR = 9103397
 _REPORT_COLOR = 14177041
-_SAFETY_ACTION_COLOR = 15548997  # red: automatic enforcement happened
-_SAFETY_REVIEW_COLOR = 16705372  # yellow: a human decision is needed
 
 # Summary embed: list at most this many targets, then "… and N more".
 _SUMMARY_MAX_LISTED = 10
 _SUMMARY_LINE_MAX = 80
+
+
+def _bound_field(value: str) -> str:
+    """Clip a field value to Discord's limit, fences included, keeping the
+    head. The full text still lives on the verdict; only the display clips."""
+    if len(value) <= _FIELD_MAX:
+        return value
+    fenced = value.startswith("```") and value.endswith("```")
+    body = value[3:-3] if fenced else value
+    keep = _FIELD_MAX - (6 if fenced else 0) - 1
+    clipped = body[:keep] + "…"
+    return f"```{clipped}```" if fenced else clipped
 
 
 class OpsNotifier(Protocol):
@@ -57,34 +78,27 @@ class OpsNotifier(Protocol):
         now: datetime,
     ) -> bool: ...
 
-    async def safety_action(
+    async def send_embed(
         self,
         *,
-        host: str,
-        reason: str,
-        trigger: str,
-        blocked_count: int,
-        legacy_count: int,
-        sample_url: str | None,
-    ) -> bool: ...
-
-    async def safety_review(
-        self,
-        *,
-        host: str,
-        trigger: str,
-        sample_url: str | None,
-        context: dict | None,
+        channel: Channel,
+        title: str,
+        color: int,
+        fields: list[dict[str, Any]],
+        image: bytes | None = None,
+        kind: str = "embed",
     ) -> bool: ...
 
 
 class DiscordOpsNotifier:
     """Discord implementation — routes each notification to its channel
-    (contact vs reports) and builds the embeds.
+    (contact vs reports); builds the embeds for the named methods and
+    delivers caller-built ones through ``send_embed``.
 
-    Embed shapes are pinned by the integration tests (test_contact /
-    test_reports run this class over a capturing HTTP fake): change a
-    field here and a test breaks.
+    The named methods' embed shapes are pinned by the integration tests
+    (test_contact / test_reports run this class over a capturing HTTP
+    fake). ``send_embed``'s field text is pinned by its callers' tests;
+    only its Discord mechanics are tested here.
     """
 
     def __init__(
@@ -206,90 +220,75 @@ class DiscordOpsNotifier:
         }
         return await self._deliver(self._report_url, payload, kind="report_summary")
 
-    async def safety_action(
+    async def send_embed(
         self,
         *,
-        host: str,
-        reason: str,
-        trigger: str,
-        blocked_count: int,
-        legacy_count: int,
-        sample_url: str | None,
+        channel: Channel,
+        title: str,
+        color: int,
+        fields: list[dict[str, Any]],
+        image: bytes | None = None,
+        kind: str = "embed",
     ) -> bool:
-        """Enforcement already happened — this states the ACTION TAKEN, it
-        is not a request for one. ``legacy_count`` is v1/emoji links
-        blocked via their safety flag (same 451 as v2, reversible)."""
-        fields: list[dict[str, Any]] = [
-            {"name": "Destination Host", "value": f"```{host}```"},
-            {"name": "Reason", "value": f"```{reason}```"},
-            {"name": "Trigger", "value": f"```{trigger}```"},
-            {"name": "Links Blocked (v2)", "value": f"```{blocked_count}```"},
-        ]
-        if legacy_count:
-            fields.append(
-                {
-                    "name": "Legacy v1/emoji Blocked",
-                    "value": f"```{legacy_count}```",
-                }
-            )
-        if sample_url:
-            fields.append({"name": "Sample URL", "value": f"```{sample_url}```"})
+        """The generic operator embed. Callers own WHAT the fields say; this
+        owns Discord: routing, the footer, field limits, and how an image
+        rides along. Field values are bounded here because Discord rejects
+        the whole message over 1024 characters and a lost notification is
+        worse than a clipped one."""
+        if channel not in _CHANNELS:
+            # A typo must not quietly route a block embed to the contact channel.
+            log.warning("ops_notify_unknown_channel", kind=kind, channel=channel)
+            return False
+        url = self._report_url if channel == "report" else self._contact_url
         payload = {
             "embeds": [
                 {
-                    "title": "Safety: destination auto-blocked",
-                    "color": _SAFETY_ACTION_COLOR,
-                    "fields": fields,
+                    "title": title,
+                    "color": color,
+                    "fields": [
+                        {"name": f["name"], "value": _bound_field(f["value"])}
+                        for f in fields
+                    ],
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "footer": _FOOTER,
                 }
             ]
         }
-        return await self._deliver(self._report_url, payload, kind="safety_action")
-
-    async def safety_review(
-        self,
-        *,
-        host: str,
-        trigger: str,
-        sample_url: str | None,
-        context: dict | None,
-    ) -> bool:
-        """No local source could judge this destination — a human decision
-        is needed. Carries the trigger context so the decision takes
-        seconds, not an investigation."""
-        fields: list[dict[str, Any]] = [
-            {"name": "Destination Host", "value": f"```{host}```"},
-            {"name": "Trigger", "value": f"```{trigger}```"},
-        ]
-        if sample_url:
-            fields.append({"name": "Sample URL", "value": f"```{sample_url}```"})
-        if context:
-            lines = [f"{k}: {v}" for k, v in list(context.items())[:8]]
-            fields.append(
-                {"name": "Context", "value": "```" + "\n".join(lines) + "```"}
-            )
-        payload = {
-            "embeds": [
-                {
-                    "title": "Safety: review needed",
-                    "color": _SAFETY_REVIEW_COLOR,
-                    "fields": fields,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "footer": _FOOTER,
-                }
-            ]
-        }
-        return await self._deliver(self._report_url, payload, kind="safety_review")
+        return await self._deliver(url, payload, kind=kind, image=image)
 
     # ── Delivery ──────────────────────────────────────────────────────────────
 
-    async def _deliver(self, url: str, payload: dict[str, Any], *, kind: str) -> bool:
+    async def _deliver(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        kind: str,
+        image: bytes | None = None,
+    ) -> bool:
         if not url:
             log.warning("ops_notify_not_configured", kind=kind)
             return False
+        if not url.startswith("https://"):
+            # A webhook URL is a bearer credential; never let it, or a
+            # screenshot, travel in the clear or follow a redirect elsewhere.
+            log.warning("ops_notify_insecure_url_refused", kind=kind)
+            return False
         try:
-            response = await self._http.post(url, json=payload)
+            if image:
+                # Discord webhooks take the image as a multipart file; the
+                # embed refers to it by attachment name.
+                payload["embeds"][0]["image"] = {"url": f"attachment://{_IMAGE_NAME}"}
+                response = await self._http.post(
+                    url,
+                    data={"payload_json": json.dumps(payload)},
+                    files={"files[0]": (_IMAGE_NAME, image, "image/webp")},
+                    follow_redirects=False,
+                )
+            else:
+                response = await self._http.post(
+                    url, json=payload, follow_redirects=False
+                )
             if response.status_code in (200, 204):
                 return True
             log.warning(

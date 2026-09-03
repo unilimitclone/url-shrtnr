@@ -401,7 +401,12 @@ class TestScopeAuthority:
         assert prov["scope_justification"] == "shared site builder, 210 creators"
         # The operator is told the pattern to add, since a pattern reaches
         # every FUTURE link and only a human may apply it.
-        assert "pattern proposed" in notifier.safety_action.await_args.kwargs["reason"]
+        kw = notifier.safety_action.await_args.kwargs
+        assert kw["scope"].startswith("pattern: ")
+        assert "proposed for the blocklist" in kw["scope"]
+        assert (
+            "pattern" not in kw["reason"]
+        )  # the reason is the model's reason, nothing else
 
 
 class TestCoverageTriggersStaySilent:
@@ -750,3 +755,45 @@ class TestPromptCarriesTheClickFixRule:
         assert "plus four of the second-part signals" in ex
         # It must not overclaim coverage it did not check.
         assert "on any path" not in ex
+
+
+class TestEnactCarriesScopeAndScreenshot:
+    @pytest.mark.asyncio
+    async def test_host_block_embed_gets_scope_and_the_rendered_screenshot(self):
+        """fetch_page runs in a child task, so the screenshot reaches the
+        embed through the same mutable-holder contextvar as the hard-hit
+        flag. Mutating it from a child task here is exactly how the agent
+        dispatches tools."""
+        from services.safety import tools as safety_tools
+
+        async def run_and_render(_task, _bundle):
+            async def tool_call():
+                shots = safety_tools._last_render.get().shots
+                shots.append(("https://evil.example/login", b"the-page"))
+                shots.append(("https://evil.example/", b"blank-root"))
+
+            await asyncio.gather(tool_call())
+            return _verdict(Classification.SCAM_HOST)
+
+        inv, _repo, enforcer, notifier = _investigator(
+            _verdict(Classification.SCAM_HOST)
+        )
+        inv._runner.run = AsyncMock(side_effect=run_and_render)
+
+        await inv.investigate(_event())
+
+        enforcer.block_host.assert_awaited_once()
+        kw = notifier.safety_action.await_args.kwargs
+        assert kw["scope"] == "host-wide"
+        # The judged URL's render, not the root fetched after it.
+        assert kw["screenshot"] == b"the-page"
+
+    @pytest.mark.asyncio
+    async def test_no_render_means_no_attachment(self):
+        inv, _repo, _enforcer, notifier = _investigator(
+            _verdict(Classification.SCAM_HOST)
+        )
+
+        await inv.investigate(_event())
+
+        assert notifier.safety_action.await_args.kwargs["screenshot"] is None
