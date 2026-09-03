@@ -37,6 +37,7 @@ def _wire(custom_domains: CustomDomainSettings):
         "app-grants": MagicMock(name="app-grants"),
         "feature_flags": MagicMock(name="feature_flags"),
         "custom_domains": MagicMock(name="custom_domains"),
+        "tags": MagicMock(name="tags"),
         "blocked_domains": MagicMock(name="blocked_domains"),
         "reports": MagicMock(name="reports"),
         "report_submissions": MagicMock(name="report_submissions"),

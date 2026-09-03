@@ -40,6 +40,10 @@ class StatsDimension(str, Enum):
     UTM_SOURCE = "utm_source"
     UTM_MEDIUM = "utm_medium"
     UTM_CAMPAIGN = "utm_campaign"
+    # Filter-only. Tags live on the link, not the click: the service
+    # resolves them (by name or id) to the owner's url_ids before the $match.
+    TAG = "tag"
+    TAG_ID = "tag_id"
 
 
 class StatsMetric(str, Enum):
@@ -58,7 +62,11 @@ class ExportFormat(str, Enum):
     XML = "xml"
 
 
-ALLOWED_GROUP_BY = frozenset(StatsDimension) - {StatsDimension.URL_ID}
+ALLOWED_GROUP_BY = frozenset(StatsDimension) - {
+    StatsDimension.URL_ID,
+    StatsDimension.TAG,
+    StatsDimension.TAG_ID,
+}
 ALLOWED_METRICS = frozenset(StatsMetric)
 ALLOWED_FILTERS = frozenset(
     {
@@ -73,6 +81,8 @@ ALLOWED_FILTERS = frozenset(
         StatsDimension.UTM_SOURCE,
         StatsDimension.UTM_MEDIUM,
         StatsDimension.UTM_CAMPAIGN,
+        StatsDimension.TAG,
+        StatsDimension.TAG_ID,
     }
 )
 # Per-link endpoints pre-select the link in the path, so slicing or
@@ -81,5 +91,7 @@ LINK_ALLOWED_GROUP_BY = ALLOWED_GROUP_BY - {StatsDimension.SHORT_CODE}
 LINK_ALLOWED_FILTERS = ALLOWED_FILTERS - {
     StatsDimension.SHORT_CODE,
     StatsDimension.URL_ID,
+    StatsDimension.TAG,
+    StatsDimension.TAG_ID,
 }
 ALLOWED_EXPORT_FORMATS = frozenset(ExportFormat)

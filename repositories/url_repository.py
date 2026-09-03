@@ -386,6 +386,82 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
             )
             raise
 
+    async def apply_by_ids_and_owner(
+        self, url_ids: list[ObjectId], owner_id: ObjectId, update: dict | list
+    ) -> int:
+        """Apply a raw update (operator document or aggregation pipeline) to
+        exactly *url_ids* if owned by *owner_id*. The caller supplies the
+        operators; ``update_by_ids_and_owner`` stays the ``$set``-only twin.
+        """
+        if not url_ids or not owner_id:
+            raise ValueError("url_ids and owner_id are both required for bulk update")
+        if not update:
+            raise ValueError("update must not be empty")
+        try:
+            result = await self._col.update_many(
+                {"_id": {"$in": url_ids}, "owner_id": owner_id}, update
+            )
+            return int(result.modified_count or 0)
+        except PyMongoError as exc:
+            log.error(
+                "repo_update_many_failed",
+                collection=self._collection_name,
+                error=str(exc),
+            )
+            raise
+
+    async def list_ids_by_owner_and_tag_ids(
+        self, owner_id: ObjectId, tag_ids: list[ObjectId]
+    ) -> list[ObjectId]:
+        """Every id of the owner's links carrying any of *tag_ids* (multikey
+        index). Uncapped on purpose: a clipped list would make tag-scoped
+        stats silently undercount, and an account's own link count bounds it."""
+        if not owner_id or not tag_ids:
+            raise ValueError("owner_id and tag_ids are both required")
+        try:
+            cursor = self._col.find(
+                {"owner_id": owner_id, "tag_ids": {"$in": tag_ids}}, {"_id": 1}
+            )
+            ids = [d["_id"] async for d in cursor]
+        except PyMongoError as exc:
+            log.error(
+                "repo_list_ids_by_tags_failed",
+                collection=self._collection_name,
+                error=str(exc),
+            )
+            raise
+        return ids
+
+    async def count_tag_ids_by_owner(self, owner_id: ObjectId) -> dict[ObjectId, int]:
+        """Links per tag id over the owner's links."""
+        if not owner_id:
+            raise ValueError("owner_id is required")
+        pipeline = [
+            {"$match": {"owner_id": owner_id, "tag_ids.0": {"$exists": True}}},
+            {"$unwind": "$tag_ids"},
+            {"$group": {"_id": "$tag_ids", "count": {"$sum": 1}}},
+        ]
+        rows = await self._aggregate(pipeline)
+        return {row["_id"]: int(row["count"]) for row in rows}
+
+    async def pull_tag_id_by_owner(self, owner_id: ObjectId, tag_id: ObjectId) -> int:
+        """Strip one tag id from every link the owner has; returns links modified."""
+        if not owner_id or not tag_id:
+            raise ValueError("owner_id and tag_id are both required")
+        try:
+            result = await self._col.update_many(
+                {"owner_id": owner_id, "tag_ids": tag_id},
+                {"$pull": {"tag_ids": tag_id}},
+            )
+            return int(result.modified_count or 0)
+        except PyMongoError as exc:
+            log.error(
+                "repo_update_many_failed",
+                collection=self._collection_name,
+                error=str(exc),
+            )
+            raise
+
     async def check_alias_exists(self, alias: str, domain: str) -> bool:
         """Return True if the alias is taken under the given domain namespace."""
         doc = await self._find_one_raw({"alias": alias, "domain": domain}, {"_id": 1})

@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from repositories.webhook_endpoint_repository import WebhookEndpointRepository
     from repositories.webhook_event_repository import WebhookEventRepository
     from services.custom_domain_service import CustomDomainService
+    from services.tag_service import TagService
     from services.url_service import UrlService
 
 log = get_logger(__name__)
@@ -117,6 +118,7 @@ class AccountErasureService:
         user_repo: UserRepository,
         url_service: UrlService,
         domain_service: CustomDomainService,
+        tag_service: TagService,
         click_repo: ClickRepository,
         api_key_repo: ApiKeyRepository,
         token_repo: TokenRepository,
@@ -139,6 +141,7 @@ class AccountErasureService:
         self._user_repo = user_repo
         self._url_service = url_service
         self._domain_service = domain_service
+        self._tag_service = tag_service
         self._click_repo = click_repo
         self._api_key_repo = api_key_repo
         self._token_repo = token_repo
@@ -210,6 +213,7 @@ class AccountErasureService:
         counts["custom_domains"] = await self._domain_service.delete_all_for_owner(
             user_id
         )
+        counts["tags"] = await self._tag_service.delete_all_for_owner(user_id)
         # Clicks are time-series: both predicates must stay metaField-only.
         # url_id chunks first — pre-claim clicks carry the anonymous sentinel.
         clicks_deleted = 0

@@ -3,6 +3,7 @@ POST /api/v1/urls/bulk/delete — delete up to 100 URLs by id
 POST /api/v1/urls/bulk/status — activate/deactivate up to 100 URLs
 POST /api/v1/urls/bulk/expiry — set/clear expiry on up to 100 URLs
 POST /api/v1/urls/bulk/domain — move up to 100 URLs to another domain
+POST /api/v1/urls/bulk/tags — add/remove tags on up to 100 URLs
 
 The backend counterpart to the dashboard's multi-select action bar: one
 request per user intent instead of a client-side fan-out over the
@@ -38,6 +39,7 @@ from middleware.rate_limiter import Limits, limiter
 from schemas.dto.requests.bulk import (
     BulkDeleteUrlsRequest,
     BulkMoveDomainRequest,
+    BulkTagUrlsRequest,
     BulkUpdateExpiryRequest,
     BulkUpdateStatusRequest,
 )
@@ -187,4 +189,39 @@ async def bulk_move_url_domain_v1(
         await custom_domain_service.assert_owned_and_active(user, body.domain)
     return await bulk_service.bulk_move_domain(
         body.object_ids(), body.domain, user.user_id
+    )
+
+
+@router.post(
+    "/urls/bulk/tags",
+    responses=ERROR_RESPONSES,
+    operation_id="bulkTagUrls",
+    summary="Bulk Tag URLs",
+)
+@limiter.limit(Limits.URL_BULK_TAGS)
+async def bulk_tag_urls_v1(
+    request: Request,
+    body: BulkTagUrlsRequest,
+    bulk_service: BulkUrlSvc,
+    user: CurrentUser = Depends(require_scopes(URL_MANAGEMENT_SCOPES)),  # noqa: B008
+) -> BulkUrlOperationResponse:
+    """Add and remove tags (by tag id) on up to 100 URLs you own in one request.
+
+    Per item the result is the link's current tags minus `remove`, plus
+    `add` (kept once, order preserved). A link that already reads that
+    way is a success no-op. Every id in `add` must be one of your tags
+    (`GET /tags`); an unknown one rejects the whole request before any
+    item is touched.
+
+    **Per-item verdicts** (`error_code`): `not_found` — no such URL in
+    your account; `forbidden` — the URL is admin-blocked;
+    `validation_error` — the result would exceed 10 tags on that link.
+
+    **Retry semantics**: re-sending the batch is safe — items already
+    carrying the result report success no-ops.
+
+    **Rate Limits**: 60/min, 200/day — counted per request, not per id.
+    """
+    return await bulk_service.bulk_tag(
+        body.object_ids(), body.add_ids(), body.remove_ids(), user.user_id
     )

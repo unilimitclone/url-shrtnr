@@ -85,6 +85,8 @@ def build_test_app(
         app.state.user_repo = AsyncMock()
         app.state.token_factory = AsyncMock()
         app.state.url_service = AsyncMock()
+        app.state.tag_service = AsyncMock()
+        app.state.tag_service.refs_by_id = AsyncMock(return_value={})
         app.state.stats_service = AsyncMock()
         app.state.export_service = AsyncMock()
         app.state.api_key_service = AsyncMock()

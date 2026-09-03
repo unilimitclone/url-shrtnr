@@ -65,6 +65,7 @@ def link_snapshot(doc: UrlV2Doc) -> dict[str, Any]:
         "max_clicks": doc.max_clicks,
         "expires_at": doc.expire_after.isoformat() if doc.expire_after else None,
         "geo_rules": doc.geo_rules or None,
+        "tag_ids": [str(i) for i in doc.tag_ids],
         "meta_tags": _public_meta_tags(doc.meta_tags),
         "total_clicks": doc.total_clicks,
         "created_at": doc.created_at.isoformat(),
@@ -96,6 +97,8 @@ def _event_change_value(field_name: str, value: object) -> object:
         return value.value
     if isinstance(value, datetime):
         return value.isoformat()
+    if field_name == "tag_ids" and isinstance(value, list):
+        return [str(v) for v in value]
     if field_name == "meta_tags":
         if isinstance(value, LinkMetaTags):
             return _public_meta_tags(value)

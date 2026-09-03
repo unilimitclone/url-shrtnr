@@ -242,3 +242,26 @@ def validate_safe_redirect(url: str, fallback: str = "/dashboard") -> str:
     if parsed.scheme or parsed.netloc:
         return fallback
     return url
+
+
+_OBJECT_ID_RE = re.compile(r"^[0-9a-f]{24}$")
+
+
+def normalise_object_ids(
+    v: object, *, cap: int | None = None, noun: str = "ids"
+) -> object:
+    """Shape-check an id list for a DTO: 24-hex strings, deduped first-wins,
+    optionally capped. Non-lists pass through so Pydantic reports the type."""
+    if v is None or not isinstance(v, list):
+        return v
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in v:
+        if not isinstance(item, str) or not _OBJECT_ID_RE.fullmatch(item):
+            raise ValueError(f"'{item}' is not a valid id")
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    if cap is not None and len(out) > cap:
+        raise ValueError(f"at most {cap} {noun}")
+    return out

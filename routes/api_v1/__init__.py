@@ -19,6 +19,7 @@ from routes.api_v1 import (
     reports,
     shorten,
     stats,
+    tags,
     urls,
     webhooks,
 )
@@ -28,6 +29,7 @@ router.include_router(shorten.router)
 router.include_router(emoji.router)
 router.include_router(urls.router)
 router.include_router(bulk.router)
+router.include_router(tags.router)
 router.include_router(management.router)
 router.include_router(stats.router)
 router.include_router(public_stats.router)

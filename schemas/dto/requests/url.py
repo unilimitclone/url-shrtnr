@@ -23,7 +23,9 @@ from schemas.dto.requests._descriptions import LIST_URLS_FILTER_DESC
 from schemas.models.url import UrlStatus
 from shared.datetime_utils import parse_datetime
 from shared.emoji_policy import is_emoji_only_shape
+from shared.tags import TAGS_MAX_PER_LINK, normalise_tags
 from shared.url_utils import normalise_fqdn
+from shared.validators import normalise_object_ids
 
 ALLOWED_SORT_FIELDS = frozenset({"created_at", "last_click", "total_clicks"})
 
@@ -36,6 +38,12 @@ _GEO_RULES_HARD_CAP = 500
 
 
 _ALNUM_ALIAS_RE = re.compile(r"[a-zA-Z0-9_-]+\Z")
+
+_TAG_IDS_FIELD_DESC = (
+    f"Ids of tags from `GET /api/v1/tags`, at most {TAGS_MAX_PER_LINK} per link. "
+    "Every id must be one of your tags (400 otherwise). On PATCH the list "
+    "replaces the stored one; `null` or `[]` clears it."
+)
 
 _ALIAS_FIELD_DESC = (
     "Custom short code. Either alphanumeric (a-z, A-Z, 0-9, `_`, `-`; "
@@ -116,6 +124,31 @@ class UrlFilter(RequestBase):
     password_set: bool | None = Field(default=None, alias="passwordSet")
     max_clicks_set: bool | None = Field(default=None, alias="maxClicksSet")
     search: str | None = Field(default=None, max_length=500)
+    tag_ids: list[str] | None = Field(
+        default=None,
+        alias="tagIds",
+        description="Only links carrying these tags, by id (see tagsMatch).",
+    )
+    tag_names: list[str] | None = Field(
+        default=None,
+        alias="tagNames",
+        description="Only links carrying these tags, by name; unknown names match nothing.",
+    )
+    tags_match: Literal["any", "all"] = Field(
+        default="any",
+        alias="tagsMatch",
+        description="`any` matches links with at least one listed tag; `all` requires every one.",
+    )
+
+    @field_validator("tag_ids", mode="before")
+    @classmethod
+    def _norm_tag_ids(cls, v: list | None) -> list | None:
+        return normalise_object_ids(v) or None
+
+    @field_validator("tag_names", mode="before")
+    @classmethod
+    def _norm_tag_names(cls, v: list | None) -> list | None:
+        return normalise_tags(v, cap=None) or None
 
 
 class MetaTagsRequest(BaseModel):
@@ -248,6 +281,11 @@ class CreateUrlRequest(RequestBase):
         ),
         examples=[{"IN": "https://example.in/", "US": "https://example.com/us"}],
     )
+    tag_ids: list[str] | None = Field(
+        default=None,
+        description=_TAG_IDS_FIELD_DESC,
+        examples=[["665f0c2f9e7a4b1d2c3d4e5f"]],
+    )
     meta_tags: MetaTagsRequest | None = Field(
         default=None, description=_META_TAGS_FIELD_DESC
     )
@@ -280,6 +318,11 @@ class CreateUrlRequest(RequestBase):
     @classmethod
     def _norm_geo_rules(cls, v: dict | None) -> dict | None:
         return _normalise_geo_rules(v)
+
+    @field_validator("tag_ids", mode="before")
+    @classmethod
+    def _norm_tag_ids(cls, v: list | None) -> list | None:
+        return normalise_object_ids(v, cap=TAGS_MAX_PER_LINK, noun="tags per link")
 
 
 class UpdateUrlRequest(RequestBase):
@@ -361,6 +404,11 @@ class UpdateUrlRequest(RequestBase):
         ),
         examples=[{"IN": "https://example.in/", "US": "https://example.com/us"}],
     )
+    tag_ids: list[str] | None = Field(
+        default=None,
+        description=_TAG_IDS_FIELD_DESC,
+        examples=[["665f0c2f9e7a4b1d2c3d4e5f"]],
+    )
     meta_tags: MetaTagsRequest | None = Field(
         default=None, description=_META_TAGS_FIELD_DESC
     )
@@ -393,6 +441,11 @@ class UpdateUrlRequest(RequestBase):
     @classmethod
     def _norm_geo_rules(cls, v: dict | None) -> dict | None:
         return _normalise_geo_rules(v)
+
+    @field_validator("tag_ids", mode="before")
+    @classmethod
+    def _norm_tag_ids(cls, v: list | None) -> list | None:
+        return normalise_object_ids(v, cap=TAGS_MAX_PER_LINK, noun="tags per link")
 
 
 class UpdateUrlStatusRequest(BaseModel):

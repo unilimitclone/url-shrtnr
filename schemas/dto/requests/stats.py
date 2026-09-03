@@ -46,6 +46,8 @@ from schemas.dto.requests._descriptions import (
     STATS_REFERRER_DESC,
     STATS_SHORT_CODE_DESC,
     STATS_START_DATE_DESC,
+    STATS_TAG_DESC,
+    STATS_TAG_ID_DESC,
     STATS_TIMEZONE_DESC,
     STATS_URL_ID_DESC,
     STATS_UTM_DESC,
@@ -60,6 +62,7 @@ from schemas.enums.stats import (
     ExportFormat,
     StatsDimension,
 )
+from shared.tags import normalise_tag
 
 
 def _parse_comma_separated(value: Any) -> list[str]:
@@ -276,12 +279,40 @@ class StatsQuery(_StatsQueryBase):
         description=STATS_URL_ID_DESC,
         examples=["686cbf34cc37ed6bbcd82ab9"],
     )
+    tag: str | None = Field(
+        default=None,
+        max_length=500,
+        description=STATS_TAG_DESC,
+        examples=["launch,q3"],
+    )
+    tag_id: str | None = Field(
+        default=None,
+        max_length=1000,
+        description=STATS_TAG_ID_DESC,
+        examples=["665f0c2f9e7a4b1d2c3d4e5f"],
+    )
 
     def _apply_identity_filters(self, parsed_filters: dict[str, list[str]]) -> None:
         if self.short_code:
             parsed_filters["short_code"] = _parse_comma_separated(self.short_code)
         if self.url_id:
             parsed_filters["url_id"] = _parse_comma_separated(self.url_id)
+        if self.tag:
+            parsed_filters["tag"] = _parse_comma_separated(self.tag)
+        if self.tag_id:
+            parsed_filters["tag_id"] = _parse_comma_separated(self.tag_id)
+        bad_tag_ids = [
+            v
+            for v in parsed_filters.get(StatsDimension.TAG_ID, [])
+            if not ObjectId.is_valid(v)
+        ]
+        if bad_tag_ids:
+            raise ValueError(f"invalid tag_id filter values: {', '.join(bad_tag_ids)}")
+        if StatsDimension.TAG in parsed_filters:
+            # Same normalisation as the write side, so "Launch" finds "launch".
+            parsed_filters[StatsDimension.TAG] = [
+                normalise_tag(v) for v in parsed_filters[StatsDimension.TAG]
+            ]
         # Format-validate every url_id value (the JSON filters path too) so
         # the service can convert to ObjectId without a second check. No
         # ownership check — the owner stamp already scopes the $match, so

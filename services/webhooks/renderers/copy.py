@@ -225,6 +225,15 @@ def _lifecycle_pairs(
         )
         pairs.append(("Bots", "blocked" if link.get("block_bots") else "allowed"))
         pairs.append(("Meta tags", "custom" if link.get("meta_tags") else "default"))
+        tags = link.get("tag_ids")
+        pairs.append(
+            (
+                "Tags",
+                f"{len(tags)} {'tag' if len(tags) == 1 else 'tags'}"
+                if isinstance(tags, list) and tags
+                else "none",
+            )
+        )
         geo = link.get("geo_rules")
         pairs.append(
             (
