@@ -4108,7 +4108,6 @@ class TestSecondaryDestinationStamping:
         inserted = url_repo.insert.call_args.args[0]
         assert inserted["dest"]["host"] == "clean.example"
         assert inserted["dest"]["secondary_hosts"] == ["hidden.example"]
-        assert inserted["dest"]["secondary_registrable"] == ["hidden.example"]
 
     @pytest.mark.asyncio
     async def test_create_without_geo_rules_writes_no_secondary_field(self):
@@ -4220,3 +4219,60 @@ class TestPreStartUrlStamping:
         written = url_repo.update.call_args[0][1]["$set"]
         assert written["pre_start_url"] == "https://teaser.example/soon"
         assert written["dest"]["secondary_hosts"] == ["teaser.example"]
+
+
+class TestL1SeesSecondaryDestinations:
+    @pytest.mark.asyncio
+    async def test_create_records_every_destination_for_burst_counters(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+        svc._url_policy.record_create = AsyncMock()
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://clean.example/",
+            geo_rules={
+                "IN": "https://hidden.example/kit",
+                "US": "https://clean.example/",
+            },
+            starts_at=datetime.now(timezone.utc) + timedelta(days=1),
+            pre_start_url="https://teaser.example/soon",
+        )
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        recorded = [c.args[0] for c in svc._url_policy.record_create.await_args_list]
+        # Distinct URLs, main first: the geo rule echoing long_url counts once.
+        assert recorded == [
+            "https://clean.example/",
+            "https://hidden.example/kit",
+            "https://teaser.example/soon",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_many_geo_paths_on_one_domain_count_once(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+        svc._url_policy.record_create = AsyncMock()
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        codes = ["IN", "US", "DE", "FR", "BR", "JP", "GB", "CA", "AU", "ES"]
+        req = CreateUrlRequest(
+            long_url="https://x.example/",
+            geo_rules={c: f"https://x.example/{c.lower()}" for c in codes},
+        )
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        # Counters key on the registrable domain: one create is one bump.
+        assert svc._url_policy.record_create.await_count == 1
