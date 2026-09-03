@@ -130,6 +130,8 @@ def _make_v2_doc_mock(
     doc.block_bots = False
     doc.password = None
     doc.expire_after = None
+    doc.starts_at = None
+    doc.pre_start_url = None
     doc.max_clicks = None
     doc.geo_rules = None
     doc.status = status

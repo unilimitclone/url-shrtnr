@@ -346,3 +346,69 @@ class TestFromV2DocExpirationNormalization:
         data = UrlCacheData.from_v2_doc(doc)
         expected = int(naive.replace(tzinfo=timezone.utc).timestamp())
         assert data.expiration_time == expected
+
+
+class TestUrlCacheDataIsNotYetLive:
+    def _data(self, start_time, pre_start_url=None):
+        return UrlCacheData(
+            id="x",
+            alias="abc1234",
+            long_url="https://example.com",
+            block_bots=False,
+            password_hash=None,
+            expiration_time=None,
+            max_clicks=None,
+            url_status="ACTIVE",
+            schema_version="v2",
+            owner_id=None,
+            start_time=start_time,
+            pre_start_url=pre_start_url,
+        )
+
+    def test_none_is_live(self):
+        assert self._data(None).is_not_yet_live(1_800_000_000) is False
+
+    def test_future_is_not_yet_live(self):
+        assert self._data(3_000).is_not_yet_live(2_000) is True
+
+    def test_boundary_equal_is_live(self):
+        # Strict > : the link goes live at the exact second.
+        assert self._data(2_000).is_not_yet_live(2_000) is False
+
+    def test_past_is_live(self):
+        assert self._data(1_000).is_not_yet_live(2_000) is False
+
+    def test_entries_written_before_the_field_deserialize_live(self):
+        """Redis entries from before scheduling shipped carry no start_time;
+        they must read as live, not fail validation."""
+        raw = (
+            '{"_id":"x","alias":"abc1234","long_url":"https://example.com",'
+            '"block_bots":false,"password_hash":null,"expiration_time":null,'
+            '"max_clicks":null,"url_status":"ACTIVE","schema_version":"v2",'
+            '"owner_id":null}'
+        )
+        data = UrlCacheData.model_validate_json(raw)
+        assert data.start_time is None
+        assert data.pre_start_url is None
+        assert data.is_not_yet_live(1_800_000_000) is False
+
+    def test_from_v2_doc_carries_start_and_fallback(self):
+        from datetime import datetime, timezone
+
+        from schemas.models.url import UrlV2Doc
+
+        starts = datetime(2030, 6, 1, 12, 0, 0)  # naive UTC from Mongo
+        doc = UrlV2Doc.from_mongo(
+            {
+                "_id": ObjectId(),
+                "alias": "abc1234",
+                "domain": "spoo.me",
+                "created_at": starts,
+                "long_url": "https://example.com",
+                "starts_at": starts,
+                "pre_start_url": "https://example.org/soon",
+            }
+        )
+        data = UrlCacheData.from_v2_doc(doc)
+        assert data.start_time == int(starts.replace(tzinfo=timezone.utc).timestamp())
+        assert data.pre_start_url == "https://example.org/soon"

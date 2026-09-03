@@ -31,7 +31,7 @@ class PublicLinkFacts(ResponseBase):
     # always get it.
     long_url: str | None = None
     created_at: datetime | None = None
-    status: Literal["active", "inactive", "expired", "blocked"]
+    status: Literal["active", "inactive", "expired", "blocked", "scheduled"]
     max_clicks: int | None = None
     block_bots: bool
     password_protected: bool

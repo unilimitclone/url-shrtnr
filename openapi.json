@@ -10618,6 +10618,42 @@
               1735689599
             ]
           },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At",
+            "description": "Go-live time. The link is not live before this moment. ISO 8601 string or Unix epoch seconds; must be in the future and before `expire_after`. Requires authentication.",
+            "examples": [
+              "2026-09-10T18:00:00+05:30",
+              1789500000
+            ]
+          },
+          "pre_start_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 8192
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pre Start Url",
+            "description": "Where visitors are sent before `starts_at`. Omit for the not-yet-live page. No effect without `starts_at`.",
+            "examples": [
+              "https://example.com/coming-soon"
+            ]
+          },
           "private_stats": {
             "anyOf": [
               {
@@ -12646,7 +12682,8 @@
               "active",
               "inactive",
               "expired",
-              "blocked"
+              "blocked",
+              "scheduled"
             ],
             "title": "Status"
           },
@@ -12705,7 +12742,8 @@
               "active",
               "inactive",
               "expired",
-              "blocked"
+              "blocked",
+              "scheduled"
             ],
             "title": "Status"
           },
@@ -12719,6 +12757,17 @@
               }
             ],
             "title": "Created At"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At"
           },
           "password_protected": {
             "type": "boolean",
@@ -13685,6 +13734,42 @@
               1735689599
             ]
           },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At",
+            "description": "Go-live time. ISO 8601 string or Unix epoch seconds; must be in the future and before `expire_after`. Pass `null` to make the link live now.",
+            "examples": [
+              "2026-09-10T18:00:00+05:30",
+              1789500000
+            ]
+          },
+          "pre_start_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 8192
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pre Start Url",
+            "description": "Where visitors are sent before `starts_at`. Pass `null` for the not-yet-live page.",
+            "examples": [
+              "https://example.com/coming-soon"
+            ]
+          },
           "private_stats": {
             "anyOf": [
               {
@@ -13856,6 +13941,36 @@
             "description": "Expiration as Unix timestamp, or null.",
             "examples": [
               1735689599
+            ]
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At",
+            "description": "Go-live time as Unix timestamp, or null when live now.",
+            "examples": [
+              1789500000
+            ]
+          },
+          "pre_start_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pre Start Url",
+            "description": "Where visitors go before `starts_at`, or null for the not-yet-live page.",
+            "examples": [
+              "https://example.com/coming-soon"
             ]
           },
           "block_bots": {
@@ -14126,6 +14241,28 @@
               }
             ],
             "title": "Expire After"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At"
+          },
+          "pre_start_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pre Start Url"
           },
           "max_clicks": {
             "anyOf": [
@@ -14417,7 +14554,8 @@
           "ACTIVE",
           "INACTIVE",
           "EXPIRED",
-          "BLOCKED"
+          "BLOCKED",
+          "SCHEDULED"
         ],
         "title": "UrlStatus",
         "description": "Status values for v2 URLs."

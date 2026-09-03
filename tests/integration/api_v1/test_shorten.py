@@ -562,3 +562,99 @@ class TestShortenClaimToken:
             )
         assert resp.status_code == 201
         assert resp.json()["claim_token"] is None
+
+
+class TestShortenScheduling:
+    """starts_at / pre_start_url are authed-only and gated by link_scheduling."""
+
+    BODY: typing.ClassVar[dict] = {
+        "long_url": "https://example.com",
+        "starts_at": 4_000_000_000,
+    }
+
+    @staticmethod
+    def _flag_svc(enabled: bool) -> AsyncMock:
+        svc = AsyncMock()
+        svc.require = AsyncMock(
+            side_effect=None
+            if enabled
+            else ForbiddenError("Link scheduling is not enabled for this account")
+        )
+        return svc
+
+    def test_anonymous_returns_401_before_flag(self):
+        from dependencies import get_feature_flag_service
+
+        mock_svc = AsyncMock()
+        flag_svc = self._flag_svc(True)
+        application = _build_test_app(
+            {
+                get_current_user: lambda: None,
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: flag_svc,
+            }
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.post("/api/v1/shorten", json=self.BODY)
+
+        assert resp.status_code == 401
+        mock_svc.create.assert_not_called()
+        flag_svc.require.assert_not_awaited()
+
+    def test_flag_off_returns_403(self):
+        from dependencies import get_feature_flag_service
+
+        mock_svc = AsyncMock()
+        application = _build_test_app(
+            {
+                get_current_user: lambda: _make_user(),
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: self._flag_svc(False),
+            }
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.post("/api/v1/shorten", json=self.BODY)
+
+        assert resp.status_code == 403
+        mock_svc.create.assert_not_called()
+
+    def test_pre_start_url_alone_is_gated_too(self):
+        from dependencies import get_feature_flag_service
+
+        mock_svc = AsyncMock()
+        application = _build_test_app(
+            {
+                get_current_user: lambda: _make_user(),
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: self._flag_svc(False),
+            }
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/api/v1/shorten",
+                json={
+                    "long_url": "https://example.com",
+                    "pre_start_url": "https://example.org/soon",
+                },
+            )
+
+        assert resp.status_code == 403
+
+    def test_flag_on_returns_201(self):
+        from dependencies import get_feature_flag_service
+
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(return_value=(_make_url_doc("sched1"), None))
+        application = _build_test_app(
+            {
+                get_current_user: lambda: _make_user(),
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: self._flag_svc(True),
+            }
+        )
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.post("/api/v1/shorten", json=self.BODY)
+
+        assert resp.status_code == 201
+        sent = mock_svc.create.call_args[0][0]
+        assert sent.starts_at is not None

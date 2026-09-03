@@ -108,6 +108,7 @@ def test_v2_active_plain_full_body():
         "short_url": "https://spoo.me/testme",
         "status": "active",
         "created_at": "2024-01-01T00:00:00+00:00",
+        "starts_at": None,
         "password_protected": False,
         "destination": {
             "url": "https://example.com/long",
@@ -248,6 +249,7 @@ def test_v1_active_full_body():
         "short_url": "https://spoo.me/abc123",
         "status": "active",
         "created_at": "2024-03-10T12:00:00+00:00",
+        "starts_at": None,
         "password_protected": False,
         "destination": {
             "url": "https://example.com/page",
@@ -390,3 +392,26 @@ def test_seven_char_code_in_both_generations_resolves_v2_first():
 
     assert resp.status_code == 200
     assert resp.json()["generation"] == "v2"
+
+
+def test_v2_scheduled_withholds_destination_and_carries_start():
+    starts = datetime.now(timezone.utc) + timedelta(days=2)
+    doc = _make_v2(starts_at=starts)
+    resp = _get(_make_service(v2_docs=(doc,)), "testme")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "scheduled"
+    assert body["destination"] is None
+    assert body["geo_destinations"] is None
+    assert body["starts_at"] == int(starts.timestamp())
+
+
+def test_v2_started_reads_active_without_start():
+    doc = _make_v2(starts_at=datetime.now(timezone.utc) - timedelta(days=2))
+    resp = _get(_make_service(v2_docs=(doc,)), "testme")
+
+    body = resp.json()
+    assert body["status"] == "active"
+    assert body["starts_at"] is None
+    assert body["destination"] is not None

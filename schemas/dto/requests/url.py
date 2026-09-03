@@ -14,6 +14,7 @@ from pydantic import (
     BaseModel,
     Field,
     PrivateAttr,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -224,6 +225,24 @@ class CreateUrlRequest(RequestBase):
         description="Expiration time. ISO 8601 string (e.g. `2025-12-31T23:59:59Z`) or Unix epoch seconds (e.g. `1735689599`).",
         examples=["2025-12-31T23:59:59Z", 1735689599],
     )
+    starts_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Go-live time. The link is not live before this moment. ISO 8601 "
+            "string or Unix epoch seconds; must be in the future and before "
+            "`expire_after`. Requires authentication."
+        ),
+        examples=["2026-09-10T18:00:00+05:30", 1789500000],
+    )
+    pre_start_url: str | None = Field(
+        default=None,
+        max_length=8192,
+        description=(
+            "Where visitors are sent before `starts_at`. Omit for the "
+            "not-yet-live page. No effect without `starts_at`."
+        ),
+        examples=["https://example.com/coming-soon"],
+    )
     private_stats: bool | None = Field(
         default=None,
         description="Make statistics private (only owner can view). Requires authentication.",
@@ -258,15 +277,20 @@ class CreateUrlRequest(RequestBase):
         return _validate_alias_shape(v)
 
     @field_validator(
-        "expire_after", mode="before", json_schema_input_type=datetime | int | None
+        "expire_after",
+        "starts_at",
+        mode="before",
+        json_schema_input_type=datetime | int | None,
     )
     @classmethod
-    def _parse_expire_after(cls, v: str | int | None) -> datetime | None:
+    def _parse_instant(
+        cls, v: str | int | None, info: ValidationInfo
+    ) -> datetime | None:
         if v is None:
             return None
         result = parse_datetime(v)
         if result is None:
-            raise ValueError("Invalid expire_after format")
+            raise ValueError(f"Invalid {info.field_name} format")
         return result
 
     @field_validator("domain", mode="before")
@@ -331,6 +355,24 @@ class UpdateUrlRequest(RequestBase):
         description="Expiration time. ISO 8601 string (e.g. `2025-12-31T23:59:59Z`) or Unix epoch seconds (e.g. `1735689599`). Pass `null` to remove.",
         examples=["2025-12-31T23:59:59Z", 1735689599],
     )
+    starts_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Go-live time. ISO 8601 string or Unix epoch seconds; must be in "
+            "the future and before `expire_after`. Pass `null` to make the "
+            "link live now."
+        ),
+        examples=["2026-09-10T18:00:00+05:30", 1789500000],
+    )
+    pre_start_url: str | None = Field(
+        default=None,
+        max_length=8192,
+        description=(
+            "Where visitors are sent before `starts_at`. Pass `null` for the "
+            "not-yet-live page."
+        ),
+        examples=["https://example.com/coming-soon"],
+    )
     private_stats: bool | None = Field(
         default=None,
         description="Make statistics private (only owner can view). Pass `null` to keep existing.",
@@ -371,15 +413,20 @@ class UpdateUrlRequest(RequestBase):
         return _validate_alias_shape(v)
 
     @field_validator(
-        "expire_after", mode="before", json_schema_input_type=datetime | int | None
+        "expire_after",
+        "starts_at",
+        mode="before",
+        json_schema_input_type=datetime | int | None,
     )
     @classmethod
-    def _parse_expire_after(cls, v: str | int | None) -> datetime | None:
+    def _parse_instant(
+        cls, v: str | int | None, info: ValidationInfo
+    ) -> datetime | None:
         if v is None:
             return None
         result = parse_datetime(v)
         if result is None:
-            raise ValueError("Invalid expire_after format")
+            raise ValueError(f"Invalid {info.field_name} format")
         return result
 
     @field_validator("domain", mode="before")

@@ -36,7 +36,11 @@ from schemas.dto.responses.url import (
     DeleteUrlResponse,
     UpdateUrlResponse,
 )
-from services.feature_flag_service import GEO_TARGETING_FLAG, META_TAGS_FLAG
+from services.feature_flag_service import (
+    GEO_TARGETING_FLAG,
+    LINK_SCHEDULING_FLAG,
+    META_TAGS_FLAG,
+)
 from shared.ip_utils import get_client_ip
 
 router = APIRouter(tags=["Link Management"])
@@ -142,6 +146,8 @@ async def update_url_v1(
     # (null) never is.
     if "meta_tags" in body.model_fields_set and body.meta_tags is not None:
         await flag_svc.require(META_TAGS_FLAG, user)
+    if body.starts_at is not None or body.pre_start_url:
+        await flag_svc.require(LINK_SCHEDULING_FLAG, user)
     # Verify domain ownership at the edge so the service can stay opaque about
     # tenancy. `domain` field-set with null means "move to system default" —
     # no ownership check needed for the default namespace.

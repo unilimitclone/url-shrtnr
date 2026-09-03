@@ -29,6 +29,7 @@ from schemas.dto.responses.public_preview import (
     PublicPreviewResponse,
 )
 from services.public_link_resolver import PublicLinkResolver, ResolvedPublicLink
+from shared.datetime_utils import to_unix_timestamp
 from shared.url_utils import split_destination
 
 log = get_logger(__name__)
@@ -79,6 +80,9 @@ class PublicPreviewService:
             short_url=link.short_url,
             status=status,
             created_at=created_at.isoformat() if created_at else None,
+            starts_at=(
+                to_unix_timestamp(doc.starts_at) if status == "scheduled" else None
+            ),
             password_protected=password_protected,
             destination=destination,
             geo_destinations=geo_destinations,

@@ -52,6 +52,10 @@ class UrlCacheData(BaseModel):
     meta_color: str | None = None
     meta_image_width: int | None = None  # from async image validation
     meta_image_height: int | None = None
+    # Unix timestamp before which the link is not live; None = live now.
+    # Entries cached before this field existed deserialize to None.
+    start_time: int | None = None
+    pre_start_url: str | None = None
 
     @classmethod
     def from_v2_doc(cls, doc: UrlV2Doc) -> UrlCacheData:
@@ -84,7 +88,15 @@ class UrlCacheData(BaseModel):
             meta_color=doc.meta_tags.color if doc.meta_tags else None,
             meta_image_width=im.width if im else None,
             meta_image_height=im.height if im else None,
+            start_time=to_unix_timestamp(doc.starts_at),
+            pre_start_url=doc.pre_start_url,
         )
+
+    def is_not_yet_live(self, now_ts: float) -> bool:
+        """Start-time check for the hot path. Strict ``>``: the link goes
+        live at the exact second, the mirror of ``is_time_expired``'s
+        ``<=`` boundary."""
+        return self.start_time is not None and self.start_time > now_ts
 
     def is_time_expired(self, now_ts: float) -> bool:
         """Time-lapse check for the hot path. ``expiration_time`` is None

@@ -44,8 +44,10 @@ class PublicPreviewResponse(ResponseBase):
     generation: Literal["v1", "v2"]
     alias: str
     short_url: str
-    status: Literal["active", "inactive", "expired", "blocked"]
+    status: Literal["active", "inactive", "expired", "blocked", "scheduled"]
     created_at: str | None
+    # Unix seconds; present only while ``status`` is ``"scheduled"``.
+    starts_at: int | None = None
     password_protected: bool
     destination: PreviewDestination | None
     geo_destinations: list[PreviewGeoDestination] | None

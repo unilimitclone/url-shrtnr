@@ -58,6 +58,7 @@ class TestEligibility:
             ({"max_clicks": 100}, "max_clicks"),
             ({"block_bots": True}, "block_bots"),
             ({"expiration_time": 1_900_000_000}, "has_expiration"),
+            ({"start_time": 4_000_000_000}, "not_yet_live"),
             ({"url_status": "BLOCKED"}, "not_active"),
             ({"url_status": "EXPIRED"}, "not_active"),
             ({"url_status": "INACTIVE"}, "not_active"),
@@ -75,6 +76,11 @@ class TestEligibility:
     def test_v1_urls_are_eligible(self):
         """Legacy URLs cache with domain=system default → same rules apply."""
         url = make_url_cache(schema_version="v1", owner_id=None)
+        assert promotion_skip_reason(url, SYSTEM, SYSTEM) is None
+
+    def test_started_urls_are_eligible(self):
+        """Once starts_at has passed the link is a plain link at the edge."""
+        url = make_url_cache(start_time=1_000_000_000)
         assert promotion_skip_reason(url, SYSTEM, SYSTEM) is None
 
     def test_geo_targeted_urls_are_eligible(self):

@@ -18,6 +18,7 @@ from errors import (
     ForbiddenError,
     GoneError,
     NotFoundError,
+    NotYetLiveError,
     ValidationError,
 )
 from infrastructure.cache.url_cache import UrlCacheData
@@ -524,3 +525,68 @@ class TestGeoTargetedRedirect:
         assert resp.headers["location"] == "https://example.com/target"
         assert "cache-control" not in resp.headers
         geoip.get_country_code.assert_not_awaited()
+
+
+# ── Scheduled links: not live yet ────────────────────────────────────────────
+
+
+def test_redirect_not_yet_live_returns_404_with_own_slug_and_no_store():
+    url_svc = MagicMock()
+    url_svc.resolve = AsyncMock(side_effect=NotYetLiveError("not live"))
+    app = _build_app(url_svc)
+    with TestClient(app) as client:
+        resp = client.get("/soon1")
+    assert resp.status_code == 404
+    assert resp.headers["X-Error-Code"] == "not_yet_live"
+    assert resp.headers["Cache-Control"] == "no-store"
+    assert "text/html" in resp.headers["content-type"]
+
+
+def test_redirect_not_yet_live_with_fallback_redirects_no_store():
+    url_svc = MagicMock()
+    url_svc.resolve = AsyncMock(
+        side_effect=NotYetLiveError(
+            "not live", fallback_url="https://example.org/coming-soon"
+        )
+    )
+    click_sink = _mock_click_sink()
+    app = _build_app(url_svc, click_sink)
+    with TestClient(app) as client:
+        resp = client.get("/soon2", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://example.org/coming-soon"
+    assert resp.headers["Cache-Control"] == "no-store"
+    assert resp.headers["X-Robots-Tag"] == "noindex, nofollow, noarchive"
+    # A pre-start visit is never a click.
+    click_sink.emit.assert_not_awaited()
+
+
+def test_head_not_yet_live_matches_get():
+    url_svc = MagicMock()
+    url_svc.resolve = AsyncMock(side_effect=NotYetLiveError("not live"))
+    app = _build_app(url_svc)
+    with TestClient(app) as client:
+        resp = client.head("/soon3")
+    assert resp.status_code == 404
+    assert resp.headers["X-Error-Code"] == "not_yet_live"
+
+
+def test_redirect_not_yet_live_edge_composed_returns_empty_body(edge_composed_errors):
+    url_svc = MagicMock()
+    url_svc.resolve = AsyncMock(side_effect=NotYetLiveError("not live"))
+    app = _build_app(url_svc)
+    with TestClient(app) as client:
+        resp = client.get("/soon4")
+    assert resp.status_code == 404
+    assert resp.headers["X-Error-Code"] == "not_yet_live"
+    assert resp.content == b""
+
+
+def test_password_form_not_reached_before_start():
+    """A scheduled password link answers not-yet-live, never the form."""
+    url_svc = MagicMock()
+    url_svc.resolve = AsyncMock(side_effect=NotYetLiveError("not live"))
+    app = _build_app(url_svc)
+    with TestClient(app) as client:
+        resp = client.post("/soon5/password", data={"password": "x"})
+    assert resp.status_code == 400
