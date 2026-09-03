@@ -18,10 +18,10 @@ _WORK = """
 geo targeting was enabled (GEO_RULES_ENABLED=true) but safety cannot see
 geo destinations. Required before shipping it:
 
-  1. stamp geo destination hosts at every write point, e.g.
-     UrlDestination gains `geo_hosts: list[str]`, plus a sparse index
-  2. enforcement matches dest.host OR dest.geo_hosts (SafetyEnforcer +
-     UrlRepository/legacy repos), so a host block reaches these links
+  1. stamp geo destination hosts at every write point:
+     UrlDestination.secondary_hosts, plus a sparse index
+  2. enforcement matches dest.host OR dest.secondary_hosts (SafetyEnforcer +
+     UrlRepository), so a host block reaches these links
   3. report intake and hot screening emit one event per distinct
      destination, geo included
   4. build_evidence_bundle lists geo destinations so the deep tier
@@ -33,4 +33,8 @@ geo destinations. Required before shipping it:
 def test_geo_targeting_stays_dark_until_enforcement_sees_it():
     if not AppSettings().geo_rules_enabled:
         return
-    assert "geo_hosts" in UrlDestination.model_fields, _WORK
+    assert "secondary_hosts" in UrlDestination.model_fields, _WORK
+    stamped = UrlDestination.for_link(
+        "https://main.example/", geo_rules={"IN": "https://geo.example/x"}
+    )
+    assert stamped is not None and stamped.secondary_hosts == ["geo.example"], _WORK

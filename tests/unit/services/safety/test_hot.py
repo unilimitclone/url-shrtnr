@@ -71,3 +71,62 @@ class TestHotLinkScreen:
         url_repo2.find_by_alias = AsyncMock(side_effect=RuntimeError("mongo down"))
         await screen2.on_hot(_hot())
         sink2.emit.assert_not_awaited()
+
+
+class TestHotLinkScreenSecondaryDestinations:
+    @pytest.mark.asyncio
+    async def test_geo_destinations_each_get_an_event(self):
+        doc = MagicMock(
+            long_url="https://clean.example/",
+            geo_rules={
+                "IN": "https://hidden.example/kit",
+                "US": "https://clean.example/us",
+            },
+        )
+        screen, _u, sink = _screen(v2_doc=doc)
+
+        await screen.on_hot(_hot())
+
+        hosts = [c.args[0].host for c in sink.emit.await_args_list]
+        assert hosts == ["clean.example", "hidden.example"]
+        event = sink.emit.await_args_list[1].args[0]
+        assert event.url == "https://hidden.example/kit"
+        assert event.context["link_destinations"] == [
+            "https://clean.example/",
+            "https://hidden.example/kit",
+            "https://clean.example/us",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_verdicted_geo_host_is_skipped_but_main_still_screened(self):
+        doc = MagicMock(
+            long_url="https://clean.example/",
+            geo_rules={"IN": "https://known.example/"},
+        )
+        screen, _u, sink = _screen(v2_doc=doc)
+        screen._verdict_repo.find_by_host = AsyncMock(
+            side_effect=lambda h: MagicMock() if h == "known.example" else None
+        )
+
+        await screen.on_hot(_hot())
+
+        assert [c.args[0].host for c in sink.emit.await_args_list] == ["clean.example"]
+
+    @pytest.mark.asyncio
+    async def test_single_destination_carries_no_link_destinations(self):
+        doc = MagicMock(long_url="https://only.example/", geo_rules=None)
+        screen, _u, sink = _screen(v2_doc=doc)
+        await screen.on_hot(_hot())
+        assert "link_destinations" not in sink.emit.await_args.args[0].context
+
+    @pytest.mark.asyncio
+    async def test_pre_start_destination_is_screened_too(self):
+        doc = MagicMock(
+            long_url="https://clean.example/",
+            geo_rules=None,
+            pre_start_url="https://teaser.example/soon",
+        )
+        screen, _u, sink = _screen(v2_doc=doc)
+        await screen.on_hot(_hot())
+        hosts = [c.args[0].host for c in sink.emit.await_args_list]
+        assert hosts == ["clean.example", "teaser.example"]

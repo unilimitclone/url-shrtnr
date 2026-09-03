@@ -14,7 +14,7 @@ from repositories.verdict_repository import VerdictRepository
 from services.click.consumers.hotness import HotUrl
 from services.safety.events import SafetyAnalyzeEvent
 from services.safety.sinks import SafetySink
-from shared.url_utils import parse_destination
+from shared.url_utils import link_destination_urls, parse_destination
 
 log = get_logger(__name__)
 
@@ -40,28 +40,34 @@ class HotLinkScreen:
 
     async def on_hot(self, hot: HotUrl) -> None:
         try:
-            url = await self._destination(hot)
-            if not url:
-                return
-            parts = parse_destination(url)
-            if parts is None:
-                return
-            if await self._verdict_repo.find_by_host(parts["host"]) is not None:
-                return
-            await self._sink.emit(
-                SafetyAnalyzeEvent(
-                    url=url,
-                    host=parts["host"],
-                    registrable_domain=parts["registrable_domain"],
-                    trigger="hot",
-                    context={
-                        "short_code": hot.short_code,
-                        "domain": hot.domain,
-                        "clicks_in_window": hot.count,
-                    },
+            urls = await self._destinations(hot)
+            seen: set[str] = set()
+            for url in urls:
+                parts = parse_destination(url)
+                if parts is None or parts["host"] in seen:
+                    continue
+                seen.add(parts["host"])
+                if await self._verdict_repo.find_by_host(parts["host"]) is not None:
+                    continue
+                context = {
+                    "short_code": hot.short_code,
+                    "domain": hot.domain,
+                    "clicks_in_window": hot.count,
+                }
+                if len(urls) > 1:
+                    context["link_destinations"] = urls
+                await self._sink.emit(
+                    SafetyAnalyzeEvent(
+                        url=url,
+                        host=parts["host"],
+                        registrable_domain=parts["registrable_domain"],
+                        trigger="hot",
+                        context=context,
+                    )
                 )
-            )
-            log.info("safety_hot_screening", host=parts["host"], alias=hot.short_code)
+                log.info(
+                    "safety_hot_screening", host=parts["host"], alias=hot.short_code
+                )
         except Exception as exc:
             log.warning(
                 "safety_hot_screen_failed",
@@ -70,10 +76,13 @@ class HotLinkScreen:
                 error_type=type(exc).__name__,
             )
 
-    async def _destination(self, hot: HotUrl) -> str | None:
+    async def _destinations(self, hot: HotUrl) -> list[str]:
+        """Every destination the link routes to: main, geo overrides, pre-start page."""
         domain = self._system_domain if hot.domain in ("default", "") else hot.domain
         doc = await self._url_repo.find_by_alias(hot.short_code, domain)
         if doc is not None:
-            return doc.long_url
+            return link_destination_urls(
+                doc.long_url, geo_rules=doc.geo_rules, pre_start_url=doc.pre_start_url
+            )
         legacy = await self._legacy_repo.find_by_id(hot.short_code)
-        return legacy.url if legacy is not None else None
+        return link_destination_urls(legacy.url) if legacy is not None else []

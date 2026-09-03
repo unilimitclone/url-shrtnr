@@ -112,6 +112,15 @@ class TestEnsureIndexes:
             _c.create_index.assert_any_await(
                 [("dest.registrable_domain", 1)], name="dest_registrable", sparse=True
             )
+        # Secondary hosts exist only on v2 links (geo rules, pre-start page).
+        urls_v2_col.create_index.assert_any_await(
+            [("dest.secondary_hosts", 1)], name="dest_secondary_hosts", sparse=True
+        )
+        for _c in (urls_legacy_col, emojis_col):
+            assert not any(
+                call.kwargs.get("name") == "dest_secondary_hosts"
+                for call in _c.create_index.await_args_list
+            )
         # Scheduler: the task runner's claim index.
         scheduled_tasks_col.create_index.assert_any_await(
             [("enabled", 1), ("next_run_at", 1)], name="ix_claim"

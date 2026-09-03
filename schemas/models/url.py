@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from schemas.models.base import ANONYMOUS_OWNER_ID, MongoBaseModel, PyObjectId
 from shared.datetime_utils import as_aware_utc
-from shared.url_utils import parse_destination
+from shared.url_utils import link_destination_urls, parse_destination, secondary_hosts
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -143,11 +143,49 @@ class UrlDestination(BaseModel):
     host: str = ""
     subdomain: str = ""
     registrable_domain: str = ""
+    # Hosts the link can ALSO route to (geo rules today, A/B variants
+    # later), main host excluded. Enforcement matches host OR these.
+    secondary_hosts: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_url(cls, url: str | None) -> UrlDestination | None:
         parts = parse_destination(url)
         return cls(**parts) if parts else None
+
+    @classmethod
+    def for_link(
+        cls,
+        long_url: str | None,
+        *,
+        geo_rules: dict[str, str] | None = None,
+        variants: list[str] | None = None,
+        pre_start_url: str | None = None,
+    ) -> UrlDestination | None:
+        """Main parts plus every secondary host. None only when nothing
+        about the link parses."""
+        main = parse_destination(long_url)
+        extra = secondary_hosts(
+            link_destination_urls(
+                None,
+                geo_rules=geo_rules,
+                variants=variants,
+                pre_start_url=pre_start_url,
+            ),
+            exclude=(main or {}).get("host", ""),
+        )
+        if main is None and not extra:
+            return None
+        return cls(**(main or {}), secondary_hosts=extra)
+
+    def to_doc(self) -> dict:
+        """Mongo shape: secondary_hosts absent when empty so the sparse index
+        holds only links that actually have them. The backfill is the one
+        writer of an empty list, as its convergence marker for geo links
+        whose rules add no host (see scripts/backfill_url_dest.py)."""
+        data = self.model_dump()
+        if not data["secondary_hosts"]:
+            data.pop("secondary_hosts")
+        return data
 
 
 class UrlV2Doc(MongoBaseModel):
@@ -217,6 +255,9 @@ class UrlV2Doc(MongoBaseModel):
     # deliberately write no host-wide verdict.
     blocked_at: datetime | None = None
     blocked_reason: str | None = None
+    # Host causes of the block; reactivates only when the last one is removed.
+    # None marks a per-link block that no host unblock may undo.
+    blocked_hosts: list[str] | None = None
     # Stamped on reversal; blocked_at/blocked_reason stay.
     unblocked_at: datetime | None = None
     private_stats: bool | None = True  # None for anonymous/unowned URLs

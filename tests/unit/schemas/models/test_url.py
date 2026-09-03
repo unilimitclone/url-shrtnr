@@ -469,3 +469,82 @@ class TestEffectiveStatusScheduled:
 
         doc = self._make(starts_at=now() + timedelta(hours=1))
         assert v2_effective_status(doc) == "scheduled"
+
+
+class TestUrlDestinationSecondaryHosts:
+    """Geo rules (and later variants) add destinations; enforcement must be
+    able to find them by host, so the stamp carries every extra host."""
+
+    def test_for_link_collects_geo_hosts_without_the_main_one(self):
+        dest = UrlDestination.for_link(
+            "https://main.example/x",
+            geo_rules={
+                "IN": "https://geo-b.example/in",
+                "US": "https://geo-a.example/us",
+                "DE": "https://main.example/de",
+            },
+        )
+        assert dest is not None
+        assert dest.host == "main.example"
+        assert dest.secondary_hosts == ["geo-a.example", "geo-b.example"]
+
+    def test_variants_plug_into_the_same_field(self):
+        dest = UrlDestination.for_link(
+            "https://main.example/", variants=["https://v2.example/b", "not a url"]
+        )
+        assert dest is not None
+        assert dest.secondary_hosts == ["v2.example"]
+
+    def test_geo_hosts_survive_an_unparseable_main_destination(self):
+        dest = UrlDestination.for_link(
+            "nonsense", geo_rules={"IN": "https://geo.example/"}
+        )
+        assert dest is not None
+        assert dest.host == ""
+        assert dest.secondary_hosts == ["geo.example"]
+
+    def test_nothing_parseable_is_none(self):
+        assert (
+            UrlDestination.for_link("nonsense", geo_rules={"IN": "also nonsense"})
+            is None
+        )
+
+    def test_to_doc_omits_empty_secondary_hosts(self):
+        plain = UrlDestination.for_link("https://main.example/")
+        assert plain is not None
+        assert "secondary_hosts" not in plain.to_doc()
+        geo = UrlDestination.for_link(
+            "https://main.example/", geo_rules={"IN": "https://geo.example/"}
+        )
+        assert geo is not None
+        assert geo.to_doc()["secondary_hosts"] == ["geo.example"]
+
+    def test_docs_predating_the_field_read_as_no_secondary_hosts(self):
+        dest = UrlDestination.model_validate(
+            {
+                "scheme": "https",
+                "host": "a.example",
+                "subdomain": "",
+                "registrable_domain": "a.example",
+            }
+        )
+        assert dest.secondary_hosts == []
+
+
+class TestPreStartUrlIsADestination:
+    """A scheduled link sends visitors to pre_start_url until it goes live,
+    so that host is a destination safety must see."""
+
+    def test_pre_start_host_is_stamped_as_secondary(self):
+        dest = UrlDestination.for_link(
+            "https://main.example/", pre_start_url="https://teaser.example/soon"
+        )
+        assert dest is not None
+        assert dest.secondary_hosts == ["teaser.example"]
+
+    def test_pre_start_on_the_main_host_adds_nothing(self):
+        dest = UrlDestination.for_link(
+            "https://main.example/", pre_start_url="https://main.example/soon"
+        )
+        assert dest is not None
+        assert dest.secondary_hosts == []

@@ -118,6 +118,10 @@ async def ensure_indexes(
         )
         # Every enforcement query is an equality match on dest.host.
         await _url_col.create_index([("dest.host", 1)], name="dest_host", sparse=True)
+    # Only v2 links carry geo rules or a pre-start page.
+    await urls_v2_col.create_index(
+        [("dest.secondary_hosts", 1)], name="dest_secondary_hosts", sparse=True
+    )
 
     # ── clicks (time-series) ───────────────────────────────────────────────
     # Create the time-series collection if it doesn't exist yet.

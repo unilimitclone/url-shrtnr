@@ -7,15 +7,21 @@
 #     "tldextract>=5.1",
 # ]
 # ///
-"""One-shot migration: stamp parsed `dest` parts on every url doc missing it.
+"""Migration: stamp parsed `dest` parts on every url doc missing them.
 
-Covers urlsV2 (long_url), urls (url) and emojis (url). Standalone — no spoo
+Covers urlsV2 (long_url), urls (url) and emojis (url). Standalone: no spoo
 project context required. Parse logic mirrors
-``shared/url_utils.parse_destination`` — keep the two in sync.
+``shared/url_utils.parse_destination``; keep the two in sync.
 
 Unparseable destinations are stamped ``dest: null`` so the needs-backfill
 filter converges to zero; null adds nothing to the sparse dest_registrable
 index.
+
+Second pass, urlsV2 only: links with geo_rules or a pre_start_url get
+``dest.secondary_hosts`` (every extra destination host but the main one) so a host block
+reaches links that hide the host in a rule. Idempotent: docs already
+carrying the field are skipped, and a link whose rules add no new host
+gets an empty list so the filter converges.
 
 Usage::
 
@@ -40,6 +46,27 @@ from pymongo import MongoClient, UpdateOne
 from pymongo.errors import BulkWriteError
 
 _FILTER = {"dest": {"$exists": False}}
+_SECONDARY_FILTER = {
+    "$and": [
+        {
+            "$or": [
+                {"geo_rules": {"$type": "object"}},
+                {"pre_start_url": {"$type": "string"}},
+            ]
+        },
+        {
+            "$or": [
+                {
+                    "dest": {"$type": "object"},
+                    "dest.secondary_hosts": {"$exists": False},
+                },
+                # An unparseable long_url left dest null; its geo hosts still count.
+                {"dest": None},
+            ]
+        },
+    ]
+}
+_EMPTY_DEST = {"scheme": "", "host": "", "subdomain": "", "registrable_domain": ""}
 _BATCH = 1_000
 _COLLECTIONS = (("urlsV2", "long_url"), ("urls", "url"), ("emojis", "url"))
 _tld = tldextract.TLDExtract(cache_dir=None, suffix_list_urls=())
@@ -75,17 +102,95 @@ def parse_destination(url: object) -> dict | None:
     }
 
 
+def secondary_urls(doc: dict) -> list:
+    """Every extra destination a link routes to: geo rules and the pre-start page."""
+    geo = doc.get("geo_rules")
+    urls = list(geo.values()) if isinstance(geo, dict) else []
+    if isinstance(doc.get("pre_start_url"), str):
+        urls.append(doc["pre_start_url"])
+    return urls
+
+
+def secondary_hosts(urls: list, main_host: str) -> list[str]:
+    """Mirror of shared/url_utils.secondary_hosts."""
+    hosts = {
+        parts["host"]
+        for parts in (parse_destination(u) for u in urls)
+        if parts is not None and parts["host"] != main_host
+    }
+    return sorted(hosts)
+
+
+def dest_for(doc: dict, url_field: str) -> dict | None:
+    """The full dest stamp for one doc: parsed parts plus secondary hosts."""
+    parts = parse_destination(doc.get(url_field))
+    extra = secondary_hosts(secondary_urls(doc), (parts or {}).get("host", ""))
+    if parts is None and not extra:
+        return None
+    stamp = dict(
+        parts or {"scheme": "", "host": "", "subdomain": "", "registrable_domain": ""}
+    )
+    if extra:
+        stamp["secondary_hosts"] = extra
+    return stamp
+
+
+def _secondary_set(d: dict) -> dict:
+    """What the second pass writes: the list on an existing stamp, or a whole
+    stamp when dest is null. [] is the convergence marker either way."""
+    if isinstance(d.get("dest"), dict):
+        hosts = secondary_hosts(secondary_urls(d), d["dest"].get("host", ""))
+        return {"dest.secondary_hosts": hosts}
+    stamp = dest_for(d, "long_url") or dict(_EMPTY_DEST)
+    stamp.setdefault("secondary_hosts", [])
+    return {"dest": stamp}
+
+
+def backfill_secondary(coll, dry_run: bool) -> None:
+    todo = coll.count_documents(_SECONDARY_FILTER)
+    print(f"[{coll.name}] geo or scheduled links needing secondary_hosts: {todo}")
+    if todo == 0 or dry_run:
+        return
+    stamped = failed = 0
+    last_id = None
+    while True:
+        query = dict(_SECONDARY_FILTER)
+        if last_id is not None:
+            query["_id"] = {"$gt": last_id}
+        batch = list(
+            coll.find(
+                query,
+                {"dest": 1, "long_url": 1, "geo_rules": 1, "pre_start_url": 1},
+            )
+            .sort("_id", 1)
+            .limit(_BATCH)
+        )
+        if not batch:
+            break
+        last_id = batch[-1]["_id"]
+        ops = [UpdateOne({"_id": d["_id"]}, {"$set": _secondary_set(d)}) for d in batch]
+        try:
+            coll.bulk_write(ops, ordered=False)
+        except BulkWriteError as exc:
+            failed += len(exc.details.get("writeErrors", []))
+        stamped += len(batch)
+    remaining = coll.count_documents(_SECONDARY_FILTER)
+    print(
+        f"[{coll.name}] secondary_hosts stamped {stamped - failed}; failed: {failed}; "
+        f"remaining (expect {failed}): {remaining}"
+    )
+
+
 def backfill(coll, url_field: str, dry_run: bool) -> None:
     todo = coll.count_documents(_FILTER)
     print(f"[{coll.name}] docs needing backfill: {todo}")
     if todo == 0:
         return
     if dry_run:
-        sample = coll.find_one(_FILTER, {url_field: 1})
-        print(
-            f"[{coll.name}] sample parse: "
-            f"{parse_destination((sample or {}).get(url_field))}"
+        sample = coll.find_one(
+            _FILTER, {url_field: 1, "geo_rules": 1, "pre_start_url": 1}
         )
+        print(f"[{coll.name}] sample parse: {dest_for(sample or {}, url_field)}")
         return
     done = 0
     failed = 0
@@ -96,15 +201,16 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
         query = dict(_FILTER)
         if last_id is not None:
             query["_id"] = {"$gt": last_id}
-        batch = list(coll.find(query, {url_field: 1}).sort("_id", 1).limit(_BATCH))
+        batch = list(
+            coll.find(query, {url_field: 1, "geo_rules": 1, "pre_start_url": 1})
+            .sort("_id", 1)
+            .limit(_BATCH)
+        )
         if not batch:
             break
         last_id = batch[-1]["_id"]
         ops = [
-            UpdateOne(
-                {"_id": d["_id"]},
-                {"$set": {"dest": parse_destination(d.get(url_field))}},
-            )
+            UpdateOne({"_id": d["_id"]}, {"$set": {"dest": dest_for(d, url_field)}})
             for d in batch
         ]
         try:
@@ -147,6 +253,7 @@ def main() -> None:
     db = client[db_name]
     for name, field in _COLLECTIONS:
         backfill(db[name], field, args.dry_run)
+    backfill_secondary(db["urlsV2"], args.dry_run)
     client.close()
 
 

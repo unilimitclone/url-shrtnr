@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+from collections.abc import Iterable
 from urllib.parse import urlparse, urlsplit
 
 import idna
@@ -86,6 +87,40 @@ def parse_destination(url: str | None) -> dict | None:
         "subdomain": subdomain,
         "registrable_domain": registrable,
     }
+
+
+def link_destination_urls(
+    long_url: str | None,
+    *,
+    geo_rules: dict[str, str] | None = None,
+    variants: Iterable[str] | None = None,
+    pre_start_url: str | None = None,
+) -> list[str]:
+    """Every URL a link can send a visitor to: the main destination, geo
+    overrides, A/B variants, and the pre-start page a scheduled link shows
+    before it goes live. Distinct, first occurrence kept."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in (
+        long_url,
+        *(geo_rules or {}).values(),
+        *(variants or ()),
+        pre_start_url,
+    ):
+        if isinstance(url, str) and url and url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+def secondary_hosts(urls: Iterable[str], *, exclude: str = "") -> list[str]:
+    """Distinct parsed hosts of *urls* without *exclude*, sorted."""
+    hosts = {
+        parts["host"]
+        for parts in (parse_destination(u) for u in urls)
+        if parts is not None and parts["host"] != exclude
+    }
+    return sorted(hosts)
 
 
 def extract_hostname(url: str | None) -> str | None:

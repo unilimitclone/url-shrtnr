@@ -799,3 +799,66 @@ class TestEnactCarriesScopeAndScreenshot:
         await inv.investigate(_event())
 
         assert notifier.safety_action.await_args.kwargs["screenshot"] is None
+
+
+class TestBundleListsEveryDestination:
+    @pytest.mark.asyncio
+    async def test_other_destinations_of_the_link_are_listed(self):
+        from services.safety.investigation import build_evidence_bundle
+
+        url_repo = AsyncMock()
+        url_repo.destination_history = AsyncMock(
+            return_value={
+                "link_count": 1,
+                "anon_count": 1,
+                "owned_count": 0,
+                "distinct_owners": 0,
+                "total_clicks": 0,
+                "first_seen": None,
+                "edited_count": 0,
+            }
+        )
+        event = SafetyAnalyzeEvent(
+            url="https://hidden.example/kit",
+            host="hidden.example",
+            registrable_domain="hidden.example",
+            trigger="report",
+            context={
+                "link_destinations": [
+                    "https://clean.example/",
+                    "https://hidden.example/kit",
+                ]
+            },
+        )
+        text = await build_evidence_bundle(event, url_repo)
+        assert "## Other destinations of the reported link(s)" in text
+        assert "- https://clean.example/" in text
+        assert "- https://hidden.example/kit" not in text
+        assert text.index("## Other destinations") < text.index(
+            "## Why this reached you"
+        )
+
+    @pytest.mark.asyncio
+    async def test_single_destination_link_has_no_section(self):
+        from services.safety.investigation import build_evidence_bundle
+
+        url_repo = AsyncMock()
+        url_repo.destination_history = AsyncMock(
+            return_value={
+                "link_count": 1,
+                "anon_count": 1,
+                "owned_count": 0,
+                "distinct_owners": 0,
+                "total_clicks": 0,
+                "first_seen": None,
+                "edited_count": 0,
+            }
+        )
+        event = SafetyAnalyzeEvent(
+            url="https://only.example/",
+            host="only.example",
+            registrable_domain="only.example",
+            trigger="report",
+            context={},
+        )
+        assert "Other destinations" not in await build_evidence_bundle(event, url_repo)

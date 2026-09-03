@@ -238,6 +238,17 @@ async def build_evidence_bundle(
         f"first seen: {history['first_seen'] or 'unknown'}",
         f"links edited after creation: {history['edited_count']}",
         "",
+    ]
+    others = [u for u in ctx.get("link_destinations") or [] if u != event.url]
+    if others:
+        lines += [
+            "## Other destinations of the reported link(s) (geo rules or variants)",
+            *(f"- {u}" for u in others),
+            "A visitor to one of the reported links may be routed to any of "
+            "these; judge the destination above knowing it is one of a set.",
+            "",
+        ]
+    lines += [
         "## Why this reached you",
         f"trigger: {event.trigger}",
     ]

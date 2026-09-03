@@ -737,3 +737,121 @@ class TestUrlRepositoryOwnerErasure:
         with pytest.raises(OperationFailure):
             async for _ in self._repo(col).iter_by_owner(USER_OID):
                 pass
+
+
+class TestSecondaryHostMatching:
+    """A host verdict must reach links that hide the host in a geo rule."""
+
+    def _col(self):
+        col = make_collection()
+        col.name = "urlsV2"
+        return col
+
+    @pytest.mark.asyncio
+    async def test_block_matches_main_or_secondary_host(self):
+        from repositories.url_repository import UrlRepository, dest_host_filter
+
+        col = self._col()
+        col.update_many = AsyncMock(return_value=MagicMock(modified_count=1))
+        await UrlRepository(col).block_active_by_dest_host("hidden.example", reason="r")
+        # First call flips ACTIVE links; the second records the cause on already-blocked ones.
+        flt, _ops = col.update_many.await_args_list[0].args
+        assert flt["$or"] == dest_host_filter("hidden.example")["$or"]
+        assert {"dest.secondary_hosts": "hidden.example"} in flt["$or"]
+        assert flt["status"] == "ACTIVE"
+
+    @pytest.mark.asyncio
+    async def test_listing_for_eviction_matches_either_field(self):
+        from repositories.url_repository import UrlRepository
+
+        col = self._col()
+        cursor = MagicMock()
+        cursor.limit = MagicMock(return_value=cursor)
+        cursor.to_list = AsyncMock(return_value=[])
+        col.find = MagicMock(return_value=cursor)
+        await UrlRepository(col).list_by_dest_host_with_urls("hidden.example")
+        flt = col.find.call_args.args[0]
+        assert {"dest.secondary_hosts": "hidden.example"} in flt["$or"]
+
+    @pytest.mark.asyncio
+    async def test_recent_hosts_sweep_unwinds_secondary_hosts(self):
+        from datetime import datetime, timezone
+
+        from repositories.url_repository import UrlRepository
+
+        col = self._col()
+        cursor = MagicMock()
+        cursor.to_list = AsyncMock(return_value=[])
+        col.aggregate = AsyncMock(return_value=cursor)
+        await UrlRepository(col).list_recent_destination_hosts(
+            datetime(2026, 9, 1, tzinfo=timezone.utc)
+        )
+        pipeline = col.aggregate.await_args.args[0]
+        stages = [next(iter(s)) for s in pipeline]
+        assert stages == ["$match", "$project", "$unwind", "$group", "$limit"]
+        assert pipeline[3]["$group"]["_id"] == "$hosts"
+
+
+class TestBlockCausesPerHost:
+    """A link blocked for two of its destinations reactivates only when the
+    last cause is removed; a per-link block is never undone by a host
+    unblock; blocks stamped before the field are host-of-long_url blocks."""
+
+    def _repo(self):
+        from repositories.url_repository import UrlRepository
+
+        col = make_collection()
+        col.name = "urlsV2"
+        col.update_many = AsyncMock(return_value=MagicMock(modified_count=1))
+        return UrlRepository(col), col
+
+    @pytest.mark.asyncio
+    async def test_host_block_stamps_its_cause_and_adds_to_already_blocked_links(self):
+        repo, col = self._repo()
+        await repo.block_active_by_dest_host("b.example", reason="r")
+        flip, add_cause = col.update_many.await_args_list
+        assert flip.args[1]["$set"]["blocked_hosts"] == ["b.example"]
+        assert add_cause.args[0]["status"] == "BLOCKED"
+        assert {"blocked_hosts": {"$type": "array"}} in add_cause.args[0]["$or"]
+        union = add_cause.args[1][0]["$set"]["blocked_hosts"]["$setUnion"]
+        assert union[1] == ["b.example"]
+
+    @pytest.mark.asyncio
+    async def test_unblock_pulls_the_cause_then_reactivates_only_cause_free_links(self):
+        repo, col = self._repo()
+        await repo.unblock_by_dest_host("a.example")
+        pull, flip = col.update_many.await_args_list
+        assert pull.args == (
+            {"blocked_hosts": "a.example", "status": "BLOCKED"},
+            {"$pull": {"blocked_hosts": "a.example"}},
+        )
+        branches = flip.args[0]["$or"]
+        assert branches[0]["blocked_hosts"] == []
+        assert {"dest.host": "a.example"} in branches[0]["$or"]
+        assert branches[1] == {
+            "blocked_hosts": {"$exists": False},
+            "dest.host": "a.example",
+        }
+        assert flip.args[1]["$set"]["status"] == "ACTIVE"
+
+    @pytest.mark.asyncio
+    async def test_per_link_block_carries_no_host_cause(self):
+        repo, col = self._repo()
+        await repo.block_active_by_aliases([("abc", "spoo.me")], reason="r")
+        assert col.update_many.await_args.args[1]["$set"]["blocked_hosts"] is None
+
+    @pytest.mark.asyncio
+    async def test_second_cause_is_recorded_on_legacy_blocks_too(self):
+        """A link blocked before blocked_hosts existed must not come back when
+        its long_url host is unblocked while a geo host stays blocked."""
+        repo, col = self._repo()
+        await repo.block_active_by_dest_host("b.example", reason="r")
+        _flip, add_cause = col.update_many.await_args_list
+        flt, update = add_cause.args
+        assert {"blocked_hosts": {"$exists": False}} in flt["$or"]
+        assert flt["blocked_reason"] == {"$exists": True}
+        union = update[0]["$set"]["blocked_hosts"]["$setUnion"]
+        # Missing list: seed it with dest.host (the original cause), then add ours.
+        assert union[0]["$ifNull"][0] == "$blocked_hosts"
+        assert union[0]["$ifNull"][1]["$cond"][1] == ["$dest.host"]
+        assert union[1] == ["b.example"]
