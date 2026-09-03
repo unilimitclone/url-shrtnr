@@ -3,6 +3,7 @@ paths. post_public is patched; repos are AsyncMocks shaped per call."""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -481,3 +482,184 @@ class TestRenderFailures:
         assert deliveries.mark_failed.await_args[0][1] == "payload_over_cap"
         endpoints.release_pending.assert_awaited_once_with(endpoint.id)
         post.assert_not_awaited()
+
+
+class _RowQueue:
+    """claim_due stand-in: hands out queued rows, records the exclusions."""
+
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.exclusions: list[list] = []
+
+    async def claim_due(self, *, lease_seconds, exclude_endpoints=()):
+        self.exclusions.append(list(exclude_endpoints))
+        for i, row in enumerate(self.rows):
+            if row.endpoint_id not in exclude_endpoints:
+                return self.rows.pop(i)
+        return None
+
+
+def _loop_executor(rows, *, concurrency, per_endpoint):
+    deliveries = AsyncMock()
+    queue = _RowQueue(rows)
+    deliveries.claim_due = queue.claim_due
+    executor = DeliveryExecutor(
+        deliveries,
+        AsyncMock(),
+        AsyncMock(),
+        default_renderers(),
+        master_secret=_MASTER,
+        poll_interval=0.01,
+        delivery_timeout=0.5,
+        concurrency=concurrency,
+        per_endpoint_concurrency=per_endpoint,
+    )
+    return executor, queue
+
+
+async def _settle():
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+class TestRunLoop:
+    @pytest.mark.asyncio
+    async def test_attempts_overlap_up_to_the_bound(self):
+        rows = [_delivery(endpoint_id=ObjectId()) for _ in range(6)]
+        executor, queue = _loop_executor(rows, concurrency=4, per_endpoint=4)
+        gate = asyncio.Event()
+        in_flight = {"now": 0, "peak": 0}
+
+        async def blocking_attempt(row):
+            in_flight["now"] += 1
+            in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+            await gate.wait()
+            in_flight["now"] -= 1
+
+        executor.attempt = blocking_attempt
+        task = asyncio.create_task(executor.run())
+        await _settle()
+        assert in_flight["now"] == 4  # four claimed, two still queued
+        gate.set()
+        await _settle()
+        assert not queue.rows
+        assert in_flight["peak"] == 4
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_one_endpoint_cannot_hold_every_slot(self):
+        slow, healthy = ObjectId(), ObjectId()
+        rows = [_delivery(endpoint_id=slow) for _ in range(5)] + [
+            _delivery(endpoint_id=healthy)
+        ]
+        executor, queue = _loop_executor(rows, concurrency=4, per_endpoint=2)
+        gate = asyncio.Event()
+        started: list[ObjectId] = []
+
+        async def blocking_attempt(row):
+            started.append(row.endpoint_id)
+            if row.endpoint_id == slow:
+                await gate.wait()
+
+        executor.attempt = blocking_attempt
+        task = asyncio.create_task(executor.run())
+        await _settle()
+        # Two slow attempts hold their two slots; the healthy row went
+        # through even though five slow rows were queued ahead of it.
+        assert started.count(slow) == 2
+        assert started.count(healthy) == 1
+        assert [slow] in queue.exclusions
+        gate.set()
+        await _settle()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_cancel_drains_in_flight_attempts(self):
+        executor, _ = _loop_executor([_delivery()], concurrency=2, per_endpoint=2)
+        finished = asyncio.Event()
+
+        async def slow_attempt(row):
+            await asyncio.sleep(0.05)
+            finished.set()
+
+        executor.attempt = slow_attempt
+        task = asyncio.create_task(executor.run())
+        await _settle()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+
+    @pytest.mark.asyncio
+    async def test_attempt_that_raises_frees_its_slot(self):
+        rows = [_delivery(), _delivery()]
+        executor, _ = _loop_executor(rows, concurrency=1, per_endpoint=1)
+        seen: list[str] = []
+
+        async def flaky_attempt(row):
+            seen.append(row.webhook_id)
+            if len(seen) == 1:
+                raise RuntimeError("boom")
+
+        executor.attempt = flaky_attempt
+        task = asyncio.create_task(executor.run())
+        await _settle()
+        assert len(seen) == 2
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+class TestRunLoopEdges:
+    @pytest.mark.asyncio
+    async def test_claim_error_frees_slot_and_loop_continues(self):
+        row = _delivery()
+        executor, _ = _loop_executor([], concurrency=1, per_endpoint=1)
+        calls = {"n": 0}
+
+        async def flaky_claim(*, lease_seconds, exclude_endpoints=()):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("mongo hiccup")
+            return row if calls["n"] == 2 else None
+
+        executor._deliveries.claim_due = flaky_claim
+        attempted: list[str] = []
+
+        async def record(r):
+            attempted.append(r.webhook_id)
+
+        executor.attempt = record
+        task = asyncio.create_task(executor.run())
+        await asyncio.sleep(0.1)
+        assert attempted == [row.webhook_id]
+        assert calls["n"] >= 3  # kept polling after the error and the idle tick
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_cancel_abandons_attempts_past_the_delivery_timeout(self):
+        executor, _ = _loop_executor([_delivery()], concurrency=1, per_endpoint=1)
+        executor._timeout = 0.02
+        cancelled = asyncio.Event()
+
+        async def hanging_attempt(row):
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        executor.attempt = hanging_attempt
+        task = asyncio.create_task(executor.run())
+        await _settle()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        assert cancelled.is_set()

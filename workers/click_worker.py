@@ -244,6 +244,8 @@ async def _build_runtime(
             max_consecutive_failures=wh.max_consecutive_failures,
             poll_interval=wh.executor_poll_seconds,
             lease_seconds=wh.executor_lease_seconds,
+            concurrency=wh.executor_concurrency,
+            per_endpoint_concurrency=wh.executor_per_endpoint_concurrency,
         )
         runtime.telemetry_tasks.append(
             asyncio.create_task(executor.run(), name="webhook-delivery-executor")

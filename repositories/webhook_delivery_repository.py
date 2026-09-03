@@ -9,6 +9,7 @@ beyond Mongo itself. The claim query is stateless over
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 from bson import ObjectId
@@ -77,22 +78,31 @@ class WebhookDeliveryRepository(BaseRepository[WebhookDeliveryDoc]):
 
     # ── Executor surface ─────────────────────────────────────────────────
 
-    async def claim_due(self, *, lease_seconds: int = 60) -> WebhookDeliveryDoc | None:
+    async def claim_due(
+        self,
+        *,
+        lease_seconds: int = 60,
+        exclude_endpoints: Sequence[ObjectId] = (),
+    ) -> WebhookDeliveryDoc | None:
         """Atomically claim one due delivery, or None when nothing is due.
 
         A crashed executor's claim expires with its lease — rows are never
-        stranded.
+        stranded. ``exclude_endpoints`` skips rows for endpoints the caller
+        already has enough attempts in flight for.
         """
         now = datetime.now(timezone.utc)
+        query: dict = {
+            "status": DeliveryStatus.PENDING.value,
+            "next_attempt_at": {"$lte": now},
+            "$or": [
+                {"claimed_until": None},
+                {"claimed_until": {"$lte": now}},
+            ],
+        }
+        if exclude_endpoints:
+            query["endpoint_id"] = {"$nin": list(exclude_endpoints)}
         doc = await self._col.find_one_and_update(
-            {
-                "status": DeliveryStatus.PENDING.value,
-                "next_attempt_at": {"$lte": now},
-                "$or": [
-                    {"claimed_until": None},
-                    {"claimed_until": {"$lte": now}},
-                ],
-            },
+            query,
             {"$set": {"claimed_until": now + timedelta(seconds=lease_seconds)}},
             sort=[("next_attempt_at", 1)],
             return_document=ReturnDocument.AFTER,

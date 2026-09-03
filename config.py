@@ -469,6 +469,10 @@ class WebhookSettings(BaseSettings):
     max_pending_per_endpoint: int = Field(default=1000, ge=10)
     executor_poll_seconds: float = Field(default=1.0, gt=0)
     executor_lease_seconds: int = Field(default=60, ge=10)
+    # Attempts in flight per executor process, and how many of those one
+    # endpoint may hold so a hanging receiver cannot occupy every slot.
+    executor_concurrency: int = Field(default=8, ge=1)
+    executor_per_endpoint_concurrency: int = Field(default=2, ge=1)
     # Owner→subscription-count cache in front of the matcher.
     matcher_cache_ttl_seconds: int = Field(default=60, ge=5)
     domain_stream_maxlen: int = Field(default=100_000, ge=1000)

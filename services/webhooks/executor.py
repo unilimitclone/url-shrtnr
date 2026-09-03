@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections import Counter
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
+
+from bson import ObjectId
 
 from infrastructure.crypto import decrypt_secret
 from infrastructure.logging import get_logger
@@ -68,6 +71,8 @@ class DeliveryExecutor:
         max_consecutive_failures: int = 10,
         poll_interval: float = 1.0,
         lease_seconds: int = 60,
+        concurrency: int = 8,
+        per_endpoint_concurrency: int = 2,
         on_disabled: OnDisabled | None = None,
     ) -> None:
         self._deliveries = delivery_repo
@@ -80,31 +85,89 @@ class DeliveryExecutor:
         self._max_consecutive = max_consecutive_failures
         self._poll_interval = poll_interval
         self._lease = lease_seconds
+        self._concurrency = concurrency
+        self._per_endpoint = per_endpoint_concurrency
         self._on_disabled = on_disabled
 
     # ── Loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        """Long-lived task; cancellation is the shutdown path."""
-        log.info("webhook_executor_started", poll_interval=self._poll_interval)
-        while True:
-            try:
-                row = await self._deliveries.claim_due(lease_seconds=self._lease)
+        """Long-lived task; cancellation is the shutdown path.
+
+        Attempts run as their own tasks under an executor-wide bound, with
+        at most ``per_endpoint_concurrency`` of them for one endpoint, so a
+        receiver that hangs for the full delivery timeout can hold only its
+        own slots. Rows are claimed one at a time exactly as before; only
+        the wait for the HTTP round trip overlaps. Shutdown drains in-flight
+        attempts for up to one delivery timeout, then cancels the rest.
+        """
+        log.info(
+            "webhook_executor_started",
+            poll_interval=self._poll_interval,
+            concurrency=self._concurrency,
+            per_endpoint_concurrency=self._per_endpoint,
+        )
+        slots = asyncio.Semaphore(self._concurrency)
+        in_flight: dict[asyncio.Task, ObjectId] = {}
+        try:
+            while True:
+                await slots.acquire()
+                row = None
+                try:
+                    row = await self._deliveries.claim_due(
+                        lease_seconds=self._lease,
+                        exclude_endpoints=self._saturated(in_flight.values()),
+                    )
+                except Exception as exc:
+                    log.error(
+                        "webhook_executor_tick_failed",
+                        stage="claim",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
                 if row is None:
+                    slots.release()
                     await asyncio.sleep(self._poll_interval)
                     continue
-                await self.attempt(row)
-            except asyncio.CancelledError:
-                log.info("webhook_executor_stopped")
-                raise
-            except Exception as exc:
-                # One bad row must not kill the loop.
-                log.error(
-                    "webhook_executor_tick_failed",
-                    error=str(exc),
-                    error_type=type(exc).__name__,
+                task = asyncio.create_task(self._run_attempt(row, slots))
+                in_flight[task] = row.endpoint_id
+                task.add_done_callback(lambda t: in_flight.pop(t, None))
+        except asyncio.CancelledError:
+            pending = set(in_flight)
+            try:
+                if pending:
+                    await asyncio.wait(pending, timeout=self._timeout)
+            finally:
+                abandoned = [t for t in pending if not t.done()]
+                for t in abandoned:
+                    t.cancel()
+                log.info(
+                    "webhook_executor_stopped",
+                    drained=len(pending) - len(abandoned),
+                    abandoned=len(abandoned),
                 )
-                await asyncio.sleep(self._poll_interval)
+            raise
+
+    def _saturated(self, endpoint_ids: Iterable[ObjectId]) -> list[ObjectId]:
+        counts = Counter(endpoint_ids)
+        return [eid for eid, n in counts.items() if n >= self._per_endpoint]
+
+    async def _run_attempt(
+        self, row: WebhookDeliveryDoc, slots: asyncio.Semaphore
+    ) -> None:
+        try:
+            await self.attempt(row)
+        except Exception as exc:
+            # One bad row must not take the loop or its slot with it.
+            log.error(
+                "webhook_executor_tick_failed",
+                stage="attempt",
+                webhook_id=row.webhook_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+        finally:
+            slots.release()
 
     # ── One attempt ──────────────────────────────────────────────────────
 

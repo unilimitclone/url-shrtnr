@@ -1,5 +1,6 @@
-"""Terminal writes report whether they moved the row out of PENDING, so the
-executor releases the endpoint's pending slot exactly once per row."""
+"""Claim and terminal-write contracts of the deliveries repository: the
+atomic lease can skip saturated endpoints, and terminal writes report whether
+they moved the row out of PENDING so the pending slot is released once."""
 
 from __future__ import annotations
 
@@ -85,3 +86,23 @@ class TestCountPending:
         query = col.count_documents.await_args[0][0]
         assert query["status"] == DeliveryStatus.PENDING.value
         assert query["is_test"] == {"$ne": True}
+
+
+class TestClaimDue:
+    @pytest.mark.asyncio
+    async def test_plain_claim_has_no_endpoint_filter(self):
+        col = make_collection()
+        col.find_one_and_update.return_value = None
+        assert await WebhookDeliveryRepository(col).claim_due() is None
+        query = col.find_one_and_update.await_args[0][0]
+        assert query["status"] == DeliveryStatus.PENDING.value
+        assert "endpoint_id" not in query
+
+    @pytest.mark.asyncio
+    async def test_exclusions_become_nin(self):
+        col = make_collection()
+        col.find_one_and_update.return_value = None
+        saturated = [ObjectId(), ObjectId()]
+        await WebhookDeliveryRepository(col).claim_due(exclude_endpoints=saturated)
+        query = col.find_one_and_update.await_args[0][0]
+        assert query["endpoint_id"] == {"$nin": saturated}
