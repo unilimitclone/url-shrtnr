@@ -388,6 +388,7 @@ class DeepInvestigator:
                 legacy_count=result.legacy_count,
                 sample_url=event.url,
                 scope="host-wide",
+                scope_kind="host",
                 screenshot=shot,
             )
         elif decision.action == "block_aliases":
@@ -409,7 +410,7 @@ class DeepInvestigator:
                     result.blocked_count,
                     result.legacy_count,
                 )
-                scope_note = f"pattern: {pattern} (proposed for the blocklist)"
+                scope_note, scope_kind = f"pattern: {pattern}", "pattern"
             else:
                 pairs = await self._aliases_to_block(event)
                 if pairs:
@@ -431,7 +432,10 @@ class DeepInvestigator:
                         result.blocked_count,
                         result.legacy_count,
                     )
-                scope_note = "specific links only, host left serving"
+                scope_note, scope_kind = (
+                    "specific links only, host left serving",
+                    "links",
+                )
             await self._notifier.safety_action(
                 host=event.host,
                 reason=verdict.reason,
@@ -440,6 +444,7 @@ class DeepInvestigator:
                 legacy_count=legacy_count,
                 sample_url=event.url,
                 scope=scope_note,
+                scope_kind=scope_kind,
                 screenshot=shot,
             )
         elif decision.action == "apply_list":

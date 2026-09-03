@@ -650,6 +650,7 @@ class TestReenforcementNotify:
 
         kw = notifier.safety_action.await_args.kwargs
         assert kw["scope"] == "host-wide (re-enforced existing verdict)"
+        assert kw["scope_kind"] == "host"
         assert kw["reason"] == "old verdict"
 
     @pytest.mark.asyncio

@@ -399,11 +399,12 @@ class TestScopeAuthority:
         assert prov["scope"] == "path_pattern"
         assert "sites" in prov["path_pattern"]
         assert prov["scope_justification"] == "shared site builder, 210 creators"
-        # The operator is told the pattern to add, since a pattern reaches
-        # every FUTURE link and only a human may apply it.
+        # The verdict store refuses future matches itself; nothing here writes
+        # to the operator blocklist, so the embed must not say it does.
         kw = notifier.safety_action.await_args.kwargs
         assert kw["scope"].startswith("pattern: ")
-        assert "proposed for the blocklist" in kw["scope"]
+        assert kw["scope_kind"] == "pattern"
+        assert "blocklist" not in kw["scope"]
         assert (
             "pattern" not in kw["reason"]
         )  # the reason is the model's reason, nothing else
@@ -785,6 +786,7 @@ class TestEnactCarriesScopeAndScreenshot:
         enforcer.block_host.assert_awaited_once()
         kw = notifier.safety_action.await_args.kwargs
         assert kw["scope"] == "host-wide"
+        assert kw["scope_kind"] == "host"
         # The judged URL's render, not the root fetched after it.
         assert kw["screenshot"] == b"the-page"
 
