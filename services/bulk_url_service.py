@@ -47,12 +47,14 @@ from services.events.contract import DomainEvent
 from services.events.sinks import NullDomainEventSink
 from services.webhooks.payloads import event_changes, link_owner_id, link_snapshot
 from shared.reserved_aliases import is_reserved_alias
+from shared.tags import TAGS_MAX_PER_LINK
 
 if TYPE_CHECKING:
     from infrastructure.cache.url_cache import UrlCache
     from infrastructure.cloudflare_kv import CloudflareKVClient
     from repositories.url_repository import UrlRepository
     from services.events.protocol import DomainEventSink
+    from services.tag_service import TagService
     from services.url_service import UrlService
 
 log = get_logger(__name__)
@@ -134,8 +136,10 @@ class BulkUrlService:
         system_default_domain: str,
         og_ttl_seconds: int = 86_400,
         events: DomainEventSink | None = None,
+        tag_service: TagService | None = None,
     ) -> None:
         self._url_repo = url_repo
+        self._tag_service = tag_service
         self._url_cache = url_cache
         # Business rules that must never fork are borrowed, not re-derived:
         # alias availability (v2 + legacy + emoji on the system default)
@@ -581,6 +585,103 @@ class BulkUrlService:
             from_domain=doc.domain,
             to_domain=target,
         )
+
+    async def bulk_tag(
+        self,
+        ids: list[ObjectId],
+        add: list[ObjectId],
+        remove: list[ObjectId],
+        owner_id: ObjectId,
+    ) -> BulkUrlOperationResponse:
+        """Retag exactly *ids*: per item ``(existing minus remove) plus add``.
+
+        ``add`` must be the owner's tags (envelope 400 otherwise, nothing
+        attempted). Unchanged items are success no-ops with no write; an
+        item whose result would exceed the per-link cap reports
+        ``validation_error``. One set-based pipeline update does the remove
+        and the add together, so a crash can never leave a link with its
+        tags removed but not added. Tags are not in the redirect cache
+        projection, so no cache or edge work.
+        """
+        if add:
+            # Fail closed, like the single-item path: no tag service, no vouching.
+            if self._tag_service is None:
+                raise ValidationError("tags are not available", field="add")
+            await self._tag_service.assert_owned(owner_id, add, field="add")
+        now = datetime.now(timezone.utc)
+        batch = await self._load(
+            ids, owner_id, blocked_message="Cannot modify a blocked URL"
+        )
+        changed: list[tuple[UrlV2Doc, list[ObjectId]]] = []
+        for doc in batch.pending:
+            kept = [t for t in doc.tag_ids if t not in remove]
+            next_tags = kept + [t for t in add if t not in kept]
+            if next_tags == doc.tag_ids:
+                batch.ok(doc.id, alias=doc.alias)
+            elif len(next_tags) > TAGS_MAX_PER_LINK:
+                batch.reject(
+                    doc.id,
+                    "validation_error",
+                    f"a link can carry at most {TAGS_MAX_PER_LINK} tags",
+                    alias=doc.alias,
+                )
+            else:
+                changed.append((doc, next_tags))
+        if not changed:
+            return batch.report(op="tag", user_id=owner_id)
+
+        doc_ids = [doc.id for doc, _ in changed]
+        # Aggregation-pipeline update: keep what is not removed, append what
+        # is added and not already kept. Order-preserving, one write.
+        kept = {
+            "$filter": {
+                "input": {"$ifNull": ["$tag_ids", []]},
+                "cond": {"$not": {"$in": ["$$this", remove]}},
+            }
+        }
+        update = [
+            {
+                "$set": {
+                    "tag_ids": {
+                        "$let": {
+                            "vars": {"kept": kept},
+                            "in": {
+                                "$concatArrays": [
+                                    "$$kept",
+                                    {
+                                        "$filter": {
+                                            "input": add,
+                                            "cond": {
+                                                "$not": {"$in": ["$$this", "$$kept"]}
+                                            },
+                                        }
+                                    },
+                                ]
+                            },
+                        }
+                    },
+                    "updated_at": now,
+                }
+            }
+        ]
+        try:
+            await self._url_repo.apply_by_ids_and_owner(doc_ids, owner_id, update)
+        except PyMongoError:
+            log.exception(
+                "urls_bulk_update_write_failed",
+                user_id=str(owner_id),
+                fields=["tag_ids"],
+            )
+            for doc, _ in changed:
+                batch.reject(doc.id, "internal", _INTERNAL_MSG, alias=doc.alias)
+            return batch.report(op="tag", user_id=owner_id)
+
+        for doc, next_tags in changed:
+            batch.ok(doc.id, alias=doc.alias)
+            set_ops = {"tag_ids": next_tags, "updated_at": now}
+            self._log_updated([doc], set_ops, owner_id)
+            await self._emit_updated([doc], set_ops)
+        return batch.report(op="tag", user_id=owner_id)
 
     # ── write helpers ────────────────────────────────────────────────────
 

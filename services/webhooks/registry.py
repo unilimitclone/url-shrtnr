@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from difflib import get_close_matches
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from errors import ValidationError
 
@@ -62,6 +62,8 @@ class LinkSnapshot(_PayloadBase):
     expires_at: str | None = None
     geo_rules: dict[str, str] | None = None
     meta_tags: dict[str, Any] | None = None
+    # Ids into the owner's tags (GET /api/v1/tags resolves name, colour, icon).
+    tag_ids: list[str] = Field(default_factory=list)
     total_clicks: int = 0
     created_at: str
 
@@ -125,6 +127,7 @@ def _sample_link() -> dict[str, Any]:
         "expires_at": None,
         "geo_rules": None,
         "meta_tags": None,
+        "tag_ids": ["68b6f0c2f9e7a4b1d2c3d4e5"],
         "total_clicks": 4102,
         "created_at": "2026-07-01T09:00:00+00:00",
     }

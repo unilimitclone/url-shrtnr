@@ -21,6 +21,7 @@ from dependencies import (
     CustomDomainSvc,
     FeatureFlagSvc,
     Settings,
+    TagSvc,
     UrlSvc,
     optional_scopes_verified,
 )
@@ -52,6 +53,7 @@ async def shorten_v1(
     request: Request,
     body: CreateUrlRequest,
     url_service: UrlSvc,
+    tag_service: TagSvc,
     custom_domain_service: CustomDomainSvc,
     settings: Settings,
     flag_svc: FeatureFlagSvc,
@@ -121,7 +123,12 @@ async def shorten_v1(
     doc, claim_token = await url_service.create(
         body, owner_id, client_ip, domain=scoped_domain, created_via=created_via
     )
-    return UrlResponse.from_doc(doc, base_url, claim_token=claim_token)
+    refs = (
+        await tag_service.refs_by_id(owner_id, doc.tag_ids)
+        if owner_id is not None and doc.tag_ids
+        else None
+    )
+    return UrlResponse.from_doc(doc, base_url, claim_token=claim_token, tag_refs=refs)
 
 
 @router.get(

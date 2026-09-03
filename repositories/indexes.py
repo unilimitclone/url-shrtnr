@@ -79,6 +79,7 @@ async def ensure_indexes(
             raise
     await urls_v2_col.create_index([("owner_id", 1)])
     await urls_v2_col.create_index([("owner_id", 1), ("created_at", -1)])
+    await urls_v2_col.create_index([("owner_id", 1), ("tag_ids", 1)])
     await urls_v2_col.create_index([("total_clicks", -1)])
     await urls_v2_col.create_index([("last_click", -1)])
     # Claimed-set lookup for scope=ALL stats. Partial — holds only claimed
@@ -89,6 +90,11 @@ async def ensure_indexes(
         name="owner_claimed",
         partialFilterExpression={"claimed_at": {"$exists": True}},
     )
+
+    # ── tags ───────────────────────────────────────────────────────────────
+    tags_col = db["tags"]
+    await tags_col.create_index([("owner_id", 1), ("name", 1)], unique=True)
+    await tags_col.create_index([("owner_id", 1), ("created_at", 1)])
 
     # ── safety_verdicts ────────────────────────────────────────────────────
     # One verdict per destination host; sweeps pivot on registrable domain.

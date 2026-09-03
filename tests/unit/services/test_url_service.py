@@ -57,6 +57,7 @@ def make_url_v2_doc(
     domain: str | None = None,
     geo_rules: dict | None = None,
     meta_tags: dict | None = None,
+    tag_ids: list | None = None,
 ) -> UrlV2Doc:
     return UrlV2Doc.from_mongo(
         {
@@ -77,6 +78,7 @@ def make_url_v2_doc(
             "total_clicks": 0,
             "last_click": None,
             "meta_tags": meta_tags,
+            "tag_ids": tag_ids or [],
         }
     )
 

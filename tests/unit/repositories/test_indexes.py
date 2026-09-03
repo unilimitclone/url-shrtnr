@@ -39,6 +39,7 @@ class TestEnsureIndexes:
         db.__getitem__ = lambda self, name: {
             "users": users_col,
             "urlsV2": urls_v2_col,
+            "tags": AsyncMock(),
             "urls": urls_legacy_col,
             "emojis": emojis_col,
             "clicks": clicks_col,

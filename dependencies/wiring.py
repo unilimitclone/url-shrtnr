@@ -47,6 +47,7 @@ from repositories.report_repository import (
     ReportSubmissionRepository,
 )
 from repositories.scheduled_task_repository import ScheduledTaskRepository
+from repositories.tag_repository import TagRepository
 from repositories.token_repository import TokenRepository
 from repositories.url_repository import UrlRepository
 from repositories.user_repository import UserRepository
@@ -123,6 +124,7 @@ from services.safety import (
 from services.scheduler import TaskScheduler
 from services.scheduler.tasks import build_task_registry
 from services.stats_service import StatsService
+from services.tag_service import TagService
 from services.tenant_resolver import CachedMongoTenantResolver
 from services.token_factory import TokenFactory
 from services.url_expand_service import UrlExpandService
@@ -358,6 +360,7 @@ def build_account_erasure_service(
         user_repo=user_repo,
         url_service=url_service,
         domain_service=domain_service,
+        tag_service=TagService(TagRepository(db["tags"]), UrlRepository(db["urlsV2"])),
         click_repo=ClickRepository(db["clicks"]),
         api_key_repo=ApiKeyRepository(db["api-keys"]),
         token_repo=TokenRepository(db["verification-tokens"]),
@@ -668,6 +671,8 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
     )
     app.state.url_policy = url_policy
     # ── Services ─────────────────────────────────────────────────────────
+    tag_repo = TagRepository(db["tags"])
+    app.state.tag_service = TagService(tag_repo, url_repo)
     app.state.url_service = UrlService(
         url_repo,
         legacy_repo,
@@ -692,6 +697,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         meta_key_secret=settings.secret_key,
         events=app.state.domain_event_sink,
         user_repo=user_repo,
+        tag_service=app.state.tag_service,
     )
     app.state.bulk_url_service = BulkUrlService(
         url_repo,
@@ -701,11 +707,13 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         system_default_domain=settings.system_default_domain,
         og_ttl_seconds=edge.og_ttl_seconds,
         events=app.state.domain_event_sink,
+        tag_service=app.state.tag_service,
     )
     app.state.stats_service = StatsService(
         click_repo,
         url_repo,
         max_date_range_days=settings.max_date_range_days,
+        tag_service=app.state.tag_service,
     )
     # One resolver serves BOTH public read-only surfaces (preview + stats)
     # so they can never disagree about which link a code names or what
@@ -988,6 +996,7 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         user_repo=user_repo,
         url_service=app.state.url_service,
         domain_service=app.state.custom_domain_service,
+        tag_service=app.state.tag_service,
         click_repo=click_repo,
         api_key_repo=api_key_repo,
         token_repo=token_repo,

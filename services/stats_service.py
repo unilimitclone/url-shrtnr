@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, available_timezones
 
 from bson import ObjectId
@@ -31,6 +31,9 @@ from errors import (
 from infrastructure.logging import get_logger
 from repositories.click_repository import ClickRepository
 from repositories.url_repository import UrlRepository
+
+if TYPE_CHECKING:
+    from services.tag_service import TagService
 from schemas.dto.requests.stats import LinkStatsQuery, StatsQuery
 from schemas.enums.stats import (
     StatsDimension,
@@ -67,6 +70,10 @@ _KNOWN_TIMEZONES: frozenset[str] = frozenset(available_timezones())
 # match those null/missing documents too. Note "unknown" is ALSO a real
 # stored value (the classifier's fallback) — the filter branch keeps the
 # sentinel in its stored-value $in for exactly that reason.
+# A valid-shaped ObjectId no document can hold: an empty tag scope must
+# match nothing, and $in: [] would be dropped by the "no values" guard.
+_NO_URL_ID = "000000000000000000000000"
+
 _NULL_SENTINEL_FILTERS: dict[StatsDimension, str] = {
     StatsDimension.REFERRER: "Direct",
     StatsDimension.DEVICE: "unknown",
@@ -90,10 +97,12 @@ class StatsService:
         click_repo: ClickRepository,
         url_repo: UrlRepository,
         max_date_range_days: int = 90,
+        tag_service: TagService | None = None,
     ) -> None:
         self._max_date_range_days = max_date_range_days
         self._click_repo = click_repo
         self._url_repo = url_repo
+        self._tag_service = tag_service
 
     # ── Timezone helpers (shared with the public stats endpoint) ─────────────
 
@@ -220,6 +229,44 @@ class StatsService:
         StatsService._merge_or_groups(query, or_groups)
 
         return query
+
+    async def _resolve_tag_filter(
+        self, filters: dict[str, list[str]], owner_oid: ObjectId
+    ) -> dict[str, list[str]]:
+        """Swap ``tag``/``tag_id`` filters for the url_ids of the owner's links.
+
+        Clicks never carry tags (a click's meta is frozen at write time, a
+        link's tags are not), so the scope is resolved through the link
+        collection. Names resolve through the tag registry; ids are taken
+        as given (foreign ids own no links, so they match nothing).
+        Intersects with an explicit ``url_id`` filter; a tag nobody uses
+        resolves to the ``_NO_URL_ID`` sentinel so the $match finds nothing
+        instead of everything.
+        """
+        names = filters.get(StatsDimension.TAG) or []
+        raw_ids = filters.get(StatsDimension.TAG_ID) or []
+        if not names and not raw_ids:
+            return filters
+        resolved = dict(filters)
+        resolved.pop(StatsDimension.TAG, None)
+        resolved.pop(StatsDimension.TAG_ID, None)
+        tag_ids = [ObjectId(v) for v in raw_ids]
+        if names and self._tag_service is not None:
+            named = await self._tag_service.ids_for_names(owner_oid, names)
+            tag_ids += [i for i in named if i not in tag_ids]
+        ids: set[str] = set()
+        if tag_ids:
+            ids = {
+                str(i)
+                for i in await self._url_repo.list_ids_by_owner_and_tag_ids(
+                    owner_oid, tag_ids
+                )
+            }
+        explicit = resolved.get(StatsDimension.URL_ID)
+        if explicit:
+            ids &= set(explicit)
+        resolved[StatsDimension.URL_ID] = sorted(ids) or [_NO_URL_ID]
+        return resolved
 
     @staticmethod
     def _apply_dimension_filters(
@@ -600,15 +647,14 @@ class StatsService:
         # ── Execute + format ──────────────────────────────────────────────────
         # Claimed links carry pre-claim history under the anonymous stamp;
         # sub-ms partial-index lookup, empty for almost every account.
-        claimed_url_ids = await self._url_repo.list_claimed_ids(
-            ObjectId(owner_id) if isinstance(owner_id, str) else owner_id
-        )
+        owner_oid = ObjectId(owner_id) if isinstance(owner_id, str) else owner_id
+        claimed_url_ids = await self._url_repo.list_claimed_ids(owner_oid)
 
         click_query = self._build_click_query(
             owner_id,
             start_date,
             end_date,
-            filters,
+            await self._resolve_tag_filter(filters, owner_oid),
             claimed_url_ids=claimed_url_ids,
         )
         response = await self.compute(
