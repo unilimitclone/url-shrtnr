@@ -509,6 +509,8 @@ def wire_services(app: FastAPI, settings: AppSettings, redis_client) -> None:
         max_consecutive_failures=wh_settings.max_consecutive_failures,
         poll_interval=wh_settings.executor_poll_seconds,
         lease_seconds=wh_settings.executor_lease_seconds,
+        concurrency=wh_settings.executor_concurrency,
+        per_endpoint_concurrency=wh_settings.executor_per_endpoint_concurrency,
     )
     if not wh_settings.enabled:
         app.state.domain_event_sink = NullDomainEventSink()

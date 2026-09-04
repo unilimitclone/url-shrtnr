@@ -1,8 +1,10 @@
 {
-  "name": "spoo · webhooks",
-  "description": "Webhook dispatch, delivery health, and endpoint lifecycle. Refresh 60s.",
+  "name": "spoo \u00b7 webhooks",
+  "description": "Webhook dispatch, consumer lag, pending depth, delivery latency and outcomes, endpoint lifecycle. Refresh 60s.",
   "owner": "X-AXIOM-EVERYONE",
-  "datasets": ["spoo-prod"],
+  "datasets": [
+    "spoo-prod"
+  ],
   "refreshTime": 60,
   "schemaVersion": 2,
   "timeWindowStart": "qr-now-6h",
@@ -34,10 +36,34 @@
     },
     {
       "id": "stat-p95-delivery",
-      "name": "p95 delivery (ms)",
+      "name": "p95 HTTP round trip (ms)",
       "type": "Statistic",
       "query": {
         "apl": "['spoo-prod']\n| where event == \"webhook_delivered\"\n| summarize p95 = percentile(duration_ms, 95)\n| project p95"
+      }
+    },
+    {
+      "id": "stat-consumer-lag",
+      "name": "Webhooks consumer lag (latest, both streams)",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"stream_group_stats\" and ['group'] == \"webhooks\"\n| summarize arg_max(_time, lag) by stream\n| summarize lag = sum(lag)\n| project lag"
+      }
+    },
+    {
+      "id": "stat-pending-depth",
+      "name": "Pending deliveries queued (latest)",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"webhook_pending_depth\"\n| summarize arg_max(_time, total_pending)\n| project total_pending"
+      }
+    },
+    {
+      "id": "stat-p95-latency",
+      "name": "p95 created to completed (ms)",
+      "type": "Statistic",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"webhook_delivered\" and is_test != true\n| summarize p95 = percentile(latency_ms, 95)\n| project p95"
       }
     },
     {
@@ -54,6 +80,38 @@
       "type": "TimeSeries",
       "query": {
         "apl": "['spoo-prod']\n| where event in (\"webhook_delivered\", \"webhook_delivery_attempt_failed\")\n| summarize count() by bin_auto(_time), event"
+      }
+    },
+    {
+      "id": "ts-consumer-lag",
+      "name": "Consumer lag on the webhooks group, by stream",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"stream_group_stats\" and ['group'] == \"webhooks\"\n| summarize max(lag) by bin_auto(_time), stream"
+      }
+    },
+    {
+      "id": "ts-pending-depth",
+      "name": "Pending depth: total queued and worst endpoint",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"webhook_pending_depth\"\n| summarize total = max(total_pending), worst_endpoint = max(max_pending) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-latency-percentiles",
+      "name": "Delivery latency created to completed (ms)",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"webhook_delivered\" and is_test != true\n| summarize percentiles_array(latency_ms, 50, 95, 99) by bin_auto(_time)"
+      }
+    },
+    {
+      "id": "ts-outcomes-by-class",
+      "name": "Delivery outcomes by class",
+      "type": "TimeSeries",
+      "query": {
+        "apl": "['spoo-prod']\n| where event in (\"webhook_delivered\", \"webhook_delivery_failed\", \"webhook_delivery_rate_limited\", \"webhook_delivery_dropped_over_cap\") and is_test != true\n| extend outcome = case(event == \"webhook_delivered\", \"delivered\", event == \"webhook_delivery_failed\", strcat(\"failed:\", reason), event == \"webhook_delivery_rate_limited\", \"rate_limited\", \"dropped_over_cap\")\n| summarize count() by bin_auto(_time), outcome"
       }
     },
     {
@@ -89,6 +147,14 @@
       }
     },
     {
+      "id": "table-backlogged-endpoints",
+      "name": "Backlogged endpoints (latest pending depth)",
+      "type": "Table",
+      "query": {
+        "apl": "['spoo-prod']\n| where event == \"webhook_endpoint_depth\"\n| summarize pending = max(pending), last_seen = max(_time) by endpoint_id, status, user_id\n| sort by pending desc\n| take 10\n| project endpoint_id, pending, status, user_id, last_seen"
+      }
+    },
+    {
       "id": "table-slowest-endpoints",
       "name": "Slowest endpoints (p95 ms)",
       "type": "Table",
@@ -106,17 +172,145 @@
     }
   ],
   "layout": [
-    { "i": "stat-dispatched", "x": 0, "y": 0, "w": 3, "h": 2 },
-    { "i": "stat-delivered", "x": 3, "y": 0, "w": 3, "h": 2 },
-    { "i": "stat-delivery-success-rate", "x": 6, "y": 0, "w": 3, "h": 2 },
-    { "i": "stat-p95-delivery", "x": 9, "y": 0, "w": 3, "h": 2 },
-    { "i": "ts-dispatch-by-type", "x": 0, "y": 2, "w": 6, "h": 4 },
-    { "i": "ts-delivery-outcomes", "x": 6, "y": 2, "w": 6, "h": 4 },
-    { "i": "ts-attempt-failures-by-status", "x": 0, "y": 6, "w": 6, "h": 4 },
-    { "i": "ts-endpoints-disabled", "x": 6, "y": 6, "w": 6, "h": 4 },
-    { "i": "ts-drops-over-cap", "x": 0, "y": 10, "w": 6, "h": 4 },
-    { "i": "ts-pipeline-degradation", "x": 6, "y": 10, "w": 6, "h": 4 },
-    { "i": "table-slowest-endpoints", "x": 0, "y": 14, "w": 6, "h": 4 },
-    { "i": "table-failing-endpoints", "x": 6, "y": 14, "w": 6, "h": 4 }
+    {
+      "i": "stat-dispatched",
+      "x": 0,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "stat-delivered",
+      "x": 3,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "stat-delivery-success-rate",
+      "x": 6,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "stat-p95-delivery",
+      "x": 9,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "stat-consumer-lag",
+      "x": 0,
+      "y": 2,
+      "w": 4,
+      "h": 2
+    },
+    {
+      "i": "stat-pending-depth",
+      "x": 4,
+      "y": 2,
+      "w": 4,
+      "h": 2
+    },
+    {
+      "i": "stat-p95-latency",
+      "x": 8,
+      "y": 2,
+      "w": 4,
+      "h": 2
+    },
+    {
+      "i": "ts-consumer-lag",
+      "x": 0,
+      "y": 4,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-pending-depth",
+      "x": 6,
+      "y": 4,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-latency-percentiles",
+      "x": 0,
+      "y": 8,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-outcomes-by-class",
+      "x": 6,
+      "y": 8,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-dispatch-by-type",
+      "x": 0,
+      "y": 12,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-delivery-outcomes",
+      "x": 6,
+      "y": 12,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-attempt-failures-by-status",
+      "x": 0,
+      "y": 16,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-endpoints-disabled",
+      "x": 6,
+      "y": 16,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-drops-over-cap",
+      "x": 0,
+      "y": 20,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ts-pipeline-degradation",
+      "x": 6,
+      "y": 20,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "table-backlogged-endpoints",
+      "x": 0,
+      "y": 24,
+      "w": 12,
+      "h": 4
+    },
+    {
+      "i": "table-slowest-endpoints",
+      "x": 0,
+      "y": 28,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "table-failing-endpoints",
+      "x": 6,
+      "y": 28,
+      "w": 6,
+      "h": 4
+    }
   ]
 }

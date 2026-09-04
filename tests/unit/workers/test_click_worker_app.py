@@ -228,3 +228,29 @@ class TestSafetyRuntime:
             runtime = await _build_runtime(settings, ["stats"], run_safety=True)
 
         assert runtime.deep_consumer is not None
+
+
+class TestWebhooksRuntime:
+    @pytest.mark.asyncio
+    async def test_builds_webhook_stack_with_reporters(self):
+        """With webhooks on, the runtime carries the click and domain
+        consumers, the executor task, the pending-depth reporter and a lag
+        reporter for the domain stream, and tears them all down."""
+        settings = _settings()
+        settings.webhooks.enabled = True
+        settings.secret_key = "s" * 32
+
+        with patch(
+            "workers.click_worker.create_redis_client", new=AsyncMock()
+        ) as redis_factory:
+            redis_factory.return_value = AsyncMock()
+            runtime = await _build_runtime(settings, ["stats"], run_webhooks=True)
+            try:
+                assert "webhooks" in runtime.consumers
+                assert runtime.webhook_domain_consumer is not None
+                names = {t.get_name() for t in runtime.telemetry_tasks}
+                assert {"webhook-delivery-executor", "webhook-depth-reporter"} <= names
+                # executor + depth reporter + click stream pair + domain stream
+                assert len(runtime.telemetry_tasks) == 5
+            finally:
+                await runtime.aclose()

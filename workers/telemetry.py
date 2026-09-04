@@ -6,6 +6,9 @@ to Axiom via the existing container-logs → Vector path, and the thing to
 alert on (lag growing = worker falling behind; alert BEFORE the buffer
 fills and the sink starts falling back inline).
 
+WebhookDepthReporter emits per-endpoint pending depth from the counter the
+dispatcher maintains — the queue-side view of a subscriber falling behind.
+
 StaleConsumerJanitor deletes consumer names that are long-dead with
 nothing pending — every worker restart registers fresh
 ``{group}-{host}-{pid}`` names and Redis keeps the old ones forever,
@@ -16,9 +19,12 @@ messages would orphan its PEL entries, so only pending==0 names go.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from infrastructure.logging import get_logger
+
+if TYPE_CHECKING:
+    from repositories.webhook_endpoint_repository import WebhookEndpointRepository
 
 log = get_logger(__name__)
 
@@ -65,6 +71,16 @@ class StreamMetricsReporter:
                 for g in groups
             ],
         )
+        # One flat line per group so lag can be charted and alerted on by
+        # group without unpacking the nested list above.
+        for g in groups:
+            log.info(
+                "stream_group_stats",
+                stream=self._stream,
+                group=g.get("name"),
+                pending=g.get("pending"),
+                lag=g.get("lag"),
+            )
 
 
 class StaleConsumerJanitor:
@@ -112,3 +128,47 @@ class StaleConsumerJanitor:
         if removed:
             log.info("stale_consumers_removed", stream=self._stream, removed=removed)
         return removed
+
+
+class WebhookDepthReporter:
+    def __init__(
+        self,
+        endpoint_repo: WebhookEndpointRepository,
+        interval_seconds: float,
+        top: int = 20,
+    ) -> None:
+        self._endpoints = endpoint_repo
+        self._interval = interval_seconds
+        self._top = top
+
+    async def run_forever(self) -> None:
+        while True:
+            try:
+                await self.report_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning(
+                    "webhook_pending_depth_failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+            await asyncio.sleep(self._interval)
+
+    async def report_once(self) -> None:
+        endpoints, total = await self._endpoints.backlog_totals()
+        backlogged = await self._endpoints.find_backlogged(limit=self._top)
+        log.info(
+            "webhook_pending_depth",
+            backlogged_endpoints=endpoints,
+            total_pending=total,
+            max_pending=backlogged[0].pending_count if backlogged else 0,
+        )
+        for ep in backlogged:
+            log.info(
+                "webhook_endpoint_depth",
+                endpoint_id=str(ep.id),
+                user_id=str(ep.user_id),
+                pending=ep.pending_count,
+                status=ep.status.value,
+            )

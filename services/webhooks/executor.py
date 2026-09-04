@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections import Counter
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
+
+from bson import ObjectId
 
 from infrastructure.crypto import decrypt_secret
 from infrastructure.logging import get_logger
@@ -49,6 +52,15 @@ RETRY_SCHEDULE_SECONDS = (0, 5, 300, 1800, 7200, 18000, 36000)
 RATE_LIMIT_FALLBACK_SECONDS = 60
 RATE_LIMIT_MAX_DEFER_SECONDS = 900
 
+
+def _since_ms(started: datetime | None) -> int | None:
+    if started is None:
+        return None
+    return int(
+        (datetime.now(timezone.utc) - as_aware_utc(started)).total_seconds() * 1000
+    )
+
+
 # Type of the on-disable hook — wiring plugs email notification in here so
 # the executor never grows an email dependency.
 OnDisabled = Callable[[WebhookEndpointDoc, str], Awaitable[None]]
@@ -68,6 +80,8 @@ class DeliveryExecutor:
         max_consecutive_failures: int = 10,
         poll_interval: float = 1.0,
         lease_seconds: int = 60,
+        concurrency: int = 8,
+        per_endpoint_concurrency: int = 2,
         on_disabled: OnDisabled | None = None,
     ) -> None:
         self._deliveries = delivery_repo
@@ -80,31 +94,89 @@ class DeliveryExecutor:
         self._max_consecutive = max_consecutive_failures
         self._poll_interval = poll_interval
         self._lease = lease_seconds
+        self._concurrency = concurrency
+        self._per_endpoint = per_endpoint_concurrency
         self._on_disabled = on_disabled
 
     # ── Loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        """Long-lived task; cancellation is the shutdown path."""
-        log.info("webhook_executor_started", poll_interval=self._poll_interval)
-        while True:
-            try:
-                row = await self._deliveries.claim_due(lease_seconds=self._lease)
+        """Long-lived task; cancellation is the shutdown path.
+
+        Attempts run as their own tasks under an executor-wide bound, with
+        at most ``per_endpoint_concurrency`` of them for one endpoint, so a
+        receiver that hangs for the full delivery timeout can hold only its
+        own slots. Rows are claimed one at a time exactly as before; only
+        the wait for the HTTP round trip overlaps. Shutdown drains in-flight
+        attempts for up to one delivery timeout, then cancels the rest.
+        """
+        log.info(
+            "webhook_executor_started",
+            poll_interval=self._poll_interval,
+            concurrency=self._concurrency,
+            per_endpoint_concurrency=self._per_endpoint,
+        )
+        slots = asyncio.Semaphore(self._concurrency)
+        in_flight: dict[asyncio.Task, ObjectId] = {}
+        try:
+            while True:
+                await slots.acquire()
+                row = None
+                try:
+                    row = await self._deliveries.claim_due(
+                        lease_seconds=self._lease,
+                        exclude_endpoints=self._saturated(in_flight.values()),
+                    )
+                except Exception as exc:
+                    log.error(
+                        "webhook_executor_tick_failed",
+                        stage="claim",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
                 if row is None:
+                    slots.release()
                     await asyncio.sleep(self._poll_interval)
                     continue
-                await self.attempt(row)
-            except asyncio.CancelledError:
-                log.info("webhook_executor_stopped")
-                raise
-            except Exception as exc:
-                # One bad row must not kill the loop.
-                log.error(
-                    "webhook_executor_tick_failed",
-                    error=str(exc),
-                    error_type=type(exc).__name__,
+                task = asyncio.create_task(self._run_attempt(row, slots))
+                in_flight[task] = row.endpoint_id
+                task.add_done_callback(lambda t: in_flight.pop(t, None))
+        except asyncio.CancelledError:
+            pending = set(in_flight)
+            try:
+                if pending:
+                    await asyncio.wait(pending, timeout=self._timeout)
+            finally:
+                abandoned = [t for t in pending if not t.done()]
+                for t in abandoned:
+                    t.cancel()
+                log.info(
+                    "webhook_executor_stopped",
+                    drained=len(pending) - len(abandoned),
+                    abandoned=len(abandoned),
                 )
-                await asyncio.sleep(self._poll_interval)
+            raise
+
+    def _saturated(self, endpoint_ids: Iterable[ObjectId]) -> list[ObjectId]:
+        counts = Counter(endpoint_ids)
+        return [eid for eid, n in counts.items() if n >= self._per_endpoint]
+
+    async def _run_attempt(
+        self, row: WebhookDeliveryDoc, slots: asyncio.Semaphore
+    ) -> None:
+        try:
+            await self.attempt(row)
+        except Exception as exc:
+            # One bad row must not take the loop or its slot with it.
+            log.error(
+                "webhook_executor_tick_failed",
+                stage="attempt",
+                webhook_id=row.webhook_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+        finally:
+            slots.release()
 
     # ── One attempt ──────────────────────────────────────────────────────
 
@@ -117,7 +189,7 @@ class DeliveryExecutor:
 
         endpoint = await self._endpoints.find_by_id(row.endpoint_id)
         if endpoint is None or endpoint.status == WebhookStatus.DISABLED:
-            await self._deliveries.mark_failed(row.id, "endpoint_inactive")
+            await self._fail(row, "endpoint_inactive")
             return
         if endpoint.status == WebhookStatus.PAUSED and not single_shot:
             # Paused is a temporary state the owner controls: hold the
@@ -146,7 +218,7 @@ class DeliveryExecutor:
                 webhook_id=row.webhook_id,
                 error_type=type(exc).__name__,
             )
-            await self._deliveries.mark_failed(row.id, "secret_unreadable")
+            await self._fail(row, "secret_unreadable")
             if not single_shot:
                 await self._disable(endpoint, EndpointDisabledReason.SECRET_UNREADABLE)
             return
@@ -169,9 +241,7 @@ class DeliveryExecutor:
 
         ok = result.status_code is not None and 200 <= result.status_code < 300
         if ok:
-            await self._deliveries.record_attempt_and_finish(
-                row.id, attempt, DeliveryStatus.SUCCESS
-            )
+            await self._finish(row, attempt, DeliveryStatus.SUCCESS)
             if not single_shot:
                 await self._endpoints.record_success(endpoint.id)
             log.info(
@@ -181,6 +251,7 @@ class DeliveryExecutor:
                 webhook_id=row.webhook_id,
                 status_code=result.status_code,
                 duration_ms=duration_ms,
+                latency_ms=_since_ms(row.created_at),
                 attempt=row.attempt_count + 1,
                 is_test=row.is_test,
             )
@@ -219,29 +290,23 @@ class DeliveryExecutor:
             attempt=row.attempt_count + 1,
         )
 
+        failure = result.error or f"status {result.status_code}"
         if single_shot:
             # One recorded attempt, terminal, health untouched: the caller
             # (test send / manual retry) reads the outcome synchronously.
-            await self._deliveries.record_attempt_and_finish(
-                row.id, attempt, DeliveryStatus.FAILED
-            )
+            await self._finish(row, attempt, DeliveryStatus.FAILED, reason=failure)
             return
 
         if result.status_code == 410:
-            await self._deliveries.record_attempt_and_finish(
-                row.id, attempt, DeliveryStatus.FAILED
-            )
+            await self._finish(row, attempt, DeliveryStatus.FAILED, reason="gone")
             await self._disable(endpoint, EndpointDisabledReason.GONE)
             return
 
         # attempt_count on the claimed row predates this attempt.
         attempts_done = row.attempt_count + 1
         if attempts_done >= len(RETRY_SCHEDULE_SECONDS):
-            await self._deliveries.record_attempt_and_finish(
-                row.id, attempt, DeliveryStatus.FAILED
-            )
-            reason = result.error or f"status {result.status_code}"
-            streak = await self._endpoints.record_exhausted(endpoint.id, reason)
+            await self._finish(row, attempt, DeliveryStatus.FAILED, reason="exhausted")
+            streak = await self._endpoints.record_exhausted(endpoint.id, failure)
             if streak >= self._max_consecutive:
                 await self._disable(
                     endpoint, EndpointDisabledReason.CONSECUTIVE_FAILURES
@@ -254,6 +319,43 @@ class DeliveryExecutor:
             attempt,
             datetime.now(timezone.utc) + timedelta(seconds=delay),
         )
+
+    # ── Terminal writes ──────────────────────────────────────────────────
+
+    async def _finish(
+        self,
+        row: WebhookDeliveryDoc,
+        attempt: DeliveryAttempt,
+        status: DeliveryStatus,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        if await self._deliveries.record_attempt_and_finish(row.id, attempt, status):
+            await self._release_slot(row)
+        if status == DeliveryStatus.FAILED:
+            self._log_failed(row, reason or "failed")
+
+    async def _fail(self, row: WebhookDeliveryDoc, reason: str) -> None:
+        if await self._deliveries.mark_failed(row.id, reason):
+            await self._release_slot(row)
+        self._log_failed(row, reason)
+
+    def _log_failed(self, row: WebhookDeliveryDoc, reason: str) -> None:
+        log.warning(
+            "webhook_delivery_failed",
+            endpoint_id=str(row.endpoint_id),
+            event_type=row.event_type,
+            webhook_id=row.webhook_id,
+            reason=reason,
+            attempts=row.attempt_count + 1,
+            latency_ms=_since_ms(row.created_at),
+            is_test=row.is_test,
+        )
+
+    async def _release_slot(self, row: WebhookDeliveryDoc) -> None:
+        # Test sends are inserted PENDING without a dispatch reservation.
+        if not row.is_test:
+            await self._endpoints.release_pending(row.endpoint_id)
 
     # ── Internals ────────────────────────────────────────────────────────
 
@@ -274,13 +376,11 @@ class DeliveryExecutor:
         event = await self._events.find_by_oid(row.event_oid)
         if event is None:
             # TTL race at the 30-day edge — terminal, never a crash.
-            await self._deliveries.mark_failed(row.id, "event_expired")
+            await self._fail(row, "event_expired")
             return None
         renderer = self._renderers.get(endpoint.flavor.value)
         if renderer is None:
-            await self._deliveries.mark_failed(
-                row.id, f"unknown_flavor:{endpoint.flavor}"
-            )
+            await self._fail(row, f"unknown_flavor:{endpoint.flavor}")
             return None
         payload = dict(event.payload)
         if row.dropped_since_last:
@@ -295,7 +395,7 @@ class DeliveryExecutor:
             payload,
         )
         if len(body.encode()) > self._max_bytes:
-            await self._deliveries.mark_failed(row.id, "payload_over_cap")
+            await self._fail(row, "payload_over_cap")
             return None
         await self._deliveries.set_rendered_body(row.id, body)
         return body

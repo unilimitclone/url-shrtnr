@@ -3,12 +3,14 @@ paths. post_public is patched; repos are AsyncMocks shaped per call."""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from bson import ObjectId
+from structlog.testing import capture_logs
 
 from infrastructure.crypto import encrypt_secret
 from infrastructure.safe_fetch import PostResult
@@ -290,6 +292,68 @@ class TestFailurePaths:
         assert deliveries.mark_failed.await_args[0][1] == "event_expired"
         post.assert_not_awaited()
 
+
+class TestPendingSlotRelease:
+    """Every terminal outcome releases the endpoint's pending slot exactly
+    once; non-terminal outcomes and rows that never reserved one do not."""
+
+    @pytest.mark.asyncio
+    async def test_success_releases(self):
+        endpoint = _endpoint()
+        executor, deliveries, endpoints, _ = _make(endpoint)
+        deliveries.record_attempt_and_finish.return_value = True
+        with patch("services.webhooks.executor.post_public", _post(204)):
+            await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        endpoints.release_pending.assert_awaited_once_with(endpoint.id)
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_releases(self):
+        endpoint = _endpoint()
+        executor, deliveries, endpoints, _ = _make(endpoint)
+        deliveries.record_attempt_and_finish.return_value = True
+        last = len(RETRY_SCHEDULE_SECONDS) - 1
+        with patch("services.webhooks.executor.post_public", _post(500)):
+            await executor.attempt(
+                _delivery(endpoint_id=endpoint.id, attempt_count=last)
+            )
+        endpoints.release_pending.assert_awaited_once_with(endpoint.id)
+
+    @pytest.mark.asyncio
+    async def test_terminal_without_attempt_releases(self):
+        endpoint = _endpoint(status=WebhookStatus.DISABLED)
+        executor, deliveries, endpoints, _ = _make(endpoint)
+        deliveries.mark_failed.return_value = True
+        await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        endpoints.release_pending.assert_awaited_once_with(endpoint.id)
+
+    @pytest.mark.asyncio
+    async def test_reschedule_and_defer_keep_the_slot(self):
+        executor, _, endpoints, _ = _make(_endpoint())
+        with patch("services.webhooks.executor.post_public", _post(500)):
+            await executor.attempt(_delivery())
+        with patch("services.webhooks.executor.post_public", _post(429)):
+            await executor.attempt(_delivery())
+        endpoints.release_pending.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_test_send_never_releases(self):
+        executor, deliveries, endpoints, _ = _make(_endpoint())
+        deliveries.record_attempt_and_finish.return_value = True
+        with patch("services.webhooks.executor.post_public", _post(204)):
+            await executor.attempt(_delivery(is_test=True))
+        endpoints.release_pending.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_manual_retry_of_finished_row_never_releases(self):
+        executor, deliveries, endpoints, _ = _make(_endpoint())
+        deliveries.record_attempt_and_finish.return_value = False
+        row = _delivery(status=DeliveryStatus.FAILED, rendered_body="{}")
+        with patch("services.webhooks.executor.post_public", _post(204)):
+            await executor.attempt(row)
+        endpoints.release_pending.assert_not_awaited()
+
+
+class TestRotationGrace:
     @pytest.mark.asyncio
     async def test_success_after_grace_secret_sends_dual_signatures(self):
         old_secret = "whsec_b2xkLXNlY3JldC1vbGQtc2VjcmV0"
@@ -380,3 +444,278 @@ class TestDeliveryUrl:
         with patch("services.webhooks.executor.post_public", post):
             await executor.attempt(_delivery())
         assert post.await_args[0][0] == endpoint.url
+
+
+class TestRenderFailures:
+    @pytest.mark.asyncio
+    async def test_unknown_flavor_is_terminal(self):
+        endpoint = _endpoint()
+        deliveries, endpoints, events = AsyncMock(), AsyncMock(), AsyncMock()
+        endpoints.find_by_id.return_value = endpoint
+        events.find_by_oid.return_value = _event()
+        deliveries.mark_failed.return_value = True
+        executor = DeliveryExecutor(
+            deliveries, endpoints, events, {}, master_secret=_MASTER
+        )
+        with patch("services.webhooks.executor.post_public", _post(204)) as post:
+            await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        assert deliveries.mark_failed.await_args[0][1].startswith("unknown_flavor:")
+        endpoints.release_pending.assert_awaited_once_with(endpoint.id)
+        post.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_payload_over_cap_is_terminal(self):
+        endpoint = _endpoint()
+        deliveries, endpoints, events = AsyncMock(), AsyncMock(), AsyncMock()
+        endpoints.find_by_id.return_value = endpoint
+        events.find_by_oid.return_value = _event()
+        deliveries.mark_failed.return_value = True
+        executor = DeliveryExecutor(
+            deliveries,
+            endpoints,
+            events,
+            default_renderers(),
+            master_secret=_MASTER,
+            max_payload_bytes=16,
+        )
+        with patch("services.webhooks.executor.post_public", _post(204)) as post:
+            await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        assert deliveries.mark_failed.await_args[0][1] == "payload_over_cap"
+        endpoints.release_pending.assert_awaited_once_with(endpoint.id)
+        post.assert_not_awaited()
+
+
+class _RowQueue:
+    """claim_due stand-in: hands out queued rows, records the exclusions."""
+
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.exclusions: list[list] = []
+
+    async def claim_due(self, *, lease_seconds, exclude_endpoints=()):
+        self.exclusions.append(list(exclude_endpoints))
+        for i, row in enumerate(self.rows):
+            if row.endpoint_id not in exclude_endpoints:
+                return self.rows.pop(i)
+        return None
+
+
+def _loop_executor(rows, *, concurrency, per_endpoint):
+    deliveries = AsyncMock()
+    queue = _RowQueue(rows)
+    deliveries.claim_due = queue.claim_due
+    executor = DeliveryExecutor(
+        deliveries,
+        AsyncMock(),
+        AsyncMock(),
+        default_renderers(),
+        master_secret=_MASTER,
+        poll_interval=0.01,
+        delivery_timeout=0.5,
+        concurrency=concurrency,
+        per_endpoint_concurrency=per_endpoint,
+    )
+    return executor, queue
+
+
+async def _settle():
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+class TestRunLoop:
+    @pytest.mark.asyncio
+    async def test_attempts_overlap_up_to_the_bound(self):
+        rows = [_delivery(endpoint_id=ObjectId()) for _ in range(6)]
+        executor, queue = _loop_executor(rows, concurrency=4, per_endpoint=4)
+        gate = asyncio.Event()
+        in_flight = {"now": 0, "peak": 0}
+
+        async def blocking_attempt(row):
+            in_flight["now"] += 1
+            in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+            await gate.wait()
+            in_flight["now"] -= 1
+
+        executor.attempt = blocking_attempt
+        task = asyncio.create_task(executor.run())
+        await _settle()
+        assert in_flight["now"] == 4  # four claimed, two still queued
+        gate.set()
+        await _settle()
+        assert not queue.rows
+        assert in_flight["peak"] == 4
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_one_endpoint_cannot_hold_every_slot(self):
+        slow, healthy = ObjectId(), ObjectId()
+        rows = [_delivery(endpoint_id=slow) for _ in range(5)] + [
+            _delivery(endpoint_id=healthy)
+        ]
+        executor, queue = _loop_executor(rows, concurrency=4, per_endpoint=2)
+        gate = asyncio.Event()
+        started: list[ObjectId] = []
+
+        async def blocking_attempt(row):
+            started.append(row.endpoint_id)
+            if row.endpoint_id == slow:
+                await gate.wait()
+
+        executor.attempt = blocking_attempt
+        task = asyncio.create_task(executor.run())
+        await _settle()
+        # Two slow attempts hold their two slots; the healthy row went
+        # through even though five slow rows were queued ahead of it.
+        assert started.count(slow) == 2
+        assert started.count(healthy) == 1
+        assert [slow] in queue.exclusions
+        gate.set()
+        await _settle()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_cancel_drains_in_flight_attempts(self):
+        executor, _ = _loop_executor([_delivery()], concurrency=2, per_endpoint=2)
+        finished = asyncio.Event()
+
+        async def slow_attempt(row):
+            await asyncio.sleep(0.05)
+            finished.set()
+
+        executor.attempt = slow_attempt
+        task = asyncio.create_task(executor.run())
+        await _settle()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+
+    @pytest.mark.asyncio
+    async def test_attempt_that_raises_frees_its_slot(self):
+        rows = [_delivery(), _delivery()]
+        executor, _ = _loop_executor(rows, concurrency=1, per_endpoint=1)
+        seen: list[str] = []
+
+        async def flaky_attempt(row):
+            seen.append(row.webhook_id)
+            if len(seen) == 1:
+                raise RuntimeError("boom")
+
+        executor.attempt = flaky_attempt
+        task = asyncio.create_task(executor.run())
+        await _settle()
+        assert len(seen) == 2
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+class TestRunLoopEdges:
+    @pytest.mark.asyncio
+    async def test_claim_error_frees_slot_and_loop_continues(self):
+        row = _delivery()
+        executor, _ = _loop_executor([], concurrency=1, per_endpoint=1)
+        calls = {"n": 0}
+
+        async def flaky_claim(*, lease_seconds, exclude_endpoints=()):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("mongo hiccup")
+            return row if calls["n"] == 2 else None
+
+        executor._deliveries.claim_due = flaky_claim
+        attempted: list[str] = []
+
+        async def record(r):
+            attempted.append(r.webhook_id)
+
+        executor.attempt = record
+        task = asyncio.create_task(executor.run())
+        await asyncio.sleep(0.1)
+        assert attempted == [row.webhook_id]
+        assert calls["n"] >= 3  # kept polling after the error and the idle tick
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_cancel_abandons_attempts_past_the_delivery_timeout(self):
+        executor, _ = _loop_executor([_delivery()], concurrency=1, per_endpoint=1)
+        executor._timeout = 0.02
+        cancelled = asyncio.Event()
+
+        async def hanging_attempt(row):
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        executor.attempt = hanging_attempt
+        task = asyncio.create_task(executor.run())
+        await _settle()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        assert cancelled.is_set()
+
+
+class TestObservabilityFields:
+    @pytest.mark.asyncio
+    async def test_delivered_carries_created_to_completed_latency(self):
+        endpoint = _endpoint()
+        executor, _, _, _ = _make(endpoint)
+        row = _delivery(
+            endpoint_id=endpoint.id,
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=2),
+        )
+        with (
+            patch("services.webhooks.executor.post_public", _post(204)),
+            capture_logs() as logs,
+        ):
+            await executor.attempt(row)
+        delivered = next(e for e in logs if e["event"] == "webhook_delivered")
+        assert 1900 <= delivered["latency_ms"] <= 10_000
+        assert delivered["duration_ms"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_terminal_failures_log_a_reason(self):
+        endpoint = _endpoint()
+        executor, _, endpoints, _ = _make(endpoint, max_consecutive=99)
+        last = len(RETRY_SCHEDULE_SECONDS) - 1
+        with (
+            patch("services.webhooks.executor.post_public", _post(500)),
+            capture_logs() as logs,
+        ):
+            await executor.attempt(
+                _delivery(endpoint_id=endpoint.id, attempt_count=last)
+            )
+        with (
+            patch("services.webhooks.executor.post_public", _post(410)),
+            capture_logs() as logs_gone,
+        ):
+            await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        endpoints.find_by_id.return_value = None
+        with capture_logs() as logs_inactive:
+            await executor.attempt(_delivery(endpoint_id=endpoint.id))
+        reasons = [
+            next(e for e in batch if e["event"] == "webhook_delivery_failed")["reason"]
+            for batch in (logs, logs_gone, logs_inactive)
+        ]
+        assert reasons == ["exhausted", "gone", "endpoint_inactive"]
+
+    @pytest.mark.asyncio
+    async def test_reschedule_is_not_a_terminal_failure(self):
+        executor, _, _, _ = _make(_endpoint())
+        with (
+            patch("services.webhooks.executor.post_public", _post(500)),
+            capture_logs() as logs,
+        ):
+            await executor.attempt(_delivery())
+        assert not [e for e in logs if e["event"] == "webhook_delivery_failed"]

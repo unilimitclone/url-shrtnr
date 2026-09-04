@@ -117,7 +117,11 @@ from services.webhooks import (
 from services.webhooks.consumers import WebhookClickConsumer, WebhookDomainConsumer
 from services.webhooks.renderers import default_renderers
 from workers.dlq import ClaimDeadLetterGuard
-from workers.telemetry import StaleConsumerJanitor, StreamMetricsReporter
+from workers.telemetry import (
+    StaleConsumerJanitor,
+    StreamMetricsReporter,
+    WebhookDepthReporter,
+)
 
 log = get_logger(__name__)
 
@@ -244,9 +248,19 @@ async def _build_runtime(
             max_consecutive_failures=wh.max_consecutive_failures,
             poll_interval=wh.executor_poll_seconds,
             lease_seconds=wh.executor_lease_seconds,
+            concurrency=wh.executor_concurrency,
+            per_endpoint_concurrency=wh.executor_per_endpoint_concurrency,
         )
-        runtime.telemetry_tasks.append(
-            asyncio.create_task(executor.run(), name="webhook-delivery-executor")
+        runtime.telemetry_tasks.extend(
+            [
+                asyncio.create_task(executor.run(), name="webhook-delivery-executor"),
+                asyncio.create_task(
+                    WebhookDepthReporter(
+                        webhook_endpoint_repo, ce.stats_interval_seconds
+                    ).run_forever(),
+                    name="webhook-depth-reporter",
+                ),
+            ]
         )
         log.info("webhooks_worker_registered", stream=DOMAIN_EVENTS_STREAM)
 
@@ -600,6 +614,14 @@ async def _build_runtime(
                 ),
             ]
         )
+        if run_webhooks:
+            runtime.telemetry_tasks.append(
+                asyncio.create_task(
+                    StreamMetricsReporter(
+                        telemetry_redis, DOMAIN_EVENTS_STREAM, ce.stats_interval_seconds
+                    ).run_forever()
+                )
+            )
 
     return runtime
 
