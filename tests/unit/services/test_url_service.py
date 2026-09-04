@@ -3872,7 +3872,9 @@ class TestUrlServiceScheduling:
     async def test_db_path_future_start_raises_after_recache(self):
         svc, url_repo, url_cache = self._svc()
         url_cache.get.return_value = None
-        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(
+            microsecond=0
+        )
         url_repo.find_by_alias.return_value = make_url_v2_doc(starts_at=future)
 
         with pytest.raises(NotYetLiveError) as exc:
@@ -4000,6 +4002,36 @@ class TestUrlServiceScheduling:
         with pytest.raises(ValidationError, match="before expire_after"):
             await svc.update(
                 URL_OID, UpdateUrlRequest(starts_at=self.FUTURE_TS + 60), USER_OID
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_start_against_naive_stored_expiry_is_a_400_not_a_500(self):
+        """Mongo hands back naive UTC; the request side is aware. The order
+        check must normalise both or the comparison raises TypeError."""
+        svc, url_repo, _url_cache = self._svc()
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        naive_expiry = datetime.fromtimestamp(self.FUTURE_TS, tz=timezone.utc).replace(
+            tzinfo=None
+        )
+        url_repo.find_by_id.return_value = make_url_v2_doc(expire_after=naive_expiry)
+        with pytest.raises(ValidationError, match="before expire_after"):
+            await svc.update(
+                URL_OID, UpdateUrlRequest(starts_at=self.FUTURE_TS + 60), USER_OID
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_expiry_against_naive_stored_start_is_a_400_not_a_500(self):
+        svc, url_repo, _url_cache = self._svc()
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        naive_start = datetime.fromtimestamp(self.FUTURE_TS, tz=timezone.utc).replace(
+            tzinfo=None
+        )
+        url_repo.find_by_id.return_value = make_url_v2_doc(starts_at=naive_start)
+        with pytest.raises(ValidationError, match="before expire_after"):
+            await svc.update(
+                URL_OID, UpdateUrlRequest(expire_after=self.FUTURE_TS - 60), USER_OID
             )
 
     @pytest.mark.asyncio

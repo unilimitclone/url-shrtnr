@@ -8,6 +8,7 @@ canonical implementation.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Any
 
@@ -60,6 +61,19 @@ def to_unix_timestamp(dt: datetime | None, default: int | None = None) -> int | 
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return int(dt.timestamp())
+
+
+def to_unix_timestamp_ceil(dt: datetime | None) -> int | None:
+    """Like ``to_unix_timestamp`` but rounds a fractional second UP.
+
+    For a moment something starts: truncating would let it read as begun
+    up to 999 ms early; rounding up errs on the side of not yet.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return math.ceil(dt.timestamp())
 
 
 def as_aware_utc(dt: Any) -> datetime | None:

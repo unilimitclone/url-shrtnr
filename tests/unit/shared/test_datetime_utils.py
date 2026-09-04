@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from shared.datetime_utils import convert_to_gmt, parse_datetime
+from shared.datetime_utils import (
+    convert_to_gmt,
+    parse_datetime,
+    to_unix_timestamp,
+    to_unix_timestamp_ceil,
+)
 
 # ---------------------------------------------------------------------------
 # shared.datetime_utils — parse_datetime
@@ -69,3 +74,32 @@ def test_parse_datetime_naive_assumed_utc():
 )
 def test_convert_to_gmt(value, expected):
     assert convert_to_gmt(value) == expected
+
+
+# ---------------------------------------------------------------------------
+# shared.datetime_utils — to_unix_timestamp_ceil
+# ---------------------------------------------------------------------------
+
+
+_WHOLE = datetime(2030, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+_WHOLE_TS = int(_WHOLE.timestamp())
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, None),
+        (_WHOLE, _WHOLE_TS),
+        (_WHOLE.replace(microsecond=900_000), _WHOLE_TS + 1),
+        (_WHOLE.replace(microsecond=1), _WHOLE_TS + 1),
+        # Naive is UTC, the same rule to_unix_timestamp applies.
+        (_WHOLE.replace(microsecond=900_000, tzinfo=None), _WHOLE_TS + 1),
+    ],
+)
+def test_to_unix_timestamp_ceil(value, expected):
+    assert to_unix_timestamp_ceil(value) == expected
+
+
+def test_ceil_agrees_with_floor_on_whole_seconds():
+    whole = datetime(2030, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    assert to_unix_timestamp_ceil(whole) == to_unix_timestamp(whole)

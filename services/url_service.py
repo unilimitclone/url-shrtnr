@@ -89,7 +89,7 @@ from shared.alias_dispatch import (
     resolution_order,
     v2_lookup_code,
 )
-from shared.datetime_utils import parse_datetime, to_unix_timestamp
+from shared.datetime_utils import as_aware_utc, parse_datetime, to_unix_timestamp
 from shared.emoji_policy import (
     canonicalize_emoji_alias,
     check_emoji_alias,
@@ -321,6 +321,9 @@ def _check_start_before_expiry(
     starts_at: datetime | None, expire_after: datetime | None
 ) -> None:
     """A link that expires before it starts would never be live."""
+    # Stored values come back naive-UTC; the request side is aware.
+    starts_at = as_aware_utc(starts_at)
+    expire_after = as_aware_utc(expire_after)
     if starts_at is not None and expire_after is not None and starts_at >= expire_after:
         raise ValidationError(
             "starts_at must be before expire_after", field="starts_at"
