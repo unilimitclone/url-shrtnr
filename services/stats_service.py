@@ -80,7 +80,20 @@ _NULL_SENTINEL_FILTERS: dict[StatsDimension, str] = {
     StatsDimension.UTM_SOURCE: "(none)",
     StatsDimension.UTM_MEDIUM: "(none)",
     StatsDimension.UTM_CAMPAIGN: "(none)",
+    StatsDimension.VARIANT: "(default)",
 }
+
+# Wire dimension → stored field, where the two differ.
+_DIMENSION_FIELDS: dict[StatsDimension, str] = {
+    StatsDimension.VARIANT: "variant_index",
+}
+
+
+def _stored_values(dimension: str, values: list[str]) -> list[Any]:
+    """Wire filter values in the stored type: variant indices are ints."""
+    if dimension == StatsDimension.VARIANT:
+        return [int(v) if v.isdigit() else v for v in values]
+    return values
 
 
 class StatsService:
@@ -308,15 +321,17 @@ class StatsService:
                 # "unknown" is also a real stored value; for referrer/utm
                 # the extra literal matches nothing (and if a visitor ever
                 # sends the literal, group-by merges it with null anyway).
+                field = _DIMENSION_FIELDS.get(dimension, dimension)
                 or_groups.append(
                     [
-                        {dimension: {"$in": values}},
-                        {dimension: {"$in": [None, ""]}},
-                        {dimension: {"$exists": False}},
+                        {field: {"$in": _stored_values(dimension, values)}},
+                        {field: {"$in": [None, ""]}},
+                        {field: {"$exists": False}},
                     ]
                 )
             else:
-                query[dimension] = {"$in": values}
+                field = _DIMENSION_FIELDS.get(dimension, dimension)
+                query[field] = {"$in": _stored_values(dimension, values)}
 
     @staticmethod
     def _merge_or_groups(

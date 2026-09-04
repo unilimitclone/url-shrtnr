@@ -155,6 +155,7 @@ def make_context(
     utm_source: str | None = None,
     utm_medium: str | None = None,
     utm_campaign: str | None = None,
+    variant_index: int | None = None,
 ) -> ClickContext:
     return ClickContext(
         url_data=url_data,
@@ -168,6 +169,7 @@ def make_context(
         utm_source=utm_source,
         utm_medium=utm_medium,
         utm_campaign=utm_campaign,
+        variant_index=variant_index,
     )
 
 
@@ -294,6 +296,24 @@ class TestV2ClickHandler:
         assert doc["utm_source"] == "newsletter"
         assert doc["utm_medium"] == "email"
         assert doc["utm_campaign"] == "launch"
+
+    @pytest.mark.asyncio
+    async def test_variant_index_recorded_in_click_doc(self):
+        d = make_deps()
+        handler = make_v2_handler(d.click_repo, d.url_repo, d.geoip, d.url_cache)
+
+        await handler.handle(make_context(make_v2_cache(), variant_index=1))
+
+        assert d.click_repo.insert.call_args[0][0]["variant_index"] == 1
+
+    @pytest.mark.asyncio
+    async def test_variant_index_defaults_to_none(self):
+        d = make_deps()
+        handler = make_v2_handler(d.click_repo, d.url_repo, d.geoip, d.url_cache)
+
+        await handler.handle(make_context(make_v2_cache()))
+
+        assert d.click_repo.insert.call_args[0][0]["variant_index"] is None
 
     @pytest.mark.asyncio
     async def test_utm_tags_default_to_none(self):

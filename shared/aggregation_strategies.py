@@ -285,6 +285,10 @@ class AggregationStrategyFactory:
         "utm_campaign": lambda: FieldAggregationStrategy(
             "$utm_campaign", "utm_campaign", 50, default="(none)"
         ),
+        # Indices are stored as ints; str() keeps every wire value a string.
+        "variant": lambda: FieldAggregationStrategy(
+            "$variant_index", "variant", 50, default="(default)", transform_fn=str
+        ),
     }
 
     @classmethod

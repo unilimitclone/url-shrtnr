@@ -1872,7 +1872,7 @@
           "URL Shortening"
         ],
         "summary": "Create Shortened URL",
-        "description": "Create a new shortened URL.\n\nCreate a shortened URL with optional customization including password\nprotection, expiration, click limits, and bot blocking. Authenticated\nusers may target an owned, ACTIVE custom domain via the ``domain`` field.\n\n**Emoji aliases**: ``alias`` also accepts an emoji-only short code\n(e.g. ``\ud83d\ude80\ud83d\udd25``) \u2014 1-15 fully-qualified emoji; ZWJ sequences, flags,\nkeycaps, and text-style symbols are rejected (they render or copy\ninconsistently across platforms). Set ``alias_type: \"emoji\"`` to\nauto-generate an emoji code instead of an alphanumeric one. Stored\nand returned in canonical form (variation selectors stripped).\n\n**Authentication**: Optional \u2014 higher rate limits when authenticated.\nRequired if ``domain`` is supplied.\n\n**API Key Scope**: `shorten:create` or `admin:all`\n\n**Rate Limits**:\n\n- Authenticated: 60/min, 5,000/day\n- Anonymous: 20/min, 1,000/day\n\n**Anonymous Usage Consequences**:\n\n- Lower rate limits\n- Cannot manage or view URLs later\n- Cannot use private stats\n- URLs not linked to any account\n- Cannot use custom domains\n- Cannot use geo targeting\n- Cannot set an expired-link fallback\n- Cannot use custom meta tags",
+        "description": "Create a new shortened URL.\n\nCreate a shortened URL with optional customization including password\nprotection, expiration, click limits, and bot blocking. Authenticated\nusers may target an owned, ACTIVE custom domain via the ``domain`` field.\n\n**Emoji aliases**: ``alias`` also accepts an emoji-only short code\n(e.g. ``\ud83d\ude80\ud83d\udd25``) \u2014 1-15 fully-qualified emoji; ZWJ sequences, flags,\nkeycaps, and text-style symbols are rejected (they render or copy\ninconsistently across platforms). Set ``alias_type: \"emoji\"`` to\nauto-generate an emoji code instead of an alphanumeric one. Stored\nand returned in canonical form (variation selectors stripped).\n\n**Authentication**: Optional \u2014 higher rate limits when authenticated.\nRequired if ``domain`` is supplied.\n\n**API Key Scope**: `shorten:create` or `admin:all`\n\n**Rate Limits**:\n\n- Authenticated: 60/min, 5,000/day\n- Anonymous: 20/min, 1,000/day\n\n**Anonymous Usage Consequences**:\n\n- Lower rate limits\n- Cannot manage or view URLs later\n- Cannot use private stats\n- URLs not linked to any account\n- Cannot use custom domains\n- Cannot use geo targeting\n- Cannot use A/B variants\n- Cannot set an expired-link fallback\n- Cannot use custom meta tags",
         "operationId": "shortenUrl",
         "requestBody": {
           "content": {
@@ -2621,7 +2621,7 @@
           "Link Management"
         ],
         "summary": "Update URL",
-        "description": "Update an existing URL's properties.\n\nPartially update a shortened URL. Only provided fields are modified; omitted\nfields remain unchanged. Pass `null` to remove optional settings like\n`password`, `max_clicks`, or `expire_after`.\n\n**Authentication**: Required \u2014 you must own the URL.\n\n**API Key Scope**: `urls:manage` or `admin:all`\n\n**Rate Limits**: 120/min, 2,000/day\n\n**Updatable Fields**: `long_url`, `alias`, `password`, `block_bots`,\n`max_clicks`, `expire_after`, `private_stats`, `status`, `domain`,\n`geo_rules`, `expired_redirect_url`, `meta_tags`\n\n**Notes**:\n\n- Setting `max_clicks` to `0` or `null` removes the click limit\n- Changing the `alias` checks availability and may fail with 409 Conflict\n- Setting `domain` moves the URL to a different tenant; caller must own\n  the target as an ACTIVE custom domain, or pass `null` to move back to\n  the system default. Alias collision is verified on the target.\n- `geo_rules` replaces the whole map; pass `null` or `{}` to remove all\n  rules\n- `expired_redirect_url` is where visitors land once the link has expired;\n  pass `null` to go back to the expired page\n- The `url_id` is the MongoDB ObjectId, not the alias",
+        "description": "Update an existing URL's properties.\n\nPartially update a shortened URL. Only provided fields are modified; omitted\nfields remain unchanged. Pass `null` to remove optional settings like\n`password`, `max_clicks`, or `expire_after`.\n\n**Authentication**: Required \u2014 you must own the URL.\n\n**API Key Scope**: `urls:manage` or `admin:all`\n\n**Rate Limits**: 120/min, 2,000/day\n\n**Updatable Fields**: `long_url`, `alias`, `password`, `block_bots`,\n`max_clicks`, `expire_after`, `private_stats`, `status`, `domain`,\n`geo_rules`, `ab_variants`, `expired_redirect_url`, `meta_tags`\n\n**Notes**:\n\n- Setting `max_clicks` to `0` or `null` removes the click limit\n- Changing the `alias` checks availability and may fail with 409 Conflict\n- Setting `domain` moves the URL to a different tenant; caller must own\n  the target as an ACTIVE custom domain, or pass `null` to move back to\n  the system default. Alias collision is verified on the target.\n- `geo_rules` replaces the whole map; pass `null` or `{}` to remove all\n  rules\n- `ab_variants` replaces the whole list; pass `null` or `[]` to remove all\n  variants\n- `expired_redirect_url` is where visitors land once the link has expired;\n  pass `null` to go back to the expired page\n- The `url_id` is the MongoDB ObjectId, not the alias",
         "operationId": "updateUrl",
         "parameters": [
           {
@@ -3985,7 +3985,7 @@
           "Statistics"
         ],
         "summary": "URL Statistics",
-        "description": "Get aggregated click statistics across all URLs you own.\n\nRetrieve click analytics with flexible grouping, filtering, and\ntime-range options.\n\n**Authentication**: Required.\n\n**API Key Scope**: `stats:read`, `urls:read`, or `admin:all`\n\n**Rate Limits**: 60/min, 5,000/day\n\n**Grouping Dimensions**: `time`, `browser`, `os`, `device`, `country`,\n`city`, `referrer`, `short_code`, `utm_source`, `utm_medium`,\n`utm_campaign`\n\n**Metrics**: `clicks`, `unique_clicks`\n\n**Filtering**: Filter by `browser`, `os`, `device`, `country`, `city`,\n`referrer`, `short_code`, `url_id`, or the `utm_*` tags using query\nparams or a JSON `filters` object. Filters slice your own aggregate \u2014\n`url_id` values you do not own simply match nothing. For statistics on\na single link, prefer `GET /stats/links/{url_id}`.",
+        "description": "Get aggregated click statistics across all URLs you own.\n\nRetrieve click analytics with flexible grouping, filtering, and\ntime-range options.\n\n**Authentication**: Required.\n\n**API Key Scope**: `stats:read`, `urls:read`, or `admin:all`\n\n**Rate Limits**: 60/min, 5,000/day\n\n**Grouping Dimensions**: `time`, `browser`, `os`, `device`, `country`,\n`city`, `referrer`, `short_code`, `utm_source`, `utm_medium`,\n`utm_campaign`, `variant`\n\n**Metrics**: `clicks`, `unique_clicks`\n\n**Filtering**: Filter by `browser`, `os`, `device`, `country`, `city`,\n`referrer`, `short_code`, `url_id`, `variant`, or the `utm_*` tags using\nquery params or a JSON `filters` object. Filters slice your own aggregate \u2014\n`url_id` values you do not own simply match nothing. For statistics on\na single link, prefer `GET /stats/links/{url_id}`.",
         "operationId": "getStats",
         "parameters": [
           {
@@ -4046,7 +4046,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `short_code` \u2014 group by URL alias\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser.",
+              "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `short_code` \u2014 group by URL alias\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n- `variant` \u2014 group by the A/B variant served, as its index into `ab_variants` (`0`, `1`, ...); clicks sent to the default destination appear as `(default)`. The index is positional: editing `ab_variants` re-keys past clicks to whatever now sits at that index\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser.",
               "examples": [
                 "time,browser",
                 "country",
@@ -4054,7 +4054,7 @@
               ],
               "title": "Group By"
             },
-            "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `short_code` \u2014 group by URL alias\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser."
+            "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `short_code` \u2014 group by URL alias\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n- `variant` \u2014 group by the A/B variant served, as its index into `ab_variants` (`0`, `1`, ...); clicks sent to the default destination appear as `(default)`. The index is positional: editing `ab_variants` re-keys past clicks to whatever now sits at that index\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser."
           },
           {
             "name": "metrics",
@@ -4110,14 +4110,14 @@
                   "type": "null"
                 }
               ],
-              "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `short_code` \u2014 Filter by URL alias (e.g., mylink, promo2024)\n- `url_id` \u2014 Filter by URL id (MongoDB ObjectId); ids you do not own match nothing\n- `tag` / `tag_id` \u2014 Filter by link tag (name or id); clicks on your links carrying any listed tag\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n- `{\"short_code\": [\"link1\", \"link2\"]}` \u2014 Stats for specific URLs\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below).",
+              "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `short_code` \u2014 Filter by URL alias (e.g., mylink, promo2024)\n- `url_id` \u2014 Filter by URL id (MongoDB ObjectId); ids you do not own match nothing\n- `tag` / `tag_id` \u2014 Filter by link tag (name or id); clicks on your links carrying any listed tag\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n- `variant` \u2014 Filter by A/B variant index (`0`, `1`, ...); `(default)` matches clicks sent to the default destination\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n- `{\"short_code\": [\"link1\", \"link2\"]}` \u2014 Stats for specific URLs\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below).",
               "examples": [
                 "{\"browser\":[\"Chrome\",\"Firefox\"]}",
                 "{\"country\":[\"United States\",\"Canada\"],\"browser\":[\"Chrome\"]}"
               ],
               "title": "Filters"
             },
-            "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `short_code` \u2014 Filter by URL alias (e.g., mylink, promo2024)\n- `url_id` \u2014 Filter by URL id (MongoDB ObjectId); ids you do not own match nothing\n- `tag` / `tag_id` \u2014 Filter by link tag (name or id); clicks on your links carrying any listed tag\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n- `{\"short_code\": [\"link1\", \"link2\"]}` \u2014 Stats for specific URLs\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below)."
+            "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `short_code` \u2014 Filter by URL alias (e.g., mylink, promo2024)\n- `url_id` \u2014 Filter by URL id (MongoDB ObjectId); ids you do not own match nothing\n- `tag` / `tag_id` \u2014 Filter by link tag (name or id); clicks on your links carrying any listed tag\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n- `variant` \u2014 Filter by A/B variant index (`0`, `1`, ...); `(default)` matches clicks sent to the default destination\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n- `{\"short_code\": [\"link1\", \"link2\"]}` \u2014 Stats for specific URLs\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below)."
           },
           {
             "name": "browser",
@@ -4316,6 +4316,29 @@
               "title": "Utm Campaign"
             },
             "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated campaign tag values. Alternative to using the `filters` JSON parameter.\n\n**Important:** Values are case-sensitive. `(none)` matches clicks with no tag.\n\n**Note:** Both `filters` JSON and individual parameters can be combined."
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated A/B variant indices (`0`, `1`, ...). `(default)` matches clicks sent to the default destination, including every click on a link without variants.\n\n**Note:** Both `filters` JSON and individual parameters can be combined.",
+              "examples": [
+                "0,1",
+                "(default)"
+              ],
+              "title": "Variant"
+            },
+            "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated A/B variant indices (`0`, `1`, ...). `(default)` matches clicks sent to the default destination, including every click on a link without variants.\n\n**Note:** Both `filters` JSON and individual parameters can be combined."
           },
           {
             "name": "short_code",
@@ -4486,7 +4509,7 @@
           "Statistics"
         ],
         "summary": "Link Statistics",
-        "description": "Get click statistics for a single URL you own.\n\nThe same aggregated analytics as `GET /stats`, pre-scoped to one link \u2014\nthe response additionally echoes the link's `url_id` and `alias`.\nCustom-domain links are safe here: clicks are matched by URL id, so a\nsame-alias link on another domain can never bleed in.\n\n**Authentication**: Required \u2014 you must own the URL.\n\n**API Key Scope**: `stats:read`, `urls:read`, or `admin:all`\n\n**Rate Limits**: 60/min, 5,000/day\n\n**Grouping Dimensions**: `time`, `browser`, `os`, `device`, `country`,\n`city`, `referrer`, `utm_source`, `utm_medium`, `utm_campaign`\n\n**Metrics**: `clicks`, `unique_clicks`\n\n**Filtering**: Filter by `browser`, `os`, `device`, `country`, `city`,\n`referrer`, or the `utm_*` tags using query params or a JSON `filters`\nobject. Link-identity filters (`short_code`, `url_id`) do not exist\nhere \u2014 the path already selects the link.\n\n**Errors**:\n\n- `400` \u2014 malformed id (not a valid ObjectId)\n- `404` \u2014 no URL with that id in your account. A URL owned by someone\n  else answers identically; this endpoint never confirms foreign ids.",
+        "description": "Get click statistics for a single URL you own.\n\nThe same aggregated analytics as `GET /stats`, pre-scoped to one link \u2014\nthe response additionally echoes the link's `url_id` and `alias`.\nCustom-domain links are safe here: clicks are matched by URL id, so a\nsame-alias link on another domain can never bleed in.\n\n**Authentication**: Required \u2014 you must own the URL.\n\n**API Key Scope**: `stats:read`, `urls:read`, or `admin:all`\n\n**Rate Limits**: 60/min, 5,000/day\n\n**Grouping Dimensions**: `time`, `browser`, `os`, `device`, `country`,\n`city`, `referrer`, `utm_source`, `utm_medium`, `utm_campaign`, `variant`\n\n**Metrics**: `clicks`, `unique_clicks`\n\n**Filtering**: Filter by `browser`, `os`, `device`, `country`, `city`,\n`referrer`, `variant`, or the `utm_*` tags using query params or a JSON\n`filters` object. Link-identity filters (`short_code`, `url_id`) do not exist\nhere \u2014 the path already selects the link.\n\n**Errors**:\n\n- `400` \u2014 malformed id (not a valid ObjectId)\n- `404` \u2014 no URL with that id in your account. A URL owned by someone\n  else answers identically; this endpoint never confirms foreign ids.",
         "operationId": "getLinkStats",
         "parameters": [
           {
@@ -4558,7 +4581,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser.",
+              "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n- `variant` \u2014 group by the A/B variant served, as its index into `ab_variants` (`0`, `1`, ...); clicks sent to the default destination appear as `(default)`. The index is positional: editing `ab_variants` re-keys past clicks to whatever now sits at that index\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser.",
               "examples": [
                 "time,browser",
                 "country",
@@ -4566,7 +4589,7 @@
               ],
               "title": "Group By"
             },
-            "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser."
+            "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n- `variant` \u2014 group by the A/B variant served, as its index into `ab_variants` (`0`, `1`, ...); clicks sent to the default destination appear as `(default)`. The index is positional: editing `ab_variants` re-keys past clicks to whatever now sits at that index\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser."
           },
           {
             "name": "metrics",
@@ -4622,14 +4645,14 @@
                   "type": "null"
                 }
               ],
-              "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below).",
+              "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n- `variant` \u2014 Filter by A/B variant index (`0`, `1`, ...); `(default)` matches clicks sent to the default destination\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below).",
               "examples": [
                 "{\"browser\":[\"Chrome\",\"Firefox\"]}",
                 "{\"country\":[\"United States\",\"Canada\"],\"browser\":[\"Chrome\"]}"
               ],
               "title": "Filters"
             },
-            "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below)."
+            "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n- `variant` \u2014 Filter by A/B variant index (`0`, `1`, ...); `(default)` matches clicks sent to the default destination\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below)."
           },
           {
             "name": "browser",
@@ -4828,6 +4851,29 @@
               "title": "Utm Campaign"
             },
             "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated campaign tag values. Alternative to using the `filters` JSON parameter.\n\n**Important:** Values are case-sensitive. `(none)` matches clicks with no tag.\n\n**Note:** Both `filters` JSON and individual parameters can be combined."
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated A/B variant indices (`0`, `1`, ...). `(default)` matches clicks sent to the default destination, including every click on a link without variants.\n\n**Note:** Both `filters` JSON and individual parameters can be combined.",
+              "examples": [
+                "0,1",
+                "(default)"
+              ],
+              "title": "Variant"
+            },
+            "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated A/B variant indices (`0`, `1`, ...). `(default)` matches clicks sent to the default destination, including every click on a link without variants.\n\n**Note:** Both `filters` JSON and individual parameters can be combined."
           }
         ],
         "responses": {
@@ -5329,7 +5375,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `short_code` \u2014 group by URL alias\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser.",
+              "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `short_code` \u2014 group by URL alias\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n- `variant` \u2014 group by the A/B variant served, as its index into `ab_variants` (`0`, `1`, ...); clicks sent to the default destination appear as `(default)`. The index is positional: editing `ab_variants` re-keys past clicks to whatever now sits at that index\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser.",
               "examples": [
                 "time,browser",
                 "country",
@@ -5337,7 +5383,7 @@
               ],
               "title": "Group By"
             },
-            "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `short_code` \u2014 group by URL alias\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser."
+            "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `short_code` \u2014 group by URL alias\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n- `variant` \u2014 group by the A/B variant served, as its index into `ab_variants` (`0`, `1`, ...); clicks sent to the default destination appear as `(default)`. The index is positional: editing `ab_variants` re-keys past clicks to whatever now sits at that index\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser."
           },
           {
             "name": "metrics",
@@ -5393,14 +5439,14 @@
                   "type": "null"
                 }
               ],
-              "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `short_code` \u2014 Filter by URL alias (e.g., mylink, promo2024)\n- `url_id` \u2014 Filter by URL id (MongoDB ObjectId); ids you do not own match nothing\n- `tag` / `tag_id` \u2014 Filter by link tag (name or id); clicks on your links carrying any listed tag\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n- `{\"short_code\": [\"link1\", \"link2\"]}` \u2014 Stats for specific URLs\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below).",
+              "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `short_code` \u2014 Filter by URL alias (e.g., mylink, promo2024)\n- `url_id` \u2014 Filter by URL id (MongoDB ObjectId); ids you do not own match nothing\n- `tag` / `tag_id` \u2014 Filter by link tag (name or id); clicks on your links carrying any listed tag\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n- `variant` \u2014 Filter by A/B variant index (`0`, `1`, ...); `(default)` matches clicks sent to the default destination\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n- `{\"short_code\": [\"link1\", \"link2\"]}` \u2014 Stats for specific URLs\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below).",
               "examples": [
                 "{\"browser\":[\"Chrome\",\"Firefox\"]}",
                 "{\"country\":[\"United States\",\"Canada\"],\"browser\":[\"Chrome\"]}"
               ],
               "title": "Filters"
             },
-            "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `short_code` \u2014 Filter by URL alias (e.g., mylink, promo2024)\n- `url_id` \u2014 Filter by URL id (MongoDB ObjectId); ids you do not own match nothing\n- `tag` / `tag_id` \u2014 Filter by link tag (name or id); clicks on your links carrying any listed tag\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n- `{\"short_code\": [\"link1\", \"link2\"]}` \u2014 Stats for specific URLs\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below)."
+            "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `short_code` \u2014 Filter by URL alias (e.g., mylink, promo2024)\n- `url_id` \u2014 Filter by URL id (MongoDB ObjectId); ids you do not own match nothing\n- `tag` / `tag_id` \u2014 Filter by link tag (name or id); clicks on your links carrying any listed tag\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n- `variant` \u2014 Filter by A/B variant index (`0`, `1`, ...); `(default)` matches clicks sent to the default destination\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n- `{\"short_code\": [\"link1\", \"link2\"]}` \u2014 Stats for specific URLs\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below)."
           },
           {
             "name": "browser",
@@ -5599,6 +5645,29 @@
               "title": "Utm Campaign"
             },
             "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated campaign tag values. Alternative to using the `filters` JSON parameter.\n\n**Important:** Values are case-sensitive. `(none)` matches clicks with no tag.\n\n**Note:** Both `filters` JSON and individual parameters can be combined."
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated A/B variant indices (`0`, `1`, ...). `(default)` matches clicks sent to the default destination, including every click on a link without variants.\n\n**Note:** Both `filters` JSON and individual parameters can be combined.",
+              "examples": [
+                "0,1",
+                "(default)"
+              ],
+              "title": "Variant"
+            },
+            "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated A/B variant indices (`0`, `1`, ...). `(default)` matches clicks sent to the default destination, including every click on a link without variants.\n\n**Note:** Both `filters` JSON and individual parameters can be combined."
           },
           {
             "name": "short_code",
@@ -5889,7 +5958,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser.",
+              "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n- `variant` \u2014 group by the A/B variant served, as its index into `ab_variants` (`0`, `1`, ...); clicks sent to the default destination appear as `(default)`. The index is positional: editing `ab_variants` re-keys past clicks to whatever now sits at that index\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser.",
               "examples": [
                 "time,browser",
                 "country",
@@ -5897,7 +5966,7 @@
               ],
               "title": "Group By"
             },
-            "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser."
+            "description": "Comma-separated grouping dimensions for the statistics breakdown. Defaults to `time` if omitted.\n\n**Available dimensions:**\n\n- `time` \u2014 group by time buckets (day/week/month, auto-selected based on range)\n- `browser` \u2014 group by browser name (e.g., Chrome, Firefox, Safari)\n- `os` \u2014 group by operating system (e.g., Windows, macOS, Linux)\n- `device` \u2014 group by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 group by country\n- `city` \u2014 group by city\n- `referrer` \u2014 group by referrer URL\n- `utm_source` \u2014 group by the `utm_source` tag on the short link (untagged clicks appear as `(none)`)\n- `utm_medium` \u2014 group by the `utm_medium` tag\n- `utm_campaign` \u2014 group by the `utm_campaign` tag\n- `variant` \u2014 group by the A/B variant served, as its index into `ab_variants` (`0`, `1`, ...); clicks sent to the default destination appear as `(default)`. The index is positional: editing `ab_variants` re-keys past clicks to whatever now sits at that index\n\nMultiple dimensions can be combined: `time,browser` returns time series broken down by browser."
           },
           {
             "name": "metrics",
@@ -5953,14 +6022,14 @@
                   "type": "null"
                 }
               ],
-              "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below).",
+              "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n- `variant` \u2014 Filter by A/B variant index (`0`, `1`, ...); `(default)` matches clicks sent to the default destination\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below).",
               "examples": [
                 "{\"browser\":[\"Chrome\",\"Firefox\"]}",
                 "{\"country\":[\"United States\",\"Canada\"],\"browser\":[\"Chrome\"]}"
               ],
               "title": "Filters"
             },
-            "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below)."
+            "description": "**Method 1: JSON Filters Object**\n\nJSON string containing dimension filters. Format: `{\"dimension\": [\"value1\", \"value2\"]}`\n\n**Available filter dimensions:**\n\n- `browser` \u2014 Filter by browser name (e.g., Chrome, Firefox, Safari, Edge)\n- `os` \u2014 Filter by operating system (e.g., Windows, macOS, Linux, iOS, Android)\n- `device` \u2014 Filter by device type (`mobile`, `tablet`, `desktop`, `unknown`)\n- `country` \u2014 Filter by country name (e.g., United States, Canada, Germany)\n- `city` \u2014 Filter by city name (e.g., New York, London, Mumbai)\n- `referrer` \u2014 Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n- `utm_source` / `utm_medium` / `utm_campaign` \u2014 Filter by campaign tags; `(none)` matches untagged clicks\n- `variant` \u2014 Filter by A/B variant index (`0`, `1`, ...); `(default)` matches clicks sent to the default destination\n\n**Value format:** Array of strings for each dimension.\n\n**Important:** Filter values are case-sensitive. Use exact capitalization as stored in the database.\n\n**Examples:**\n\n- `{\"browser\": [\"Chrome\", \"Firefox\"]}` \u2014 Chrome OR Firefox clicks\n- `{\"country\": [\"United States\", \"Canada\"], \"browser\": [\"Chrome\"]}` \u2014 US/CA clicks from Chrome\n\n**Alternative:** You can also pass filters as individual query parameters (see `browser`, `os`, `country`, `city`, `referrer` parameters below)."
           },
           {
             "name": "browser",
@@ -6159,6 +6228,29 @@
               "title": "Utm Campaign"
             },
             "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated campaign tag values. Alternative to using the `filters` JSON parameter.\n\n**Important:** Values are case-sensitive. `(none)` matches clicks with no tag.\n\n**Note:** Both `filters` JSON and individual parameters can be combined."
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated A/B variant indices (`0`, `1`, ...). `(default)` matches clicks sent to the default destination, including every click on a link without variants.\n\n**Note:** Both `filters` JSON and individual parameters can be combined.",
+              "examples": [
+                "0,1",
+                "(default)"
+              ],
+              "title": "Variant"
+            },
+            "description": "**Method 2: Individual Filter Parameter**\n\nComma-separated A/B variant indices (`0`, `1`, ...). `(default)` matches clicks sent to the default destination, including every click on a link without variants.\n\n**Note:** Both `filters` JSON and individual parameters can be combined."
           }
         ],
         "responses": {
@@ -9849,6 +9941,58 @@
   },
   "components": {
     "schemas": {
+      "AbVariantRequest": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Url",
+            "description": "Destination URL for this variant.",
+            "examples": [
+              "https://example.com/b"
+            ]
+          },
+          "weight": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Weight",
+            "description": "Percentage of visitors sent to this variant (1-100).",
+            "examples": [
+              40
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "weight"
+        ],
+        "title": "AbVariantRequest",
+        "description": "One A/B split destination as sent on create/update."
+      },
+      "AbVariantResponse": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "Variant destination URL."
+          },
+          "weight": {
+            "type": "integer",
+            "title": "Weight",
+            "description": "Percentage of visitors sent here."
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "weight"
+        ],
+        "title": "AbVariantResponse",
+        "description": "One A/B split destination."
+      },
       "AccountDeletionResponse": {
         "properties": {
           "purge_after": {
@@ -11375,6 +11519,29 @@
             "examples": [
               [
                 "665f0c2f9e7a4b1d2c3d4e5f"
+              ]
+            ]
+          },
+          "ab_variants": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AbVariantRequest"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Variants",
+            "description": "Weighted split destinations: each entry is `{url, weight}` where `weight` is the percentage of visitors sent there (integers, summing to at most 100). The default destination (`url`) receives the remainder. Requires authentication.",
+            "examples": [
+              [
+                {
+                  "url": "https://example.com/b",
+                  "weight": 40
+                }
               ]
             ]
           },
@@ -13276,6 +13443,40 @@
         "title": "PreviewGeoDestination",
         "description": "One geo-rule destination group.\n\n``countries`` are ISO 3166-1 alpha-2 codes, sorted ascending \u2014 every\nrule is listed, nothing summarized (anti-cloaking transparency)."
       },
+      "PreviewVariantDestination": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "is_https": {
+            "type": "boolean",
+            "title": "Is Https"
+          },
+          "weight": {
+            "type": "integer",
+            "title": "Weight"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "domain",
+          "path",
+          "is_https",
+          "weight"
+        ],
+        "title": "PreviewVariantDestination",
+        "description": "One A/B variant destination with its traffic share in percent."
+      },
       "ProfilePictureMessageResponse": {
         "properties": {
           "message": {
@@ -13483,6 +13684,20 @@
             ],
             "title": "Geo Destinations"
           },
+          "variant_destinations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PreviewVariantDestination"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant Destinations"
+          },
           "expired_destination": {
             "anyOf": [
               {
@@ -13506,7 +13721,7 @@
           "geo_destinations"
         ],
         "title": "PublicPreviewResponse",
-        "description": "Response body for the public link preview endpoint.\n\n``destination`` and ``geo_destinations`` are non-null only while the\nlink is active and not password-protected \u2014 the preview never reveals\na destination the redirect would refuse to serve. The rule runs both\nways: ``expired_destination`` names where an expired link still sends\nevery visitor when its owner set a fallback, so the preview never shows\nLESS than the redirect serves either."
+        "description": "Response body for the public link preview endpoint.\n\n``destination``, ``geo_destinations`` and ``variant_destinations`` are\nnon-null only while the link is active and not password-protected \u2014 the\npreview never reveals a destination the redirect would refuse to serve.\nThe rule runs both ways: ``expired_destination`` names where an expired\nlink still sends every visitor when its owner set a fallback, so the\npreview never shows LESS than the redirect serves either."
       },
       "PublicStatsBody": {
         "properties": {
@@ -14853,6 +15068,29 @@
               ]
             ]
           },
+          "ab_variants": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AbVariantRequest"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Variants",
+            "description": "Weighted split destinations: each entry is `{url, weight}` where `weight` is the percentage of visitors sent there (integers, summing to at most 100). The default destination (`url`) receives the remainder. Requires authentication. The list replaces any existing variants in full. Pass `null` or `[]` to remove all variants; omit to keep them unchanged.",
+            "examples": [
+              [
+                {
+                  "url": "https://example.com/b",
+                  "weight": 40
+                }
+              ]
+            ]
+          },
           "meta_tags": {
             "anyOf": [
               {
@@ -15069,6 +15307,29 @@
             "type": "array",
             "title": "Tags",
             "description": "The link's tags (id, name, colour), in the link's order."
+          },
+          "ab_variants": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AbVariantResponse"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Variants",
+            "description": "Weighted split destinations ({url, weight} entries; the default destination takes the remaining share), or null.",
+            "examples": [
+              [
+                {
+                  "url": "https://example.com/b",
+                  "weight": 40
+                }
+              ]
+            ]
           },
           "updated_at": {
             "type": "integer",
@@ -15405,6 +15666,20 @@
             "type": "array",
             "title": "Tags"
           },
+          "ab_variants": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AbVariantResponse"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Variants"
+          },
           "meta_tags": {
             "anyOf": [
               {
@@ -15590,6 +15865,29 @@
             "type": "array",
             "title": "Tags",
             "description": "The link's tags (id, name, colour), in the link's order."
+          },
+          "ab_variants": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AbVariantResponse"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Variants",
+            "description": "Weighted split destinations ({url, weight} entries; the default destination takes the remaining share), or null.",
+            "examples": [
+              [
+                {
+                  "url": "https://example.com/b",
+                  "weight": 40
+                }
+              ]
+            ]
           },
           "meta_tags": {
             "anyOf": [

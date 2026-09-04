@@ -746,6 +746,36 @@ def test_preview_geo_link_lists_every_destination():
     assert "US:" in html
 
 
+def test_preview_variant_link_lists_every_destination():
+    from schemas.models.url import AbVariant
+
+    db = _mock_db()
+    v2_doc = MagicMock()
+    v2_doc.alias = "abc1234"
+    v2_doc.long_url = "https://example.com/default"
+    v2_doc.password = None
+    v2_doc.geo_rules = None
+    v2_doc.ab_variants = [AbVariant(url="https://b.example.net/offer", weight=40)]
+
+    with (
+        patch("routes.legacy.url_shortener.UrlRepository") as MockUrlRepo,
+        patch("routes.legacy.url_shortener.LegacyUrlRepository") as MockLegacyRepo,
+    ):
+        MockUrlRepo.return_value.find_by_alias = AsyncMock(return_value=v2_doc)
+        MockLegacyRepo.return_value.find_by_id = AsyncMock(return_value=None)
+
+        app = build_test_app(legacy_url_router, overrides={get_db: lambda: db})
+        with TestClient(app) as client:
+            resp = client.get("/abc1234+")
+
+    assert resp.status_code == 200
+    html = resp.text
+    assert "splits visitors between several destinations" in html
+    assert "40% of visitors:" in html
+    assert "b.example.net" in html
+    assert "example.com" in html
+
+
 def test_preview_non_geo_link_has_no_banner():
     db = _mock_db()
     v2_doc = MagicMock()

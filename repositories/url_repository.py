@@ -44,6 +44,13 @@ _ALL_URLS = {
                 "in": "$$rule.v",
             }
         },
+        {
+            "$map": {
+                "input": {"$ifNull": ["$ab_variants", []]},
+                "as": "v",
+                "in": "$$v.url",
+            }
+        },
         *(
             {"$cond": [{"$eq": [{"$type": f"${field}"}, "string"]}, [f"${field}"], []]}
             for field in SINGLE_DESTINATION_FIELDS

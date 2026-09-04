@@ -100,9 +100,13 @@ def link_destination_urls_for(link: object) -> list[str]:
     The one place that knows which fields hold destinations. Readers that
     enumerate by keyword drift the moment a field is added; they call this.
     """
+    # Duck-typed like shared.ab_variants.variant_urls, not imported here to
+    # dodge a cycle (that module imports schemas.models.url, which imports this).
+    variants = getattr(link, "ab_variants", None) or []
     return link_destination_urls(
         getattr(link, "long_url", None),
         geo_rules=getattr(link, "geo_rules", None),
+        variants=[v["url"] if isinstance(v, dict) else v.url for v in variants],
         **{
             field: getattr(link, field, None) or None
             for field in SINGLE_DESTINATION_FIELDS

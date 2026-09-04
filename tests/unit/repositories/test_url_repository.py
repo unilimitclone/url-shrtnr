@@ -925,10 +925,11 @@ class TestSweepSampleUrls:
         assert urls[1]["$map"]["input"] == {
             "$objectToArray": {"$ifNull": ["$geo_rules", {}]}
         }
+        assert urls[2]["$map"]["input"] == {"$ifNull": ["$ab_variants", []]}
         # One arm per single-URL destination field, in the shared list's order:
         # a field missing here is a sweep that samples the wrong URL.
         from shared.url_utils import SINGLE_DESTINATION_FIELDS
 
-        arms = [arm["$cond"][1] for arm in urls[2:]]
+        arms = [arm["$cond"][1] for arm in urls[3:]]
         assert arms == [[f"${field}"] for field in SINGLE_DESTINATION_FIELDS]
         assert pipeline[3]["$group"]["urls"] == {"$first": "$urls"}

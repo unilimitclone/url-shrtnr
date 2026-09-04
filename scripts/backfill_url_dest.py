@@ -17,9 +17,10 @@ Unparseable destinations are stamped ``dest: null`` so the needs-backfill
 filter converges to zero; null adds nothing to the sparse dest_registrable
 index.
 
-Second pass, urlsV2 only: links with geo_rules or a single-URL fallback get
-``dest.secondary_hosts`` (every extra destination host but the main one) and
-the index-aligned ``dest.secondary_registrable``, so a host block and a
+Second pass, urlsV2 only: links with geo_rules, ab_variants or a single-URL
+fallback get ``dest.secondary_hosts`` (every extra destination host but the
+main one) and the index-aligned ``dest.secondary_registrable``, so a host
+block and a
 feed-domain sweep both reach links that hide the host in a rule. Idempotent:
 docs already carrying the fields are skipped, and a link whose extra
 destinations add no new host gets empty lists so the filter converges.
@@ -59,6 +60,7 @@ _SECONDARY_FILTER = {
         {
             "$or": [
                 {"geo_rules": {"$type": "object"}},
+                {"ab_variants": {"$type": "array"}},
                 *({field: {"$type": "string"}} for field in SINGLE_DESTINATION_FIELDS),
             ]
         },
@@ -111,9 +113,13 @@ def parse_destination(url: object) -> dict | None:
 
 
 def secondary_urls(doc: dict) -> list:
-    """Every extra destination a link routes to: geo rules plus each single-URL field."""
+    """Every extra destination a link routes to: geo rules, A/B variants and
+    each single-URL field."""
     geo = doc.get("geo_rules")
     urls = list(geo.values()) if isinstance(geo, dict) else []
+    variants = doc.get("ab_variants")
+    if isinstance(variants, list):
+        urls += [v.get("url") for v in variants if isinstance(v, dict)]
     for field in SINGLE_DESTINATION_FIELDS:
         if isinstance(doc.get(field), str):
             urls.append(doc[field])
@@ -175,6 +181,7 @@ def _secondary_op(d: dict) -> UpdateOne:
     flt = {
         "_id": d["_id"],
         "geo_rules": d.get("geo_rules"),
+        "ab_variants": d.get("ab_variants"),
         **{field: d.get(field) for field in SINGLE_DESTINATION_FIELDS},
         "dest.secondary_registrable": {"$exists": False},
     }
@@ -187,7 +194,7 @@ def _secondary_op(d: dict) -> UpdateOne:
 
 def backfill_secondary(coll, dry_run: bool) -> None:
     todo = coll.count_documents(_SECONDARY_FILTER)
-    print(f"[{coll.name}] geo or scheduled links needing secondary fields: {todo}")
+    print(f"[{coll.name}] geo/variant/scheduled links needing secondary fields: {todo}")
     if todo == 0 or dry_run:
         return
     stamped = failed = skipped = 0
@@ -199,7 +206,13 @@ def backfill_secondary(coll, dry_run: bool) -> None:
         batch = list(
             coll.find(
                 query,
-                {"dest": 1, "long_url": 1, "geo_rules": 1, **_SINGLE_PROJECTION},
+                {
+                    "dest": 1,
+                    "long_url": 1,
+                    "geo_rules": 1,
+                    "ab_variants": 1,
+                    **_SINGLE_PROJECTION,
+                },
             )
             .sort("_id", 1)
             .limit(_BATCH)
@@ -230,7 +243,8 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
         return
     if dry_run:
         sample = coll.find_one(
-            _FILTER, {url_field: 1, "geo_rules": 1, **_SINGLE_PROJECTION}
+            _FILTER,
+            {url_field: 1, "geo_rules": 1, "ab_variants": 1, **_SINGLE_PROJECTION},
         )
         print(f"[{coll.name}] sample parse: {dest_for(sample or {}, url_field)}")
         return
@@ -245,7 +259,10 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
         if last_id is not None:
             query["_id"] = {"$gt": last_id}
         batch = list(
-            coll.find(query, {url_field: 1, "geo_rules": 1, **_SINGLE_PROJECTION})
+            coll.find(
+                query,
+                {url_field: 1, "geo_rules": 1, "ab_variants": 1, **_SINGLE_PROJECTION},
+            )
             .sort("_id", 1)
             .limit(_BATCH)
         )

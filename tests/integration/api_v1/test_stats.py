@@ -230,6 +230,26 @@ class TestLinkStats:
 
         assert resp.status_code == 200
 
+    def test_link_stats_variant_group_by_accepted(self):
+        user = _make_user()
+        url_doc = _make_url_doc(alias="mylink", owner_id=user.user_id)
+        url_svc = AsyncMock()
+        url_svc.get_owned = AsyncMock(return_value=url_doc)
+        stats_svc = AsyncMock()
+        stats_svc.query_link = AsyncMock(
+            return_value={**self._LINK_STATS_RESULT, "group_by": ["variant"]}
+        )
+
+        application = self._app(user=user, stats_svc=stats_svc, url_svc=url_svc)
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.get(
+                f"/api/v1/stats/links/{self._URL_ID}?group_by=variant&variant=0"
+            )
+
+        assert resp.status_code == 200
+        query = stats_svc.query_link.call_args.args[0]
+        assert query.parsed_filters["variant"] == ["0"]
+
     def test_link_stats_short_code_group_by_rejected(self):
         user = _make_user()
         application = self._app(user=user)

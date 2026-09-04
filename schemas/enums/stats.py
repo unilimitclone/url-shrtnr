@@ -44,6 +44,8 @@ class StatsDimension(str, Enum):
     # resolves them (by name or id) to the owner's url_ids before the $match.
     TAG = "tag"
     TAG_ID = "tag_id"
+    # A/B variant index served ("0", "1", ...); "(default)" = long_url.
+    VARIANT = "variant"
 
 
 class StatsMetric(str, Enum):
@@ -83,6 +85,7 @@ ALLOWED_FILTERS = frozenset(
         StatsDimension.UTM_CAMPAIGN,
         StatsDimension.TAG,
         StatsDimension.TAG_ID,
+        StatsDimension.VARIANT,
     }
 )
 # Per-link endpoints pre-select the link in the path, so slicing or

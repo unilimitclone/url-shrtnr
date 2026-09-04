@@ -8,6 +8,7 @@ POST /<short_code>/password → password form submission
 from __future__ import annotations
 
 import time
+from random import randrange
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
@@ -32,6 +33,7 @@ from schemas.models.url import SchemaVersion
 from services.click.bot_detection import should_block_bot, wants_preview
 from services.click.events import ClickEvent
 from services.meta_preview import build_preview_context
+from shared.ab_variants import pick_variant
 from shared.ip_utils import get_client_ip
 from shared.url_utils import extract_hostname
 
@@ -265,6 +267,14 @@ async def redirect_url(
             destination = url_data.geo_rules[resolved_country]
             geo_matched = True
 
+    # 3b. A/B split — only the default destination is split; a matched geo
+    #     rule already decided. Stateless per request, no sticky assignment.
+    variant_index: int | None = None
+    if url_data.ab_variants and not geo_matched:
+        variant_index = pick_variant(url_data.ab_variants, randrange(100))
+        if variant_index is not None:
+            destination = url_data.ab_variants[variant_index].url
+
     # 4. Pre-emit bot block — the DECISION must run before the redirect is
     #    served (click processing may happen out-of-band); bot metadata
     #    RECORDING stays in the click pipeline.
@@ -297,6 +307,7 @@ async def redirect_url(
             cf_city=cf_city,
             resolved_country=resolved_country,
             geo_matched=geo_matched,
+            variant_index=variant_index,
             # Raw capture only — ClickEvent sanitises and bounds these
             # structurally, same as the password-hash strip.
             utm_source=request.query_params.get("utm_source"),
@@ -340,12 +351,13 @@ async def redirect_url(
             geo_targeted=bool(url_data.geo_rules),
             resolved_country=resolved_country,
             geo_matched=geo_matched,
+            variant_index=variant_index,
             slow=total_ms > 100,
         )
     resp = RedirectResponse(destination, status_code=302)
     resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
-    if url_data.geo_rules:
-        # Response varies by visitor country — no intermediary may cache it
+    if url_data.geo_rules or url_data.ab_variants:
+        # Response varies per visitor — no intermediary may cache it
         resp.headers["Cache-Control"] = "no-store"
     return resp
 

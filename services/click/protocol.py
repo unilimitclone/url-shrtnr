@@ -26,6 +26,7 @@ class ClickContext:
     utm_source: str | None = None
     utm_medium: str | None = None
     utm_campaign: str | None = None
+    variant_index: int | None = None
 
 
 class ClickHandler(Protocol):

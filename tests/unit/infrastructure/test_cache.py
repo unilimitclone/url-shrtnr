@@ -296,6 +296,43 @@ class TestUrlCacheDataGeoRules:
         assert result.geo_rules == rules
 
 
+class TestUrlCacheDataAbVariants:
+    async def test_pre_variants_payload_decodes_with_none(self):
+        payload = {
+            "_id": "507f1f77bcf86cd799439011",
+            "alias": "abc1234",
+            "long_url": "https://example.com",
+            "block_bots": False,
+            "password_hash": None,
+            "expiration_time": None,
+            "max_clicks": None,
+            "url_status": "ACTIVE",
+            "schema_version": "v2",
+            "owner_id": "507f1f77bcf86cd799439012",
+            "domain": DOMAIN,
+        }
+        r = _fake_redis(get_returns=json.dumps(payload))
+        cache = UrlCache(r)
+        result = await cache.get("abc1234", DOMAIN)
+        assert result is not None
+        assert result.ab_variants is None
+
+    async def test_ab_variants_round_trip(self):
+        from schemas.models.url import AbVariant
+
+        variants = [AbVariant(url="https://example.com/b", weight=40)]
+        data = _url_data(domain=DOMAIN).model_copy(update={"ab_variants": variants})
+        r = _fake_redis()
+        cache = UrlCache(r)
+        await cache.set("abc1234", data)
+        stored_json = r.setex.call_args[0][2]
+
+        r2 = _fake_redis(get_returns=stored_json)
+        result = await UrlCache(r2).get("abc1234", DOMAIN)
+        assert result is not None
+        assert result.ab_variants == variants
+
+
 class TestUrlCacheDataIsTimeExpired:
     def _data(self, expiration_time):
         return UrlCacheData(

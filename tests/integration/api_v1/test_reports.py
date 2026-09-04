@@ -720,6 +720,29 @@ def test_safety_sink_absent_means_no_enqueue_and_no_failure():
     assert len(reports_col.update_calls) == 1
 
 
+def test_reported_link_enqueues_variant_destinations_too():
+    from schemas.models.url import AbVariant
+
+    doc = _make_v2_doc("var1234")
+    doc.long_url = "https://clean.example/"
+    doc.ab_variants = [AbVariant(url="https://hidden.example/b", weight=40)]
+    sink = _CapturingSafetySink()
+    service, _, _ = _build_service(v2_docs=[doc], safety_sink=sink)
+
+    with _client(service) as c:
+        resp = c.post(
+            _URL, json={"items": [{"code_or_url": "var1234", "reason": "phishing"}]}
+        )
+    assert resp.status_code == 200
+
+    by_host = {e.host: e for e in sink.events}
+    assert set(by_host) == {"clean.example", "hidden.example"}
+    assert by_host["hidden.example"].context["link_destinations"] == [
+        "https://clean.example/",
+        "https://hidden.example/b",
+    ]
+
+
 def test_reported_link_enqueues_every_destination_including_geo_rules():
     """A phish hidden in a geo rule must be judged, not just long_url."""
     doc = _make_v2_doc("geo1234")

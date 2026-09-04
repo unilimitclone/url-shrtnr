@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import typing
 from datetime import datetime, timezone
 
 import pytest
@@ -696,3 +697,147 @@ class TestFromDocDerivedStatus:
         future = datetime(2099, 1, 1, tzinfo=timezone.utc)
         r = UrlListItem.from_doc(_make_doc(expire_after=future))
         assert r.status == "ACTIVE"
+
+
+# ── ab_variants ────────────────────────────────────────────────────────────────
+
+
+class TestAbVariantsField:
+    def test_urls_stripped_and_weights_coerced(self):
+        req = CreateUrlRequest.model_validate(
+            {
+                "long_url": "https://example.com",
+                "ab_variants": [{"url": "  https://example.com/b ", "weight": "40"}],
+            }
+        )
+        assert req.ab_variants is not None
+        assert req.ab_variants[0].url == "https://example.com/b"
+        assert req.ab_variants[0].weight == 40
+
+    def test_weights_over_100_rejected(self):
+        with pytest.raises(ValidationError, match="sum to at most 100"):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "ab_variants": [
+                        {"url": "https://example.com/b", "weight": 70},
+                        {"url": "https://example.com/c", "weight": 40},
+                    ],
+                }
+            )
+
+    def test_weights_exactly_100_accepted(self):
+        req = CreateUrlRequest.model_validate(
+            {
+                "long_url": "https://example.com",
+                "ab_variants": [
+                    {"url": "https://example.com/b", "weight": 60},
+                    {"url": "https://example.com/c", "weight": 40},
+                ],
+            }
+        )
+        assert sum(v.weight for v in req.ab_variants) == 100
+
+    @pytest.mark.parametrize("weight", [0, 101, -1, 60.5, "many"])
+    def test_bad_weight_rejected(self, weight):
+        with pytest.raises(ValidationError):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "ab_variants": [{"url": "https://example.com/b", "weight": weight}],
+                }
+            )
+
+    def test_empty_url_rejected(self):
+        with pytest.raises(ValidationError):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "ab_variants": [{"url": "   ", "weight": 10}],
+                }
+            )
+
+    def test_oversized_url_rejected(self):
+        with pytest.raises(ValidationError):
+            CreateUrlRequest.model_validate(
+                {
+                    "long_url": "https://example.com",
+                    "ab_variants": [
+                        {"url": "https://example.com/" + "a" * 8192, "weight": 10}
+                    ],
+                }
+            )
+
+    def test_non_list_returns_clean_validation_error(self):
+        for bad in ({"url": "https://example.com/b", "weight": 10}, "x", 42):
+            with pytest.raises(ValidationError):
+                CreateUrlRequest.model_validate(
+                    {"long_url": "https://example.com", "ab_variants": bad}
+                )
+
+    def test_hard_entry_ceiling_bounds_the_pre_auth_loop(self):
+        variants = [{"url": "https://example.com/x", "weight": 1} for _ in range(51)]
+        with pytest.raises(ValidationError, match="cannot exceed 50"):
+            CreateUrlRequest.model_validate(
+                {"long_url": "https://example.com", "ab_variants": variants}
+            )
+
+    def test_update_null_registers_in_fields_set(self):
+        req = UpdateUrlRequest.model_validate({"ab_variants": None})
+        assert "ab_variants" in req.model_fields_set
+        assert req.ab_variants is None
+
+    def test_update_empty_list_registers_in_fields_set(self):
+        req = UpdateUrlRequest.model_validate({"ab_variants": []})
+        assert "ab_variants" in req.model_fields_set
+        assert req.ab_variants == []
+
+    def test_update_omitted_not_in_fields_set(self):
+        req = UpdateUrlRequest.model_validate({})
+        assert "ab_variants" not in req.model_fields_set
+
+    def test_update_weights_over_100_rejected(self):
+        with pytest.raises(ValidationError, match="sum to at most 100"):
+            UpdateUrlRequest.model_validate(
+                {
+                    "ab_variants": [
+                        {"url": "https://example.com/b", "weight": 60},
+                        {"url": "https://example.com/c", "weight": 50},
+                    ]
+                }
+            )
+
+
+class TestAbVariantsResponse:
+    def _doc(self, **overrides) -> UrlV2Doc:
+        base = {
+            "_id": ObjectId(),
+            "alias": "abc1234",
+            "owner_id": ObjectId(),
+            "domain": "spoo.me",
+            "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "long_url": "https://example.com",
+        }
+        base.update(overrides)
+        return UrlV2Doc.model_validate(base)
+
+    VARIANTS: typing.ClassVar[list[dict]] = [
+        {"url": "https://example.com/b", "weight": 60},
+        {"url": "https://example.com/c", "weight": 40},
+    ]
+
+    def test_echoed_on_all_three_shapes(self):
+        doc = self._doc(ab_variants=self.VARIANTS)
+        assert (
+            UrlResponse.from_doc(doc, "https://spoo.me").model_dump()["ab_variants"]
+            == self.VARIANTS
+        )
+        assert UpdateUrlResponse.from_doc(doc).model_dump()["ab_variants"] == (
+            self.VARIANTS
+        )
+        assert UrlListItem.from_doc(doc).model_dump()["ab_variants"] == self.VARIANTS
+
+    def test_null_when_unset(self):
+        doc = self._doc()
+        assert UrlResponse.from_doc(doc, "https://spoo.me").ab_variants is None
+        assert UrlListItem.from_doc(doc).ab_variants is None

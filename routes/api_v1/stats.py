@@ -60,13 +60,13 @@ async def stats_v1(
 
     **Grouping Dimensions**: `time`, `browser`, `os`, `device`, `country`,
     `city`, `referrer`, `short_code`, `utm_source`, `utm_medium`,
-    `utm_campaign`
+    `utm_campaign`, `variant`
 
     **Metrics**: `clicks`, `unique_clicks`
 
     **Filtering**: Filter by `browser`, `os`, `device`, `country`, `city`,
-    `referrer`, `short_code`, `url_id`, or the `utm_*` tags using query
-    params or a JSON `filters` object. Filters slice your own aggregate —
+    `referrer`, `short_code`, `url_id`, `variant`, or the `utm_*` tags using
+    query params or a JSON `filters` object. Filters slice your own aggregate —
     `url_id` values you do not own simply match nothing. For statistics on
     a single link, prefer `GET /stats/links/{url_id}`.
     """
@@ -106,13 +106,13 @@ async def link_stats_v1(
     **Rate Limits**: 60/min, 5,000/day
 
     **Grouping Dimensions**: `time`, `browser`, `os`, `device`, `country`,
-    `city`, `referrer`, `utm_source`, `utm_medium`, `utm_campaign`
+    `city`, `referrer`, `utm_source`, `utm_medium`, `utm_campaign`, `variant`
 
     **Metrics**: `clicks`, `unique_clicks`
 
     **Filtering**: Filter by `browser`, `os`, `device`, `country`, `city`,
-    `referrer`, or the `utm_*` tags using query params or a JSON `filters`
-    object. Link-identity filters (`short_code`, `url_id`) do not exist
+    `referrer`, `variant`, or the `utm_*` tags using query params or a JSON
+    `filters` object. Link-identity filters (`short_code`, `url_id`) do not exist
     here — the path already selects the link.
 
     **Errors**:

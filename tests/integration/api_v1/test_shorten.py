@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from dependencies import get_current_user, get_url_service
 from errors import ConflictError, ForbiddenError, ValidationError
+from schemas.models.url import AbVariant
 
 from .conftest import _build_test_app, _make_api_key_doc, _make_url_doc, _make_user
 
@@ -426,6 +427,101 @@ class TestCheckAliasWithCustomDomain:
         assert custom_svc.assert_owned_and_active.await_count == 0
         kwargs = url_svc.check_alias.call_args.kwargs
         assert kwargs.get("domain") is None
+
+
+class TestShortenAbVariants:
+    """ab_variants is authed-only and gated by the ab_testing feature flag."""
+
+    VARIANTS: typing.ClassVar[list[dict]] = [
+        {"url": "https://example.com/b", "weight": 40}
+    ]
+    BODY: typing.ClassVar[dict] = {
+        "long_url": "https://example.com",
+        "ab_variants": VARIANTS,
+    }
+
+    @staticmethod
+    def _flag_svc(enabled: bool) -> AsyncMock:
+        svc = AsyncMock()
+        svc.is_enabled = AsyncMock(return_value=enabled)
+        svc.require = AsyncMock(
+            side_effect=None
+            if enabled
+            else ForbiddenError("A/B testing is not enabled for this account")
+        )
+        return svc
+
+    def _app(self, user, mock_svc, flag_svc):
+        from dependencies import get_feature_flag_service
+
+        return _build_test_app(
+            {
+                get_current_user: lambda: user,
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: flag_svc,
+            }
+        )
+
+    def test_anonymous_with_ab_variants_returns_401(self):
+        mock_svc = AsyncMock()
+        flag_svc = self._flag_svc(True)
+        with TestClient(
+            self._app(None, mock_svc, flag_svc), raise_server_exceptions=False
+        ) as client:
+            resp = client.post("/api/v1/shorten", json=self.BODY)
+
+        assert resp.status_code == 401
+        mock_svc.create.assert_not_called()
+        flag_svc.require.assert_not_awaited()
+
+    def test_flag_off_returns_403(self):
+        mock_svc = AsyncMock()
+        with TestClient(
+            self._app(_make_user(), mock_svc, self._flag_svc(False)),
+            raise_server_exceptions=False,
+        ) as client:
+            resp = client.post("/api/v1/shorten", json=self.BODY)
+
+        assert resp.status_code == 403
+        mock_svc.create.assert_not_called()
+
+    def test_flag_on_returns_201_with_ab_variants_echoed(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.ab_variants = [AbVariant(url="https://example.com/b", weight=40)]
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
+
+        with TestClient(
+            self._app(user, mock_svc, self._flag_svc(True)),
+            raise_server_exceptions=True,
+        ) as client:
+            resp = client.post("/api/v1/shorten", json=self.BODY)
+
+        assert resp.status_code == 201
+        assert resp.json()["ab_variants"] == self.VARIANTS
+        sent = mock_svc.create.call_args.args[0]
+        assert [v.model_dump() for v in sent.ab_variants] == self.VARIANTS
+
+    def test_empty_list_flag_never_consulted(self):
+        user = _make_user()
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(
+            return_value=(_make_url_doc(owner_id=user.user_id), None)
+        )
+        flag_svc = self._flag_svc(False)
+
+        with TestClient(
+            self._app(user, mock_svc, flag_svc), raise_server_exceptions=True
+        ) as client:
+            resp = client.post(
+                "/api/v1/shorten",
+                json={"long_url": "https://example.com", "ab_variants": []},
+            )
+
+        assert resp.status_code == 201
+        assert resp.json()["ab_variants"] is None
+        flag_svc.require.assert_not_awaited()
 
 
 class TestShortenExpiredFallback:

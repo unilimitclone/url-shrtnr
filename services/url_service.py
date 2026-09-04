@@ -47,6 +47,7 @@ from repositories.legacy.emoji_url_repository import EmojiUrlRepository
 from repositories.legacy.legacy_url_repository import LegacyUrlRepository
 from repositories.url_repository import UrlRepository
 from schemas.dto.requests.url import (
+    AbVariantRequest,
     ClaimItemRequest,
     CreateUrlRequest,
     ListUrlsQuery,
@@ -77,6 +78,7 @@ if TYPE_CHECKING:
     from services.tag_service import TagService
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import (
+    AbVariant,
     EmojiUrlDoc,
     LegacyUrlDoc,
     LinkMetaTags,
@@ -85,6 +87,7 @@ from schemas.models.url import (
     UrlStatus,
     UrlV2Doc,
 )
+from shared.ab_variants import variant_urls
 from shared.alias_dispatch import (
     emoji_lookup_candidates,
     resolution_order,
@@ -140,6 +143,38 @@ def _validate_geo_rules_shape(
             raise ValidationError(
                 f"'{code}' is not a valid ISO 3166-1 alpha-2 country code",
                 field=f"geo_rules.{code}",
+            )
+
+
+def _validate_ab_variants_shape(
+    variants: Sequence[AbVariantRequest],
+    *,
+    max_variants: int,
+    enabled: bool = True,
+) -> None:
+    """Feature gate + entry cap. Weights and URL safety are checked
+    elsewhere (DTO and ``url_policy.check`` respectively)."""
+    if not enabled:
+        raise ValidationError("A/B variants are not available yet", field="ab_variants")
+    if len(variants) > max_variants:
+        raise ValidationError(
+            f"ab_variants cannot exceed {max_variants} entries", field="ab_variants"
+        )
+
+
+async def _check_variant_destinations(
+    service: UrlService,
+    variants: Sequence[AbVariantRequest],
+    *,
+    event: str = "url_create_rejected",
+) -> None:
+    """Every variant URL runs the full L0 gate, same as long_url and geo."""
+    for index, variant in enumerate(variants):
+        rejection = await service._url_policy.check(variant.url)
+        if rejection is not None:
+            log.info(event, reason=rejection.code)
+            raise ValidationError(
+                rejection.public_message, field=f"ab_variants.{index}.url"
             )
 
 
@@ -382,6 +417,29 @@ async def _handle_geo_rules(
     ops["geo_rules"] = request.geo_rules
 
 
+async def _handle_ab_variants(
+    request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
+) -> None:
+    if "ab_variants" not in request.model_fields_set:
+        return
+    if not request.ab_variants:
+        if existing.ab_variants:
+            ops["ab_variants"] = None
+        return
+    new = [AbVariant(url=v.url, weight=v.weight) for v in request.ab_variants]
+    if new == existing.ab_variants:
+        return
+    _validate_ab_variants_shape(
+        request.ab_variants,
+        max_variants=service._ab_variants_max,
+        enabled=service._ab_variants_enabled,
+    )
+    await _check_variant_destinations(
+        service, request.ab_variants, event="url_update_rejected"
+    )
+    ops["ab_variants"] = [v.model_dump() for v in new]
+
+
 async def _handle_meta_tags(
     request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
 ) -> None:
@@ -455,6 +513,7 @@ FIELD_HANDLERS: dict[str, Callable[..., Awaitable[None]]] = {
     "status": _handle_status,
     "geo_rules": _handle_geo_rules,
     "tag_ids": _handle_tag_ids,
+    "ab_variants": _handle_ab_variants,
     "expired_redirect_url": _handle_expired_redirect_url,
     # Must follow long_url — the handler validates against ops["long_url"]
     # when the destination changes in the same request.
@@ -509,6 +568,8 @@ class UrlService:
         emoji_generated_alias_length: int = 3,
         geo_rules_max_countries: int = 50,
         geo_rules_enabled: bool = False,
+        ab_variants_max: int = 10,
+        ab_variants_enabled: bool = False,
         og_writethrough: OgEdgeWritethrough | None = None,
         edge_kv: CloudflareKVClient | None = None,
         r2_storage: R2StorageClient | None = None,
@@ -539,6 +600,8 @@ class UrlService:
         self._emoji_generated_alias_length = emoji_generated_alias_length
         self._geo_rules_max_countries = geo_rules_max_countries
         self._geo_rules_enabled = geo_rules_enabled
+        self._ab_variants_max = ab_variants_max
+        self._ab_variants_enabled = ab_variants_enabled
         # Edge KV write-through for og-links; None when edge cache is
         # unconfigured (self-host) — origin then serves all previews.
         self._og_writethrough = og_writethrough
@@ -939,6 +1002,13 @@ class UrlService:
                     raise ValidationError(
                         geo_rejection.public_message, field=f"geo_rules.{geo_code}"
                     )
+        if request.ab_variants:
+            _validate_ab_variants_shape(
+                request.ab_variants,
+                max_variants=self._ab_variants_max,
+                enabled=self._ab_variants_enabled,
+            )
+            await _check_variant_destinations(self, request.ab_variants)
         if request.expired_redirect_url:
             await self.check_expired_redirect_url(request.expired_redirect_url)
         # Meta-tags: resolve data-URI uploads to R2 URLs, then run abuse
@@ -1020,6 +1090,7 @@ class UrlService:
             dest=UrlDestination.for_link(
                 request.long_url,
                 geo_rules=request.geo_rules,
+                variants=variant_urls(request.ab_variants),
                 pre_start_url=request.pre_start_url or None,
                 expired_redirect_url=request.expired_redirect_url or None,
             ),
@@ -1031,6 +1102,11 @@ class UrlService:
             pre_start_url=request.pre_start_url or None,
             geo_rules=request.geo_rules or None,
             tag_ids=tag_ids,
+            ab_variants=(
+                [AbVariant(url=v.url, weight=v.weight) for v in request.ab_variants]
+                if request.ab_variants
+                else None
+            ),
             expired_redirect_url=request.expired_redirect_url or None,
             status=UrlStatus.ACTIVE,
             private_stats=private_stats,
@@ -1097,6 +1173,7 @@ class UrlService:
             domain=target_domain,
             geo_rules=len(request.geo_rules or {}),
             tags=len(tag_ids),
+            ab_variants=len(request.ab_variants or []),
             has_expired_fallback=bool(request.expired_redirect_url),
             has_meta_tags=bool(request.meta_tags),
         )
@@ -1243,12 +1320,16 @@ class UrlService:
         if {
             "long_url",
             "geo_rules",
+            "ab_variants",
             "pre_start_url",
             "expired_redirect_url",
         } & update_ops.keys():
             dest = UrlDestination.for_link(
                 update_ops.get("long_url", existing.long_url),
                 geo_rules=update_ops.get("geo_rules", existing.geo_rules),
+                variants=variant_urls(
+                    update_ops.get("ab_variants", existing.ab_variants)
+                ),
                 pre_start_url=update_ops.get("pre_start_url", existing.pre_start_url),
                 expired_redirect_url=update_ops.get(
                     "expired_redirect_url", existing.expired_redirect_url

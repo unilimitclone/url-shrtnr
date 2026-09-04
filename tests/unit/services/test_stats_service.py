@@ -460,6 +460,27 @@ class TestClickQueryBuilding:
             {"utm_medium": {"$exists": False}},
         ]
 
+    def test_variant_filter_targets_variant_index_as_ints(self):
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            OWNER_ID, START, NOW, {"variant": ["0", "1"]}
+        )
+        assert q["variant_index"] == {"$in": [0, 1]}
+        assert "variant" not in q
+
+    def test_variant_default_sentinel_matches_missing_field(self):
+        from services.stats_service import StatsService
+
+        q = StatsService._build_click_query(
+            OWNER_ID, START, NOW, {"variant": ["(default)", "1"]}
+        )
+        assert q["$or"] == [
+            {"variant_index": {"$in": ["(default)", 1]}},
+            {"variant_index": {"$in": [None, ""]}},
+            {"variant_index": {"$exists": False}},
+        ]
+
     def test_two_null_sentinel_filters_nest_under_and(self):
         """Two $or groups must combine under $and — a second bare "$or"
         key would silently overwrite the first."""
@@ -707,6 +728,17 @@ class TestQueryLink:
             {"utm_source": {"$in": [None, ""]}},
             {"utm_source": {"$exists": False}},
         ]
+
+    @pytest.mark.asyncio
+    async def test_variant_group_by_groups_on_variant_index(self):
+        svc, click_repo, _ = make_service()
+        click_repo.aggregate.return_value = facet_response()
+
+        await svc.query_link(_lq(group_by="variant"), make_url_doc())
+
+        facet = click_repo.aggregate.call_args[0][0][1]["$facet"]
+        group = next(s["$group"] for s in facet["variant"] if "$group" in s)
+        assert group["_id"] == {"$ifNull": ["$variant_index", "(default)"]}
 
     @pytest.mark.asyncio
     async def test_utm_group_by_allowed(self):

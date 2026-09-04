@@ -40,6 +40,7 @@ class ClickService:
         utm_source: str | None = None,
         utm_medium: str | None = None,
         utm_campaign: str | None = None,
+        variant_index: int | None = None,
     ) -> None:
         """
         Dispatch click tracking to the appropriate handler.
@@ -64,5 +65,6 @@ class ClickService:
             utm_source=utm_source,
             utm_medium=utm_medium,
             utm_campaign=utm_campaign,
+            variant_index=variant_index,
         )
         await handler.handle(context)

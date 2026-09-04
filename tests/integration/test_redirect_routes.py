@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from dependencies import get_click_sink, get_url_service
@@ -23,6 +24,7 @@ from errors import (
 )
 from infrastructure.cache.url_cache import UrlCacheData
 from routes.redirect_routes import router as redirect_router
+from schemas.models.url import AbVariant
 from services.click.events import ClickEvent
 from tests.conftest import build_test_app
 from tests.factories import make_url_cache
@@ -398,6 +400,110 @@ def test_password_form_url_not_password_protected_returns_400_html():
         resp = client.post("/abc1234/password", data={"password": "pw"})
     assert resp.status_code == 400
     assert "text/html" in resp.headers["content-type"]
+
+
+# ── A/B variant tests ─────────────────────────────────────────────────────────
+
+AB_VARIANTS = [
+    AbVariant(url="https://example.com/b", weight=60),
+    AbVariant(url="https://example.com/c", weight=30),
+]
+
+
+class TestAbVariantRedirect:
+    def _app(self, url_data, sink=None):
+        return _build_app(_mock_url_service(url_data), sink)
+
+    def _get(self, client, method="get"):
+        return getattr(client, method)("/abc1234", headers={"User-Agent": BROWSER_UA})
+
+    @pytest.mark.parametrize(
+        ("roll", "location", "index"),
+        [
+            (0, "https://example.com/b", 0),
+            (59, "https://example.com/b", 0),
+            (60, "https://example.com/c", 1),
+            (89, "https://example.com/c", 1),
+            (90, "https://example.com/default", None),
+            (99, "https://example.com/default", None),
+        ],
+    )
+    def test_roll_picks_variant_and_stamps_event(
+        self, monkeypatch, roll, location, index
+    ):
+        monkeypatch.setattr("routes.redirect_routes.randrange", lambda n: roll)
+        url_data = _make_url_cache(
+            long_url="https://example.com/default", ab_variants=AB_VARIANTS
+        )
+        sink = _mock_click_sink()
+        with TestClient(self._app(url_data, sink), follow_redirects=False) as client:
+            resp = self._get(client)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == location
+        assert resp.headers["cache-control"] == "no-store"
+        event = sink.emit.await_args.args[0]
+        assert event.variant_index == index
+
+    def test_split_over_many_requests_is_roughly_the_weights(self):
+        url_data = _make_url_cache(
+            long_url="https://example.com/default", ab_variants=AB_VARIANTS
+        )
+        sink = _mock_click_sink()
+        with TestClient(self._app(url_data, sink), follow_redirects=False) as client:
+            locations = [self._get(client).headers["location"] for _ in range(400)]
+        b = locations.count("https://example.com/b")
+        c = locations.count("https://example.com/c")
+        d = locations.count("https://example.com/default")
+        # 60/30/10 with a generous band; a broken pick lands far outside it.
+        assert 190 <= b <= 290, b
+        assert 80 <= c <= 160, c
+        assert 15 <= d <= 70, d
+
+    def test_matched_geo_rule_wins_over_variants(self, monkeypatch):
+        from dependencies import get_geoip_service
+
+        monkeypatch.setattr("routes.redirect_routes.randrange", lambda n: 0)
+        url_data = _make_url_cache(
+            long_url="https://example.com/default",
+            geo_rules={"IN": "https://example.in/"},
+            ab_variants=AB_VARIANTS,
+        )
+        sink = _mock_click_sink()
+        app = build_test_app(
+            redirect_router,
+            overrides={
+                get_url_service: lambda: _mock_url_service(url_data),
+                get_click_sink: lambda: sink,
+                get_geoip_service: lambda: MagicMock(),
+            },
+        )
+        with TestClient(app, follow_redirects=False) as client:
+            resp = client.get(
+                "/abc1234", headers={"User-Agent": BROWSER_UA, "CF-IPCountry": "IN"}
+            )
+        assert resp.headers["location"] == "https://example.in/"
+        event = sink.emit.await_args.args[0]
+        assert event.geo_matched is True
+        assert event.variant_index is None
+
+    def test_head_request_picks_a_variant_without_event(self, monkeypatch):
+        monkeypatch.setattr("routes.redirect_routes.randrange", lambda n: 0)
+        url_data = _make_url_cache(ab_variants=AB_VARIANTS)
+        sink = _mock_click_sink()
+        with TestClient(self._app(url_data, sink), follow_redirects=False) as client:
+            resp = self._get(client, "head")
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "https://example.com/b"
+        sink.emit.assert_not_awaited()
+
+    def test_plain_link_has_no_variant_and_stays_cacheable(self):
+        url_data = _make_url_cache(long_url="https://example.com/target")
+        sink = _mock_click_sink()
+        with TestClient(self._app(url_data, sink), follow_redirects=False) as client:
+            resp = self._get(client)
+        assert resp.headers["location"] == "https://example.com/target"
+        assert "cache-control" not in resp.headers
+        assert sink.emit.await_args.args[0].variant_index is None
 
 
 # ── Geo-targeting tests ───────────────────────────────────────────────────────

@@ -81,7 +81,7 @@ class HotLinkScreen:
             )
 
     async def _destinations(self, hot: HotUrl) -> list[str]:
-        """Every destination the link routes to: main, geo overrides, both fallbacks."""
+        """Every destination the link routes to: main, geo overrides, variants, both fallbacks."""
         domain = self._system_domain if hot.domain in ("default", "") else hot.domain
         doc = await self._url_repo.find_by_alias(hot.short_code, domain)
         if doc is not None:

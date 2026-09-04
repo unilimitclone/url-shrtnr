@@ -26,6 +26,7 @@ from infrastructure.logging import get_logger
 from schemas.dto.responses.public_preview import (
     PreviewDestination,
     PreviewGeoDestination,
+    PreviewVariantDestination,
     PublicPreviewResponse,
 )
 from services.public_link_resolver import PublicLinkResolver, ResolvedPublicLink
@@ -69,9 +70,17 @@ class PublicPreviewService:
         # destinations stay unreachable). There is no password unlock here.
         destination: PreviewDestination | None = None
         geo_destinations: list[PreviewGeoDestination] | None = None
+        variant_destinations: list[PreviewVariantDestination] | None = None
         if status == "active" and not password_protected:
             destination = PreviewDestination(**split_destination(doc.long_url))
             geo_destinations = self._group_geo_rules(doc.geo_rules)
+            if doc.ab_variants:
+                variant_destinations = [
+                    PreviewVariantDestination(
+                        weight=v.weight, **split_destination(v.url)
+                    )
+                    for v in doc.ab_variants
+                ]
         # An expired link with a fallback still 302s everyone (the redirect
         # decides before the password gate), so the preview names that URL.
         expired_destination: PreviewDestination | None = None
@@ -93,6 +102,7 @@ class PublicPreviewService:
             password_protected=password_protected,
             destination=destination,
             geo_destinations=geo_destinations,
+            variant_destinations=variant_destinations,
             expired_destination=expired_destination,
         )
 

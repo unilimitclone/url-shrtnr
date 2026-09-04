@@ -58,6 +58,11 @@ class TestStatsQuery:
             "utm_campaign",
         ]
 
+    def test_variant_dimension_accepted_in_group_by_and_filter(self):
+        q = StatsQuery.model_validate({"group_by": "variant", "variant": "0,(default)"})
+        assert q.parsed_group_by == ["variant"]
+        assert q.parsed_filters["variant"] == ["0", "(default)"]
+
     def test_device_and_utm_filter_params_parsed(self):
         q = StatsQuery.model_validate(
             {
