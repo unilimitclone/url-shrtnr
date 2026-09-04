@@ -38,7 +38,7 @@ from schemas.enums.report import RejectionCode
 from services.public_link_resolver import PublicLinkResolver
 from services.safety.events import SafetyAnalyzeEvent
 from services.safety.sinks import SafetySink
-from shared.url_utils import parse_destination
+from shared.url_utils import link_destination_urls, parse_destination
 
 log = get_logger(__name__)
 
@@ -285,7 +285,7 @@ class ReportIntakeService:
         enqueue never resolves twice).
         """
         seen: set[tuple[str | None, str]] = set()
-        accepted: list[tuple[str | None, str, ReportItemRequest, str | None]] = []
+        accepted: list[tuple[str | None, str, ReportItemRequest, list[str]]] = []
         rejected: list[RejectedItem] = []
 
         for index, item in enumerate(items):
@@ -303,76 +303,93 @@ class ReportIntakeService:
             seen.add(target)
 
             domain, code = target
-            long_url = await self._resolve_long_url(domain, code)
-            if long_url is not None:
-                accepted.append((domain, code, item, long_url or None))
+            destinations = await self._resolve_destinations(domain, code)
+            if destinations is not None:
+                accepted.append((domain, code, item, destinations))
             else:
                 rejected.append(RejectedItem(index, item.code_or_url, "not_found"))
 
         return accepted, rejected
 
-    async def _resolve_long_url(self, domain: str | None, code: str) -> str | None:
-        """Domain-scoped existence check that also yields the destination.
+    async def _resolve_destinations(
+        self, domain: str | None, code: str
+    ) -> list[str] | None:
+        """Domain-scoped existence check that also yields every destination
+        the link routes to (long_url, geo overrides, pre-start page).
 
         System-domain codes resolve via the shared PublicLinkResolver —
         the same generation dispatch (v1/v2/emoji) as the redirect, and
         status-agnostic on purpose: expired/blocked links are still
-        reportable. Custom-domain codes are exact v2 lookups. Returns the
-        stored long_url, "" when the link exists but the destination is
-        unreadable, or None when the code does not exist.
+        reportable. Custom-domain codes are exact v2 lookups. Returns an
+        empty list when the link exists but no destination is readable,
+        or None when the code does not exist.
         """
         if domain is None:
             resolved = await self._resolver.resolve(code)
             if resolved is None:
                 return None
             if resolved.v2_doc is not None:
-                return resolved.v2_doc.long_url
-            return str((resolved.raw_v1 or {}).get("url") or "")
+                doc = resolved.v2_doc
+                return link_destination_urls(
+                    doc.long_url,
+                    geo_rules=doc.geo_rules,
+                    pre_start_url=doc.pre_start_url,
+                )
+            return link_destination_urls(str((resolved.raw_v1 or {}).get("url") or ""))
         doc = await self._url_repo.find_by_alias(code, domain)
-        return doc.long_url if doc is not None else None
+        if doc is None:
+            return None
+        return link_destination_urls(
+            doc.long_url, geo_rules=doc.geo_rules, pre_start_url=doc.pre_start_url
+        )
 
     async def _enqueue_safety_analysis(
-        self, accepted: list[tuple[str | None, str, ReportItemRequest, str | None]]
+        self, accepted: list[tuple[str | None, str, ReportItemRequest, list[str]]]
     ) -> None:
-        """One analysis request per distinct destination host in the batch
-        (many reported codes often point at one campaign host). Best-effort:
-        the sink swallows failures and None means safety is not wired."""
+        """One analysis request per distinct destination host in the batch,
+        every destination of every reported link included (many reported
+        codes often point at one campaign host). Best-effort: the sink
+        swallows failures and None means safety is not wired."""
         if self._safety_sink is None or not accepted:
             return
         by_host: dict[str, SafetyAnalyzeEvent] = {}
-        for domain, code, item, long_url in accepted:
-            parts = parse_destination(long_url)
-            if parts is None:
-                continue
-            host = parts["host"]
-            existing = by_host.get(host)
-            if existing is not None:
-                reasons = set(existing.context.get("reasons", []))
-                reasons.add(item.reason.value)
-                by_host[host] = existing.model_copy(
-                    update={
-                        "context": {
-                            **existing.context,
-                            "reasons": sorted(reasons),
-                            "reported_codes": [
-                                *existing.context.get("reported_codes", []),
-                                f"{domain or self._system_default_domain}/{code}",
-                            ],
-                        }
+        for domain, code, item, destinations in accepted:
+            reported = f"{domain or self._system_default_domain}/{code}"
+            for url in destinations:
+                parts = parse_destination(url)
+                if parts is None:
+                    continue
+                host = parts["host"]
+                existing = by_host.get(host)
+                if existing is not None:
+                    reasons = set(existing.context.get("reasons", []))
+                    reasons.add(item.reason.value)
+                    codes = existing.context.get("reported_codes", [])
+                    known = existing.context.get("link_destinations") or [existing.url]
+                    merged = [*known, *(u for u in destinations if u not in known)]
+                    context = {
+                        **existing.context,
+                        "reasons": sorted(reasons),
+                        "reported_codes": (
+                            codes if reported in codes else [*codes, reported]
+                        ),
                     }
-                )
-                continue
-            by_host[host] = SafetyAnalyzeEvent(
-                url=long_url or "",
-                host=host,
-                registrable_domain=parts["registrable_domain"],
-                trigger="report",
-                context={
+                    if len(merged) > 1:
+                        context["link_destinations"] = merged
+                    by_host[host] = existing.model_copy(update={"context": context})
+                    continue
+                context: dict = {
                     "reasons": [item.reason.value],
-                    "reported_codes": [
-                        f"{domain or self._system_default_domain}/{code}"
-                    ],
-                },
-            )
+                    "reported_codes": [reported],
+                }
+                if len(destinations) > 1:
+                    context["link_destinations"] = destinations
+                by_host[host] = SafetyAnalyzeEvent(
+                    url=url,
+                    host=host,
+                    registrable_domain=parts["registrable_domain"],
+                    trigger="report",
+                    context=context,
+                )
         for event in by_host.values():
             await self._safety_sink.emit(event)

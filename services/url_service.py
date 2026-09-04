@@ -162,10 +162,6 @@ async def _handle_long_url(
             log.info("url_update_rejected", reason=rejection.code)
             raise ValidationError(rejection.public_message, field="long_url")
         ops["long_url"] = request.long_url
-        # Destination changed -> re-stamp the parsed parts (meta_tags
-        # precedent: plain model_dump dicts go into ops).
-        dest = UrlDestination.from_url(request.long_url)
-        ops["dest"] = dest.model_dump() if dest else None
 
 
 async def _handle_alias(
@@ -987,7 +983,11 @@ class UrlService:
             creation_ip=client_ip,
             created_via=created_via,
             long_url=request.long_url,
-            dest=UrlDestination.from_url(request.long_url),
+            dest=UrlDestination.for_link(
+                request.long_url,
+                geo_rules=request.geo_rules,
+                pre_start_url=request.pre_start_url or None,
+            ),
             password=password_hash,
             block_bots=request.block_bots,
             max_clicks=request.max_clicks,
@@ -1021,6 +1021,8 @@ class UrlService:
         for _absent_if_none in ("claim_token_hash", "claimed_at", "dest"):
             if doc.get(_absent_if_none) is None:
                 doc.pop(_absent_if_none, None)
+        if url_doc.dest is not None:
+            doc["dest"] = url_doc.dest.to_doc()
 
         # 8. Insert
         inserted_id = await self._url_repo.insert(doc)
@@ -1190,6 +1192,15 @@ class UrlService:
                 update_ops.get("starts_at", existing.starts_at),
                 update_ops.get("expire_after", existing.expire_after),
             )
+
+        # Any destination change re-stamps dest, secondary hosts included.
+        if {"long_url", "geo_rules", "pre_start_url"} & update_ops.keys():
+            dest = UrlDestination.for_link(
+                update_ops.get("long_url", existing.long_url),
+                geo_rules=update_ops.get("geo_rules", existing.geo_rules),
+                pre_start_url=update_ops.get("pre_start_url", existing.pre_start_url),
+            )
+            update_ops["dest"] = dest.to_doc() if dest else None
 
         # Handlers don't see the request context; stamp the writer's IP
         # onto a fresh meta_tags value here (None stays None on clears).

@@ -1154,8 +1154,8 @@ class TestUrlServiceUpdate:
         from schemas.dto.requests.url import UpdateUrlRequest
 
         monkeypatch.setattr(
-            "services.url_service.UrlDestination.from_url",
-            classmethod(lambda cls, url: None),
+            "services.url_service.UrlDestination.for_link",
+            classmethod(lambda cls, long_url, **_: None),
         )
         req = UpdateUrlRequest(long_url="https://b.new-dest.com/x")
         await svc.update(URL_OID, req, USER_OID)
@@ -4082,3 +4082,140 @@ class TestUrlServiceScheduling:
                         assert (doc.effective_status == UrlStatus.SCHEDULED) == (
                             _matches_scheduled_clause(doc, now)
                         ), case
+
+
+class TestSecondaryDestinationStamping:
+    """A blocked host hidden in a geo rule must be findable by host."""
+
+    @pytest.mark.asyncio
+    async def test_create_with_geo_rules_stamps_secondary_hosts(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://clean.example/",
+            geo_rules={"IN": "https://hidden.example/kit"},
+        )
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        inserted = url_repo.insert.call_args.args[0]
+        assert inserted["dest"]["host"] == "clean.example"
+        assert inserted["dest"]["secondary_hosts"] == ["hidden.example"]
+
+    @pytest.mark.asyncio
+    async def test_create_without_geo_rules_writes_no_secondary_field(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        await svc.create(
+            CreateUrlRequest(long_url="https://clean.example/"),
+            owner_id=USER_OID,
+            client_ip="1.2.3.4",
+        )
+        # Absent, not [] or null: the sparse index holds only real cases.
+        assert "secondary_hosts" not in url_repo.insert.call_args.args[0]["dest"]
+
+    @pytest.mark.asyncio
+    async def test_update_geo_rules_restamps_secondary_hosts(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        req = UpdateUrlRequest(geo_rules={"BR": "https://hidden.example/br"})
+        await svc.update(URL_OID, req, USER_OID)
+
+        written = url_repo.update.call_args[0][1]["$set"]
+        assert written["geo_rules"] == {"BR": "https://hidden.example/br"}
+        assert written["dest"]["secondary_hosts"] == ["hidden.example"]
+        from shared.url_utils import parse_destination
+
+        assert written["dest"]["host"] == parse_destination(existing.long_url)["host"]
+
+    @pytest.mark.asyncio
+    async def test_clearing_geo_rules_drops_secondary_hosts(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        existing = make_url_v2_doc()
+        existing.geo_rules = {"BR": "https://hidden.example/br"}
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        await svc.update(URL_OID, UpdateUrlRequest(geo_rules=None), USER_OID)
+
+        written = url_repo.update.call_args[0][1]["$set"]
+        assert written["geo_rules"] is None
+        assert "secondary_hosts" not in written["dest"]
+
+
+class TestPreStartUrlStamping:
+    @pytest.mark.asyncio
+    async def test_create_with_pre_start_url_stamps_its_host(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+
+        from datetime import timedelta
+
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://clean.example/",
+            starts_at=datetime.now(timezone.utc) + timedelta(days=1),
+            pre_start_url="https://teaser.example/soon",
+        )
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        inserted = url_repo.insert.call_args.args[0]
+        assert inserted["dest"]["secondary_hosts"] == ["teaser.example"]
+
+    @pytest.mark.asyncio
+    async def test_update_pre_start_url_restamps_dest(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        existing = make_url_v2_doc()
+        url_repo.find_by_id.return_value = existing
+        url_repo.update.return_value = True
+
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        await svc.update(
+            URL_OID,
+            UpdateUrlRequest(pre_start_url="https://teaser.example/soon"),
+            USER_OID,
+        )
+
+        written = url_repo.update.call_args[0][1]["$set"]
+        assert written["pre_start_url"] == "https://teaser.example/soon"
+        assert written["dest"]["secondary_hosts"] == ["teaser.example"]

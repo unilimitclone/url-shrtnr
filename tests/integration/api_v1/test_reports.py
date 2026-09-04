@@ -718,3 +718,71 @@ def test_safety_sink_absent_means_no_enqueue_and_no_failure():
         resp = c.post(_URL, json={"items": _items("abc1234")})
     assert resp.status_code == 200
     assert len(reports_col.update_calls) == 1
+
+
+def test_reported_link_enqueues_every_destination_including_geo_rules():
+    """A phish hidden in a geo rule must be judged, not just long_url."""
+    doc = _make_v2_doc("geo1234")
+    doc.long_url = "https://clean.example/"
+    doc.geo_rules = {
+        "IN": "https://hidden.example/kit",
+        "US": "https://clean.example/us",
+    }
+    sink = _CapturingSafetySink()
+    service, _, _ = _build_service(v2_docs=[doc], safety_sink=sink)
+
+    with _client(service) as c:
+        resp = c.post(
+            _URL, json={"items": [{"code_or_url": "geo1234", "reason": "phishing"}]}
+        )
+    assert resp.status_code == 200
+
+    # One event per distinct host: the US rule echoing the main host is folded in.
+    assert len(sink.events) == 2
+    by_host = {e.host: e for e in sink.events}
+    assert set(by_host) == {"clean.example", "hidden.example"}
+    hidden = by_host["hidden.example"]
+    assert hidden.url == "https://hidden.example/kit"
+    assert hidden.context["reported_codes"] == [f"{_DOMAIN}/geo1234"]
+    assert hidden.context["link_destinations"] == [
+        "https://clean.example/",
+        "https://hidden.example/kit",
+        "https://clean.example/us",
+    ]
+
+
+def test_links_sharing_a_host_keep_every_links_destinations():
+    """Two reported links land on one host event; the bundle must still see
+    the geo destinations of BOTH, not only the first link's."""
+    doc_a = _make_v2_doc("aaa1234")
+    doc_a.long_url = "https://shared.example/a"
+    doc_a.geo_rules = {"IN": "https://geo-a.example/"}
+    doc_b = _make_v2_doc("bbb1234")
+    doc_b.long_url = "https://shared.example/b"
+    doc_b.geo_rules = {"BR": "https://geo-b.example/"}
+    sink = _CapturingSafetySink()
+    service, _, _ = _build_service(v2_docs=[doc_a, doc_b], safety_sink=sink)
+
+    with _client(service) as c:
+        resp = c.post(
+            _URL,
+            json={
+                "items": [
+                    {"code_or_url": "aaa1234", "reason": "phishing"},
+                    {"code_or_url": "bbb1234", "reason": "phishing"},
+                ]
+            },
+        )
+    assert resp.status_code == 200
+    assert len(sink.events) == 3
+    shared = {e.host: e for e in sink.events}["shared.example"]
+    assert shared.context["reported_codes"] == [
+        f"{_DOMAIN}/aaa1234",
+        f"{_DOMAIN}/bbb1234",
+    ]
+    assert shared.context["link_destinations"] == [
+        "https://shared.example/a",
+        "https://geo-a.example/",
+        "https://shared.example/b",
+        "https://geo-b.example/",
+    ]

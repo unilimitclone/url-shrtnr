@@ -22,6 +22,18 @@ from schemas.models.url import UrlStatus, UrlV2Doc
 log = get_logger(__name__)
 
 
+def dest_host_filter(host: str) -> dict:
+    """A host verdict reaches links that hide the host in a geo rule or a
+    variant, not only links whose long_url points there. The legacy urls and
+    emojis collections carry no rules, so their host-only queries stay
+    complete without this."""
+    return {"$or": [{"dest.host": host}, {"dest.secondary_hosts": host}]}
+
+
+# Every host a link can route to, for grouping: main plus secondary.
+_ALL_HOSTS = {"$setUnion": [["$dest.host"], {"$ifNull": ["$dest.secondary_hosts", []]}]}
+
+
 # Mongo caps a single query document at 16MB; a host-wide block can name
 # tens of thousands of (alias, domain) pairs, so the $or is chunked.
 _ALIAS_CHUNK = 1_000
@@ -478,7 +490,7 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         deliberately status-blind: a re-delivered block must still evict
         entries the first attempt flipped but failed to evict."""
         cursor = self._col.find(
-            {"dest.host": host},
+            dest_host_filter(host),
             {"alias": 1, "domain": 1, "long_url": 1},
         ).limit(limit)
         docs = await cursor.to_list(length=limit)
@@ -492,13 +504,24 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         return [(d["alias"], d.get("domain", ""), d.get("long_url", "")) for d in docs]
 
     async def unblock_by_dest_host(self, host: str) -> int:
-        """Flip BLOCKED links pointing at *host* back to ACTIVE, scoped to
-        docs carrying ``blocked_reason`` so a manual operator ban is never
-        undone. Stamps stay; ``unblocked_at`` records the reversal."""
+        """Remove *host* as a block cause and reactivate the links that have
+        no cause left. A link also blocked for another of its destinations
+        stays BLOCKED; a per-link block (``blocked_hosts`` null) is never
+        touched by a host unblock. Blocks stamped before ``blocked_hosts``
+        existed were host-of-long_url blocks, so they match on ``dest.host``.
+        Scoped to docs carrying ``blocked_reason`` so a manual operator ban is
+        never undone. Stamps stay; ``unblocked_at`` records the reversal."""
         now = datetime.now(timezone.utc)
+        await self._col.update_many(
+            {"blocked_hosts": host, "status": UrlStatus.BLOCKED.value},
+            {"$pull": {"blocked_hosts": host}},
+        )
         result = await self._col.update_many(
             {
-                "dest.host": host,
+                "$or": [
+                    {**dest_host_filter(host), "blocked_hosts": []},
+                    {"blocked_hosts": {"$exists": False}, "dest.host": host},
+                ],
                 "status": UrlStatus.BLOCKED.value,
                 "blocked_reason": {"$exists": True},
             },
@@ -519,7 +542,7 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         event set (anonymous links have no possible webhook subscriber)."""
         cursor = self._col.find(
             {
-                "dest.host": host,
+                **dest_host_filter(host),
                 "status": UrlStatus.ACTIVE.value,
                 "owner_id": {"$ne": ANONYMOUS_OWNER_ID},
             }
@@ -543,6 +566,8 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
                     "status": UrlStatus.ACTIVE.value,
                 }
             },
+            # Main host only: a secondary host's own registrable domain is not
+            # the matched one, so fanning it out here would tag it wrongly.
             {
                 "$group": {
                     "_id": "$dest.host",
@@ -570,9 +595,11 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         since_id = ObjectId.from_datetime(since)
         pipeline = [
             {"$match": {"_id": {"$gte": since_id}, "dest.host": {"$exists": True}}},
+            {"$project": {"hosts": _ALL_HOSTS, "long_url": 1}},
+            {"$unwind": "$hosts"},
             {
                 "$group": {
-                    "_id": "$dest.host",
+                    "_id": "$hosts",
                     "sample_url": {"$first": "$long_url"},
                 }
             },
@@ -623,6 +650,8 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
                         "updated_at": now,
                         "blocked_at": now,
                         "blocked_reason": reason,
+                        # Per-link cause: a host unblock never reactivates it.
+                        "blocked_hosts": None,
                     }
                 },
             )
@@ -635,7 +664,7 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         how many links point here, the anon/owned split, total clicks, and
         the earliest sighting. All facts we already own; no network."""
         pipeline = [
-            {"$match": {"dest.host": host}},
+            {"$match": dest_host_filter(host)},
             {
                 "$group": {
                     "_id": None,
@@ -698,7 +727,7 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         benefit of the doubt.
         """
         pipeline = [
-            {"$match": {"dest.host": host}},
+            {"$match": dest_host_filter(host)},
             {
                 "$group": {
                     "_id": None,
@@ -748,15 +777,57 @@ class UrlRepository(BaseRepository[UrlV2Doc]):
         audit trail — ``updated_at`` is lossy, these survive later edits."""
         now = datetime.now(timezone.utc)
         result = await self._col.update_many(
-            {"dest.host": host, "status": UrlStatus.ACTIVE.value},
+            {**dest_host_filter(host), "status": UrlStatus.ACTIVE.value},
             {
                 "$set": {
                     "status": UrlStatus.BLOCKED.value,
                     "updated_at": now,
                     "blocked_at": now,
                     "blocked_reason": reason,
+                    "blocked_hosts": [host],
                 }
             },
+        )
+        # Already-blocked links gain this host as a second cause; a pre-field
+        # block's first cause is dest.host. Per-link blocks (null) are skipped.
+        await self._col.update_many(
+            {
+                **dest_host_filter(host),
+                "status": UrlStatus.BLOCKED.value,
+                "blocked_reason": {"$exists": True},
+                "$or": [
+                    {"blocked_hosts": {"$type": "array"}},
+                    {"blocked_hosts": {"$exists": False}},
+                ],
+            },
+            [
+                {
+                    "$set": {
+                        "blocked_hosts": {
+                            "$setUnion": [
+                                {
+                                    "$ifNull": [
+                                        "$blocked_hosts",
+                                        {
+                                            "$cond": [
+                                                {
+                                                    "$eq": [
+                                                        {"$type": "$dest.host"},
+                                                        "string",
+                                                    ]
+                                                },
+                                                ["$dest.host"],
+                                                [],
+                                            ]
+                                        },
+                                    ]
+                                },
+                                [host],
+                            ]
+                        }
+                    }
+                }
+            ],
         )
         return int(result.modified_count)
 
