@@ -83,6 +83,16 @@ class TestEligibility:
         url = make_url_cache(start_time=1_000_000_000)
         assert promotion_skip_reason(url, SYSTEM, SYSTEM) is None
 
+    def test_ab_variant_urls_are_skipped(self):
+        """No Worker entry type makes a weighted pick — variant links stay
+        origin-served so every click gets its variant_index."""
+        from schemas.models.url import AbVariant
+
+        url = make_url_cache(
+            ab_variants=[AbVariant(url="https://example.com/b", weight=50)]
+        )
+        assert promotion_skip_reason(url, SYSTEM, SYSTEM) == "ab_variants"
+
     def test_geo_targeted_urls_are_eligible(self):
         """Geo links promote as geo_redirect entries — the Worker can make
         the per-country decision from request.cf.country."""

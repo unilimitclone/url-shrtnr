@@ -66,6 +66,8 @@ class ClickEvent(BaseModel):
     # Defaults keep pre-existing stream payloads decodable.
     resolved_country: str | None = None
     geo_matched: bool = False
+    # Index into url.ab_variants the redirect served; None = default URL.
+    variant_index: int | None = None
     # Campaign tags from the short link's query string. Defaults keep
     # pre-existing stream payloads decodable.
     utm_source: str | None = None

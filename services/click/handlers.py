@@ -180,6 +180,7 @@ class V2ClickHandler:
             utm_source=context.utm_source,
             utm_medium=context.utm_medium,
             utm_campaign=context.utm_campaign,
+            variant_index=context.variant_index,
         )
 
         await self._click_repo.insert(click_doc.to_mongo())

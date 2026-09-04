@@ -135,6 +135,24 @@ class TestGeoDecisionFields:
         assert restored.geo_matched is False
 
 
+class TestVariantIndexField:
+    def test_defaults_to_none(self):
+        assert make_event().variant_index is None
+
+    def test_round_trips_through_stream(self):
+        restored = from_stream_fields(to_stream_fields(make_event(variant_index=1)))
+        assert restored.variant_index == 1
+
+    def test_pre_variant_stream_payload_still_parses(self):
+        import json as _json
+
+        fields = to_stream_fields(make_event())
+        data = _json.loads(fields[STREAM_FIELD_DATA])
+        data.pop("variant_index", None)
+        fields[STREAM_FIELD_DATA] = _json.dumps(data)
+        assert from_stream_fields(fields).variant_index is None
+
+
 class TestUtmSanitization:
     """UTM values are visitor-controlled input — the bound is structural,
     enforced at event construction like the password-hash strip."""

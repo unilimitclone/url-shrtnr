@@ -60,3 +60,6 @@ class ClickDoc(MongoBaseModel):
     utm_source: str | None = None
     utm_medium: str | None = None
     utm_campaign: str | None = None
+    # Which ab_variants entry served this click; None = default destination
+    # (and every click recorded before the field existed).
+    variant_index: int | None = None
