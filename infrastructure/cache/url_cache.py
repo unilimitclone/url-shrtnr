@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from infrastructure.crypto import verify_password as verify_password_hash
 from infrastructure.logging import get_logger
-from shared.datetime_utils import to_unix_timestamp
+from shared.datetime_utils import to_unix_timestamp, to_unix_timestamp_ceil
 
 if TYPE_CHECKING:
     from schemas.models.url import UrlV2Doc
@@ -88,7 +88,8 @@ class UrlCacheData(BaseModel):
             meta_color=doc.meta_tags.color if doc.meta_tags else None,
             meta_image_width=im.width if im else None,
             meta_image_height=im.height if im else None,
-            start_time=to_unix_timestamp(doc.starts_at),
+            # Ceil: a fractional start must never read as live a moment early.
+            start_time=to_unix_timestamp_ceil(doc.starts_at),
             pre_start_url=doc.pre_start_url,
         )
 

@@ -412,3 +412,28 @@ class TestUrlCacheDataIsNotYetLive:
         data = UrlCacheData.from_v2_doc(doc)
         assert data.start_time == int(starts.replace(tzinfo=timezone.utc).timestamp())
         assert data.pre_start_url == "https://example.org/soon"
+
+
+class TestFromV2DocFractionalStart:
+    def test_fractional_start_rounds_up_so_the_link_is_never_live_early(self):
+        from datetime import datetime, timezone
+
+        from schemas.models.url import UrlV2Doc
+
+        starts = datetime(2030, 6, 1, 12, 0, 0, 900_000, tzinfo=timezone.utc)
+        doc = UrlV2Doc.from_mongo(
+            {
+                "_id": ObjectId(),
+                "alias": "abc1234",
+                "domain": "spoo.me",
+                "created_at": starts,
+                "long_url": "https://example.com",
+                "starts_at": starts,
+            }
+        )
+        data = UrlCacheData.from_v2_doc(doc)
+        whole = int(starts.replace(microsecond=0).timestamp())
+        assert data.start_time == whole + 1
+        # At the floor second the link is still not live; one second on it is.
+        assert data.is_not_yet_live(whole) is True
+        assert data.is_not_yet_live(whole + 1) is False
