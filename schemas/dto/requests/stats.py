@@ -51,6 +51,7 @@ from schemas.dto.requests._descriptions import (
     STATS_TIMEZONE_DESC,
     STATS_URL_ID_DESC,
     STATS_UTM_DESC,
+    STATS_VARIANT_DESC,
 )
 from schemas.enums.stats import (
     ALLOWED_EXPORT_FORMATS,
@@ -183,6 +184,12 @@ class _StatsQueryBase(RequestBase):
         description=STATS_UTM_DESC,
         examples=["summer-launch"],
     )
+    variant: str | None = Field(
+        default=None,
+        max_length=200,
+        description=STATS_VARIANT_DESC,
+        examples=["0,1", "(default)"],
+    )
 
     # --- Parsed/validated results (private — not exposed as query params) ---
     _parsed_group_by: list[str] = PrivateAttr(default_factory=list)
@@ -243,6 +250,7 @@ class _StatsQueryBase(RequestBase):
             "utm_source",
             "utm_medium",
             "utm_campaign",
+            "variant",
         ):
             raw = getattr(self, dim, None)
             if raw:

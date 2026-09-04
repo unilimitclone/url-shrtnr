@@ -62,7 +62,10 @@ STATS_GROUP_BY_DESC = (
     "- `utm_source` — group by the `utm_source` tag on the short link "
     "(untagged clicks appear as `(none)`)\n"
     "- `utm_medium` — group by the `utm_medium` tag\n"
-    "- `utm_campaign` — group by the `utm_campaign` tag\n\n"
+    "- `utm_campaign` — group by the `utm_campaign` tag\n"
+    "- `variant` — group by the A/B variant served, as its index into "
+    "`ab_variants` (`0`, `1`, ...); clicks sent to the default destination "
+    "appear as `(default)`\n\n"
     "Multiple dimensions can be combined: `time,browser` returns time series "
     "broken down by browser."
 )
@@ -97,7 +100,9 @@ STATS_FILTERS_DESC = (
     "- `tag` / `tag_id` — Filter by link tag (name or id); clicks on your links "
     "carrying any listed tag\n"
     "- `utm_source` / `utm_medium` / `utm_campaign` — Filter by campaign tags; "
-    "`(none)` matches untagged clicks\n\n"
+    "`(none)` matches untagged clicks\n"
+    "- `variant` — Filter by A/B variant index (`0`, `1`, ...); "
+    "`(default)` matches clicks sent to the default destination\n\n"
     "**Value format:** Array of strings for each dimension.\n\n"
     "**Important:** Filter values are case-sensitive. Use exact capitalization "
     "as stored in the database.\n\n"
@@ -165,6 +170,14 @@ STATS_DEVICE_DESC = (
     "**Note:** Both `filters` JSON and individual parameters can be combined."
 )
 
+STATS_VARIANT_DESC = (
+    "**Method 2: Individual Filter Parameter**\n\n"
+    "Comma-separated A/B variant indices (`0`, `1`, ...). `(default)` matches "
+    "clicks sent to the default destination, including every click on a link "
+    "without variants.\n\n"
+    "**Note:** Both `filters` JSON and individual parameters can be combined."
+)
+
 STATS_UTM_DESC = (
     "**Method 2: Individual Filter Parameter**\n\n"
     "Comma-separated campaign tag values. Alternative to using the `filters` "
@@ -193,7 +206,10 @@ LINK_STATS_GROUP_BY_DESC = (
     "- `utm_source` — group by the `utm_source` tag on the short link "
     "(untagged clicks appear as `(none)`)\n"
     "- `utm_medium` — group by the `utm_medium` tag\n"
-    "- `utm_campaign` — group by the `utm_campaign` tag\n\n"
+    "- `utm_campaign` — group by the `utm_campaign` tag\n"
+    "- `variant` — group by the A/B variant served, as its index into "
+    "`ab_variants` (`0`, `1`, ...); clicks sent to the default destination "
+    "appear as `(default)`\n\n"
     "Multiple dimensions can be combined: `time,browser` returns time series "
     "broken down by browser."
 )
@@ -210,7 +226,9 @@ LINK_STATS_FILTERS_DESC = (
     "- `city` — Filter by city name (e.g., New York, London, Mumbai)\n"
     "- `referrer` — Filter by referrer URL (e.g., https://google.com, https://twitter.com)\n"
     "- `utm_source` / `utm_medium` / `utm_campaign` — Filter by campaign tags; "
-    "`(none)` matches untagged clicks\n\n"
+    "`(none)` matches untagged clicks\n"
+    "- `variant` — Filter by A/B variant index (`0`, `1`, ...); "
+    "`(default)` matches clicks sent to the default destination\n\n"
     "**Value format:** Array of strings for each dimension.\n\n"
     "**Important:** Filter values are case-sensitive. Use exact capitalization "
     "as stored in the database.\n\n"

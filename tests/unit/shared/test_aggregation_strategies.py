@@ -58,6 +58,7 @@ def test_factory_get_available_strategies():
         "utm_source",
         "utm_medium",
         "utm_campaign",
+        "variant",
     }
 
 
@@ -151,6 +152,7 @@ def test_referrer_pipeline_uses_direct_as_null_fallback():
         ("utm_source", "(none)"),
         ("utm_medium", "(none)"),
         ("utm_campaign", "(none)"),
+        ("variant", "(default)"),
     ],
 )
 def test_pipeline_uses_unknown_as_null_fallback(strategy_name, expected_null_fallback):
@@ -368,3 +370,14 @@ def test_time_format_results_dynamic_adds_bucket_strategy():
 
 def test_time_format_results_empty():
     assert TimeAggregationStrategy().format_results([]) == []
+
+
+def test_variant_indices_format_as_strings():
+    """Stored ints become wire strings so every dimension value has one type."""
+    rows = _strategy("variant").format_results(
+        [
+            {"_id": 0, "total_clicks": 6, "unique_clicks": 5},
+            {"_id": "(default)", "total_clicks": 4, "unique_clicks": 4},
+        ]
+    )
+    assert [r["variant"] for r in rows] == ["0", "(default)"]
