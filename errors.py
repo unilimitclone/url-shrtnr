@@ -126,6 +126,19 @@ class BlockedUrlError(AppError):
     error_code = "blocked"
 
 
+class NotYetLiveError(AppError):
+    """A scheduled link was requested before its start time. Answers 404
+    (nothing is reachable yet); ``fallback_url`` is the owner's pre-start
+    destination when they set one."""
+
+    status_code = 404
+    error_code = "not_yet_live"
+
+    def __init__(self, message: str, *, fallback_url: str | None = None) -> None:
+        super().__init__(message)
+        self.fallback_url = fallback_url
+
+
 class GoneError(AppError):
     status_code = 410
     error_code = "gone"

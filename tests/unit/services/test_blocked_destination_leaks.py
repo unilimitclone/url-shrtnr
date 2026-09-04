@@ -9,7 +9,11 @@ inherits the fix instead of repeating the bug.
 
 from __future__ import annotations
 
-from schemas.models.url import EmojiUrlDoc, LegacyUrlDoc, UrlStatus
+from datetime import datetime, timedelta, timezone
+
+from bson import ObjectId
+
+from schemas.models.url import EmojiUrlDoc, LegacyUrlDoc, UrlStatus, UrlV2Doc
 from services.public_link_resolver import ResolvedPublicLink, SchemaVersion
 
 
@@ -56,3 +60,49 @@ class TestLegacyStatsProjection:
         )
         assert "blocked" in project
         assert project["blocked"] == {"$ifNull": ["$blocked", False]}
+
+
+class TestScheduledWithheld:
+    """A scheduled link's destination was never public. Every surface that
+    withholds for BLOCKED must withhold for SCHEDULED too; the legacy preview
+    route test covers the page itself."""
+
+    def _doc(self) -> UrlV2Doc:
+        return UrlV2Doc.from_mongo(
+            {
+                "_id": ObjectId(),
+                "alias": "sched01",
+                "domain": "spoo.me",
+                "created_at": datetime.now(timezone.utc),
+                "long_url": "https://secret.example/launch",
+                "starts_at": datetime.now(timezone.utc) + timedelta(days=1),
+            }
+        )
+
+    def test_future_start_reads_as_scheduled(self):
+        assert self._doc().effective_status is UrlStatus.SCHEDULED
+
+    def test_public_resolver_reports_scheduled(self):
+        link = ResolvedPublicLink(
+            schema=SchemaVersion.V2,
+            alias="sched01",
+            short_url="https://spoo.me/sched01",
+            v2_doc=self._doc(),
+        )
+        assert link.effective_status() == "scheduled"
+
+    def test_public_preview_withholds_destination(self):
+        from services.public_preview_service import PublicPreviewService
+
+        svc = PublicPreviewService.__new__(PublicPreviewService)
+        link = ResolvedPublicLink(
+            schema=SchemaVersion.V2,
+            alias="sched01",
+            short_url="https://spoo.me/sched01",
+            v2_doc=self._doc(),
+        )
+        body = svc._v2_preview(link)
+        assert body.status == "scheduled"
+        assert body.destination is None
+        assert body.geo_destinations is None
+        assert "secret.example" not in body.model_dump_json()

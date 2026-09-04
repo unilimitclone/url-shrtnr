@@ -64,6 +64,8 @@ def link_snapshot(doc: UrlV2Doc) -> dict[str, Any]:
         "block_bots": bool(doc.block_bots),
         "max_clicks": doc.max_clicks,
         "expires_at": doc.expire_after.isoformat() if doc.expire_after else None,
+        "starts_at": doc.starts_at.isoformat() if doc.starts_at else None,
+        "pre_start_url": doc.pre_start_url,
         "geo_rules": doc.geo_rules or None,
         "tag_ids": [str(i) for i in doc.tag_ids],
         "meta_tags": _public_meta_tags(doc.meta_tags),

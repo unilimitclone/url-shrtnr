@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 
 from infrastructure.cache.url_cache import UrlCache, UrlCacheData
 from infrastructure.cloudflare_kv import CloudflareKVClient
@@ -57,6 +58,8 @@ def promotion_skip_reason(
         return "block_bots"
     if url.expiration_time:
         return "has_expiration"  # could expire mid-TTL; rare, so skip all
+    if url.is_not_yet_live(time.time()):
+        return "not_yet_live"  # the edge would serve the redirect early
     # geo_rules is NOT a skip: geo links promote as geo_redirect entries —
     # the Worker resolves request.cf.country against the same rules map
     # origin would, so per-country routing is a decision the edge CAN make.

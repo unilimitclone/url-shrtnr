@@ -23,6 +23,7 @@ from errors import (
     ForbiddenError,
     GoneError,
     NotFoundError,
+    NotYetLiveError,
     ValidationError,
 )
 from infrastructure.cache.url_cache import UrlCacheData
@@ -57,6 +58,8 @@ def make_url_v2_doc(
     domain: str | None = None,
     geo_rules: dict | None = None,
     meta_tags: dict | None = None,
+    starts_at: datetime | None = None,
+    pre_start_url: str | None = None,
     tag_ids: list | None = None,
 ) -> UrlV2Doc:
     return UrlV2Doc.from_mongo(
@@ -72,6 +75,8 @@ def make_url_v2_doc(
             "block_bots": block_bots,
             "max_clicks": max_clicks,
             "expire_after": expire_after,
+            "starts_at": starts_at,
+            "pre_start_url": pre_start_url,
             "geo_rules": geo_rules,
             "status": status,
             "private_stats": True,
@@ -121,6 +126,8 @@ def make_active_cache(
     password_hash: str | None = None,
     expiration_time: int | None = None,
     url_status: str = "ACTIVE",
+    start_time: int | None = None,
+    pre_start_url: str | None = None,
 ) -> UrlCacheData:
     return UrlCacheData(
         id=str(URL_OID),
@@ -134,6 +141,8 @@ def make_active_cache(
         schema_version=schema,
         owner_id=str(USER_OID),
         domain=SYSTEM_DEFAULT_DOMAIN,
+        start_time=start_time,
+        pre_start_url=pre_start_url,
     )
 
 
@@ -3018,7 +3027,10 @@ class TestEffectiveStatusClause:
         clause = effective_status_clause(UrlStatus.ACTIVE, now)
         assert clause == {
             "status": UrlStatus.ACTIVE,
-            "$nor": _derived_expiry_arms(now),
+            "$nor": [
+                *_derived_expiry_arms(now),
+                {"status": UrlStatus.ACTIVE, "starts_at": {"$gt": now}},
+            ],
         }
 
     @pytest.mark.parametrize("status", [UrlStatus.INACTIVE, UrlStatus.BLOCKED])
@@ -3352,6 +3364,38 @@ class TestSingleItemEdgePurge:
         edge_kv.delete.assert_awaited_once_with(
             f"cache:{SYSTEM_DEFAULT_DOMAIN}:{ALIAS}"
         )
+
+    @pytest.mark.asyncio
+    async def test_update_start_time_on_plain_link_purges_edge_key(self):
+        """Pushing starts_at into the future takes the link dark at origin;
+        a promoted entry must not keep serving the redirect for its TTL."""
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+        url_repo.update.return_value = True
+        svc, edge_kv = self._service_with_edge(url_repo)
+
+        future = int(time_module.time()) + 3600
+        await svc.update(URL_OID, UpdateUrlRequest(starts_at=future), USER_OID)
+        await self._drain(svc)
+
+        edge_kv.delete.assert_awaited_once_with(
+            f"cache:{SYSTEM_DEFAULT_DOMAIN}:{ALIAS}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_start_time_on_og_link_resyncs_writethrough(self):
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc(meta_tags={"title": "T"})
+        url_repo.update.return_value = True
+        og = MagicMock(remove=AsyncMock(), sync=AsyncMock())
+        svc, edge_kv = self._service_with_edge(url_repo, og=og)
+
+        future = int(time_module.time()) + 3600
+        await svc.update(URL_OID, UpdateUrlRequest(starts_at=future), USER_OID)
+        await self._drain(svc)
+
+        og.sync.assert_awaited_once()
+        edge_kv.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_og_link_uses_writethrough_not_purge(self):
@@ -3760,3 +3804,249 @@ class TestUrlServiceDeleteAllByOwner:
         # BLOCKED link's cache entry is purged like everyone else's.
         invalidated = [c.args for c in url_cache.invalidate.await_args_list]
         assert (blocked.alias, SYSTEM_DEFAULT_DOMAIN) in invalidated
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestUrlServiceScheduling — starts_at mirrors expiry with the sign flipped
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _matches_scheduled_clause(doc: UrlV2Doc, now: datetime) -> bool:
+    """Python evaluation of effective_status_clause(SCHEDULED, now) — the
+    referee for the predicate pin, mirroring _derived_scheduled_arm minus
+    the expiry arms."""
+    if doc.status != "ACTIVE" or _matches_expired_clause(doc, now):
+        return False
+    starts = doc.starts_at
+    if starts is None:
+        return False
+    aware = starts if starts.tzinfo else starts.replace(tzinfo=timezone.utc)
+    return aware > now
+
+
+class TestUrlServiceScheduling:
+    PAST_TS = int(time_module.time()) - 3600
+    FUTURE_TS = int(time_module.time()) + 3600
+    FALLBACK = "https://example.org/soon"
+
+    def _svc(self):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = []
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+        url_repo.update.return_value = True
+        return svc, url_repo, url_cache
+
+    # ── resolve ──────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_future_start_raises_not_yet_live(self):
+        svc, url_repo, url_cache = self._svc()
+        url_cache.get.return_value = make_active_cache(
+            start_time=self.FUTURE_TS, pre_start_url=self.FALLBACK
+        )
+
+        with pytest.raises(NotYetLiveError) as exc:
+            await svc.resolve(ALIAS)
+
+        assert exc.value.fallback_url == self.FALLBACK
+        assert exc.value.status_code == 404
+        # No persisted flip — the clock decides, nothing to write.
+        url_repo.update.assert_not_called()
+        url_cache.invalidate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_past_start_resolves(self):
+        svc, _url_repo, url_cache = self._svc()
+        cached = make_active_cache(start_time=self.PAST_TS)
+        url_cache.get.return_value = cached
+
+        result, _schema = await svc.resolve(ALIAS)
+
+        assert result is cached
+
+    @pytest.mark.asyncio
+    async def test_db_path_future_start_raises_after_recache(self):
+        svc, url_repo, url_cache = self._svc()
+        url_cache.get.return_value = None
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        url_repo.find_by_alias.return_value = make_url_v2_doc(starts_at=future)
+
+        with pytest.raises(NotYetLiveError) as exc:
+            await svc.resolve(ALIAS)
+
+        assert exc.value.fallback_url is None
+        # The entry is cached with its start_time, so the next hit answers
+        # from Redis and flips at the instant without a DB read.
+        url_cache.set.assert_awaited_once()
+        cached = url_cache.set.call_args[0][1]
+        assert cached.start_time == int(future.timestamp())
+
+    @pytest.mark.asyncio
+    async def test_expired_beats_scheduled(self):
+        """A past expiry with a future start is dead, not pending."""
+        svc, url_repo, url_cache = self._svc()
+        url_cache.get.return_value = make_active_cache(
+            expiration_time=self.PAST_TS, start_time=self.FUTURE_TS
+        )
+        url_repo.expire_if_time_reached.return_value = True
+
+        with pytest.raises(GoneError):
+            await svc.resolve(ALIAS)
+
+    @pytest.mark.asyncio
+    async def test_blocked_beats_scheduled(self):
+        svc, _url_repo, url_cache = self._svc()
+        url_cache.get.return_value = make_active_cache(
+            start_time=self.FUTURE_TS, url_status="BLOCKED"
+        )
+
+        with pytest.raises(BlockedUrlError):
+            await svc.resolve(ALIAS)
+
+    # ── create ───────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_create_future_start_is_stored(self):
+        svc, url_repo, _url_cache = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            starts_at=self.FUTURE_TS,
+            pre_start_url=self.FALLBACK,
+        )
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        inserted = url_repo.insert.call_args[0][0]
+        assert inserted["starts_at"] == datetime.fromtimestamp(
+            self.FUTURE_TS, tz=timezone.utc
+        )
+        assert inserted["pre_start_url"] == self.FALLBACK
+
+    @pytest.mark.asyncio
+    async def test_create_past_start_rejected(self):
+        svc, *_ = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(long_url="https://example.com", starts_at=self.PAST_TS)
+        with pytest.raises(ValidationError, match="starts_at must be in the future"):
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+    @pytest.mark.asyncio
+    async def test_create_start_after_expiry_rejected(self):
+        svc, *_ = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            starts_at=self.FUTURE_TS + 60,
+            expire_after=self.FUTURE_TS,
+        )
+        with pytest.raises(ValidationError, match="before expire_after"):
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+    @pytest.mark.asyncio
+    async def test_create_pre_start_url_runs_the_destination_gate(self):
+        """A self-link fallback is refused like a self-link destination."""
+        svc, *_ = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            starts_at=self.FUTURE_TS,
+            pre_start_url=f"https://{SYSTEM_DEFAULT_DOMAIN}/other",
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "pre_start_url"
+
+    # ── update ───────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_update_sets_and_clears_start(self):
+        svc, url_repo, _url_cache = self._svc()
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+        await svc.update(URL_OID, UpdateUrlRequest(starts_at=self.FUTURE_TS), USER_OID)
+        set_ops = url_repo.update.call_args[0][1]["$set"]
+        assert set_ops["starts_at"] == datetime.fromtimestamp(
+            self.FUTURE_TS, tz=timezone.utc
+        )
+
+        url_repo.find_by_id.return_value = make_url_v2_doc(
+            starts_at=datetime.now(timezone.utc) + timedelta(days=1),
+            pre_start_url=self.FALLBACK,
+        )
+        await svc.update(
+            URL_OID, UpdateUrlRequest(starts_at=None, pre_start_url=None), USER_OID
+        )
+        set_ops = url_repo.update.call_args[0][1]["$set"]
+        assert set_ops["starts_at"] is None
+        assert set_ops["pre_start_url"] is None
+
+    @pytest.mark.asyncio
+    async def test_update_start_after_existing_expiry_rejected(self):
+        svc, url_repo, _url_cache = self._svc()
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        url_repo.find_by_id.return_value = make_url_v2_doc(
+            expire_after=datetime.fromtimestamp(self.FUTURE_TS, tz=timezone.utc)
+        )
+        with pytest.raises(ValidationError, match="before expire_after"):
+            await svc.update(
+                URL_OID, UpdateUrlRequest(starts_at=self.FUTURE_TS + 60), USER_OID
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_unchanged_start_is_a_noop(self):
+        svc, url_repo, _url_cache = self._svc()
+        from schemas.dto.requests.url import UpdateUrlRequest
+
+        starts = datetime.fromtimestamp(self.FUTURE_TS, tz=timezone.utc)
+        url_repo.find_by_id.return_value = make_url_v2_doc(starts_at=starts)
+        await svc.update(URL_OID, UpdateUrlRequest(starts_at=self.FUTURE_TS), USER_OID)
+        url_repo.update.assert_not_called()
+
+    # ── list filter ──────────────────────────────────────────────────────
+
+    def test_scheduled_clause_shape(self):
+        from services.url_service import (
+            _derived_expiry_arms,
+            effective_status_clause,
+        )
+
+        now = datetime.now(timezone.utc)
+        assert effective_status_clause(UrlStatus.SCHEDULED, now) == {
+            "status": UrlStatus.ACTIVE,
+            "starts_at": {"$gt": now},
+            "$nor": _derived_expiry_arms(now),
+        }
+
+    def test_predicate_pin_matrix(self):
+        """effective_status == SCHEDULED iff doc matches the SCHEDULED
+        clause, across status x start x expiry x max-clicks."""
+        now = datetime.now(timezone.utc)
+        statuses = ["ACTIVE", "INACTIVE", "EXPIRED", "BLOCKED"]
+        instants = [None, now - timedelta(hours=1), now + timedelta(hours=1)]
+        clicks = [(None, 0), (5, 5)]
+
+        for status in statuses:
+            for starts_at in instants:
+                for expire_after in instants:
+                    for max_clicks, total_clicks in clicks:
+                        doc = make_url_v2_doc(
+                            status=status,
+                            starts_at=starts_at,
+                            expire_after=expire_after,
+                            max_clicks=max_clicks,
+                        )
+                        doc.total_clicks = total_clicks
+                        case = f"{status}/{starts_at}/{expire_after}/{max_clicks}"
+                        assert (doc.effective_status == UrlStatus.SCHEDULED) == (
+                            _matches_scheduled_clause(doc, now)
+                        ), case

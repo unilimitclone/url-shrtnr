@@ -344,3 +344,83 @@ class TestUpdateUrlGeoRules:
 
         assert resp.status_code == 200
         flag_svc.require.assert_not_awaited()
+
+
+class TestUpdateUrlScheduling:
+    """Setting starts_at / pre_start_url is flag-gated; clearing never is."""
+
+    @staticmethod
+    def _flag_svc(enabled: bool) -> AsyncMock:
+        svc = AsyncMock()
+        svc.require = AsyncMock(
+            side_effect=None
+            if enabled
+            else ForbiddenError("Link scheduling is not enabled for this account")
+        )
+        return svc
+
+    def _app(self, user, mock_svc, flag_svc):
+        from dependencies import get_feature_flag_service
+
+        return _build_test_app(
+            {
+                require_auth: lambda: user,
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: flag_svc,
+            }
+        )
+
+    def test_set_start_flag_on_echoes_fields(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.starts_at = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        url_doc.pre_start_url = "https://example.org/soon"
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        mock_svc = AsyncMock()
+        mock_svc.update = AsyncMock(return_value=url_doc)
+
+        application = self._app(user, mock_svc, self._flag_svc(True))
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}",
+                json={
+                    "starts_at": 1893456000,
+                    "pre_start_url": "https://example.org/soon",
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["starts_at"] == 1893456000
+        assert body["pre_start_url"] == "https://example.org/soon"
+        assert body["status"] == "SCHEDULED"
+
+    def test_set_start_flag_off_returns_403(self):
+        user = _make_user()
+        mock_svc = AsyncMock()
+        application = self._app(user, mock_svc, self._flag_svc(False))
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}", json={"starts_at": 1893456000}
+            )
+
+        assert resp.status_code == 403
+        mock_svc.update.assert_not_called()
+
+    def test_clear_start_bypasses_flag(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        mock_svc = AsyncMock()
+        mock_svc.update = AsyncMock(return_value=url_doc)
+        flag_svc = self._flag_svc(False)
+
+        application = self._app(user, mock_svc, flag_svc)
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}",
+                json={"starts_at": None, "pre_start_url": None},
+            )
+
+        assert resp.status_code == 200
+        flag_svc.require.assert_not_awaited()

@@ -796,3 +796,37 @@ def test_preview_password_protected_geo_link_hides_everything():
     assert "hidden for security" in html
     assert "secret.example.in" not in html
     assert "secret.example.com" not in html
+
+
+def test_preview_withholds_a_scheduled_link():
+    """The legacy preview page is the serving surface until the Caddy
+    cutover; a scheduled link's destination and geo map must not render
+    there before the start, the way BLOCKED already withholds."""
+    from datetime import datetime, timedelta, timezone
+
+    db = _mock_db()
+    db["urlsV2"].find_one = AsyncMock(
+        return_value={
+            "_id": ObjectId(),
+            "alias": "sched01",
+            "domain": "spoo.me",
+            "created_at": datetime.now(timezone.utc),
+            "long_url": "https://secret.example/launch",
+            "geo_rules": {"IN": "https://secret.example/in"},
+            "starts_at": datetime.now(timezone.utc) + timedelta(days=1),
+        }
+    )
+    app = build_test_app(
+        legacy_url_router,
+        overrides={
+            get_db: lambda: db,
+            get_settings: lambda: _mock_settings(),
+            get_url_service: lambda: _mock_url_service(),
+        },
+    )
+    with TestClient(app) as client:
+        resp = client.get("/sched01+")
+    assert resp.status_code == 404
+    assert resp.headers["X-Error-Code"] == "not_yet_live"
+    assert resp.headers["Cache-Control"] == "no-store"
+    assert "secret.example" not in resp.text

@@ -35,6 +35,7 @@ from errors import (
     ForbiddenError,
     GoneError,
     NotFoundError,
+    NotYetLiveError,
     ValidationError,
 )
 from infrastructure.cache.url_cache import UrlCache, UrlCacheData
@@ -285,6 +286,47 @@ async def _handle_expire_after(
             ops["expire_after"] = request.expire_after
 
 
+async def _handle_starts_at(
+    request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
+) -> None:
+    if "starts_at" not in request.model_fields_set:
+        return
+    if request.starts_at is None and existing.starts_at:
+        ops["starts_at"] = None
+    elif request.starts_at is not None:
+        if request.starts_at <= datetime.now(timezone.utc):
+            raise ValidationError("starts_at must be in the future", field="starts_at")
+        if request.starts_at != existing.starts_at:
+            ops["starts_at"] = request.starts_at
+
+
+async def _handle_pre_start_url(
+    request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
+) -> None:
+    if "pre_start_url" not in request.model_fields_set:
+        return
+    if not request.pre_start_url:
+        if existing.pre_start_url:
+            ops["pre_start_url"] = None
+        return
+    if request.pre_start_url == existing.pre_start_url:
+        return
+    rejection = await service._url_policy.check(request.pre_start_url)
+    if rejection is not None:
+        raise ValidationError(rejection.public_message, field="pre_start_url")
+    ops["pre_start_url"] = request.pre_start_url
+
+
+def _check_start_before_expiry(
+    starts_at: datetime | None, expire_after: datetime | None
+) -> None:
+    """A link that expires before it starts would never be live."""
+    if starts_at is not None and expire_after is not None and starts_at >= expire_after:
+        raise ValidationError(
+            "starts_at must be before expire_after", field="starts_at"
+        )
+
+
 async def _handle_status(
     request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
 ) -> None:
@@ -387,6 +429,8 @@ FIELD_HANDLERS: dict[str, Callable[..., Awaitable[None]]] = {
     "password": _handle_password,
     "max_clicks": _handle_max_clicks,
     "expire_after": _handle_expire_after,
+    "starts_at": _handle_starts_at,
+    "pre_start_url": _handle_pre_start_url,
     "block_bots": _simple_field_handler("block_bots"),
     "private_stats": _simple_field_handler("private_stats"),
     "status": _handle_status,
@@ -522,6 +566,7 @@ class UrlService:
             BlockedUrlError: URL status is BLOCKED (v2 only).
             GoneError:       URL status is EXPIRED or INACTIVE (v2 only),
                              or the expiration time has passed (any schema).
+            NotYetLiveError: the start time has not arrived (v2 only).
         """
         scope = domain or self._system_default_domain
         is_custom = scope != self._system_default_domain
@@ -550,6 +595,7 @@ class UrlService:
                 )
                 _raise_for_status(cached.url_status)
             await self._raise_if_time_expired(cached, schema, short_code, "cache")
+            _raise_if_not_yet_live(cached, short_code, "cache")
             if should_sample("cache_operation"):
                 log.debug(
                     "url_cache_hit",
@@ -606,6 +652,9 @@ class UrlService:
 
         # 4c. Raise for URLs whose expiration time has passed (any schema)
         await self._raise_if_time_expired(url_cache_data, schema, short_code, "db")
+
+        # 4d. Raise for v2 URLs whose start time has not arrived
+        _raise_if_not_yet_live(url_cache_data, short_code, "db")
 
         return url_cache_data, schema
 
@@ -881,6 +930,19 @@ class UrlService:
                 "expire_after must be in the future", field="expire_after"
             )
 
+        # 4b. Scheduling: same future rule, and the pre-start destination
+        # runs the full gate like every geo destination.
+        if request.starts_at is not None and request.starts_at <= now:
+            raise ValidationError("starts_at must be in the future", field="starts_at")
+        _check_start_before_expiry(request.starts_at, expire_ts)
+        if request.pre_start_url:
+            pre_rejection = await self._url_policy.check(request.pre_start_url)
+            if pre_rejection is not None:
+                log.info("url_create_rejected", reason=pre_rejection.code)
+                raise ValidationError(
+                    pre_rejection.public_message, field="pre_start_url"
+                )
+
         # 5. Alias — generate or validate custom (may loop; done after cheap checks)
         if request.alias:
             alias = self._validate_and_canonicalize_custom_alias(request.alias)
@@ -927,6 +989,8 @@ class UrlService:
             block_bots=request.block_bots,
             max_clicks=request.max_clicks,
             expire_after=expire_ts,
+            starts_at=request.starts_at,
+            pre_start_url=request.pre_start_url or None,
             geo_rules=request.geo_rules or None,
             tag_ids=tag_ids,
             status=UrlStatus.ACTIVE,
@@ -977,6 +1041,7 @@ class UrlService:
             max_clicks=request.max_clicks,
             block_bots=request.block_bots,
             has_expiration=bool(expire_ts),
+            has_start=bool(request.starts_at),
             private_stats=private_stats,
             alias_custom=bool(getattr(request, "alias", None)),
             domain=target_domain,
@@ -1117,6 +1182,12 @@ class UrlService:
         for handler in FIELD_HANDLERS.values():
             await handler(request, existing, update_ops, self)
 
+        if {"starts_at", "expire_after"} & update_ops.keys():
+            _check_start_before_expiry(
+                update_ops.get("starts_at", existing.starts_at),
+                update_ops.get("expire_after", existing.expire_after),
+            )
+
         # Handlers don't see the request context; stamp the writer's IP
         # onto a fresh meta_tags value here (None stays None on clears).
         if update_ops.get("meta_tags"):
@@ -1179,20 +1250,25 @@ class UrlService:
         # old entry; sync() re-puts or deletes under the new key.
         is_og = existing.meta_tags is not None or merged_doc.meta_tags is not None
         if self._og_writethrough and is_og:
-            relevant = {"meta_tags", "long_url", "status", "alias", "domain"}
+            relevant = {
+                "meta_tags",
+                "long_url",
+                "status",
+                "alias",
+                "domain",
+                "starts_at",
+            }
             if relevant & update_ops.keys():
                 if (new_alias, new_domain) != (existing.alias, existing.domain):
                     await self._og_writethrough.remove(existing.domain, existing.alias)
                 await self._og_writethrough.sync(UrlCacheData.from_v2_doc(merged_doc))
         elif not is_og and (
             update_ops.get("status") == UrlStatus.INACTIVE
+            or "starts_at" in update_ops
             or (new_alias, new_domain) != (existing.alias, existing.domain)
         ):
-            # Plain links: deactivation and key changes must drop any
-            # hot-promoted entry under the pre-change key (takedown parity
-            # with the bulk endpoints; og-links are handled above). The
-            # new key needs nothing — a link is never promoted under a
-            # key it hasn't served on.
+            # Plain links: deactivation, a new start time and key changes drop the
+            # promoted entry (og-links are handled above; a new key was never promoted).
             self._purge_edge_key(existing.domain, existing.alias)
 
         if "meta_tags" in update_ops:
@@ -1738,6 +1814,28 @@ def _raise_for_status(status: UrlStatus) -> None:
     raise GoneError("URL has expired or is no longer active")
 
 
+def _raise_if_not_yet_live(data: UrlCacheData, short_code: str, source: str) -> None:
+    """Enforce the start time at resolve time. Nothing to persist: unlike
+    expiry there is no status flip, the clock decides forever. Runs after
+    the expiry raise so an expired link never reads as scheduled."""
+    if not data.is_not_yet_live(time.time()):
+        return
+    log.info(
+        "url_resolve_not_yet_live",
+        short_code=short_code,
+        source=source,
+        has_fallback=bool(data.pre_start_url),
+    )
+    raise NotYetLiveError("URL is not live yet", fallback_url=data.pre_start_url)
+
+
+def _derived_scheduled_arm(now: datetime) -> dict:
+    """Mongo arm matching ACTIVE-stored docs whose effective status is
+    SCHEDULED. MUST express the same predicate as
+    ``UrlV2Doc.effective_status`` — pinned by test."""
+    return {"status": UrlStatus.ACTIVE, "starts_at": {"$gt": now}}
+
+
 def _derived_expiry_arms(now: datetime) -> list[dict]:
     """Mongo arms matching ACTIVE-stored docs whose effective status is
     EXPIRED. MUST express the same predicate as
@@ -1761,8 +1859,15 @@ def effective_status_clause(status: UrlStatus, now: datetime) -> dict:
     """
     if status is UrlStatus.EXPIRED:
         return {"$or": [{"status": UrlStatus.EXPIRED}, *_derived_expiry_arms(now)]}
+    if status is UrlStatus.SCHEDULED:
+        # Expiry wins in the property, so an expired-and-scheduled doc must
+        # not match here either.
+        return {**_derived_scheduled_arm(now), "$nor": _derived_expiry_arms(now)}
     if status is UrlStatus.ACTIVE:
-        return {"status": UrlStatus.ACTIVE, "$nor": _derived_expiry_arms(now)}
+        return {
+            "status": UrlStatus.ACTIVE,
+            "$nor": [*_derived_expiry_arms(now), _derived_scheduled_arm(now)],
+        }
     return {"status": status}  # INACTIVE / BLOCKED: stored is truth
 
 

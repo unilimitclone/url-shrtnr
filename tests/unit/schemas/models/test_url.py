@@ -377,6 +377,7 @@ class TestUrlV2DocEffectiveStatus:
             "INACTIVE",
             "EXPIRED",
             "BLOCKED",
+            "SCHEDULED",
         }
 
 
@@ -415,3 +416,56 @@ class TestUrlDestination:
             dest=UrlDestination.from_url("https://a.evil.com/kit"),
         )
         assert doc.dest.registrable_domain == "evil.com"
+
+
+class TestEffectiveStatusScheduled:
+    """A future starts_at derives SCHEDULED the way a past expire_after
+    derives EXPIRED; expiry wins when both apply."""
+
+    def _make(self, **overrides) -> UrlV2Doc:
+        base = {
+            "_id": oid(),
+            "alias": "abc1234",
+            "owner_id": oid(),
+            "domain": "spoo.me",
+            "created_at": now(),
+            "long_url": "https://example.com",
+        }
+        base.update(overrides)
+        return UrlV2Doc.model_validate(base)
+
+    def test_future_start_reads_scheduled(self):
+        doc = self._make(starts_at=now() + timedelta(hours=1))
+        assert doc.effective_status == UrlStatus.SCHEDULED
+
+    def test_past_start_reads_active(self):
+        doc = self._make(starts_at=now() - timedelta(seconds=1))
+        assert doc.effective_status == UrlStatus.ACTIVE
+
+    def test_naive_future_start_treated_as_utc(self):
+        naive_future = (now() + timedelta(hours=1)).replace(tzinfo=None)
+        doc = self._make(starts_at=naive_future)
+        assert doc.effective_status == UrlStatus.SCHEDULED
+
+    def test_expiry_beats_schedule(self):
+        doc = self._make(
+            starts_at=now() + timedelta(hours=1),
+            expire_after=now() - timedelta(hours=1),
+        )
+        assert doc.effective_status == UrlStatus.EXPIRED
+
+    def test_max_clicks_beats_schedule(self):
+        doc = self._make(starts_at=now() + timedelta(hours=1), max_clicks=1)
+        doc.total_clicks = 1
+        assert doc.effective_status == UrlStatus.EXPIRED
+
+    @pytest.mark.parametrize("status", ["INACTIVE", "BLOCKED", "EXPIRED"])
+    def test_non_active_stored_status_never_folded(self, status):
+        doc = self._make(status=status, starts_at=now() + timedelta(hours=1))
+        assert doc.effective_status == UrlStatus(status)
+
+    def test_public_wire_casing(self):
+        from services.public_link_resolver import v2_effective_status
+
+        doc = self._make(starts_at=now() + timedelta(hours=1))
+        assert v2_effective_status(doc) == "scheduled"

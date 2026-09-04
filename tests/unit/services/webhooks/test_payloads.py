@@ -68,6 +68,15 @@ class TestLinkSnapshot:
         assert "password" not in snap
         assert "argon2" not in str(snap)
 
+    def test_snapshot_keys_match_the_registry_model(self):
+        """The registry drives the webhook docs; a snapshot key it does not
+        declare would ship undocumented."""
+        from services.webhooks.registry import LinkSnapshot, _sample_link
+
+        declared = set(LinkSnapshot.model_fields)
+        assert set(link_snapshot(_doc())) <= declared
+        assert set(_sample_link()) == declared
+
 
 class TestLinkExpired:
     def test_anonymous_owner_returns_none(self):
@@ -159,3 +168,21 @@ class TestEventChanges:
         changes2 = event_changes(existing_with_meta, update_ops)
         assert changes2["meta_tags"]["old"]["title"] == "Old"
         assert "198.51.100.7" not in str(changes2)
+
+
+def test_link_snapshot_carries_schedule_fields():
+    from services.webhooks.payloads import link_snapshot
+
+    doc = _doc()
+    assert link_snapshot(doc)["starts_at"] is None
+    assert link_snapshot(doc)["pre_start_url"] is None
+
+    scheduled = doc.model_copy(
+        update={
+            "starts_at": datetime(2030, 1, 1, tzinfo=timezone.utc),
+            "pre_start_url": "https://example.org/soon",
+        }
+    )
+    snap = link_snapshot(scheduled)
+    assert snap["starts_at"] == "2030-01-01T00:00:00+00:00"
+    assert snap["pre_start_url"] == "https://example.org/soon"

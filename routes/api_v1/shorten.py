@@ -30,7 +30,11 @@ from middleware.openapi import AUTH_RESPONSES, OPTIONAL_AUTH_SECURITY
 from middleware.rate_limiter import Limits, dynamic_limit, limiter
 from schemas.dto.requests.url import AliasCheckQuery, CreateUrlRequest
 from schemas.dto.responses.url import AliasCheckResponse, UrlResponse
-from services.feature_flag_service import GEO_TARGETING_FLAG, META_TAGS_FLAG
+from services.feature_flag_service import (
+    GEO_TARGETING_FLAG,
+    LINK_SCHEDULING_FLAG,
+    META_TAGS_FLAG,
+)
 from shared.client_tag import CLIENT_TAG_HEADER, first_party_client
 from shared.ip_utils import get_client_ip
 
@@ -106,6 +110,11 @@ async def shorten_v1(
         if user is None:
             raise AuthenticationError("Authentication required to set meta_tags")
         await flag_svc.require(META_TAGS_FLAG, user)
+
+    if body.starts_at is not None or body.pre_start_url:
+        if user is None:
+            raise AuthenticationError("Authentication required to schedule a link")
+        await flag_svc.require(LINK_SCHEDULING_FLAG, user)
 
     if body.domain and body.domain != settings.system_default_domain:
         if user is None:

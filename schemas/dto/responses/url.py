@@ -195,6 +195,16 @@ class UpdateUrlResponse(ResponseBase):
         description="Expiration as Unix timestamp, or null.",
         examples=[1735689599],
     )
+    starts_at: int | None = Field(
+        default=None,
+        description="Go-live time as Unix timestamp, or null when live now.",
+        examples=[1789500000],
+    )
+    pre_start_url: str | None = Field(
+        default=None,
+        description="Where visitors go before `starts_at`, or null for the not-yet-live page.",
+        examples=["https://example.com/coming-soon"],
+    )
     block_bots: bool | None = Field(
         default=None, description="Whether bot blocking is enabled."
     )
@@ -235,6 +245,8 @@ class UpdateUrlResponse(ResponseBase):
             password_set=doc.password is not None,
             max_clicks=doc.max_clicks,
             expire_after=to_unix_timestamp(doc.expire_after),
+            starts_at=to_unix_timestamp(doc.starts_at),
+            pre_start_url=doc.pre_start_url,
             block_bots=doc.block_bots,
             private_stats=doc.private_stats,
             domain=doc.domain,
@@ -261,6 +273,8 @@ class UrlListItem(ResponseBase):
     status: UrlStatus | None = None
     created_at: datetime | None = None
     expire_after: int | None = None  # Unix timestamp or null
+    starts_at: int | None = None  # Unix timestamp or null
+    pre_start_url: str | None = None
     max_clicks: int | None = None
     private_stats: bool | None = None
     block_bots: bool | None = None
@@ -292,6 +306,8 @@ class UrlListItem(ResponseBase):
             status=doc.effective_status,
             created_at=_ensure_utc(doc.created_at),
             expire_after=to_unix_timestamp(doc.expire_after),
+            starts_at=to_unix_timestamp(doc.starts_at),
+            pre_start_url=doc.pre_start_url,
             max_clicks=doc.max_clicks,
             private_stats=doc.private_stats,
             block_bots=bool(doc.block_bots) if doc.block_bots is not None else None,

@@ -19,6 +19,7 @@ from errors import (
     ForbiddenError,
     GoneError,
     NotFoundError,
+    NotYetLiveError,
     ValidationError,
 )
 from infrastructure.logging import get_logger, should_sample
@@ -48,6 +49,7 @@ _TENANT_ERROR_COPY = {
         "the operator of {fqdn} if you think this is a mistake.",
     ),
     "403": ("Access denied", "You don't have permission to view this URL."),
+    "not_yet_live": ("Not live yet", "This URL on {fqdn} isn't live yet."),
 }
 _NOINDEX_HEADER = "noindex, nofollow, noarchive"
 
@@ -69,7 +71,14 @@ _ERROR_SLUGS = {
 }
 
 
-def _error_page(request: Request, code: str, message: str, status: int) -> Response:
+def _error_page(
+    request: Request,
+    code: str,
+    message: str,
+    status: int,
+    *,
+    slug: str | None = None,
+) -> Response:
     """Render the error page for a resolve/redirect failure.
 
     Custom-tenant requests get a self-contained minimal page (no external
@@ -79,12 +88,15 @@ def _error_page(request: Request, code: str, message: str, status: int) -> Respo
 
     On 404, an ACTIVE tenant's ``not_found_redirect`` overrides the page
     entirely so owners control the UX for unknown paths consistently with
-    the middleware-level disallowed-path branch.
+    the middleware-level disallowed-path branch. ``slug`` overrides the
+    status's default X-Error-Code when one status carries several
+    meanings (a scheduled link before its start is a 404 that is not
+    ``not_found``).
     """
     tenant = getattr(request.state, "tenant", None)
     is_custom = tenant is not None and not tenant.is_system_default
 
-    if is_custom and status == 404:
+    if is_custom and status == 404 and slug is None:
         active = tenant.status == DomainStatus.ACTIVE
         if active and tenant.not_found_redirect and request.method in {"GET", "HEAD"}:
             return RedirectResponse(
@@ -95,7 +107,7 @@ def _error_page(request: Request, code: str, message: str, status: int) -> Respo
 
     if is_custom:
         title, body_tpl = _TENANT_ERROR_COPY.get(
-            code, ("Error", "Something went wrong.")
+            slug or code, ("Error", "Something went wrong.")
         )
         return templates.TemplateResponse(
             request,
@@ -109,7 +121,7 @@ def _error_page(request: Request, code: str, message: str, status: int) -> Respo
             headers={"X-Robots-Tag": _NOINDEX_HEADER},
         )
 
-    slug = _ERROR_SLUGS.get(code)
+    slug = slug or _ERROR_SLUGS.get(code)
     # settings can be absent (app built without lifespan) — default-off is
     # the fail-safe.
     settings = getattr(request.app.state, "settings", None)
@@ -176,6 +188,17 @@ async def redirect_url(
     except GoneError:
         log.info("url_gone", short_code=short_code)
         return _error_page(request, "410", "SHORT URL EXPIRED", 410)
+    except NotYetLiveError as exc:
+        log.info("url_not_yet_live", short_code=short_code)
+        if exc.fallback_url:
+            resp = RedirectResponse(exc.fallback_url, status_code=302)
+            resp.headers["X-Robots-Tag"] = _NOINDEX_HEADER
+        else:
+            resp = _error_page(request, "404", "NOT LIVE YET", 404, slug="not_yet_live")
+        # The right answer changes at a known future instant; no intermediary
+        # may hold the pre-start one.
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
     resolve_ms = int((time.perf_counter() - resolve_start) * 1000)
 
     # Custom meta-tags: preview crawlers get the owner's OG card instead of
@@ -336,7 +359,13 @@ async def check_password(
     domain = tenant.fqdn if tenant else None
     try:
         url_data, _schema = await url_service.resolve(short_code, domain=domain)
-    except (NotFoundError, BlockedUrlError, ForbiddenError, GoneError):
+    except (
+        NotFoundError,
+        BlockedUrlError,
+        ForbiddenError,
+        GoneError,
+        NotYetLiveError,
+    ):
         return _error_page(
             request, "400", "Invalid short code or URL not password-protected", 400
         )

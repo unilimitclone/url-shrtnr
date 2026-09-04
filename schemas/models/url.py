@@ -33,6 +33,8 @@ class UrlStatus(str, Enum):
     INACTIVE = "INACTIVE"
     EXPIRED = "EXPIRED"
     BLOCKED = "BLOCKED"
+    # Derived only (starts_at in the future); never persisted.
+    SCHEDULED = "SCHEDULED"
 
 
 class SchemaVersion(str, Enum):
@@ -198,6 +200,10 @@ class UrlV2Doc(MongoBaseModel):
     block_bots: bool | None = None
     max_clicks: int | None = Field(default=None, ge=0)
     expire_after: datetime | None = None
+    # UTC instant before which the link is not live; None = live now.
+    starts_at: datetime | None = None
+    # Where pre-start visitors go; None = the not-yet-live page.
+    pre_start_url: str | None = None
     # ISO 3166-1 alpha-2 country code (uppercase) → destination URL override.
     # long_url stays the fallback for unmatched countries. None = no targeting.
     geo_rules: dict[str, str] | None = None
@@ -229,7 +235,9 @@ class UrlV2Doc(MongoBaseModel):
         """Status with derived expiry folded in — time lapse and max-click
         exhaustion read as EXPIRED even before the persisted flip (the
         flip happens on the click/redirect path; between observations the
-        stored field may lag). Never read ``status`` raw on a wire path.
+        stored field may lag), and a future ``starts_at`` reads as
+        SCHEDULED (expiry wins: an expired link is dead for good). Never
+        read ``status`` raw on a wire path.
         """
         if self.status is not UrlStatus.ACTIVE:
             return self.status
@@ -238,6 +246,9 @@ class UrlV2Doc(MongoBaseModel):
             return UrlStatus.EXPIRED
         if self.max_clicks is not None and self.total_clicks >= self.max_clicks:
             return UrlStatus.EXPIRED
+        starts_at = as_aware_utc(self.starts_at)
+        if starts_at is not None and starts_at > datetime.now(timezone.utc):
+            return UrlStatus.SCHEDULED
         return self.status
 
 
