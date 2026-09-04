@@ -708,6 +708,32 @@ def test_v2_active_with_past_expire_after_reports_expired_and_hides_long_url():
     assert link["long_url"] is None
 
 
+def test_v2_expired_with_fallback_names_where_visitors_go():
+    doc = _make_v2_doc(
+        alias="capped2",
+        max_clicks=5,
+        total_clicks=5,
+        expired_redirect_url="https://ended.example/bye",
+    )
+    service, _ = _build_service(v2_docs=[doc])
+    with _client(service) as client:
+        link = client.get(_url("capped2")).json()["link"]
+
+    assert link["status"] == "expired"
+    assert link["long_url"] is None
+    assert link["expired_redirect_url"] == "https://ended.example/bye"
+
+
+def test_v2_active_with_fallback_keeps_it_off_the_stats_page():
+    doc = _make_v2_doc(alias="live1", expired_redirect_url="https://ended.example/bye")
+    service, _ = _build_service(v2_docs=[doc])
+    with _client(service) as client:
+        link = client.get(_url("live1")).json()["link"]
+
+    assert link["status"] == "active"
+    assert link["expired_redirect_url"] is None
+
+
 def test_v2_active_with_max_clicks_reached_reports_expired():
     doc = _make_v2_doc(alias="capped1", max_clicks=5, total_clicks=5)
     service, _ = _build_service(v2_docs=[doc])

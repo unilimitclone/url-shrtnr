@@ -751,6 +751,29 @@ def test_reported_link_enqueues_every_destination_including_geo_rules():
     ]
 
 
+def test_reported_link_enqueues_the_after_expiry_fallback_too():
+    """A phish parked in the fallback of an expired link must be judged."""
+    doc = _make_v2_doc("fall123")
+    doc.long_url = "https://clean.example/"
+    doc.expired_redirect_url = "https://hidden.example/ended"
+    sink = _CapturingSafetySink()
+    service, _, _ = _build_service(v2_docs=[doc], safety_sink=sink)
+
+    with _client(service) as c:
+        resp = c.post(
+            _URL, json={"items": [{"code_or_url": "fall123", "reason": "phishing"}]}
+        )
+    assert resp.status_code == 200
+
+    by_host = {e.host: e for e in sink.events}
+    assert set(by_host) == {"clean.example", "hidden.example"}
+    assert by_host["hidden.example"].url == "https://hidden.example/ended"
+    assert by_host["hidden.example"].context["link_destinations"] == [
+        "https://clean.example/",
+        "https://hidden.example/ended",
+    ]
+
+
 def test_links_sharing_a_host_keep_every_links_destinations():
     """Two reported links land on one host event; the bundle must still see
     the geo destinations of BOTH, not only the first link's."""

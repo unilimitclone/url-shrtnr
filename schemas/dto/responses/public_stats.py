@@ -30,6 +30,9 @@ class PublicLinkFacts(ResponseBase):
     # null unless the effective status is "active"; owner sessions
     # always get it.
     long_url: str | None = None
+    # Where an expired link still sends visitors; set only while ``status``
+    # is "expired" and the owner set a fallback.
+    expired_redirect_url: str | None = None
     created_at: datetime | None = None
     status: Literal["active", "inactive", "expired", "blocked", "scheduled"]
     max_clicks: int | None = None

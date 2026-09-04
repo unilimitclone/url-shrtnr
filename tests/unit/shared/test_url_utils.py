@@ -175,3 +175,41 @@ class TestIsRegistrableApex:
 
     def test_bare_label_is_not_apex(self):
         assert is_registrable_apex("localhost") is False
+
+
+class TestLinkDestinationUrlsFor:
+    """The doc-shaped enumerator owns the field list; every reader uses it."""
+
+    def test_reads_every_destination_field_off_a_doc_shaped_object(self):
+        from types import SimpleNamespace
+
+        from shared.url_utils import (
+            SINGLE_DESTINATION_FIELDS,
+            link_destination_urls_for,
+        )
+
+        link = SimpleNamespace(
+            long_url="https://main.example/",
+            geo_rules={"IN": "https://geo.example/in"},
+            pre_start_url="https://teaser.example/soon",
+            expired_redirect_url="https://ended.example/bye",
+        )
+        assert link_destination_urls_for(link) == [
+            "https://main.example/",
+            "https://geo.example/in",
+            "https://teaser.example/soon",
+            "https://ended.example/bye",
+        ]
+        assert set(SINGLE_DESTINATION_FIELDS) == {
+            "pre_start_url",
+            "expired_redirect_url",
+        }
+
+    def test_missing_and_empty_fields_are_skipped(self):
+        from types import SimpleNamespace
+
+        from shared.url_utils import link_destination_urls_for
+
+        assert link_destination_urls_for(
+            SimpleNamespace(long_url="https://main.example/", expired_redirect_url="")
+        ) == ["https://main.example/"]

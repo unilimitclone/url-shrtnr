@@ -2401,6 +2401,20 @@ class TestUrlServiceExpiredFallback:
 
         url_repo.update.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_create_counts_the_fallback_in_l1(self):
+        svc, _, _ = self._svc()
+        svc._url_policy.record_create = AsyncMock()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com", expired_redirect_url=self.FALLBACK
+        )
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        recorded = [c.args[0] for c in svc._url_policy.record_create.await_args_list]
+        assert recorded == ["https://example.com", self.FALLBACK]
+
     def test_cache_projection_carries_fallback(self):
         doc = make_url_v2_doc(expired_redirect_url=self.FALLBACK)
         assert UrlCacheData.from_v2_doc(doc).expired_redirect_url == self.FALLBACK

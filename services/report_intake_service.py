@@ -38,7 +38,11 @@ from schemas.enums.report import RejectionCode
 from services.public_link_resolver import PublicLinkResolver
 from services.safety.events import SafetyAnalyzeEvent
 from services.safety.sinks import SafetySink
-from shared.url_utils import link_destination_urls, parse_destination
+from shared.url_utils import (
+    link_destination_urls,
+    link_destination_urls_for,
+    parse_destination,
+)
 
 log = get_logger(__name__)
 
@@ -315,7 +319,7 @@ class ReportIntakeService:
         self, domain: str | None, code: str
     ) -> list[str] | None:
         """Domain-scoped existence check that also yields every destination
-        the link routes to (long_url, geo overrides, pre-start page).
+        the link routes to (long_url, geo overrides, pre-start and after-expiry pages).
 
         System-domain codes resolve via the shared PublicLinkResolver —
         the same generation dispatch (v1/v2/emoji) as the redirect, and
@@ -329,19 +333,12 @@ class ReportIntakeService:
             if resolved is None:
                 return None
             if resolved.v2_doc is not None:
-                doc = resolved.v2_doc
-                return link_destination_urls(
-                    doc.long_url,
-                    geo_rules=doc.geo_rules,
-                    pre_start_url=doc.pre_start_url,
-                )
+                return link_destination_urls_for(resolved.v2_doc)
             return link_destination_urls(str((resolved.raw_v1 or {}).get("url") or ""))
         doc = await self._url_repo.find_by_alias(code, domain)
         if doc is None:
             return None
-        return link_destination_urls(
-            doc.long_url, geo_rules=doc.geo_rules, pre_start_url=doc.pre_start_url
-        )
+        return link_destination_urls_for(doc)
 
     async def _enqueue_safety_analysis(
         self, accepted: list[tuple[str | None, str, ReportItemRequest, list[str]]]

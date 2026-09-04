@@ -72,6 +72,13 @@ class PublicPreviewService:
         if status == "active" and not password_protected:
             destination = PreviewDestination(**split_destination(doc.long_url))
             geo_destinations = self._group_geo_rules(doc.geo_rules)
+        # An expired link with a fallback still 302s everyone (the redirect
+        # decides before the password gate), so the preview names that URL.
+        expired_destination: PreviewDestination | None = None
+        if status == "expired" and doc.expired_redirect_url:
+            expired_destination = PreviewDestination(
+                **split_destination(doc.expired_redirect_url)
+            )
 
         created_at = link.created_at()
         return PublicPreviewResponse(
@@ -86,6 +93,7 @@ class PublicPreviewService:
             password_protected=password_protected,
             destination=destination,
             geo_destinations=geo_destinations,
+            expired_destination=expired_destination,
         )
 
     @staticmethod

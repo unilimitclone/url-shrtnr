@@ -99,7 +99,11 @@ from shared.emoji_policy import (
 )
 from shared.generators import generate_emoji_alias_v2, generate_short_code_v2
 from shared.reserved_aliases import is_reserved_alias
-from shared.url_utils import extract_hostname, link_destination_urls, parse_destination
+from shared.url_utils import (
+    extract_hostname,
+    link_destination_urls_for,
+    parse_destination,
+)
 from shared.validators import (
     validate_alias,
     validate_blocked_url,
@@ -1065,11 +1069,7 @@ class UrlService:
         # One record per registrable domain: the counters key on the domain,
         # so fifty geo paths on one host must not read as a fifty-link burst.
         counted: set[str] = set()
-        for destination in link_destination_urls(
-            request.long_url,
-            geo_rules=request.geo_rules,
-            pre_start_url=request.pre_start_url or None,
-        ):
+        for destination in link_destination_urls_for(request):
             parts = parse_destination(destination)
             domain = parts["registrable_domain"] if parts else destination
             if domain in counted:

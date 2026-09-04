@@ -89,6 +89,27 @@ def parse_destination(url: str | None) -> dict | None:
     }
 
 
+# Single-URL fields besides long_url that send visitors somewhere. The Mongo
+# pipelines and the backfill derive their field lists from this tuple.
+SINGLE_DESTINATION_FIELDS: tuple[str, ...] = ("pre_start_url", "expired_redirect_url")
+
+
+def link_destination_urls_for(link: object) -> list[str]:
+    """Every URL a doc or request routes to, read off its fields.
+
+    The one place that knows which fields hold destinations. Readers that
+    enumerate by keyword drift the moment a field is added; they call this.
+    """
+    return link_destination_urls(
+        getattr(link, "long_url", None),
+        geo_rules=getattr(link, "geo_rules", None),
+        **{
+            field: getattr(link, field, None) or None
+            for field in SINGLE_DESTINATION_FIELDS
+        },
+    )
+
+
 def link_destination_urls(
     long_url: str | None,
     *,

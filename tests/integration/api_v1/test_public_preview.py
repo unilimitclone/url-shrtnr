@@ -117,6 +117,7 @@ def test_v2_active_plain_full_body():
             "is_https": True,
         },
         "geo_destinations": None,
+        "expired_destination": None,
     }
 
 
@@ -223,6 +224,32 @@ def test_v2_active_with_past_expire_after_reads_expired():
     assert body["destination"] is None
 
 
+def test_v2_expired_with_fallback_names_where_visitors_go():
+    doc = _make_v2(
+        max_clicks=5,
+        total_clicks=5,
+        expired_redirect_url="https://ended.example/bye?x=1",
+    )
+    body = _get(_make_service(v2_docs=(doc,)), "testme").json()
+
+    assert body["status"] == "expired"
+    assert body["destination"] is None
+    assert body["expired_destination"] == {
+        "url": "https://ended.example/bye?x=1",
+        "domain": "ended.example",
+        "path": "/bye?x=1",
+        "is_https": True,
+    }
+
+
+def test_v2_active_with_fallback_keeps_it_out_of_the_preview():
+    doc = _make_v2(expired_redirect_url="https://ended.example/bye")
+    body = _get(_make_service(v2_docs=(doc,)), "testme").json()
+
+    assert body["status"] == "active"
+    assert body["expired_destination"] is None
+
+
 def test_v2_active_with_max_clicks_reached_reads_expired():
     doc = _make_v2(max_clicks=5, total_clicks=5)
     resp = _get(_make_service(v2_docs=(doc,)), "testme")
@@ -258,6 +285,7 @@ def test_v1_active_full_body():
             "is_https": True,
         },
         "geo_destinations": None,
+        "expired_destination": None,
     }
 
 

@@ -506,6 +506,11 @@ async def preview_url(
                         else None,
                         "blocked": v2.effective_status is UrlStatus.BLOCKED,
                         "scheduled": v2.effective_status is UrlStatus.SCHEDULED,
+                        "expired_fallback": (
+                            v2.expired_redirect_url
+                            if v2.effective_status is UrlStatus.EXPIRED
+                            else None
+                        ),
                     }
                     schema_type = "v2"
         else:
@@ -522,6 +527,11 @@ async def preview_url(
                     "meta_tags": v2.meta_tags.model_dump() if v2.meta_tags else None,
                     "blocked": v2.effective_status is UrlStatus.BLOCKED,
                     "scheduled": v2.effective_status is UrlStatus.SCHEDULED,
+                    "expired_fallback": (
+                        v2.expired_redirect_url
+                        if v2.effective_status is UrlStatus.EXPIRED
+                        else None
+                    ),
                 }
                 schema_type = "v2"
             else:
@@ -621,6 +631,12 @@ async def preview_url(
             "path": default_dest["path"],
             "is_https": default_dest["is_https"],
             "geo_destinations": geo_destinations,
+            # An expired link with a fallback still sends everyone there.
+            "expired_destination": (
+                split_destination(url_data["expired_fallback"])
+                if url_data.get("expired_fallback")
+                else None
+            ),
             "password_protected": False,
             "host_url": host_url,
             # Anti-phishing transparency: show the custom card NEXT TO the

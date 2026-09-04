@@ -13339,6 +13339,17 @@
             ],
             "title": "Long Url"
           },
+          "expired_redirect_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expired Redirect Url"
+          },
           "created_at": {
             "anyOf": [
               {
@@ -13471,6 +13482,16 @@
               }
             ],
             "title": "Geo Destinations"
+          },
+          "expired_destination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreviewDestination"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -13485,7 +13506,7 @@
           "geo_destinations"
         ],
         "title": "PublicPreviewResponse",
-        "description": "Response body for the public link preview endpoint.\n\n``destination`` and ``geo_destinations`` are non-null only while the\nlink is active and not password-protected \u2014 the preview never reveals\na destination the redirect would refuse to serve."
+        "description": "Response body for the public link preview endpoint.\n\n``destination`` and ``geo_destinations`` are non-null only while the\nlink is active and not password-protected \u2014 the preview never reveals\na destination the redirect would refuse to serve. The rule runs both\nways: ``expired_destination`` names where an expired link still sends\nevery visitor when its owner set a fallback, so the preview never shows\nLESS than the redirect serves either."
       },
       "PublicStatsBody": {
         "properties": {
