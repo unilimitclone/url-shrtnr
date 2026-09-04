@@ -60,6 +60,8 @@ class LinkSnapshot(_PayloadBase):
     block_bots: bool = False
     max_clicks: int | None = None
     expires_at: str | None = None
+    starts_at: str | None = None
+    pre_start_url: str | None = None
     geo_rules: dict[str, str] | None = None
     meta_tags: dict[str, Any] | None = None
     # Ids into the owner's tags (GET /api/v1/tags resolves name, colour, icon).
@@ -125,6 +127,8 @@ def _sample_link() -> dict[str, Any]:
         "block_bots": False,
         "max_clicks": None,
         "expires_at": None,
+        "starts_at": None,
+        "pre_start_url": None,
         "geo_rules": None,
         "meta_tags": None,
         "tag_ids": ["68b6f0c2f9e7a4b1d2c3d4e5"],

@@ -1250,20 +1250,25 @@ class UrlService:
         # old entry; sync() re-puts or deletes under the new key.
         is_og = existing.meta_tags is not None or merged_doc.meta_tags is not None
         if self._og_writethrough and is_og:
-            relevant = {"meta_tags", "long_url", "status", "alias", "domain"}
+            relevant = {
+                "meta_tags",
+                "long_url",
+                "status",
+                "alias",
+                "domain",
+                "starts_at",
+            }
             if relevant & update_ops.keys():
                 if (new_alias, new_domain) != (existing.alias, existing.domain):
                     await self._og_writethrough.remove(existing.domain, existing.alias)
                 await self._og_writethrough.sync(UrlCacheData.from_v2_doc(merged_doc))
         elif not is_og and (
             update_ops.get("status") == UrlStatus.INACTIVE
+            or "starts_at" in update_ops
             or (new_alias, new_domain) != (existing.alias, existing.domain)
         ):
-            # Plain links: deactivation and key changes must drop any
-            # hot-promoted entry under the pre-change key (takedown parity
-            # with the bulk endpoints; og-links are handled above). The
-            # new key needs nothing — a link is never promoted under a
-            # key it hasn't served on.
+            # Plain links: deactivation, a new start time and key changes drop the
+            # promoted entry (og-links are handled above; a new key was never promoted).
             self._purge_edge_key(existing.domain, existing.alias)
 
         if "meta_tags" in update_ops:

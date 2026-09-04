@@ -3366,6 +3366,38 @@ class TestSingleItemEdgePurge:
         )
 
     @pytest.mark.asyncio
+    async def test_update_start_time_on_plain_link_purges_edge_key(self):
+        """Pushing starts_at into the future takes the link dark at origin;
+        a promoted entry must not keep serving the redirect for its TTL."""
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+        url_repo.update.return_value = True
+        svc, edge_kv = self._service_with_edge(url_repo)
+
+        future = int(time_module.time()) + 3600
+        await svc.update(URL_OID, UpdateUrlRequest(starts_at=future), USER_OID)
+        await self._drain(svc)
+
+        edge_kv.delete.assert_awaited_once_with(
+            f"cache:{SYSTEM_DEFAULT_DOMAIN}:{ALIAS}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_start_time_on_og_link_resyncs_writethrough(self):
+        url_repo = AsyncMock()
+        url_repo.find_by_id.return_value = make_url_v2_doc(meta_tags={"title": "T"})
+        url_repo.update.return_value = True
+        og = MagicMock(remove=AsyncMock(), sync=AsyncMock())
+        svc, edge_kv = self._service_with_edge(url_repo, og=og)
+
+        future = int(time_module.time()) + 3600
+        await svc.update(URL_OID, UpdateUrlRequest(starts_at=future), USER_OID)
+        await self._drain(svc)
+
+        og.sync.assert_awaited_once()
+        edge_kv.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_delete_og_link_uses_writethrough_not_purge(self):
         url_repo = AsyncMock()
         url_repo.find_by_id.return_value = make_url_v2_doc(meta_tags={"title": "T"})

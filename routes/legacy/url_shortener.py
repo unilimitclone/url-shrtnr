@@ -454,7 +454,8 @@ async def preview_url(
 
     Accesses repos directly so an EXPIRED link still previews, but a
     blocked one reveals nothing: destination, geo destinations and meta
-    tags are all withheld behind the same 451 the redirect serves.
+    tags are all withheld behind the same 451 the redirect serves. A
+    scheduled one is withheld the same way behind the redirect's 404.
     """
     short_code = unquote(short_code)
     host_url = str(request.base_url)
@@ -504,6 +505,7 @@ async def preview_url(
                         if v2.meta_tags
                         else None,
                         "blocked": v2.effective_status is UrlStatus.BLOCKED,
+                        "scheduled": v2.effective_status is UrlStatus.SCHEDULED,
                     }
                     schema_type = "v2"
         else:
@@ -519,6 +521,7 @@ async def preview_url(
                     "geo_rules": v2.geo_rules,
                     "meta_tags": v2.meta_tags.model_dump() if v2.meta_tags else None,
                     "blocked": v2.effective_status is UrlStatus.BLOCKED,
+                    "scheduled": v2.effective_status is UrlStatus.SCHEDULED,
                 }
                 schema_type = "v2"
             else:
@@ -555,6 +558,21 @@ async def preview_url(
                 "host_url": host_url,
             },
             status_code=451,
+        )
+
+    # A scheduled link's destination was never public; withhold it like the redirect does.
+    if url_data.get("scheduled"):
+        log.info("legacy_preview_not_yet_live", short_code=short_code)
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {
+                "error_code": "404",
+                "error_message": "This link is not live yet",
+                "host_url": host_url,
+            },
+            status_code=404,
+            headers={"X-Error-Code": "not_yet_live", "Cache-Control": "no-store"},
         )
 
     if schema_type == "v2":

@@ -68,6 +68,15 @@ class TestLinkSnapshot:
         assert "password" not in snap
         assert "argon2" not in str(snap)
 
+    def test_snapshot_keys_match_the_registry_model(self):
+        """The registry drives the webhook docs; a snapshot key it does not
+        declare would ship undocumented."""
+        from services.webhooks.registry import LinkSnapshot, _sample_link
+
+        declared = set(LinkSnapshot.model_fields)
+        assert set(link_snapshot(_doc())) <= declared
+        assert set(_sample_link()) == declared
+
 
 class TestLinkExpired:
     def test_anonymous_owner_returns_none(self):
