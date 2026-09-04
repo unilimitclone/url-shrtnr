@@ -63,6 +63,32 @@
                 <span class="url-label">Short URL:</span>
                 <div class="short-url">{{ short_url }}</div>
             </div>
+            {% if expired_destination %}
+            <div class="geo-banner">
+                <i class="ti ti-clock-off"></i>
+                This link has ended. Visitors are sent to the address below instead of the original destination.
+            </div>
+            <div class="url-display destination">
+                <span class="url-label">Visitors now go to:</span>
+                <div class="long-url">
+                    <div class="url-content">
+                        <div class="url-header">
+                            <img src="https://www.google.com/s2/favicons?domain={{ expired_destination.domain }}&sz=32" class="favicon"
+                                alt="favicon" onerror="this.style.display='none'">
+                            <span class="full-url">
+                                <span class="domain-name">{{ expired_destination.domain }}</span><span class="url-path">{{ expired_destination.path }}</span>
+                            </span>
+                            {% if expired_destination.is_https %}
+                            <span class="https-badge">
+                                <i class="ti ti-lock"></i>
+                                HTTPS
+                            </span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
             {% if geo_destinations %}
             <div class="geo-banner">
                 <i class="ti ti-world"></i>
@@ -70,7 +96,7 @@
             </div>
             {% endif %}
             <div class="url-display destination">
-                <span class="url-label">{% if geo_destinations %}Default destination:{% else %}Redirects to:{% endif %}</span>
+                <span class="url-label">{% if expired_destination %}Original destination:{% elif geo_destinations %}Default destination:{% else %}Redirects to:{% endif %}</span>
                 <div class="long-url">
                     <div class="url-content">
                         <div class="url-header">

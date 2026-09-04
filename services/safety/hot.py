@@ -14,7 +14,11 @@ from repositories.verdict_repository import VerdictRepository
 from services.click.consumers.hotness import HotUrl
 from services.safety.events import SafetyAnalyzeEvent
 from services.safety.sinks import SafetySink
-from shared.url_utils import link_destination_urls, parse_destination
+from shared.url_utils import (
+    link_destination_urls,
+    link_destination_urls_for,
+    parse_destination,
+)
 
 log = get_logger(__name__)
 
@@ -77,12 +81,10 @@ class HotLinkScreen:
             )
 
     async def _destinations(self, hot: HotUrl) -> list[str]:
-        """Every destination the link routes to: main, geo overrides, pre-start page."""
+        """Every destination the link routes to: main, geo overrides, both fallbacks."""
         domain = self._system_domain if hot.domain in ("default", "") else hot.domain
         doc = await self._url_repo.find_by_alias(hot.short_code, domain)
         if doc is not None:
-            return link_destination_urls(
-                doc.long_url, geo_rules=doc.geo_rules, pre_start_url=doc.pre_start_url
-            )
+            return link_destination_urls_for(doc)
         legacy = await self._legacy_repo.find_by_id(hot.short_code)
         return link_destination_urls(legacy.url) if legacy is not None else []

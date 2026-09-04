@@ -222,6 +222,12 @@ class PublicStatsService:
             # expired, paused, or blocked link's stats page must not out
             # the destination. Owner sessions always get it.
             "long_url": long_url if (status == "active" or is_owner) else None,
+            # The redirect serves this to everyone, so the page names it.
+            "expired_redirect_url": (
+                doc.expired_redirect_url
+                if (link.is_v2 and status == "expired")
+                else None
+            ),
             "created_at": link.created_at(),
             "status": status,
             "max_clicks": doc.max_clicks,

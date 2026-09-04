@@ -17,7 +17,7 @@ Unparseable destinations are stamped ``dest: null`` so the needs-backfill
 filter converges to zero; null adds nothing to the sparse dest_registrable
 index.
 
-Second pass, urlsV2 only: links with geo_rules or a pre_start_url get
+Second pass, urlsV2 only: links with geo_rules or a single-URL fallback get
 ``dest.secondary_hosts`` (every extra destination host but the main one) and
 the index-aligned ``dest.secondary_registrable``, so a host block and a
 feed-domain sweep both reach links that hide the host in a rule. Idempotent:
@@ -50,12 +50,16 @@ from pymongo import MongoClient, UpdateOne
 from pymongo.errors import BulkWriteError
 
 _FILTER = {"dest": {"$exists": False}}
+# Mirrors shared.url_utils.SINGLE_DESTINATION_FIELDS (pinned by test); the
+# script imports nothing from the app so it runs against any checkout.
+SINGLE_DESTINATION_FIELDS = ("pre_start_url", "expired_redirect_url")
+_SINGLE_PROJECTION = dict.fromkeys(SINGLE_DESTINATION_FIELDS, 1)
 _SECONDARY_FILTER = {
     "$and": [
         {
             "$or": [
                 {"geo_rules": {"$type": "object"}},
-                {"pre_start_url": {"$type": "string"}},
+                *({field: {"$type": "string"}} for field in SINGLE_DESTINATION_FIELDS),
             ]
         },
         {
@@ -107,11 +111,12 @@ def parse_destination(url: object) -> dict | None:
 
 
 def secondary_urls(doc: dict) -> list:
-    """Every extra destination a link routes to: geo rules and the pre-start page."""
+    """Every extra destination a link routes to: geo rules plus each single-URL field."""
     geo = doc.get("geo_rules")
     urls = list(geo.values()) if isinstance(geo, dict) else []
-    if isinstance(doc.get("pre_start_url"), str):
-        urls.append(doc["pre_start_url"])
+    for field in SINGLE_DESTINATION_FIELDS:
+        if isinstance(doc.get(field), str):
+            urls.append(doc[field])
     return urls
 
 
@@ -170,7 +175,7 @@ def _secondary_op(d: dict) -> UpdateOne:
     flt = {
         "_id": d["_id"],
         "geo_rules": d.get("geo_rules"),
-        "pre_start_url": d.get("pre_start_url"),
+        **{field: d.get(field) for field in SINGLE_DESTINATION_FIELDS},
         "dest.secondary_registrable": {"$exists": False},
     }
     if isinstance(d.get("dest"), dict):
@@ -194,7 +199,7 @@ def backfill_secondary(coll, dry_run: bool) -> None:
         batch = list(
             coll.find(
                 query,
-                {"dest": 1, "long_url": 1, "geo_rules": 1, "pre_start_url": 1},
+                {"dest": 1, "long_url": 1, "geo_rules": 1, **_SINGLE_PROJECTION},
             )
             .sort("_id", 1)
             .limit(_BATCH)
@@ -225,7 +230,7 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
         return
     if dry_run:
         sample = coll.find_one(
-            _FILTER, {url_field: 1, "geo_rules": 1, "pre_start_url": 1}
+            _FILTER, {url_field: 1, "geo_rules": 1, **_SINGLE_PROJECTION}
         )
         print(f"[{coll.name}] sample parse: {dest_for(sample or {}, url_field)}")
         return
@@ -240,7 +245,7 @@ def backfill(coll, url_field: str, dry_run: bool) -> None:
         if last_id is not None:
             query["_id"] = {"$gt": last_id}
         batch = list(
-            coll.find(query, {url_field: 1, "geo_rules": 1, "pre_start_url": 1})
+            coll.find(query, {url_field: 1, "geo_rules": 1, **_SINGLE_PROJECTION})
             .sort("_id", 1)
             .limit(_BATCH)
         )

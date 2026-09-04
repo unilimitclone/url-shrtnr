@@ -32,6 +32,7 @@ from errors import (
     AppError,
     BlockedUrlError,
     ConflictError,
+    ExpiredRedirectError,
     ForbiddenError,
     GoneError,
     NotFoundError,
@@ -98,7 +99,11 @@ from shared.emoji_policy import (
 )
 from shared.generators import generate_emoji_alias_v2, generate_short_code_v2
 from shared.reserved_aliases import is_reserved_alias
-from shared.url_utils import extract_hostname, link_destination_urls, parse_destination
+from shared.url_utils import (
+    extract_hostname,
+    link_destination_urls_for,
+    parse_destination,
+)
 from shared.validators import (
     validate_alias,
     validate_blocked_url,
@@ -333,6 +338,21 @@ async def _handle_status(
         ops["status"] = request.status
 
 
+async def _handle_expired_redirect_url(
+    request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
+) -> None:
+    if "expired_redirect_url" not in request.model_fields_set:
+        return
+    if not request.expired_redirect_url:
+        if existing.expired_redirect_url:
+            ops["expired_redirect_url"] = None
+        return
+    if request.expired_redirect_url == existing.expired_redirect_url:
+        return
+    await service.check_expired_redirect_url(request.expired_redirect_url)
+    ops["expired_redirect_url"] = request.expired_redirect_url
+
+
 async def _handle_geo_rules(
     request: UpdateUrlRequest, existing: UrlV2Doc, ops: dict, service: UrlService
 ) -> None:
@@ -435,6 +455,7 @@ FIELD_HANDLERS: dict[str, Callable[..., Awaitable[None]]] = {
     "status": _handle_status,
     "geo_rules": _handle_geo_rules,
     "tag_ids": _handle_tag_ids,
+    "expired_redirect_url": _handle_expired_redirect_url,
     # Must follow long_url — the handler validates against ops["long_url"]
     # when the destination changes in the same request.
     "meta_tags": _handle_meta_tags,
@@ -592,7 +613,7 @@ class UrlService:
                     schema=schema,
                     source="cache",
                 )
-                _raise_for_status(cached.url_status)
+                _raise_for_status(cached)
             await self._raise_if_time_expired(cached, schema, short_code, "cache")
             _raise_if_not_yet_live(cached, short_code, "cache")
             if should_sample("cache_operation"):
@@ -633,7 +654,7 @@ class UrlService:
                 schema=schema,
                 source="db",
             )
-            _raise_for_status(url_cache_data.url_status)
+            _raise_for_status(url_cache_data)
 
         # 4b. Raise for v1 URLs whose max-clicks have been exhausted
         if (
@@ -694,6 +715,8 @@ class UrlService:
                     event = build_link_expired(doc, "time_expired")
                     if event is not None:
                         await self._events.emit(event)
+        if data.expired_redirect_url:
+            raise ExpiredRedirectError(data.expired_redirect_url)
         raise GoneError("URL has expired (expiration time reached)")
 
     async def check_alias_available(
@@ -820,6 +843,15 @@ class UrlService:
             return meta.model_copy(update={"image": ingested.url}), ingested.image_meta
         return meta, None
 
+    async def check_expired_redirect_url(self, url: str) -> None:
+        """The fallback is a destination: it passes the same gate as long_url."""
+        rejection = await self._url_policy.check(url)
+        if rejection is not None:
+            log.info("url_expired_fallback_rejected", reason=rejection.code)
+            raise ValidationError(
+                rejection.public_message, field="expired_redirect_url"
+            )
+
     async def validate_meta_tags(self, meta: MetaTagsRequest, *, long_url: str) -> None:
         """Abuse checks for a meta_tags write.
 
@@ -907,6 +939,8 @@ class UrlService:
                     raise ValidationError(
                         geo_rejection.public_message, field=f"geo_rules.{geo_code}"
                     )
+        if request.expired_redirect_url:
+            await self.check_expired_redirect_url(request.expired_redirect_url)
         # Meta-tags: resolve data-URI uploads to R2 URLs, then run abuse
         # checks (the route layer already gated the feature itself).
         meta_req = request.meta_tags
@@ -987,6 +1021,7 @@ class UrlService:
                 request.long_url,
                 geo_rules=request.geo_rules,
                 pre_start_url=request.pre_start_url or None,
+                expired_redirect_url=request.expired_redirect_url or None,
             ),
             password=password_hash,
             block_bots=request.block_bots,
@@ -996,6 +1031,7 @@ class UrlService:
             pre_start_url=request.pre_start_url or None,
             geo_rules=request.geo_rules or None,
             tag_ids=tag_ids,
+            expired_redirect_url=request.expired_redirect_url or None,
             status=UrlStatus.ACTIVE,
             private_stats=private_stats,
             total_clicks=0,
@@ -1033,11 +1069,7 @@ class UrlService:
         # One record per registrable domain: the counters key on the domain,
         # so fifty geo paths on one host must not read as a fifty-link burst.
         counted: set[str] = set()
-        for destination in link_destination_urls(
-            request.long_url,
-            geo_rules=request.geo_rules,
-            pre_start_url=request.pre_start_url or None,
-        ):
+        for destination in link_destination_urls_for(request):
             parts = parse_destination(destination)
             domain = parts["registrable_domain"] if parts else destination
             if domain in counted:
@@ -1065,6 +1097,7 @@ class UrlService:
             domain=target_domain,
             geo_rules=len(request.geo_rules or {}),
             tags=len(tag_ids),
+            has_expired_fallback=bool(request.expired_redirect_url),
             has_meta_tags=bool(request.meta_tags),
         )
 
@@ -1207,11 +1240,19 @@ class UrlService:
             )
 
         # Any destination change re-stamps dest, secondary hosts included.
-        if {"long_url", "geo_rules", "pre_start_url"} & update_ops.keys():
+        if {
+            "long_url",
+            "geo_rules",
+            "pre_start_url",
+            "expired_redirect_url",
+        } & update_ops.keys():
             dest = UrlDestination.for_link(
                 update_ops.get("long_url", existing.long_url),
                 geo_rules=update_ops.get("geo_rules", existing.geo_rules),
                 pre_start_url=update_ops.get("pre_start_url", existing.pre_start_url),
+                expired_redirect_url=update_ops.get(
+                    "expired_redirect_url", existing.expired_redirect_url
+                ),
             )
             update_ops["dest"] = dest.to_doc() if dest else None
 
@@ -1835,9 +1876,11 @@ class UrlService:
 # ── Module-level helpers ──────────────────────────────────────────────────────
 
 
-def _raise_for_status(status: UrlStatus) -> None:
-    if status == UrlStatus.BLOCKED:
+def _raise_for_status(data: UrlCacheData) -> None:
+    if data.url_status == UrlStatus.BLOCKED:
         raise BlockedUrlError("URL is blocked")
+    if data.url_status == UrlStatus.EXPIRED and data.expired_redirect_url:
+        raise ExpiredRedirectError(data.expired_redirect_url)
     raise GoneError("URL has expired or is no longer active")
 
 

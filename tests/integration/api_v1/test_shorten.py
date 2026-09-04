@@ -428,6 +428,75 @@ class TestCheckAliasWithCustomDomain:
         assert kwargs.get("domain") is None
 
 
+class TestShortenExpiredFallback:
+    """expired_redirect_url is authed-only and gated by the expired_fallback flag."""
+
+    BODY: typing.ClassVar[dict] = {
+        "long_url": "https://example.com",
+        "expired_redirect_url": "https://example.com/ended",
+    }
+
+    @staticmethod
+    def _flag_svc(enabled: bool) -> AsyncMock:
+        svc = AsyncMock()
+        svc.require = AsyncMock(
+            side_effect=None
+            if enabled
+            else ForbiddenError("Expired fallback is not enabled for this account")
+        )
+        return svc
+
+    def _app(self, user, mock_svc, flag_svc):
+        from dependencies import get_feature_flag_service
+
+        return _build_test_app(
+            {
+                get_current_user: lambda: user,
+                get_url_service: lambda: mock_svc,
+                get_feature_flag_service: lambda: flag_svc,
+            }
+        )
+
+    def test_anonymous_returns_401(self):
+        mock_svc = AsyncMock()
+        flag_svc = self._flag_svc(True)
+        with TestClient(
+            self._app(None, mock_svc, flag_svc), raise_server_exceptions=False
+        ) as client:
+            resp = client.post("/api/v1/shorten", json=self.BODY)
+
+        assert resp.status_code == 401
+        mock_svc.create.assert_not_called()
+        flag_svc.require.assert_not_awaited()
+
+    def test_flag_off_returns_403(self):
+        mock_svc = AsyncMock()
+        with TestClient(
+            self._app(_make_user(), mock_svc, self._flag_svc(False)),
+            raise_server_exceptions=False,
+        ) as client:
+            resp = client.post("/api/v1/shorten", json=self.BODY)
+
+        assert resp.status_code == 403
+        mock_svc.create.assert_not_called()
+
+    def test_flag_on_returns_201_and_echoes_field(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.expired_redirect_url = "https://example.com/ended"
+        mock_svc = AsyncMock()
+        mock_svc.create = AsyncMock(return_value=(url_doc, None))
+
+        with TestClient(
+            self._app(user, mock_svc, self._flag_svc(True)),
+            raise_server_exceptions=True,
+        ) as client:
+            resp = client.post("/api/v1/shorten", json=self.BODY)
+
+        assert resp.status_code == 201
+        assert resp.json()["expired_redirect_url"] == "https://example.com/ended"
+
+
 class TestShortenGeoRules:
     """geo_rules is authed-only and gated by the geo_targeting feature flag."""
 

@@ -20,6 +20,7 @@ from errors import (
     AppError,
     BlockedUrlError,
     ConflictError,
+    ExpiredRedirectError,
     ForbiddenError,
     GoneError,
     NotFoundError,
@@ -61,6 +62,7 @@ def make_url_v2_doc(
     starts_at: datetime | None = None,
     pre_start_url: str | None = None,
     tag_ids: list | None = None,
+    expired_redirect_url: str | None = None,
 ) -> UrlV2Doc:
     return UrlV2Doc.from_mongo(
         {
@@ -78,6 +80,7 @@ def make_url_v2_doc(
             "starts_at": starts_at,
             "pre_start_url": pre_start_url,
             "geo_rules": geo_rules,
+            "expired_redirect_url": expired_redirect_url,
             "status": status,
             "private_stats": True,
             "total_clicks": 0,
@@ -2288,6 +2291,183 @@ class TestGeoRulesFeatureGate:
             await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
         assert exc.value.field == "geo_rules"
         url_repo.insert.assert_not_awaited()
+
+
+class TestUrlServiceExpiredFallback:
+    """expired_redirect_url: validated like a destination, stamped as a
+    secondary host, and served instead of 410 once the link is EXPIRED."""
+
+    FALLBACK = "https://fallback.example/ended"
+
+    def _svc(self, patterns=()):
+        url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache = make_repos()
+        svc = make_service(
+            url_repo, legacy_repo, emoji_repo, blocked_url_repo, url_cache
+        )
+        blocked_url_repo.get_patterns.return_value = list(patterns)
+        url_repo.check_alias_exists.return_value = False
+        url_repo.insert.return_value = URL_OID
+        return svc, url_repo, url_cache
+
+    @pytest.mark.asyncio
+    async def test_create_persists_fallback_and_stamps_its_host(self):
+        svc, url_repo, _ = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com", expired_redirect_url=self.FALLBACK
+        )
+        result, _ = await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        assert result.expired_redirect_url == self.FALLBACK
+        inserted = url_repo.insert.call_args[0][0]
+        assert inserted["expired_redirect_url"] == self.FALLBACK
+        assert inserted["dest"]["secondary_hosts"] == ["fallback.example"]
+
+    @pytest.mark.asyncio
+    async def test_create_blocked_fallback_rejected_with_field_path(self):
+        svc, url_repo, _ = self._svc(patterns=[r"https://evil\.com"])
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            expired_redirect_url="https://evil.com/landing",
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "expired_redirect_url"
+        url_repo.insert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_self_link_fallback_rejected(self):
+        svc, _, _ = self._svc()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com",
+            expired_redirect_url="https://spoo.me/other",
+        )
+        with pytest.raises(ValidationError) as exc:
+            await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+        assert exc.value.field == "expired_redirect_url"
+
+    @pytest.mark.asyncio
+    async def test_update_sets_fallback_and_restamps_dest(self):
+        svc, url_repo, url_cache = self._svc()
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+        url_repo.update.return_value = True
+
+        req = UpdateUrlRequest(expired_redirect_url=self.FALLBACK)
+        await svc.update(URL_OID, req, USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["expired_redirect_url"] == self.FALLBACK
+        assert update_doc["$set"]["dest"]["secondary_hosts"] == ["fallback.example"]
+        url_cache.invalidate.assert_called_once_with(ALIAS, SYSTEM_DEFAULT_DOMAIN)
+
+    @pytest.mark.asyncio
+    async def test_update_blocked_fallback_rejected(self):
+        svc, url_repo, _ = self._svc(patterns=[r"https://evil\.com"])
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+
+        req = UpdateUrlRequest(expired_redirect_url="https://evil.com/x")
+        with pytest.raises(ValidationError) as exc:
+            await svc.update(URL_OID, req, USER_OID)
+        assert exc.value.field == "expired_redirect_url"
+        url_repo.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_null_clears_fallback_and_its_host(self):
+        svc, url_repo, _ = self._svc()
+        url_repo.find_by_id.return_value = make_url_v2_doc(
+            expired_redirect_url=self.FALLBACK
+        )
+        url_repo.update.return_value = True
+
+        req = UpdateUrlRequest.model_validate({"expired_redirect_url": None})
+        await svc.update(URL_OID, req, USER_OID)
+
+        update_doc = url_repo.update.call_args[0][1]
+        assert update_doc["$set"]["expired_redirect_url"] is None
+        assert "secondary_hosts" not in update_doc["$set"]["dest"]
+
+    @pytest.mark.asyncio
+    async def test_update_null_on_unset_fallback_is_a_noop(self):
+        svc, url_repo, _ = self._svc()
+        url_repo.find_by_id.return_value = make_url_v2_doc()
+
+        req = UpdateUrlRequest.model_validate({"expired_redirect_url": None})
+        await svc.update(URL_OID, req, USER_OID)
+
+        url_repo.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_counts_the_fallback_in_l1(self):
+        svc, _, _ = self._svc()
+        svc._url_policy.record_create = AsyncMock()
+        from schemas.dto.requests.url import CreateUrlRequest
+
+        req = CreateUrlRequest(
+            long_url="https://example.com", expired_redirect_url=self.FALLBACK
+        )
+        await svc.create(req, owner_id=USER_OID, client_ip="1.2.3.4")
+
+        recorded = [c.args[0] for c in svc._url_policy.record_create.await_args_list]
+        assert recorded == ["https://example.com", self.FALLBACK]
+
+    def test_cache_projection_carries_fallback(self):
+        doc = make_url_v2_doc(expired_redirect_url=self.FALLBACK)
+        assert UrlCacheData.from_v2_doc(doc).expired_redirect_url == self.FALLBACK
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_expired_with_fallback_raises_redirect(self):
+        svc, _, url_cache = self._svc()
+        url_cache.get.return_value = make_active_cache(url_status="EXPIRED").model_copy(
+            update={"expired_redirect_url": self.FALLBACK}
+        )
+
+        with pytest.raises(ExpiredRedirectError) as exc:
+            await svc.resolve(ALIAS)
+        assert exc.value.redirect_url == self.FALLBACK
+        assert isinstance(exc.value, GoneError)
+
+    @pytest.mark.asyncio
+    async def test_inactive_never_uses_the_fallback(self):
+        svc, _, url_cache = self._svc()
+        url_cache.get.return_value = make_active_cache(
+            url_status="INACTIVE"
+        ).model_copy(update={"expired_redirect_url": self.FALLBACK})
+
+        with pytest.raises(GoneError) as exc:
+            await svc.resolve(ALIAS)
+        assert not isinstance(exc.value, ExpiredRedirectError)
+
+    @pytest.mark.asyncio
+    async def test_time_expiry_with_fallback_flips_then_redirects(self):
+        svc, url_repo, url_cache = self._svc()
+        url_cache.get.return_value = make_active_cache(
+            expiration_time=int(time_module.time()) - 60
+        ).model_copy(update={"expired_redirect_url": self.FALLBACK})
+        url_repo.expire_if_time_reached.return_value = True
+
+        with pytest.raises(ExpiredRedirectError) as exc:
+            await svc.resolve(ALIAS)
+        assert exc.value.redirect_url == self.FALLBACK
+        url_repo.expire_if_time_reached.assert_awaited_once_with(URL_OID)
+        url_cache.invalidate.assert_awaited_once_with(ALIAS, SYSTEM_DEFAULT_DOMAIN)
+
+    @pytest.mark.asyncio
+    async def test_db_path_expired_with_fallback_raises_redirect(self):
+        svc, url_repo, url_cache = self._svc()
+        url_cache.get.return_value = None
+        url_repo.find_by_alias.return_value = make_url_v2_doc(
+            status="EXPIRED", expired_redirect_url=self.FALLBACK
+        )
+
+        with pytest.raises(ExpiredRedirectError) as exc:
+            await svc.resolve(ALIAS)
+        assert exc.value.redirect_url == self.FALLBACK
+        url_cache.set.assert_awaited_once()
 
 
 class TestUrlServiceGeoRules:

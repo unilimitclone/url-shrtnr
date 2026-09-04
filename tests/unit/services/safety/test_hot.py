@@ -130,3 +130,16 @@ class TestHotLinkScreenSecondaryDestinations:
         await screen.on_hot(_hot())
         hosts = [c.args[0].host for c in sink.emit.await_args_list]
         assert hosts == ["clean.example", "teaser.example"]
+
+    @pytest.mark.asyncio
+    async def test_after_expiry_destination_is_screened_too(self):
+        doc = MagicMock(
+            long_url="https://clean.example/",
+            geo_rules=None,
+            pre_start_url=None,
+            expired_redirect_url="https://ended.example/bye",
+        )
+        screen, _u, sink = _screen(v2_doc=doc)
+        await screen.on_hot(_hot())
+        hosts = [c.args[0].host for c in sink.emit.await_args_list]
+        assert hosts == ["clean.example", "ended.example"]

@@ -38,6 +38,7 @@ from schemas.dto.responses.url import (
     UpdateUrlResponse,
 )
 from services.feature_flag_service import (
+    EXPIRED_FALLBACK_FLAG,
     GEO_TARGETING_FLAG,
     LINK_SCHEDULING_FLAG,
     META_TAGS_FLAG,
@@ -126,7 +127,7 @@ async def update_url_v1(
 
     **Updatable Fields**: `long_url`, `alias`, `password`, `block_bots`,
     `max_clicks`, `expire_after`, `private_stats`, `status`, `domain`,
-    `geo_rules`, `meta_tags`
+    `geo_rules`, `expired_redirect_url`, `meta_tags`
 
     **Notes**:
 
@@ -137,6 +138,8 @@ async def update_url_v1(
       the system default. Alias collision is verified on the target.
     - `geo_rules` replaces the whole map; pass `null` or `{}` to remove all
       rules
+    - `expired_redirect_url` is where visitors land once the link has expired;
+      pass `null` to go back to the expired page
     - The `url_id` is the MongoDB ObjectId, not the alias
     """
     oid = parse_url_id(url_id)
@@ -144,6 +147,8 @@ async def update_url_v1(
     # de-allowlisted owners can remove their rules during rollback.
     if "geo_rules" in body.model_fields_set and body.geo_rules:
         await flag_svc.require(GEO_TARGETING_FLAG, user)
+    if "expired_redirect_url" in body.model_fields_set and body.expired_redirect_url:
+        await flag_svc.require(EXPIRED_FALLBACK_FLAG, user)
     # Same deal for meta_tags: setting/replacing is flag-gated, clearing
     # (null) never is.
     if "meta_tags" in body.model_fields_set and body.meta_tags is not None:

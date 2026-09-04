@@ -35,6 +35,18 @@ def test_secondary_hosts_mirror_the_shared_helper():
     assert backfill.secondary_urls({"geo_rules": None, "pre_start_url": None}) == []
 
 
+def test_single_destination_fields_mirror_the_shared_list():
+    from shared.url_utils import SINGLE_DESTINATION_FIELDS
+
+    assert backfill.SINGLE_DESTINATION_FIELDS == SINGLE_DESTINATION_FIELDS
+    assert backfill.secondary_urls(
+        {"expired_redirect_url": "https://ended.example/bye"}
+    ) == ["https://ended.example/bye"]
+    assert {"expired_redirect_url": {"$type": "string"}} in backfill._SECONDARY_FILTER[
+        "$and"
+    ][0]["$or"]
+
+
 def test_secondary_fields_are_index_aligned():
     fields = backfill.secondary_fields(
         ["https://shop.evil.co.uk/x", "https://a.evil.com/y"], "main.example"
@@ -97,6 +109,7 @@ def test_backfill_secondary_stamps_and_reports(capsys):
         "_id": 1,
         "geo_rules": {"IN": "https://geo.example/"},
         "pre_start_url": None,
+        "expired_redirect_url": None,
         "dest.host": "main.example",
         "dest.secondary_registrable": {"$exists": False},
     }

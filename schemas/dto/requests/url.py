@@ -300,6 +300,16 @@ class CreateUrlRequest(RequestBase):
         ),
         examples=[{"IN": "https://example.in/", "US": "https://example.com/us"}],
     )
+    expired_redirect_url: str | None = Field(
+        default=None,
+        max_length=8192,
+        description=(
+            "Where visitors land once the link has expired, by time or by "
+            "click limit, instead of the expired page. Validated like a "
+            "destination. Requires authentication."
+        ),
+        examples=["https://example.com/offer-ended"],
+    )
     tag_ids: list[str] | None = Field(
         default=None,
         description=_TAG_IDS_FIELD_DESC,
@@ -445,6 +455,16 @@ class UpdateUrlRequest(RequestBase):
             "omit to keep existing rules unchanged."
         ),
         examples=[{"IN": "https://example.in/", "US": "https://example.com/us"}],
+    )
+    expired_redirect_url: str | None = Field(
+        default=None,
+        max_length=8192,
+        description=(
+            "Where visitors land once the link has expired, by time or by "
+            "click limit, instead of the expired page. Validated like a "
+            "destination. Pass `null` or empty to remove; omit to keep."
+        ),
+        examples=["https://example.com/offer-ended"],
     )
     tag_ids: list[str] | None = Field(
         default=None,

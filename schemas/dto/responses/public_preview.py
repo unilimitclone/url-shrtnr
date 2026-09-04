@@ -38,7 +38,10 @@ class PublicPreviewResponse(ResponseBase):
 
     ``destination`` and ``geo_destinations`` are non-null only while the
     link is active and not password-protected — the preview never reveals
-    a destination the redirect would refuse to serve.
+    a destination the redirect would refuse to serve. The rule runs both
+    ways: ``expired_destination`` names where an expired link still sends
+    every visitor when its owner set a fallback, so the preview never shows
+    LESS than the redirect serves either.
     """
 
     generation: Literal["v1", "v2"]
@@ -51,3 +54,5 @@ class PublicPreviewResponse(ResponseBase):
     password_protected: bool
     destination: PreviewDestination | None
     geo_destinations: list[PreviewGeoDestination] | None
+    # Set only while ``status`` is ``"expired"`` and the owner set a fallback.
+    expired_destination: PreviewDestination | None = None

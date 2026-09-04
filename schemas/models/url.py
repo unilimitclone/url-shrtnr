@@ -168,12 +168,17 @@ class UrlDestination(BaseModel):
         geo_rules: dict[str, str] | None = None,
         variants: list[str] | None = None,
         pre_start_url: str | None = None,
+        expired_redirect_url: str | None = None,
     ) -> UrlDestination | None:
         """Main parts plus every secondary host. None only when nothing
         about the link parses."""
         main = parse_destination(long_url)
         urls = link_destination_urls(
-            None, geo_rules=geo_rules, variants=variants, pre_start_url=pre_start_url
+            None,
+            geo_rules=geo_rules,
+            variants=variants,
+            pre_start_url=pre_start_url,
+            expired_redirect_url=expired_redirect_url,
         )
         exclude = (main or {}).get("host", "")
         extra = secondary_hosts(urls, exclude=exclude)
@@ -257,6 +262,8 @@ class UrlV2Doc(MongoBaseModel):
     # Ids into the owner's ``tags`` collection. Docs written before the
     # field existed read as [].
     tag_ids: list[PyObjectId] = Field(default_factory=list)
+    # Where visitors go once the link is EXPIRED; INACTIVE and BLOCKED never use it.
+    expired_redirect_url: str | None = None
     status: UrlStatus = UrlStatus.ACTIVE
     # Enforcement audit trail, stamped when safety flips status to BLOCKED.
     # ``updated_at`` is lossy (any later touch overwrites); these survive.

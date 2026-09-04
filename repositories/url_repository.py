@@ -18,7 +18,7 @@ from infrastructure.logging import get_logger
 from repositories.base import BaseRepository
 from schemas.models.base import ANONYMOUS_OWNER_ID
 from schemas.models.url import UrlStatus, UrlV2Doc
-from shared.url_utils import parse_destination
+from shared.url_utils import SINGLE_DESTINATION_FIELDS, parse_destination
 
 log = get_logger(__name__)
 
@@ -44,13 +44,10 @@ _ALL_URLS = {
                 "in": "$$rule.v",
             }
         },
-        {
-            "$cond": [
-                {"$eq": [{"$type": "$pre_start_url"}, "string"]},
-                ["$pre_start_url"],
-                [],
-            ]
-        },
+        *(
+            {"$cond": [{"$eq": [{"$type": f"${field}"}, "string"]}, [f"${field}"], []]}
+            for field in SINGLE_DESTINATION_FIELDS
+        ),
     ]
 }
 # (host, registrable) pairs for every destination; secondary_registrable is

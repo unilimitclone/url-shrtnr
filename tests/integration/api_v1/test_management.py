@@ -310,6 +310,55 @@ class TestUpdateUrlGeoRules:
         assert resp.status_code == 403
         mock_svc.update.assert_not_called()
 
+    def test_set_expired_fallback_flag_off_returns_403(self):
+        user = _make_user()
+        mock_svc = AsyncMock()
+
+        application = self._app(user, mock_svc, self._flag_svc(False))
+        with TestClient(application, raise_server_exceptions=False) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}",
+                json={"expired_redirect_url": "https://example.com/ended"},
+            )
+
+        assert resp.status_code == 403
+        mock_svc.update.assert_not_called()
+
+    def test_set_expired_fallback_flag_on_returns_200(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.expired_redirect_url = "https://example.com/ended"
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        mock_svc = AsyncMock()
+        mock_svc.update = AsyncMock(return_value=url_doc)
+
+        application = self._app(user, mock_svc, self._flag_svc(True))
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}",
+                json={"expired_redirect_url": "https://example.com/ended"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["expired_redirect_url"] == "https://example.com/ended"
+
+    def test_clear_expired_fallback_bypasses_flag(self):
+        user = _make_user()
+        url_doc = _make_url_doc(owner_id=user.user_id)
+        url_doc.updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        mock_svc = AsyncMock()
+        mock_svc.update = AsyncMock(return_value=url_doc)
+        flag_svc = self._flag_svc(False)
+
+        application = self._app(user, mock_svc, flag_svc)
+        with TestClient(application, raise_server_exceptions=True) as client:
+            resp = client.patch(
+                f"/api/v1/urls/{ObjectId()}", json={"expired_redirect_url": None}
+            )
+
+        assert resp.status_code == 200
+        flag_svc.require.assert_not_awaited()
+
     def test_clear_geo_rules_bypasses_flag(self):
         """Rollback posture: a de-allowlisted owner must be able to remove
         their rules, so null-clear never consults the flag."""

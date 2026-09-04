@@ -89,16 +89,39 @@ def parse_destination(url: str | None) -> dict | None:
     }
 
 
+# Single-URL fields besides long_url that send visitors somewhere. The Mongo
+# pipelines and the backfill derive their field lists from this tuple.
+SINGLE_DESTINATION_FIELDS: tuple[str, ...] = ("pre_start_url", "expired_redirect_url")
+
+
+def link_destination_urls_for(link: object) -> list[str]:
+    """Every URL a doc or request routes to, read off its fields.
+
+    The one place that knows which fields hold destinations. Readers that
+    enumerate by keyword drift the moment a field is added; they call this.
+    """
+    return link_destination_urls(
+        getattr(link, "long_url", None),
+        geo_rules=getattr(link, "geo_rules", None),
+        **{
+            field: getattr(link, field, None) or None
+            for field in SINGLE_DESTINATION_FIELDS
+        },
+    )
+
+
 def link_destination_urls(
     long_url: str | None,
     *,
     geo_rules: dict[str, str] | None = None,
     variants: Iterable[str] | None = None,
     pre_start_url: str | None = None,
+    expired_redirect_url: str | None = None,
 ) -> list[str]:
     """Every URL a link can send a visitor to: the main destination, geo
-    overrides, A/B variants, and the pre-start page a scheduled link shows
-    before it goes live. Distinct, first occurrence kept."""
+    overrides, A/B variants, the pre-start page a scheduled link shows before
+    it goes live, and the page an expired link falls back to. Distinct, first
+    occurrence kept."""
     seen: set[str] = set()
     out: list[str] = []
     for url in (
@@ -106,6 +129,7 @@ def link_destination_urls(
         *(geo_rules or {}).values(),
         *(variants or ()),
         pre_start_url,
+        expired_redirect_url,
     ):
         if isinstance(url, str) and url and url not in seen:
             seen.add(url)

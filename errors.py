@@ -144,6 +144,14 @@ class GoneError(AppError):
     error_code = "gone"
 
 
+class ExpiredRedirectError(GoneError):
+    """Expired link whose owner set a fallback destination."""
+
+    def __init__(self, redirect_url: str) -> None:
+        super().__init__("URL has expired")
+        self.redirect_url = redirect_url
+
+
 class RateLimitError(AppError):
     status_code = 429
     error_code = "rate_limit_exceeded"
