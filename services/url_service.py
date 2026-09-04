@@ -163,13 +163,16 @@ def _validate_ab_variants_shape(
 
 
 async def _check_variant_destinations(
-    service: UrlService, variants: Sequence[AbVariantRequest]
+    service: UrlService,
+    variants: Sequence[AbVariantRequest],
+    *,
+    event: str = "url_create_rejected",
 ) -> None:
     """Every variant URL runs the full L0 gate, same as long_url and geo."""
     for index, variant in enumerate(variants):
         rejection = await service._url_policy.check(variant.url)
         if rejection is not None:
-            log.info("url_create_rejected", reason=rejection.code)
+            log.info(event, reason=rejection.code)
             raise ValidationError(
                 rejection.public_message, field=f"ab_variants.{index}.url"
             )
@@ -431,7 +434,9 @@ async def _handle_ab_variants(
         max_variants=service._ab_variants_max,
         enabled=service._ab_variants_enabled,
     )
-    await _check_variant_destinations(service, request.ab_variants)
+    await _check_variant_destinations(
+        service, request.ab_variants, event="url_update_rejected"
+    )
     ops["ab_variants"] = [v.model_dump() for v in new]
 
 

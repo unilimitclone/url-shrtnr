@@ -117,6 +117,7 @@ def test_v2_active_plain_full_body():
             "is_https": True,
         },
         "geo_destinations": None,
+        "variant_destinations": None,
         "expired_destination": None,
     }
 
@@ -180,6 +181,41 @@ def test_v2_geo_rules_grouped_by_url_countries_sorted():
     assert body["destination"]["url"] == "https://example.com/long"
 
 
+def test_v2_ab_variants_listed_with_weights():
+    doc = _make_v2(
+        ab_variants=[
+            {"url": "https://b.example.com/promo", "weight": 60},
+            {"url": "https://example.com/c", "weight": 20},
+        ]
+    )
+    resp = _get(_make_service(v2_docs=(doc,)), "testme")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["variant_destinations"] == [
+        {
+            "weight": 60,
+            "url": "https://b.example.com/promo",
+            "domain": "b.example.com",
+            "path": "/promo",
+            "is_https": True,
+        },
+        {
+            "weight": 20,
+            "url": "https://example.com/c",
+            "domain": "example.com",
+            "path": "/c",
+            "is_https": True,
+        },
+    ]
+    assert body["destination"]["url"] == "https://example.com/long"
+
+
+def test_v2_without_variants_has_null_variant_destinations():
+    resp = _get(_make_service(v2_docs=(_make_v2(),)), "testme")
+    assert resp.json()["variant_destinations"] is None
+
+
 # ── v2, withholding ────────────────────────────────────────────────────────────
 
 
@@ -187,6 +223,7 @@ def test_v2_password_protected_withholds_destination_and_geo():
     doc = _make_v2(
         password="$argon2id$fakehash",
         geo_rules={"US": "https://us.example.com/"},
+        ab_variants=[{"url": "https://b.example.com/", "weight": 50}],
     )
     resp = _get(_make_service(v2_docs=(doc,)), "testme")
 
@@ -196,6 +233,8 @@ def test_v2_password_protected_withholds_destination_and_geo():
     assert body["password_protected"] is True
     assert body["destination"] is None
     assert body["geo_destinations"] is None
+    assert body["variant_destinations"] is None
+    assert "b.example.com" not in resp.text
     # No password unlock exists on this wire — the hash must never leak.
     assert "argon2" not in resp.text
 
@@ -285,6 +324,7 @@ def test_v1_active_full_body():
             "is_https": True,
         },
         "geo_destinations": None,
+        "variant_destinations": None,
         "expired_destination": None,
     }
 

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 from schemas.models.url import AbVariant
 
@@ -19,3 +20,8 @@ def pick_variant(variants: Sequence[AbVariant], roll: int) -> int | None:
         if roll < ceiling:
             return index
     return None
+
+
+def variant_urls(variants: Iterable[Any] | None) -> list[str]:
+    """Destination URLs of ab_variants entries, as models or raw Mongo dicts."""
+    return [v["url"] if isinstance(v, dict) else v.url for v in variants or []]

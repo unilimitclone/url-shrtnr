@@ -57,6 +57,22 @@ def test_secondary_fields_are_index_aligned():
     }
 
 
+def test_secondary_hosts_include_variant_destinations():
+    variants = [
+        {"url": "https://B.example/x", "weight": 40},
+        {"url": "https://main.example/b", "weight": 10},
+    ]
+    urls = backfill.secondary_urls({"ab_variants": variants})
+    assert backfill.secondary_hosts(urls, "main.example") == ["b.example"]
+    both_urls = backfill.secondary_urls(
+        {"geo_rules": {"IN": "https://geo.example/"}, "ab_variants": variants}
+    )
+    assert backfill.secondary_hosts(both_urls, "main.example") == [
+        "b.example",
+        "geo.example",
+    ]
+
+
 def test_dest_for_includes_secondary_hosts_only_when_present():
     plain = backfill.dest_for({"long_url": "https://main.example/p"}, "long_url")
     assert plain["host"] == "main.example" and "secondary_hosts" not in plain
@@ -69,6 +85,14 @@ def test_dest_for_includes_secondary_hosts_only_when_present():
     )
     assert geo["secondary_hosts"] == ["geo.example"]
     assert geo["secondary_registrable"] == ["geo.example"]
+    variant = backfill.dest_for(
+        {
+            "long_url": "https://main.example/p",
+            "ab_variants": [{"url": "https://variant.example/b", "weight": 50}],
+        },
+        "long_url",
+    )
+    assert variant["secondary_hosts"] == ["variant.example"]
     assert backfill.dest_for({"long_url": "nonsense"}, "long_url") is None
     scheduled = backfill.dest_for(
         {
@@ -108,6 +132,7 @@ def test_backfill_secondary_stamps_and_reports(capsys):
     assert ops[0]._filter == {
         "_id": 1,
         "geo_rules": {"IN": "https://geo.example/"},
+        "ab_variants": None,
         "pre_start_url": None,
         "expired_redirect_url": None,
         "dest.host": "main.example",
@@ -123,7 +148,7 @@ def test_backfill_secondary_stamps_and_reports(capsys):
         2: {"dest.secondary_hosts": [], "dest.secondary_registrable": []},
     }
     out = capsys.readouterr().out
-    assert "geo or scheduled links needing secondary fields: 2" in out
+    assert "geo/variant/scheduled links needing secondary fields: 2" in out
     assert (
         "secondary fields stamped 2; failed: 0; skipped (changed meanwhile): 0; "
         "remaining (expect 0): 0"

@@ -113,6 +113,31 @@ class TestHotLinkScreenSecondaryDestinations:
         assert [c.args[0].host for c in sink.emit.await_args_list] == ["clean.example"]
 
     @pytest.mark.asyncio
+    async def test_variant_destinations_each_get_an_event(self):
+        from schemas.models.url import AbVariant
+
+        doc = MagicMock(
+            long_url="https://clean.example/",
+            geo_rules=None,
+            ab_variants=[
+                AbVariant(url="https://variant.example/b", weight=50),
+                AbVariant(url="https://clean.example/c", weight=20),
+            ],
+        )
+        screen, _u, sink = _screen(v2_doc=doc)
+
+        await screen.on_hot(_hot())
+
+        hosts = [c.args[0].host for c in sink.emit.await_args_list]
+        assert hosts == ["clean.example", "variant.example"]
+        event = sink.emit.await_args_list[1].args[0]
+        assert event.context["link_destinations"] == [
+            "https://clean.example/",
+            "https://variant.example/b",
+            "https://clean.example/c",
+        ]
+
+    @pytest.mark.asyncio
     async def test_single_destination_carries_no_link_destinations(self):
         doc = MagicMock(long_url="https://only.example/", geo_rules=None)
         screen, _u, sink = _screen(v2_doc=doc)

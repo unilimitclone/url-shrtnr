@@ -65,7 +65,8 @@ STATS_GROUP_BY_DESC = (
     "- `utm_campaign` — group by the `utm_campaign` tag\n"
     "- `variant` — group by the A/B variant served, as its index into "
     "`ab_variants` (`0`, `1`, ...); clicks sent to the default destination "
-    "appear as `(default)`\n\n"
+    "appear as `(default)`. The index is positional: editing `ab_variants` "
+    "re-keys past clicks to whatever now sits at that index\n\n"
     "Multiple dimensions can be combined: `time,browser` returns time series "
     "broken down by browser."
 )
@@ -209,7 +210,8 @@ LINK_STATS_GROUP_BY_DESC = (
     "- `utm_campaign` — group by the `utm_campaign` tag\n"
     "- `variant` — group by the A/B variant served, as its index into "
     "`ab_variants` (`0`, `1`, ...); clicks sent to the default destination "
-    "appear as `(default)`\n\n"
+    "appear as `(default)`. The index is positional: editing `ab_variants` "
+    "re-keys past clicks to whatever now sits at that index\n\n"
     "Multiple dimensions can be combined: `time,browser` returns time series "
     "broken down by browser."
 )

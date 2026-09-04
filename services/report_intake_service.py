@@ -319,7 +319,8 @@ class ReportIntakeService:
         self, domain: str | None, code: str
     ) -> list[str] | None:
         """Domain-scoped existence check that also yields every destination
-        the link routes to (long_url, geo overrides, pre-start and after-expiry pages).
+        the link routes to (long_url, geo overrides, A/B variants, pre-start
+        and after-expiry pages).
 
         System-domain codes resolve via the shared PublicLinkResolver —
         the same generation dispatch (v1/v2/emoji) as the redirect, and

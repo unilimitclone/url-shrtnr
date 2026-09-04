@@ -501,6 +501,7 @@ async def preview_url(
                         "long_url": v2.long_url,
                         "password": v2.password,
                         "geo_rules": v2.geo_rules,
+                        "ab_variants": [v.model_dump() for v in v2.ab_variants or []],
                         "meta_tags": v2.meta_tags.model_dump()
                         if v2.meta_tags
                         else None,
@@ -524,6 +525,7 @@ async def preview_url(
                     "long_url": v2.long_url,
                     "password": v2.password,
                     "geo_rules": v2.geo_rules,
+                    "ab_variants": [v.model_dump() for v in v2.ab_variants or []],
                     "meta_tags": v2.meta_tags.model_dump() if v2.meta_tags else None,
                     "blocked": v2.effective_status is UrlStatus.BLOCKED,
                     "scheduled": v2.effective_status is UrlStatus.SCHEDULED,
@@ -619,6 +621,11 @@ async def preview_url(
             {"countries": sorted(codes), **split_destination(dest)}
             for dest, codes in grouped.items()
         ]
+    # Same rule for A/B variants: every destination a visitor might land on.
+    variant_destinations = [
+        {"weight": v["weight"], **split_destination(v["url"])}
+        for v in url_data.get("ab_variants") or []
+    ] or None
 
     return templates.TemplateResponse(
         request,
@@ -631,6 +638,7 @@ async def preview_url(
             "path": default_dest["path"],
             "is_https": default_dest["is_https"],
             "geo_destinations": geo_destinations,
+            "variant_destinations": variant_destinations,
             # An expired link with a fallback still sends everyone there.
             "expired_destination": (
                 split_destination(url_data["expired_fallback"])

@@ -139,6 +139,34 @@
             </div>
             {% endfor %}
             {% endif %}
+            {% if variant_destinations %}
+            <div class="geo-banner">
+                <i class="ti ti-arrows-split"></i>
+                This link splits visitors between several destinations at random.
+            </div>
+            {% for dest in variant_destinations %}
+            <div class="url-display destination">
+                <span class="url-label">{{ dest.weight }}% of visitors:</span>
+                <div class="long-url">
+                    <div class="url-content">
+                        <div class="url-header">
+                            <img src="https://www.google.com/s2/favicons?domain={{ dest.domain }}&sz=32" class="favicon"
+                                alt="favicon" onerror="this.style.display='none'">
+                            <span class="full-url">
+                                <span class="domain-name">{{ dest.domain }}</span><span class="url-path">{{ dest.path }}</span>
+                            </span>
+                            {% if dest.is_https %}
+                            <span class="https-badge">
+                                <i class="ti ti-lock"></i>
+                                HTTPS
+                            </span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+            {% endif %}
             {% if meta_tags %}
             <!-- Custom social preview set by the link owner. Shown next to the
                  real destination above so recipients can compare what the
