@@ -519,6 +519,26 @@ class TestUrlDestinationSecondaryHosts:
         assert geo is not None
         assert geo.to_doc()["secondary_hosts"] == ["geo.example"]
 
+    def test_secondary_registrable_is_index_aligned_with_hosts(self):
+        dest = UrlDestination.for_link(
+            "https://main.example/",
+            geo_rules={
+                "GB": "https://shop.evil.co.uk/x",
+                "IN": "https://a.evil.com/y",
+                "US": "https://b.evil.com/z",
+            },
+        )
+        assert dest is not None
+        assert dest.secondary_hosts == ["a.evil.com", "b.evil.com", "shop.evil.co.uk"]
+        assert dest.secondary_registrable == ["evil.com", "evil.com", "evil.co.uk"]
+        doc = dest.to_doc()
+        assert doc["secondary_registrable"] == ["evil.com", "evil.com", "evil.co.uk"]
+
+    def test_to_doc_omits_empty_secondary_registrable(self):
+        plain = UrlDestination.for_link("https://main.example/")
+        assert plain is not None
+        assert "secondary_registrable" not in plain.to_doc()
+
     def test_docs_predating_the_field_read_as_no_secondary_hosts(self):
         dest = UrlDestination.model_validate(
             {
@@ -529,6 +549,7 @@ class TestUrlDestinationSecondaryHosts:
             }
         )
         assert dest.secondary_hosts == []
+        assert dest.secondary_registrable == []
 
 
 class TestPreStartUrlIsADestination:
@@ -541,6 +562,7 @@ class TestPreStartUrlIsADestination:
         )
         assert dest is not None
         assert dest.secondary_hosts == ["teaser.example"]
+        assert dest.secondary_registrable == ["teaser.example"]
 
     def test_pre_start_on_the_main_host_adds_nothing(self):
         dest = UrlDestination.for_link(

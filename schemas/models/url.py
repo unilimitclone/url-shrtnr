@@ -21,7 +21,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from schemas.models.base import ANONYMOUS_OWNER_ID, MongoBaseModel, PyObjectId
 from shared.datetime_utils import as_aware_utc
-from shared.url_utils import link_destination_urls, parse_destination, secondary_hosts
+from shared.url_utils import (
+    link_destination_urls,
+    parse_destination,
+    secondary_hosts,
+    secondary_registrables,
+)
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -146,6 +151,9 @@ class UrlDestination(BaseModel):
     # Hosts the link can ALSO route to (geo rules today, A/B variants
     # later), main host excluded. Enforcement matches host OR these.
     secondary_hosts: list[str] = Field(default_factory=list)
+    # Registrable domain of each secondary host, same index. Feed sweeps
+    # fan out by domain; this is what lets them reach a hidden host.
+    secondary_registrable: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_url(cls, url: str | None) -> UrlDestination | None:
@@ -164,18 +172,18 @@ class UrlDestination(BaseModel):
         """Main parts plus every secondary host. None only when nothing
         about the link parses."""
         main = parse_destination(long_url)
-        extra = secondary_hosts(
-            link_destination_urls(
-                None,
-                geo_rules=geo_rules,
-                variants=variants,
-                pre_start_url=pre_start_url,
-            ),
-            exclude=(main or {}).get("host", ""),
+        urls = link_destination_urls(
+            None, geo_rules=geo_rules, variants=variants, pre_start_url=pre_start_url
         )
+        exclude = (main or {}).get("host", "")
+        extra = secondary_hosts(urls, exclude=exclude)
         if main is None and not extra:
             return None
-        return cls(**(main or {}), secondary_hosts=extra)
+        return cls(
+            **(main or {}),
+            secondary_hosts=extra,
+            secondary_registrable=secondary_registrables(urls, exclude=exclude),
+        )
 
     def to_doc(self) -> dict:
         """Mongo shape: secondary_hosts absent when empty so the sparse index
@@ -183,8 +191,9 @@ class UrlDestination(BaseModel):
         writer of an empty list, as its convergence marker for geo links
         whose rules add no host (see scripts/backfill_url_dest.py)."""
         data = self.model_dump()
-        if not data["secondary_hosts"]:
-            data.pop("secondary_hosts")
+        for field in ("secondary_hosts", "secondary_registrable"):
+            if not data[field]:
+                data.pop(field)
         return data
 
 

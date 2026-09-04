@@ -35,6 +35,16 @@ def test_secondary_hosts_mirror_the_shared_helper():
     assert backfill.secondary_urls({"geo_rules": None, "pre_start_url": None}) == []
 
 
+def test_secondary_fields_are_index_aligned():
+    fields = backfill.secondary_fields(
+        ["https://shop.evil.co.uk/x", "https://a.evil.com/y"], "main.example"
+    )
+    assert fields == {
+        "secondary_hosts": ["a.evil.com", "shop.evil.co.uk"],
+        "secondary_registrable": ["evil.com", "evil.co.uk"],
+    }
+
+
 def test_dest_for_includes_secondary_hosts_only_when_present():
     plain = backfill.dest_for({"long_url": "https://main.example/p"}, "long_url")
     assert plain["host"] == "main.example" and "secondary_hosts" not in plain
@@ -46,6 +56,7 @@ def test_dest_for_includes_secondary_hosts_only_when_present():
         "long_url",
     )
     assert geo["secondary_hosts"] == ["geo.example"]
+    assert geo["secondary_registrable"] == ["geo.example"]
     assert backfill.dest_for({"long_url": "nonsense"}, "long_url") is None
     scheduled = backfill.dest_for(
         {
@@ -76,16 +87,60 @@ def test_backfill_secondary_stamps_and_reports(capsys):
     cursor = MagicMock()
     cursor.sort.return_value.limit = MagicMock(side_effect=[docs, []])
     col.find = MagicMock(return_value=cursor)
+    col.bulk_write = MagicMock(return_value=MagicMock(matched_count=2))
 
     backfill.backfill_secondary(col, dry_run=False)
 
     ops = col.bulk_write.call_args.args[0]
-    sets = {op._filter["_id"]: op._doc["$set"]["dest.secondary_hosts"] for op in ops}
+    # Optimistic predicate: the write re-asserts the state it was computed from.
+    assert ops[0]._filter == {
+        "_id": 1,
+        "geo_rules": {"IN": "https://geo.example/"},
+        "pre_start_url": None,
+        "dest.host": "main.example",
+        "dest.secondary_registrable": {"$exists": False},
+    }
+    sets = {op._filter["_id"]: op._doc["$set"] for op in ops}
     # A rule that adds no new host still gets [] so the filter converges.
-    assert sets == {1: ["geo.example"], 2: []}
+    assert sets == {
+        1: {
+            "dest.secondary_hosts": ["geo.example"],
+            "dest.secondary_registrable": ["geo.example"],
+        },
+        2: {"dest.secondary_hosts": [], "dest.secondary_registrable": []},
+    }
     out = capsys.readouterr().out
-    assert "geo or scheduled links needing secondary_hosts: 2" in out
-    assert "secondary_hosts stamped 2; failed: 0; remaining (expect 0): 0" in out
+    assert "geo or scheduled links needing secondary fields: 2" in out
+    assert (
+        "secondary fields stamped 2; failed: 0; skipped (changed meanwhile): 0; "
+        "remaining (expect 0): 0"
+    ) in out
+
+
+def test_backfill_secondary_counts_docs_that_changed_under_it(capsys):
+    docs = [
+        {
+            "_id": 1,
+            "dest": {"host": "main.example"},
+            "geo_rules": {"IN": "https://geo.example/"},
+        },
+    ]
+    col = MagicMock()
+    col.name = "urlsV2"
+    col.count_documents = MagicMock(side_effect=[1, 1])
+    cursor = MagicMock()
+    cursor.sort.return_value.limit = MagicMock(side_effect=[docs, []])
+    col.find = MagicMock(return_value=cursor)
+    # The doc was edited between read and write: the predicate matched nothing.
+    col.bulk_write = MagicMock(return_value=MagicMock(matched_count=0))
+
+    backfill.backfill_secondary(col, dry_run=False)
+
+    out = capsys.readouterr().out
+    assert (
+        "stamped 0; failed: 0; skipped (changed meanwhile): 1; remaining (expect 1): 1"
+        in out
+    )
 
 
 def test_backfill_secondary_dry_run_writes_nothing(capsys):
@@ -94,7 +149,38 @@ def test_backfill_secondary_dry_run_writes_nothing(capsys):
     col.count_documents = MagicMock(return_value=5)
     backfill.backfill_secondary(col, dry_run=True)
     col.bulk_write.assert_not_called()
-    assert "needing secondary_hosts: 5" in capsys.readouterr().out
+    assert "needing secondary fields: 5" in capsys.readouterr().out
+
+
+def test_backfill_secondary_partial_bulk_failure_reconciles(capsys):
+    from pymongo.errors import BulkWriteError
+
+    docs = [
+        {
+            "_id": i,
+            "dest": {"host": "main.example"},
+            "geo_rules": {"IN": "https://geo.example/"},
+        }
+        for i in (1, 2, 3)
+    ]
+    col = MagicMock()
+    col.name = "urlsV2"
+    col.count_documents = MagicMock(side_effect=[3, 2])
+    cursor = MagicMock()
+    cursor.sort.return_value.limit = MagicMock(side_effect=[docs, []])
+    col.find = MagicMock(return_value=cursor)
+    # One op failed, one matched and wrote, one matched nothing (changed meanwhile).
+    col.bulk_write = MagicMock(
+        side_effect=BulkWriteError({"nMatched": 1, "writeErrors": [{"index": 0}]})
+    )
+
+    backfill.backfill_secondary(col, dry_run=False)
+
+    out = capsys.readouterr().out
+    assert (
+        "stamped 1; failed: 1; skipped (changed meanwhile): 1; remaining (expect 2): 2"
+        in out
+    )
 
 
 def test_secondary_pass_repairs_a_null_dest_with_valid_geo_hosts():
@@ -113,6 +199,7 @@ def test_secondary_pass_repairs_a_null_dest_with_valid_geo_hosts():
             "subdomain": "",
             "registrable_domain": "",
             "secondary_hosts": ["geo.example"],
+            "secondary_registrable": ["geo.example"],
         }
     }
     # Nothing parseable at all still converges instead of matching forever.
@@ -125,4 +212,5 @@ def test_secondary_pass_repairs_a_null_dest_with_valid_geo_hosts():
         }
     )
     assert nothing["dest"]["secondary_hosts"] == []
+    assert nothing["dest"]["secondary_registrable"] == []
     assert backfill._SECONDARY_FILTER["$and"][1]["$or"][1] == {"dest": None}

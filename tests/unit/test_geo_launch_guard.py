@@ -38,3 +38,4 @@ def test_geo_targeting_stays_dark_until_enforcement_sees_it():
         "https://main.example/", geo_rules={"IN": "https://geo.example/x"}
     )
     assert stamped is not None and stamped.secondary_hosts == ["geo.example"], _WORK
+    assert stamped.secondary_registrable == ["geo.example"], _WORK
